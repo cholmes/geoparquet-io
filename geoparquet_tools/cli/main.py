@@ -5,6 +5,7 @@ from geoparquet_tools.core.hilbert_order import hilbert_order as hilbert_impl
 from geoparquet_tools.core.add_country_codes import add_country_codes as add_country_codes_impl
 from geoparquet_tools.core.split_by_country import split_by_country as split_country_impl
 from geoparquet_tools.core.add_bbox_metadata import add_bbox_metadata as add_bbox_metadata_impl
+from geoparquet_tools.core.add_h3 import add_h3 as add_h3_impl
 
 @click.group()
 def cli():
@@ -138,6 +139,18 @@ def add():
 def add_country_codes(input_parquet, countries_parquet, output_parquet, verbose):
     """Add country ISO codes to a GeoParquet file based on spatial intersection."""
     add_country_codes_impl(input_parquet, countries_parquet, output_parquet, verbose)
+
+@add.command(name='h3')
+@click.argument('input_parquet')
+@click.argument('output_parquet')
+@click.option('--resolution', type=click.IntRange(0, 15), default=15,
+              help='H3 resolution (0-15, default: 15)')
+@click.option('--column-name', default='h3-cell',
+              help='Name for the H3 cell column (default: h3-cell)')
+@click.option('--verbose', is_flag=True, help='Print additional information.')
+def add_h3(input_parquet, output_parquet, resolution, column_name, verbose):
+    """Add H3 cell IDs to a GeoParquet file based on geometry centroids."""
+    add_h3_impl(input_parquet, output_parquet, resolution, column_name, verbose)
 
 # Partition commands group
 @cli.group()

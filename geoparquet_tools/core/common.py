@@ -175,6 +175,7 @@ def check_bbox_structure(parquet_file, verbose=False):
             - has_bbox_column (bool): Whether a valid bbox struct column exists
             - bbox_column_name (str): Name of the bbox column if found
             - has_bbox_metadata (bool): Whether bbox covering is specified in metadata
+            - referenced_bbox_column (str): Name of the referenced bbox column if found
             - status (str): "optimal", "suboptimal", or "poor"
             - message (str): Human readable description
     """
@@ -208,30 +209,33 @@ def check_bbox_structure(parquet_file, verbose=False):
 
     # Then check metadata for bbox covering that specifically references the bbox column
     has_bbox_metadata = False
-    if metadata and b'geo' in metadata and has_bbox_column:
+    referenced_bbox_column = None
+    if metadata and b'geo' in metadata:
         try:
             geo_meta = json.loads(metadata[b'geo'].decode('utf-8'))
             if verbose:
                 click.echo("\nParsed geo metadata:")
                 click.echo(json.dumps(geo_meta, indent=2))
             
+            # Look through columns for geometry columns with bbox covering
             if isinstance(geo_meta, dict) and 'columns' in geo_meta:
-                columns = geo_meta['columns']
-                for col_name, col_info in columns.items():
-                    if isinstance(col_info, dict) and col_info.get("covering", {}).get("bbox"):
-                        bbox_refs = col_info["covering"]["bbox"]
-                        # Check if the bbox covering has the required structure
-                        if isinstance(bbox_refs, dict) and all(
-                            key in bbox_refs for key in ['xmin', 'ymin', 'xmax', 'ymax']
-                        ) and all(
-                            isinstance(ref, list) and len(ref) == 2
-                            for ref in bbox_refs.values()
-                        ):
-                            referenced_bbox_column = bbox_refs['xmin'][0]  # Get column name from any coordinate
-                            has_bbox_metadata = True
-                            if verbose:
-                                click.echo(f"Found bbox covering in metadata referencing column: {referenced_bbox_column}")
-                            break
+                for col_name, col_info in geo_meta['columns'].items():
+                    if isinstance(col_info, dict) and 'encoding' in col_info:
+                        # Found a geometry column, check for bbox covering
+                        if 'covering' in col_info and 'bbox' in col_info['covering']:
+                            bbox_refs = col_info['covering']['bbox']
+                            if isinstance(bbox_refs, dict) and all(
+                                key in bbox_refs for key in ['xmin', 'ymin', 'xmax', 'ymax']
+                            ) and all(
+                                isinstance(ref, list) and len(ref) == 2
+                                for ref in bbox_refs.values()
+                            ):
+                                referenced_bbox_column = bbox_refs['xmin'][0]  # Get column name from any coordinate
+                                has_bbox_metadata = True
+                                if verbose:
+                                    click.echo(f"Found bbox covering in metadata for geometry column '{col_name}' referencing bbox column: {referenced_bbox_column}")
+                                break
+
         except json.JSONDecodeError:
             if verbose:
                 click.echo("Failed to parse geo metadata as JSON")
@@ -252,6 +256,7 @@ def check_bbox_structure(parquet_file, verbose=False):
         click.echo(f"  has_bbox_column: {has_bbox_column}")
         click.echo(f"  bbox_column_name: {bbox_column_name}")
         click.echo(f"  has_bbox_metadata: {has_bbox_metadata}")
+        click.echo(f"  referenced_bbox_column: {referenced_bbox_column}")
         click.echo(f"  status: {status}")
         click.echo(f"  message: {message}")
 
@@ -259,6 +264,7 @@ def check_bbox_structure(parquet_file, verbose=False):
         "has_bbox_column": has_bbox_column,
         "bbox_column_name": bbox_column_name if has_bbox_column else None,
         "has_bbox_metadata": has_bbox_metadata,
+        "referenced_bbox_column": referenced_bbox_column,
         "status": status,
         "message": message
     }
