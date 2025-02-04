@@ -6,6 +6,7 @@ from geoparquet_tools.core.add_country_codes import add_country_codes as add_cou
 from geoparquet_tools.core.split_by_country import split_by_country as split_country_impl
 from geoparquet_tools.core.add_bbox_metadata import add_bbox_metadata as add_bbox_metadata_impl
 from geoparquet_tools.core.add_h3 import add_h3 as add_h3_impl
+from geoparquet_tools.core.partition_by_h3 import partition_by_h3 as partition_h3_impl
 
 @click.group()
 def cli():
@@ -167,6 +168,24 @@ def partition():
 def partition_admin(input_parquet, output_folder, hive, verbose, overwrite):
     """Split a GeoParquet file into separate files by country code."""
     split_country_impl(input_parquet, output_folder, hive, verbose, overwrite)
+
+@partition.command(name='h3')
+@click.argument('input_parquet')
+@click.argument('output_folder')
+@click.option('--column-name', default='h3-cell',
+              help='Name of the H3 cell column (default: h3-cell)')
+@click.option('--resolution', type=click.IntRange(0, 15), default=8,
+              help='H3 resolution to partition by (0-15, default: 8)')
+@click.option('--dry-run', is_flag=True,
+              help='Only show partitioning statistics without creating files')
+@click.option('--verbose', is_flag=True, help='Print additional information')
+def partition_h3(input_parquet, output_folder, column_name, resolution, dry_run, verbose):
+    """Partition a GeoParquet file by H3 cells.
+    
+    Creates one file per unique H3 cell in the specified column. If the H3 column
+    doesn't exist, you can create it first using 'gt add h3'.
+    """
+    partition_h3_impl(input_parquet, output_folder, column_name, resolution, dry_run, verbose)
 
 if __name__ == "__main__":
     cli() 

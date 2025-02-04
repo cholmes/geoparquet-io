@@ -43,7 +43,7 @@ def add_h3(input_parquet, output_parquet, resolution=15, column_name='h3-cell', 
         FROM '{input_url}'
     )
     TO '{output_parquet}'
-    (FORMAT PARQUET);
+    (FORMAT PARQUET, COMPRESSION ZSTD);
     """
     
     con.execute(query)
