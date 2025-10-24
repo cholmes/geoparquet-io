@@ -52,8 +52,8 @@ def partition_by_kdtree(
         skip_analysis: Skip partition strategy analysis (for performance)
         sample_size: Number of points to sample for computing boundaries. None for exact mode (default: 100,000)
     """
-    # Validate iterations
-    if not 1 <= iterations <= 20:
+    # Validate iterations (skip if None - auto mode)
+    if iterations is not None and not 1 <= iterations <= 20:
         raise click.UsageError(f"Iterations must be between 1 and 20, got {iterations}")
 
     # Determine default for keep_kdtree_column
@@ -84,12 +84,18 @@ def partition_by_kdtree(
         )
 
     # If column doesn't exist, add it
-    partition_count = 2**iterations
+    # Compute partition count for messaging (if iterations is known)
+    partition_count = 2**iterations if iterations is not None else None
     if not column_exists:
         if verbose:
-            click.echo(
-                f"Adding KD-tree column '{kdtree_column_name}' with {partition_count} partitions..."
-            )
+            if partition_count is not None:
+                click.echo(
+                    f"Adding KD-tree column '{kdtree_column_name}' with {partition_count} partitions..."
+                )
+            else:
+                click.echo(
+                    f"Adding KD-tree column '{kdtree_column_name}' (auto-selecting partition count)..."
+                )
 
         # Create temporary file for KD-tree-enriched data
         temp_dir = tempfile.gettempdir()
@@ -164,9 +170,12 @@ def partition_by_kdtree(
         return
 
     # Build description for user feedback
-    click.echo(
-        f"Partitioning into {partition_count} KD-tree cells (column: '{kdtree_column_name}')"
-    )
+    if partition_count is not None:
+        click.echo(
+            f"Partitioning into {partition_count} KD-tree cells (column: '{kdtree_column_name}')"
+        )
+    else:
+        click.echo(f"Partitioning by KD-tree cells (column: '{kdtree_column_name}')")
 
     try:
         # Use common partition function - partition by full column value (not prefix)
