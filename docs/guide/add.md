@@ -96,23 +96,55 @@ gpio add kdtree input.parquet output.parquet --verbose
 
 ## Administrative Divisions
 
-Add country ISO codes via spatial join:
+Add administrative division columns via spatial join with remote boundaries datasets:
+
+### How It Works
+
+Performs spatial intersection between your data and remote admin boundaries to add admin division columns. Uses efficient spatial extent filtering to query only relevant boundaries from remote datasets.
+
+### Quick Start
 
 ```bash
-# Use default countries dataset
-gpio add admin-divisions buildings.parquet output.parquet
+# Add all GAUL levels (continent, country, department)
+gpio add admin-divisions input.parquet output.parquet --dataset gaul
 
-# Use custom countries file
-gpio add admin-divisions buildings.parquet output.parquet \
-  --countries-file my_countries.parquet
-
-# Preview SQL
-gpio add admin-divisions buildings.parquet output.parquet --dry-run
+# Preview SQL before execution
+gpio add admin-divisions input.parquet output.parquet --dataset gaul --dry-run
 ```
 
-Uses the [administrative division extension](https://github.com/fiboa/administrative-division-extension) from [fiboa](https://github.com/fiboa).
+### Multi-Level Admin Divisions
 
-Default countries source: [source.coop admin boundaries](https://data.source.coop/cholmes/admin-boundaries/countries.parquet)
+Add multiple hierarchical administrative levels:
+
+```bash
+# Add all GAUL levels (adds admin:continent, admin:country, admin:department)
+gpio add admin-divisions buildings.parquet output.parquet --dataset gaul
+
+# Add specific levels only
+gpio add admin-divisions buildings.parquet output.parquet --dataset gaul \
+  --levels continent,country
+
+# Use Overture Maps dataset
+gpio add admin-divisions buildings.parquet output.parquet --dataset overture \
+  --levels country,region
+```
+
+### Datasets
+
+Two remote admin boundary datasets are supported:
+
+| Dataset | Columns Added | Description |
+|---------|--------------|-------------|
+| `gaul` (default) | `admin:continent`, `admin:country`, `admin:department` | GAUL L2 Admin Boundaries - worldwide |
+| `overture` | `admin:country`, `admin:region` | Overture Maps Divisions (219 countries, 3,544 regions) - [docs](https://docs.overturemaps.org/guides/divisions/) |
+
+### Notes
+
+- Uses the [administrative division extension](https://github.com/fiboa/administrative-division-extension) from [fiboa](https://github.com/fiboa)
+- GAUL dataset: [source.coop GAUL L2](https://data.source.coop/nlebovits/gaul-l2-admin/)
+- Performs spatial intersection to assign admin divisions based on geometry
+- Requires internet connection to access remote datasets
+- Uses spatial extent filtering and bbox columns for optimization
 
 ## Common Options
 
