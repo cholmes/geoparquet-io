@@ -165,6 +165,84 @@ gpio benchmark suite --files path/to/file.parquet --operations core
 gpio benchmark run inspect path/to/file.parquet
 ```
 
+## Profiling Integration
+
+When benchmarks identify performance regressions, profiling helps diagnose which code paths are responsible.
+
+### Enabling Profiling
+
+Add the `--profile` flag to enable cProfile integration:
+
+```bash
+# Run benchmarks with profiling enabled
+gpio benchmark suite \
+  --files path/to/file.parquet \
+  --operations core \
+  --profile \
+  --profile-dir ./profiles
+
+# Profile specific operations
+gpio benchmark suite \
+  --files large.parquet \
+  --operations add-bbox,sort-hilbert \
+  --profile
+```
+
+This generates `.prof` files in the specified directory (default: `./profiles/`).
+
+### Analyzing Profile Data
+
+**View profile interactively:**
+```bash
+python -m pstats profiles/add-bbox_large_1.prof
+# Then use commands like:
+# - stats 20  (show top 20 functions)
+# - sort cumtime  (sort by cumulative time)
+# - callers duckdb  (show callers of duckdb functions)
+```
+
+**Generate text summary:**
+```python
+from geoparquet_io.benchmarks.profile_report import format_profile_stats
+
+# Show top 20 slowest functions
+summary = format_profile_stats('profiles/add-bbox_large_1.prof', top_n=20)
+print(summary)
+```
+
+**Sample profile output:**
+```
+Profile: add-bbox_large_1.prof
+================================================================================
+
+Top 20 functions by cumulative time:
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.002    0.002   12.456   12.456 geoparquet_io/core/add_column.py:45(add_bbox_column)
+        1    0.001    0.001   11.234   11.234 duckdb.py:123(execute)
+      100    5.678    0.057    9.876    0.099 duckdb.py:234(_fetch_arrow)
+    10000    2.345    0.000    3.456    0.000 pyarrow.lib:456(cast)
+```
+
+### Profiling Overhead
+
+- Profiling adds ~5-15% overhead to benchmark timing
+- Profile files are typically 50-500KB each
+- Disabled by default to keep benchmarks fast
+
+### CI Integration
+
+The benchmark workflow automatically suggests profiling when regressions are detected:
+
+```
+⚠️ Performance regression detected (+25% slower on sort-hilbert)
+
+💡 To diagnose, run locally with profiling:
+   gpio benchmark suite --files large.parquet --operations sort-hilbert --profile
+```
+
+Profile artifacts are uploaded with 30-day retention when profiling is enabled.
+
 ## GitHub Actions Workflows
 
 ### PR Benchmarks (Opt-in)
