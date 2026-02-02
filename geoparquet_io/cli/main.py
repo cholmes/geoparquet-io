@@ -4796,12 +4796,25 @@ def benchmark_compare(
     type=click.Path(),
     help="Write results to JSON file",
 )
+@click.option(
+    "--profile",
+    is_flag=True,
+    help="Enable cProfile profiling to diagnose performance bottlenecks",
+)
+@click.option(
+    "--profile-dir",
+    type=click.Path(),
+    default="./profiles",
+    help="Directory for profile output files (default: ./profiles)",
+)
 @verbose_option
 def benchmark_suite(
     operations,
     files,
     iterations,
     output,
+    profile,
+    profile_dir,
     verbose,
 ):
     """
@@ -4813,13 +4826,14 @@ def benchmark_suite(
     Example:
         gpio benchmark suite --operations core --output results.json
         gpio benchmark suite --files input.parquet --output results.json
+        gpio benchmark suite --profile --profile-dir ./my-profiles
     """
     from pathlib import Path
 
     configure_verbose(verbose)
     from geoparquet_io.benchmarks.config import CORE_OPERATIONS, FULL_OPERATIONS
     from geoparquet_io.core.benchmark_suite import run_benchmark_suite
-    from geoparquet_io.core.logging_config import progress, success
+    from geoparquet_io.core.logging_config import info, progress, success
 
     # Determine operations
     ops = CORE_OPERATIONS if operations == "core" else FULL_OPERATIONS
@@ -4836,6 +4850,13 @@ def benchmark_suite(
         else:
             raise click.ClickException(f"File not found: {f}")
 
+    # Setup profiling if requested
+    profile_path = None
+    if profile:
+        profile_path = Path(profile_dir)
+        profile_path.mkdir(parents=True, exist_ok=True)
+        info(f"Profiling enabled - output directory: {profile_path}")
+
     progress(
         f"Running benchmark suite: {len(ops)} operations, "
         f"{len(input_files)} files, {iterations} iterations"
@@ -4846,12 +4867,30 @@ def benchmark_suite(
         operations=ops,
         iterations=iterations,
         verbose=verbose,
+        profile=profile,
+        profile_dir=profile_path,
     )
 
     # Display summary
     success_count = sum(1 for r in result.results if r.success)
     total_count = len(result.results)
     progress(f"\nCompleted: {success_count}/{total_count} benchmarks")
+
+    # Show profile summary if profiling was enabled
+    if profile:
+        profile_files = [
+            Path(r.details.get("profile_path"))
+            for r in result.results
+            if r.details.get("profile_path")
+        ]
+
+        if profile_files:
+            info(f"\nGenerated {len(profile_files)} profile files in {profile_path}")
+            info("\nTo view profile details, use:")
+            info(f"  python -m pstats {profile_files[0]}")
+            info("\nOr generate a summary:")
+            info("  from geoparquet_io.benchmarks.profile_report import format_profile_stats")
+            info(f"  print(format_profile_stats('{profile_files[0]}'))")
 
     # Save if requested
     if output:
