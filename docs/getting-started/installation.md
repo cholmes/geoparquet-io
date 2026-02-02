@@ -88,6 +88,42 @@ gpio --help
 gpio inspect your_file.parquet
 ```
 
+## Shell Completion
+
+Enable tab completion for `gpio` commands in your shell:
+
+**Bash:**
+```bash
+# Add to ~/.bashrc
+eval "$(_GPIO_COMPLETE=bash_source gpio)"
+```
+
+**Zsh:**
+```bash
+# Add to ~/.zshrc
+eval "$(_GPIO_COMPLETE=zsh_source gpio)"
+```
+
+**Fish:**
+```bash
+# Add to ~/.config/fish/config.fish
+eval (env _GPIO_COMPLETE=fish_source gpio)
+```
+
+After adding the appropriate line to your shell config, restart your shell or source the config file:
+```bash
+source ~/.bashrc    # Bash
+source ~/.zshrc     # Zsh
+source ~/.config/fish/config.fish  # Fish
+```
+
+Once enabled, you can tab-complete commands, subcommands, and options:
+```bash
+gpio <TAB>          # Shows: add, check, convert, extract, inspect, ...
+gpio add <TAB>      # Shows: bbox, h3, kdtree, quadkey, ...
+gpio add bbox --<TAB>  # Shows available options
+```
+
 ## Upgrading
 
 To upgrade to the latest version:
