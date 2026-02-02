@@ -19,6 +19,7 @@ import psutil
 
 from geoparquet_io.benchmarks.config import DEFAULT_THRESHOLDS, RegressionThresholds
 from geoparquet_io.benchmarks.operations import get_operation
+from geoparquet_io.benchmarks.profile_report import save_profile_data
 from geoparquet_io.core.logging_config import debug, progress
 
 
@@ -39,6 +40,40 @@ class BenchmarkResult:
     details: dict[str, Any] = field(default_factory=dict)
     memory_limit_mb: int | None = None
     iteration: int = 1
+
+
+def _save_profile_stats(
+    profiler: cProfile.Profile,
+    profile_dir: Path,
+    operation: str,
+    input_path: Path,
+    iteration: int,
+    details: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Save profiler stats and update details dict.
+
+    Args:
+        profiler: cProfile.Profile object with collected data
+        profile_dir: Directory for profile output
+        operation: Operation name
+        input_path: Input file path
+        iteration: Iteration number
+        details: Existing details dict (or None)
+
+    Returns:
+        Updated details dict with profile_path added
+    """
+    profiler.disable()
+    profile_path = profile_dir / f"{operation}_{input_path.stem}_{iteration}.prof"
+    save_profile_data(profiler, profile_path)
+
+    # Ensure we have a dict to update
+    if not isinstance(details, dict):
+        details = {}
+
+    details["profile_path"] = str(profile_path)
+    return details
 
 
 def run_single_operation(
@@ -93,15 +128,11 @@ def run_single_operation(
         details = run_func(input_path, output_dir)
         elapsed = time.perf_counter() - start_time
 
-        # Disable profiler and save stats
+        # Save profiler stats if profiling enabled
         if profiler is not None:
-            profiler.disable()
-            profile_path = profile_dir / f"{operation}_{input_path.stem}_{iteration}.prof"
-            profiler.dump_stats(profile_path)
-            # Ensure details dict exists
-            if not isinstance(details, dict):
-                details = {}
-            details["profile_path"] = str(profile_path)
+            details = _save_profile_stats(
+                profiler, profile_dir, operation, input_path, iteration, details
+            )
 
         # Get RSS after operation
         current_rss = process.memory_info().rss
@@ -123,13 +154,12 @@ def run_single_operation(
     except Exception as e:
         elapsed = time.perf_counter() - start_time
 
-        # Disable profiler even on error and ensure we have a details dict
+        # Save profiler stats even on error
         details = {}
         if profiler is not None:
-            profiler.disable()
-            profile_path = profile_dir / f"{operation}_{input_path.stem}_{iteration}.prof"
-            profiler.dump_stats(profile_path)
-            details["profile_path"] = str(profile_path)
+            details = _save_profile_stats(
+                profiler, profile_dir, operation, input_path, iteration, None
+            )
 
         current_rss = process.memory_info().rss
         rss_delta_mb = (current_rss - baseline_rss) / (1024 * 1024)
@@ -265,6 +295,8 @@ def run_benchmark_suite(
                         input_path=input_path,
                         output_dir=Path(output_dir),
                         iteration=0,  # Warmup iteration
+                        profile=False,  # Never profile warmup runs
+                        profile_dir=None,
                     )
 
             # Actual benchmark runs

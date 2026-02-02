@@ -11,7 +11,7 @@ class TestProfileReportFormatting:
     """Tests for profile stats formatting."""
 
     @pytest.fixture
-    def sample_profile(self):
+    def sample_profile(self, tmp_path):
         """Create a sample profile file."""
 
         # Create a simple function to profile
@@ -28,10 +28,9 @@ class TestProfileReportFormatting:
         profiler.disable()
 
         # Save to temp file
-        with tempfile.TemporaryDirectory() as tmpdir:
-            profile_path = Path(tmpdir) / "sample.prof"
-            profiler.dump_stats(profile_path)
-            yield profile_path
+        profile_path = tmp_path / "sample.prof"
+        profiler.dump_stats(profile_path)
+        return profile_path
 
     def test_format_profile_stats_returns_string(self, sample_profile):
         """Test that format_profile_stats returns a string."""
