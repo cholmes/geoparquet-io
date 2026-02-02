@@ -194,7 +194,7 @@ This generates `.prof` files in the specified directory (default: `./profiles/`)
 
 **View profile interactively:**
 ```bash
-python -m pstats profiles/add-bbox_large_1.prof
+uv run python -m pstats profiles/add-bbox_large_1.prof
 # Then use commands like:
 # - stats 20  (show top 20 functions)
 # - sort cumtime  (sort by cumulative time)

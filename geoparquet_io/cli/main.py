@@ -4887,7 +4887,7 @@ def benchmark_suite(
         if profile_files:
             info(f"\nGenerated {len(profile_files)} profile files in {profile_path}")
             info("\nTo view profile details, use:")
-            info(f"  python -m pstats {profile_files[0]}")
+            info(f"  uv run python -m pstats {profile_files[0]}")
             info("\nOr generate a summary:")
             info("  from geoparquet_io.benchmarks.profile_report import format_profile_stats")
             info(f"  print(format_profile_stats('{profile_files[0]}'))")
