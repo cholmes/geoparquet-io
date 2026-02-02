@@ -3659,8 +3659,25 @@ def partition_string(
 @click.option(
     "--resolution",
     type=click.IntRange(0, 15),
-    default=9,
-    help="H3 resolution for partitioning (0-15, default: 9)",
+    default=None,
+    help="H3 resolution for partitioning (0-15). Required unless --auto is used.",
+)
+@click.option(
+    "--auto",
+    is_flag=True,
+    help="Automatically calculate optimal resolution based on data size",
+)
+@click.option(
+    "--target-rows",
+    type=int,
+    default=100000,
+    help="Target rows per partition for auto mode (default: 100000)",
+)
+@click.option(
+    "--max-partitions",
+    type=int,
+    default=10000,
+    help="Maximum number of partitions for auto mode (default: 10000)",
 )
 @click.option(
     "--keep-h3-column",
@@ -3677,6 +3694,9 @@ def partition_h3(
     output_folder,
     h3_name,
     resolution,
+    auto,
+    target_rows,
+    max_partitions,
     keep_h3_column,
     hive,
     overwrite,
@@ -3703,21 +3723,28 @@ def partition_h3(
     partition path) unless using Hive-style partitioning. Use --keep-h3-column to explicitly
     keep the column in all cases.
 
+    Auto-resolution mode: Use --auto to automatically calculate the optimal H3 resolution
+    based on your data size. Control partition sizing with --target-rows (default: 100K rows
+    per partition) and --max-partitions (default: 10K partitions max).
+
     Use --preview to see what partitions would be created without actually creating files.
 
     Examples:
 
+        # Auto-calculate optimal resolution for ~100K rows per partition
+        gpio partition h3 input.parquet output/ --auto
+
+        # Auto-calculate with custom target partition size
+        gpio partition h3 input.parquet output/ --auto --target-rows 50000
+
         # Preview partitions at resolution 7 (~5km² cells)
         gpio partition h3 input.parquet --resolution 7 --preview
 
-        # Partition by H3 cells at default resolution 9 (H3 column excluded from output)
-        gpio partition h3 input.parquet output/
+        # Partition by H3 cells at specific resolution 9
+        gpio partition h3 input.parquet output/ --resolution 9
 
         # Partition with H3 column kept in output files
-        gpio partition h3 input.parquet output/ --keep-h3-column
-
-        # Partition with custom H3 column name
-        gpio partition h3 input.parquet output/ --h3-name my_h3
+        gpio partition h3 input.parquet output/ --resolution 9 --keep-h3-column
 
         # Use Hive-style partitioning at resolution 8 (H3 column included by default)
         gpio partition h3 input.parquet output/ --resolution 8 --hive
@@ -3753,6 +3780,9 @@ def partition_h3(
         row_group_size_mb=row_group_mb,
         row_group_rows=row_group_size,
         memory_limit=write_memory,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
     )
 
 

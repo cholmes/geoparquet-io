@@ -15,7 +15,15 @@ from geoparquet_io.core.constants import (
     DEFAULT_QUADKEY_PARTITION_RESOLUTION,
     DEFAULT_QUADKEY_RESOLUTION,
 )
-from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
+from geoparquet_io.core.logging_config import (
+    configure_verbose,
+    debug,
+    info,
+    progress,
+    success,
+    warn,
+)
+from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
 from geoparquet_io.core.partition_common import (
     calculate_partition_stats,
     partition_by_column,
@@ -124,8 +132,8 @@ def partition_by_quadkey(
     input_parquet: str,
     output_folder: str,
     quadkey_column_name: str = DEFAULT_QUADKEY_COLUMN_NAME,
-    resolution: int = DEFAULT_QUADKEY_RESOLUTION,
-    partition_resolution: int = DEFAULT_QUADKEY_PARTITION_RESOLUTION,
+    resolution: int | None = None,
+    partition_resolution: int | None = None,
     use_centroid: bool = False,
     hive: bool = False,
     overwrite: bool = False,
@@ -143,14 +151,71 @@ def partition_by_quadkey(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     memory_limit: str | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
 ) -> None:
     """
     Partition a GeoParquet file by quadkey cells.
 
     Supports Arrow IPC streaming for input:
     - Input "-" reads from stdin (output is always a directory)
+
+    Auto-resolution mode:
+    - Use --auto to automatically calculate optimal zoom level based on data size
+    - Specify --target-rows to control partition size (default: 100,000 rows)
+    - Specify --max-partitions to limit total partition count (default: 10,000)
+
+    Args:
+        auto: Automatically calculate optimal resolution (default: False)
+        target_rows: Target rows per partition for auto mode (default: 100000)
+        max_partitions: Maximum partitions for auto mode (default: 10000)
+        resolution: Quadkey resolution for column (0-23). If None and not auto, uses default.
+        partition_resolution: Zoom level for partitioning (0-23). If None, uses resolution value.
     """
     configure_verbose(verbose)
+
+    # Handle stdin input first
+    stdin_temp_file = None
+    actual_input = input_parquet
+
+    if is_stdin(input_parquet):
+        stdin_temp_file = read_stdin_to_temp_file(verbose)
+        actual_input = stdin_temp_file
+
+    # Handle auto-resolution
+    if auto:
+        if resolution is not None or partition_resolution is not None:
+            if stdin_temp_file and os.path.exists(stdin_temp_file):
+                os.remove(stdin_temp_file)
+            raise click.UsageError(
+                "Cannot specify --resolution or --partition-resolution with --auto"
+            )
+
+        try:
+            calculated_resolution = calculate_auto_resolution(
+                input_parquet=actual_input,
+                spatial_index_type="quadkey",
+                target_rows_per_partition=target_rows,
+                max_partitions=max_partitions,
+                min_resolution=0,
+                max_resolution=23,
+                verbose=verbose,
+            )
+            resolution = calculated_resolution
+            partition_resolution = calculated_resolution
+            info(f"Auto-calculated quadkey zoom level: {resolution}")
+        except Exception as e:
+            if stdin_temp_file and os.path.exists(stdin_temp_file):
+                os.remove(stdin_temp_file)
+            raise click.ClickException(f"Auto-resolution calculation failed: {str(e)}") from e
+    else:
+        # Use defaults if not provided
+        if resolution is None:
+            resolution = DEFAULT_QUADKEY_RESOLUTION
+        if partition_resolution is None:
+            partition_resolution = DEFAULT_QUADKEY_PARTITION_RESOLUTION
+
     _validate_resolutions(resolution, partition_resolution)
 
     if keep_quadkey_column is None:

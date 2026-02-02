@@ -11,7 +11,15 @@ import click
 from geoparquet_io.core.add_h3_column import add_h3_column
 from geoparquet_io.core.common import safe_file_url
 from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
-from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
+from geoparquet_io.core.logging_config import (
+    configure_verbose,
+    debug,
+    info,
+    progress,
+    success,
+    warn,
+)
+from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
 from geoparquet_io.core.partition_common import (
     calculate_partition_stats,
     partition_by_column,
@@ -98,7 +106,7 @@ def partition_by_h3(
     input_parquet: str,
     output_folder: str,
     h3_column_name: str = DEFAULT_H3_COLUMN_NAME,
-    resolution: int = 9,
+    resolution: int | None = None,
     hive: bool = False,
     overwrite: bool = False,
     preview: bool = False,
@@ -115,6 +123,9 @@ def partition_by_h3(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     memory_limit: str | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
 ) -> None:
     """
     Partition a GeoParquet file by H3 cells at specified resolution.
@@ -122,11 +133,16 @@ def partition_by_h3(
     Supports Arrow IPC streaming for input:
     - Input "-" reads from stdin (output is always a directory)
 
+    Auto-resolution mode:
+    - Use --auto to automatically calculate optimal resolution based on data size
+    - Specify --target-rows to control partition size (default: 100,000 rows)
+    - Specify --max-partitions to limit total partition count (default: 10,000)
+
     Args:
         input_parquet: Input GeoParquet file (local, remote URL, or "-" for stdin)
         output_folder: Output directory (always writes to directory, no stdout support)
         h3_column_name: Name of the H3 column (default: 'h3_cell')
-        resolution: H3 resolution level (0-15). Default: 9
+        resolution: H3 resolution level (0-15). Required unless --auto is used
         hive: Use Hive-style partitioning (column=value directories)
         overwrite: Overwrite existing output directory
         preview: Preview partition distribution without writing
@@ -143,22 +159,53 @@ def partition_by_h3(
         row_group_size_mb: Row group size in MB (mutually exclusive with row_group_rows)
         row_group_rows: Row group size in number of rows (mutually exclusive with row_group_size_mb)
         memory_limit: DuckDB memory limit for write operations (e.g., "2GB")
+        auto: Automatically calculate optimal resolution (default: False)
+        target_rows: Target rows per partition for auto mode (default: 100000)
+        max_partitions: Maximum partitions for auto mode (default: 10000)
     """
     configure_verbose(verbose)
 
-    if not 0 <= resolution <= 15:
-        raise click.UsageError(f"H3 resolution must be between 0 and 15, got {resolution}")
-
-    if keep_h3_column is None:
-        keep_h3_column = hive
-
-    # Handle stdin input
+    # Handle stdin input first (before resolution calculation)
     stdin_temp_file = None
     actual_input = input_parquet
 
     if is_stdin(input_parquet):
         stdin_temp_file = read_stdin_to_temp_file(verbose)
         actual_input = stdin_temp_file
+
+    # Validate resolution parameter
+    if auto and resolution is not None:
+        raise click.UsageError("Cannot specify both --auto and --resolution")
+
+    if not auto and resolution is None:
+        raise click.UsageError("Must specify either --resolution or --auto")
+
+    # Calculate auto resolution if requested
+    if auto:
+        try:
+            resolution = calculate_auto_resolution(
+                input_parquet=actual_input,
+                spatial_index_type="h3",
+                target_rows_per_partition=target_rows,
+                max_partitions=max_partitions,
+                min_resolution=0,
+                max_resolution=15,
+                verbose=verbose,
+            )
+            info(f"Auto-calculated H3 resolution: {resolution}")
+        except Exception as e:
+            if stdin_temp_file and os.path.exists(stdin_temp_file):
+                os.remove(stdin_temp_file)
+            raise click.ClickException(f"Auto-resolution calculation failed: {str(e)}") from e
+
+    # Validate resolved resolution
+    if not 0 <= resolution <= 15:
+        if stdin_temp_file and os.path.exists(stdin_temp_file):
+            os.remove(stdin_temp_file)
+        raise click.UsageError(f"H3 resolution must be between 0 and 15, got {resolution}")
+
+    if keep_h3_column is None:
+        keep_h3_column = hive
 
     try:
         working_parquet, column_existed, temp_file = _ensure_h3_column(
