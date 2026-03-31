@@ -429,24 +429,30 @@ def _detect_geometry_column_from_schema(
     con: duckdb.DuckDBPyConnection,
     table_id: str,
     geography_column: str | None = None,
+    table_source: str = "bigquery",
 ) -> str | None:
     """
-    Detect geometry column from BigQuery table schema.
+    Detect native GEOMETRY-typed column from table schema.
+
+    Only detects columns with DuckDB GEOMETRY type (e.g., BigQuery GEOGRAPHY
+    columns that are automatically mapped). Does NOT detect VARCHAR columns
+    containing WKT/GeoJSON by name - users must specify those explicitly
+    with --geography-column.
 
     Args:
-        con: DuckDB connection with BigQuery extension
-        table_id: Fully qualified BigQuery table ID
-        geography_column: Explicit column name (if provided, validates it exists)
+        con: DuckDB connection
+        table_id: Table identifier
+        geography_column: If provided and matches a native GEOMETRY column,
+            returns it. Otherwise returns None (caller handles VARCHAR columns).
+        table_source: "bigquery" for bigquery_scan, "local" for local tables
 
     Returns:
-        Name of detected geometry column, or None if no geometry column found
-        and no explicit geography_column was requested
-
-    Raises:
-        ValueError: If geography_column is provided but not found in the table
+        Name of detected GEOMETRY column, or None
     """
-    # Query schema to find GEOMETRY columns
-    schema_query = f"DESCRIBE SELECT * FROM bigquery_scan('{table_id}') LIMIT 0"
+    if table_source == "bigquery":
+        schema_query = f"DESCRIBE SELECT * FROM bigquery_scan('{table_id}') LIMIT 0"
+    else:
+        schema_query = f"DESCRIBE SELECT * FROM {table_id} LIMIT 0"
     schema_result = con.execute(schema_query).fetchall()
 
     geometry_cols = []
@@ -458,33 +464,25 @@ def _detect_geometry_column_from_schema(
         if "GEOMETRY" in col_type:
             geometry_cols.append(col_name)
 
-    # If explicit column provided, validate it
+    # If explicit column provided and it's a native GEOMETRY column, use it
     if geography_column:
-        if geography_column in all_cols:
-            return geography_column
-        # Try case-insensitive match
-        lower_map = {c.lower(): c for c in all_cols}
+        lower_map = {c.lower(): c for c in geometry_cols}
         if geography_column.lower() in lower_map:
             return lower_map[geography_column.lower()]
-        # Column not found - raise error with helpful message
-        geom_hint = ""
-        if geometry_cols:
-            geom_hint = f" Detected geometry columns: {geometry_cols}."
-        raise ValueError(
-            f"Geography column '{geography_column}' not found in table '{table_id}'. "
-            f"Available columns: {all_cols}.{geom_hint}"
-        )
+        # Check column exists (for better error messages later)
+        all_lower = {c.lower() for c in all_cols}
+        if geography_column.lower() not in all_lower:
+            raise ValueError(
+                f"Column '{geography_column}' not found in table '{table_id}'. "
+                f"Available columns: {all_cols}."
+            )
+        # Column exists but isn't GEOMETRY type - return None so caller
+        # can handle it as VARCHAR with WKT/GeoJSON parsing
+        return None
 
-    # Return first geometry column found
+    # Return first native GEOMETRY column found
     if geometry_cols:
         return geometry_cols[0]
-
-    # Fallback: look for common geometry column names
-    common_names = ["geometry", "geom", "the_geom", "shape", "geo", "geography"]
-    lower_map = {c.lower(): c for c in all_cols}
-    for name in common_names:
-        if name in lower_map:
-            return lower_map[name]
 
     return None
 
@@ -513,26 +511,33 @@ def _get_column_type(
     return "VARCHAR"
 
 
-def _build_geometry_select_expr(column_name: str, column_type: str) -> str:
+def _build_geometry_select_expr(
+    column_name: str,
+    column_type: str,
+    geometry_format: str = "wkt",
+) -> str:
     """
     Build the SELECT expression for a geometry column based on its DuckDB type.
 
-    BigQuery GEOGRAPHY columns come through DuckDB's bigquery_scan as VARCHAR
-    (WKT strings), not as GEOMETRY type. This function handles both cases:
-    - GEOMETRY type: ST_AsWKB("col")
-    - VARCHAR type: ST_AsWKB(ST_GeomFromText("col"))
+    Handles three scenarios:
+    - Native GEOMETRY type: ST_AsWKB("col")
+    - VARCHAR with WKT: ST_AsWKB(ST_GeomFromText("col"))
+    - VARCHAR with GeoJSON: ST_AsWKB(ST_GeomFromGeoJSON("col"))
 
     Args:
         column_name: Name of the geometry column
         column_type: DuckDB type of the column (e.g. "GEOMETRY", "VARCHAR")
+        geometry_format: Format of geometry in VARCHAR columns ("wkt" or "geojson")
 
     Returns:
         SQL expression string for the SELECT clause
     """
     if "GEOMETRY" in column_type:
         return f'ST_AsWKB("{column_name}") AS "{column_name}"'
+    elif geometry_format == "geojson":
+        return f'ST_AsWKB(ST_GeomFromGeoJSON("{column_name}")) AS "{column_name}"'
     else:
-        # VARCHAR/STRING: BigQuery GEOGRAPHY serialized as WKT
+        # Default: WKT
         return f'ST_AsWKB(ST_GeomFromText("{column_name}")) AS "{column_name}"'
 
 
@@ -541,6 +546,7 @@ def _build_select_with_wkb(
     geometry_column: str | None,
     con: duckdb.DuckDBPyConnection,
     table_id: str,
+    geometry_format: str = "wkt",
 ) -> tuple[str, list[str]]:
     """
     Build SELECT clause with ST_AsWKB for geometry columns.
@@ -548,14 +554,15 @@ def _build_select_with_wkb(
     DuckDB's GEOMETRY type uses an internal binary format when exported to Arrow,
     not standard WKB. We must use ST_AsWKB() to convert to proper WKB for GeoParquet.
 
-    Handles both native GEOMETRY columns and VARCHAR columns containing WKT
-    (common with BigQuery GEOGRAPHY type).
+    Handles native GEOMETRY columns, VARCHAR columns containing WKT, and
+    VARCHAR columns containing GeoJSON.
 
     Args:
         columns: List of columns to select (None = all)
         geometry_column: Name of geometry column (already detected)
         con: DuckDB connection
         table_id: BigQuery table ID
+        geometry_format: Format of geometry in VARCHAR columns ("wkt" or "geojson")
 
     Returns:
         Tuple of (SELECT clause string, list of actual column names)
@@ -575,7 +582,7 @@ def _build_select_with_wkb(
     select_parts = []
     for col in columns:
         if geometry_column and col.lower() == geometry_column.lower():
-            select_parts.append(_build_geometry_select_expr(col, geom_col_type))
+            select_parts.append(_build_geometry_select_expr(col, geom_col_type, geometry_format))
         else:
             select_parts.append(f'"{col}"')
 
@@ -753,6 +760,7 @@ def extract_bigquery(
     include_cols: str | None = None,
     exclude_cols: str | None = None,
     geography_column: str | None = None,
+    geometry_format: str = "wkt",
     dry_run: bool = False,
     show_sql: bool = False,
     verbose: bool = False,
@@ -764,13 +772,17 @@ def extract_bigquery(
     overwrite: bool = False,
 ) -> pa.Table | None:
     """
-    Extract data from BigQuery table to GeoParquet.
+    Extract data from BigQuery table to GeoParquet or plain Parquet.
 
     Uses DuckDB's BigQuery extension with the Storage Read API for
     efficient Arrow-based scanning with filter pushdown.
 
-    BigQuery GEOGRAPHY columns are converted to GeoParquet geometry with
-    spherical edges (edges: "spherical" in metadata).
+    If a GEOGRAPHY column is detected (native GEOMETRY type), it is
+    automatically converted. If --geography-column is specified, the
+    named column is parsed as WKT or GeoJSON geometry.
+
+    If no geometry column is found, the table is written as plain Parquet
+    without GeoParquet metadata.
 
     Args:
         table_id: BigQuery table ID. Supports both formats:
@@ -787,7 +799,10 @@ def extract_bigquery(
         limit: Maximum rows to extract
         include_cols: Comma-separated columns to include
         exclude_cols: Comma-separated columns to exclude
-        geography_column: Name of GEOGRAPHY column (auto-detected if not set)
+        geography_column: Name of column containing geometry data.
+            Auto-detected for native GEOGRAPHY columns. Use this to
+            specify a VARCHAR column containing WKT or GeoJSON geometry.
+        geometry_format: Format of geometry in VARCHAR columns ("wkt" or "geojson")
         dry_run: Show SQL without executing
         show_sql: Print SQL being executed
         verbose: Enable verbose output
@@ -834,6 +849,7 @@ def extract_bigquery(
         project=normalized_project,
         credentials_file=credentials_file,
         geography_column=geography_column,
+        geometry_format=geometry_format,
         include_list=include_list,
         exclude_list=exclude_list,
         bbox=bbox,
@@ -858,6 +874,7 @@ def _execute_bigquery_extraction(
     project: str | None,
     credentials_file: str | None,
     geography_column: str | None,
+    geometry_format: str = "wkt",
     include_list: list[str] | None,
     exclude_list: list[str] | None,
     bbox: str | None,
@@ -880,18 +897,32 @@ def _execute_bigquery_extraction(
         project=project,
         credentials_file=credentials_file,
     ) as con:
-        # Detect geometry column from schema
+        # Detect geometry column from schema (native GEOMETRY type only)
         geom_col = _detect_geometry_column_from_schema(con, validated_table_id, geography_column)
         if geom_col:
             debug(f"Detected geometry column: {geom_col}")
         else:
-            warn("No geometry column detected - output may not be valid GeoParquet")
+            if geography_column:
+                # User explicitly specified a column that isn't native GEOMETRY -
+                # still use it, parsing as WKT or GeoJSON
+                geom_col = geography_column
+                debug(
+                    f"Using '{geom_col}' as geometry column (parsing as {geometry_format.upper()})"
+                )
+            else:
+                warn(
+                    "No geometry column detected. Output will be plain Parquet "
+                    "without GeoParquet metadata. Use --geography-column to "
+                    "specify a column containing WKT or GeoJSON geometry."
+                )
 
         # Build column list and SELECT clause
         cols_to_select = _build_column_list(
             con, validated_table_id, include_list, exclude_list, geom_col
         )
-        select_cols, _ = _build_select_with_wkb(cols_to_select, geom_col, con, validated_table_id)
+        select_cols, _ = _build_select_with_wkb(
+            cols_to_select, geom_col, con, validated_table_id, geometry_format
+        )
 
         # Build query with bbox and where filters
         query = _build_bigquery_query(
@@ -921,18 +952,25 @@ def _execute_bigquery_extraction(
 
         # Write output if path provided
         if output_parquet:
-            write_geoparquet_table(
-                result,
-                output_parquet,
-                geometry_column=final_geom_col,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                geoparquet_version=geoparquet_version,
-                verbose=verbose,
-                edges="spherical" if final_geom_col else None,
-            )
+            if final_geom_col:
+                write_geoparquet_table(
+                    result,
+                    output_parquet,
+                    geometry_column=final_geom_col,
+                    compression=compression,
+                    compression_level=compression_level,
+                    row_group_size_mb=row_group_size_mb,
+                    row_group_rows=row_group_rows,
+                    geoparquet_version=geoparquet_version,
+                    verbose=verbose,
+                    edges="spherical",
+                )
+            else:
+                # No geometry - write plain Parquet
+                import pyarrow.parquet as pq
+
+                pq.write_table(result, output_parquet, compression="ZSTD")
+
             success(f"Extracted {row_count:,} rows to {output_parquet}")
             return None
 

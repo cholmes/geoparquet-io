@@ -231,6 +231,92 @@ class TestBuildGeometrySelectExpr:
         assert isinstance(result[0][0], bytes)
         con.close()
 
+    def test_geojson_format(self):
+        """Test that GeoJSON format uses ST_GeomFromGeoJSON."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        expr = _build_geometry_select_expr("geom", "VARCHAR", geometry_format="geojson")
+        assert "ST_GeomFromGeoJSON" in expr
+        assert "ST_AsWKB" in expr
+        assert "ST_GeomFromText" not in expr
+
+    def test_geojson_format_query_executes(self):
+        """Test that GeoJSON format SQL actually works."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute(
+            """CREATE TABLE test_geojson AS
+            SELECT 1 AS id,
+            '{"type":"Point","coordinates":[1.5,2.5]}' AS geom"""
+        )
+
+        expr = _build_geometry_select_expr("geom", "VARCHAR", geometry_format="geojson")
+        result = con.execute(f"SELECT {expr} FROM test_geojson").fetchall()
+        assert len(result) == 1
+        assert isinstance(result[0][0], bytes)
+        con.close()
+
+
+class TestNoGeometryPlainParquet:
+    """Test that tables without geometry are written as plain Parquet."""
+
+    def test_no_geometry_detected_returns_none(self):
+        """Test that _detect_geometry_column_from_schema returns None for non-GEOMETRY columns."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        # Table with a "geometry" column that is VARCHAR, not GEOMETRY type
+        con.execute("CREATE TABLE test_no_geom AS SELECT 1 AS id, 'POINT(0 0)' AS geometry")
+
+        # Should NOT detect "geometry" by name - only native GEOMETRY type
+        result = _detect_geometry_column_from_schema(con, "test_no_geom", table_source="local")
+        assert result is None
+        con.close()
+
+    def test_detects_native_geometry_type(self):
+        """Test that native GEOMETRY columns are still detected."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_native AS SELECT 1 AS id, ST_Point(0, 0) AS geometry")
+
+        result = _detect_geometry_column_from_schema(con, "test_native", table_source="local")
+        assert result == "geometry"
+        con.close()
+
+    def test_explicit_varchar_column_returns_none(self):
+        """Test that specifying a VARCHAR column returns None (not error)."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_varchar AS SELECT 1 AS id, 'POINT(0 0)' AS geom")
+
+        # Should return None - column exists but isn't GEOMETRY type
+        result = _detect_geometry_column_from_schema(
+            con, "test_varchar", geography_column="geom", table_source="local"
+        )
+        assert result is None
+        con.close()
+
+    def test_nonexistent_column_raises_error(self):
+        """Test that specifying a nonexistent column raises ValueError."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_noexist AS SELECT 1 AS id")
+
+        with pytest.raises(ValueError, match="not found"):
+            _detect_geometry_column_from_schema(
+                con, "test_noexist", geography_column="geom", table_source="local"
+            )
+        con.close()
+
 
 class TestDryRun:
     """Test dry-run functionality."""
