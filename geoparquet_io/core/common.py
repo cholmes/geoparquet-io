@@ -1190,6 +1190,56 @@ def find_primary_geometry_column(parquet_file, verbose=False):
     return "geometry"
 
 
+# Standard geometry column names for fallback detection
+STANDARD_GEOMETRY_NAMES = ["geometry", "geom", "wkb_geometry", "shape", "the_geom"]
+
+
+def detect_parquet_geometry_column(parquet_file, verbose=False):
+    """
+    Detect the geometry column in a Parquet file.
+
+    Checks GeoParquet metadata first (primary_column), then falls back to
+    matching column names against standard geometry column names.
+
+    Args:
+        parquet_file: Path to the parquet file (local or remote URL)
+        verbose: Print verbose output
+
+    Returns:
+        str or None: Name of the geometry column, or None if not found
+    """
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+
+    # 1. Check GeoParquet metadata first
+    safe_url = safe_file_url(parquet_file, verbose=False)
+    geo_meta = get_geo_metadata(safe_url)
+    if geo_meta and isinstance(geo_meta, dict):
+        primary = geo_meta.get("primary_column")
+        if primary:
+            if verbose:
+                debug(f"Detected geometry column from metadata: {primary}")
+            return primary
+
+    # 2. Fall back to name-based detection from schema
+    import pyarrow.parquet as pq
+
+    try:
+        schema = pq.read_schema(parquet_file)
+        column_names = [field.name for field in schema]
+        for std_name in STANDARD_GEOMETRY_NAMES:
+            for col in column_names:
+                if col.lower() == std_name.lower():
+                    if verbose:
+                        debug(f"Detected geometry column from schema: {col}")
+                    return col
+    except Exception:
+        pass
+
+    if verbose:
+        debug("No geometry column found in parquet file")
+    return None
+
+
 def calculate_file_bounds(file_path, geom_column=None, verbose=False):
     """
     Calculate the bounding box of all geometries in a parquet file.

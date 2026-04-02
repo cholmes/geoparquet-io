@@ -87,21 +87,25 @@ def _build_st_read_expr(input_url: str, layer: str | None = None) -> str:
 
 def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=None):
     """Detect geometry column name from input file."""
+    from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES, detect_parquet_geometry_column
+
     if verbose:
         debug("Detecting geometry column from input...")
 
-    # For parquet files, read directly; for other formats use ST_Read
+    # For parquet files, check GeoParquet metadata first, then fall back to names
     if is_parquet:
-        detect_query = f"SELECT * FROM read_parquet('{input_file}') LIMIT 0"
-    else:
-        table_expr = _build_st_read_expr(input_file, layer)
-        detect_query = f"SELECT * FROM {table_expr} LIMIT 0"
+        result = detect_parquet_geometry_column(input_file, verbose=verbose)
+        return result
+
+    # For other formats, use schema-based detection with standard names
+    table_expr = _build_st_read_expr(input_file, layer)
+    detect_query = f"SELECT * FROM {table_expr} LIMIT 0"
 
     schema_result = con.execute(detect_query).description
 
     for col_info in schema_result:
         col_name = col_info[0].lower()
-        if col_name in ["geom", "geometry", "wkb_geometry", "shape"]:
+        if col_name in STANDARD_GEOMETRY_NAMES:
             if verbose:
                 debug(f"Detected geometry column: {col_info[0]}")
             return col_info[0]

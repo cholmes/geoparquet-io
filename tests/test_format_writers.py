@@ -938,3 +938,74 @@ class TestCRSPreservation:
 
         # Should succeed without error
         assert Path(geopackage_output).exists()
+
+
+class TestCustomGeometryColumnName:
+    """Test that format writers detect geometry from GeoParquet metadata, not just hardcoded names."""
+
+    @pytest.fixture
+    def custom_geom_parquet(self, tmp_path):
+        """Create a GeoParquet file with a non-standard geometry column name."""
+        import json
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import shapely
+
+        geom1 = shapely.Point(1.0, 2.0)
+        geom2 = shapely.Point(3.0, 4.0)
+        table = pa.table(
+            {
+                "id": [1, 2],
+                "name": ["a", "b"],
+                "my_custom_geom": [shapely.to_wkb(geom1), shapely.to_wkb(geom2)],
+            }
+        )
+
+        geo_metadata = {
+            "version": "1.1.0",
+            "primary_column": "my_custom_geom",
+            "columns": {
+                "my_custom_geom": {
+                    "encoding": "WKB",
+                    "geometry_types": ["Point"],
+                    "crs": {
+                        "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+                        "type": "GeographicCRS",
+                        "name": "WGS 84",
+                        "id": {"authority": "EPSG", "code": 4326},
+                    },
+                }
+            },
+        }
+
+        existing_meta = table.schema.metadata or {}
+        new_meta = {**existing_meta, b"geo": json.dumps(geo_metadata).encode("utf-8")}
+        table = table.replace_schema_metadata(new_meta)
+
+        path = str(tmp_path / "custom_geom.parquet")
+        pq.write_table(table, path)
+        return path
+
+    def test_csv_writer_detects_custom_geometry(self, custom_geom_parquet, tmp_path):
+        """CSV writer should detect geometry column from metadata, not hardcoded names."""
+        output_path = str(tmp_path / "output.csv")
+        write_csv(
+            input_path=custom_geom_parquet,
+            output_path=output_path,
+            verbose=False,
+        )
+        assert Path(output_path).exists()
+        content = Path(output_path).read_text()
+        # Should have a 'wkt' column from ST_AsText conversion, not the raw column name
+        assert "wkt" in content.split("\n")[0]
+
+    def test_gdal_writer_detects_custom_geometry(self, custom_geom_parquet, tmp_path):
+        """GeoPackage writer should detect geometry column from metadata, not hardcoded names."""
+        output_path = str(tmp_path / "output.gpkg")
+        write_geopackage(
+            input_path=custom_geom_parquet,
+            output_path=output_path,
+            verbose=False,
+        )
+        assert Path(output_path).exists()
