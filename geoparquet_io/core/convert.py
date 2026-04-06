@@ -772,43 +772,59 @@ def _build_conversion_query(
     else:
         table_expr = _build_st_read_expr(input_file, layer)
 
-    # Build exclusion list - always exclude geom_column, optionally exclude existing bbox
-    exclude_cols = [geom_column]
+    # Build exclusion list - only exclude existing bbox if needed
+    # NOTE: We preserve the original geometry column name (no renaming to "geometry")
+    # This fixes #328: non-standard geometry column names should be preserved
+    exclude_cols = []
     if existing_bbox_col and skip_bbox:
         # For 2.0: remove existing bbox column (not needed for native geo types)
         exclude_cols.append(existing_bbox_col)
-    exclude_clause = ", ".join(exclude_cols)
+
+    exclude_clause = ", ".join(exclude_cols) if exclude_cols else None
 
     if skip_bbox:
-        # For 2.0/parquet-geo-only: don't add bbox column
-        base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry
-            FROM {table_expr}
-        """
+        # For 2.0/parquet-geo-only: don't add bbox column, preserve original geometry name
+        if exclude_clause:
+            base_select = f"""
+                SELECT * EXCLUDE ({exclude_clause})
+                FROM {table_expr}
+            """
+        else:
+            base_select = f"""
+                SELECT *
+                FROM {table_expr}
+            """
     elif preserve_existing_bbox:
         # For 1.x with existing bbox: preserve existing bbox column, don't add new one
         base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry
+            SELECT *
             FROM {table_expr}
         """
     else:
-        # For 1.x without existing bbox: add bbox column
-        base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry,
-                STRUCT_PACK(
-                    xmin := ST_XMin({geom_column}),
-                    ymin := ST_YMin({geom_column}),
-                    xmax := ST_XMax({geom_column}),
-                    ymax := ST_YMax({geom_column})
-                ) AS bbox
-            FROM {table_expr}
-        """
+        # For 1.x without existing bbox: add bbox column, preserve original geometry name
+        if existing_bbox_col:
+            # Remove old bbox before adding new one
+            base_select = f"""
+                SELECT * EXCLUDE ({existing_bbox_col}),
+                    STRUCT_PACK(
+                        xmin := ST_XMin({geom_column}),
+                        ymin := ST_YMin({geom_column}),
+                        xmax := ST_XMax({geom_column}),
+                        ymax := ST_YMax({geom_column})
+                    ) AS bbox
+                FROM {table_expr}
+            """
+        else:
+            base_select = f"""
+                SELECT *,
+                    STRUCT_PACK(
+                        xmin := ST_XMin({geom_column}),
+                        ymin := ST_YMin({geom_column}),
+                        xmax := ST_XMax({geom_column}),
+                        ymax := ST_YMax({geom_column})
+                    ) AS bbox
+                FROM {table_expr}
+            """
 
     if skip_hilbert:
         return base_select

@@ -17,8 +17,10 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from tests.fixtures.multi_geometry import (
+    create_geoparquet_with_custom_column_name,
     create_multi_geometry_geoparquet,
     create_multi_geometry_geoparquet_different_crs,
+    create_multi_geometry_with_custom_primary_name,
 )
 
 
@@ -382,3 +384,241 @@ class TestMultiGeometryVersions:
         assert "geometry" in geo_meta["columns"]
         assert "boundary" in geo_meta["columns"]
         assert geo_meta["version"] == "2.0.0"
+
+
+class TestColumnNamePreservation:
+    """Tests for preserving original geometry column names (issue #328).
+
+    GeoParquet files can have non-standard geometry column names like
+    "the_geom" or "my_geometry". These should be preserved during conversion,
+    not renamed to "geometry".
+    """
+
+    def test_preserves_custom_primary_column_name(self, tmp_path):
+        """Custom geometry column name should be preserved in output."""
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = tmp_path / "input.parquet"
+        output_file = tmp_path / "output.parquet"
+        create_geoparquet_with_custom_column_name(str(input_file), "the_geom")
+
+        convert_to_geoparquet(str(input_file), str(output_file), skip_hilbert=True)
+
+        # Verify column name is preserved
+        table = pq.read_table(str(output_file))
+        column_names = [f.name for f in table.schema]
+
+        assert "the_geom" in column_names
+        assert "geometry" not in column_names  # Should NOT be renamed
+
+    def test_preserves_custom_name_in_metadata(self, tmp_path):
+        """Custom column name should appear in output geo metadata."""
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = tmp_path / "input.parquet"
+        output_file = tmp_path / "output.parquet"
+        create_geoparquet_with_custom_column_name(str(input_file), "my_geometry")
+
+        convert_to_geoparquet(str(input_file), str(output_file), skip_hilbert=True)
+
+        meta = pq.read_metadata(str(output_file))
+        geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+        assert geo_meta["primary_column"] == "my_geometry"
+        assert "my_geometry" in geo_meta["columns"]
+        assert "geometry" not in geo_meta["columns"]
+
+    def test_multi_geometry_with_custom_primary_name(self, tmp_path):
+        """Multi-geometry with custom primary name should preserve both columns."""
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = tmp_path / "input.parquet"
+        output_file = tmp_path / "output.parquet"
+        create_multi_geometry_with_custom_primary_name(str(input_file), "the_geom")
+
+        convert_to_geoparquet(str(input_file), str(output_file), skip_hilbert=True)
+
+        # Verify both columns preserved with original names
+        table = pq.read_table(str(output_file))
+        column_names = [f.name for f in table.schema]
+
+        assert "the_geom" in column_names
+        assert "boundary" in column_names
+        assert "geometry" not in column_names
+
+        # Verify metadata
+        meta = pq.read_metadata(str(output_file))
+        geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+        assert geo_meta["primary_column"] == "the_geom"
+        assert "the_geom" in geo_meta["columns"]
+        assert "boundary" in geo_meta["columns"]
+
+    def test_hilbert_ordering_with_custom_column_name(self, tmp_path):
+        """Hilbert ordering should work with custom geometry column names."""
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = tmp_path / "input.parquet"
+        output_file = tmp_path / "output.parquet"
+        create_geoparquet_with_custom_column_name(str(input_file), "the_geom")
+
+        # Convert with Hilbert ordering (should not fail)
+        convert_to_geoparquet(
+            str(input_file), str(output_file), skip_hilbert=False, geoparquet_version="1.1"
+        )
+
+        # Verify file exists and column preserved
+        assert Path(output_file).exists()
+        table = pq.read_table(str(output_file))
+        assert "the_geom" in [f.name for f in table.schema]
+
+
+class TestWriteStrategiesWithMultiGeometry:
+    """Tests for multi-geometry support across different write strategies.
+
+    Ensures all write strategies (duckdb-kv, disk-rewrite, in-memory,
+    streaming) correctly handle multiple geometry columns.
+
+    These tests use write_parquet_with_metadata directly since convert_to_geoparquet
+    doesn't expose write_strategy parameter.
+    """
+
+    def _setup_test_query(self, tmp_path, input_filename="input.parquet"):
+        """Create test input and return connection + query for multi-geometry file."""
+
+        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.convert import detect_all_geometry_columns
+
+        input_file = tmp_path / input_filename
+        create_multi_geometry_geoparquet(str(input_file))
+
+        # Detect geometry columns
+        geom_info = detect_all_geometry_columns(str(input_file))
+
+        # Get connection and build query
+        con = get_duckdb_connection(load_spatial=True)
+
+        # Simple SELECT * preserves all columns
+        query = f"SELECT * FROM read_parquet('{input_file}')"
+
+        return con, query, geom_info, input_file
+
+    def test_disk_rewrite_strategy_preserves_multi_geometry(self, tmp_path):
+        """disk-rewrite strategy should preserve secondary geometry columns."""
+        from geoparquet_io.core.common import write_parquet_with_metadata
+
+        con, query, geom_info, _ = self._setup_test_query(tmp_path)
+        output_file = tmp_path / "output.parquet"
+
+        try:
+            write_parquet_with_metadata(
+                con,
+                query,
+                str(output_file),
+                geoparquet_version="1.1",
+                write_strategy="disk-rewrite",
+                geometry_info=geom_info,
+            )
+        finally:
+            con.close()
+
+        # Verify both columns in metadata
+        meta = pq.read_metadata(str(output_file))
+        geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+        assert "geometry" in geo_meta["columns"]
+        assert "boundary" in geo_meta["columns"]
+        assert geo_meta["columns"]["boundary"]["encoding"] == "WKB"
+
+    def test_arrow_memory_strategy_preserves_multi_geometry(self, tmp_path):
+        """in-memory strategy should preserve secondary geometry columns."""
+        from geoparquet_io.core.common import write_parquet_with_metadata
+
+        con, query, geom_info, _ = self._setup_test_query(tmp_path)
+        output_file = tmp_path / "output.parquet"
+
+        try:
+            write_parquet_with_metadata(
+                con,
+                query,
+                str(output_file),
+                geoparquet_version="1.1",
+                write_strategy="in-memory",
+                geometry_info=geom_info,
+            )
+        finally:
+            con.close()
+
+        # Verify both columns in metadata
+        meta = pq.read_metadata(str(output_file))
+        geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+        assert "geometry" in geo_meta["columns"]
+        assert "boundary" in geo_meta["columns"]
+        assert geo_meta["columns"]["boundary"]["encoding"] == "WKB"
+
+    def test_arrow_streaming_strategy_preserves_multi_geometry(self, tmp_path):
+        """streaming strategy should preserve secondary geometry columns."""
+        from geoparquet_io.core.common import write_parquet_with_metadata
+
+        con, query, geom_info, _ = self._setup_test_query(tmp_path)
+        output_file = tmp_path / "output.parquet"
+
+        try:
+            write_parquet_with_metadata(
+                con,
+                query,
+                str(output_file),
+                geoparquet_version="1.1",
+                write_strategy="streaming",
+                geometry_info=geom_info,
+            )
+        finally:
+            con.close()
+
+        # Verify both columns in metadata
+        meta = pq.read_metadata(str(output_file))
+        geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+        assert "geometry" in geo_meta["columns"]
+        assert "boundary" in geo_meta["columns"]
+        assert geo_meta["columns"]["boundary"]["encoding"] == "WKB"
+
+    def test_all_strategies_preserve_crs_for_secondary_columns(self, tmp_path):
+        """All write strategies should preserve CRS for secondary columns."""
+        from geoparquet_io.core.common import get_duckdb_connection, write_parquet_with_metadata
+        from geoparquet_io.core.convert import detect_all_geometry_columns
+
+        strategies = ["duckdb-kv", "disk-rewrite", "in-memory", "streaming"]
+
+        for strategy in strategies:
+            input_file = tmp_path / f"input_{strategy}.parquet"
+            output_file = tmp_path / f"output_{strategy}.parquet"
+            create_multi_geometry_geoparquet_different_crs(str(input_file))
+
+            # Detect geometry columns
+            geom_info = detect_all_geometry_columns(str(input_file))
+
+            con = get_duckdb_connection(load_spatial=True)
+            query = f"SELECT * FROM read_parquet('{input_file}')"
+
+            try:
+                write_parquet_with_metadata(
+                    con,
+                    query,
+                    str(output_file),
+                    geoparquet_version="1.1",
+                    write_strategy=strategy,
+                    geometry_info=geom_info,
+                )
+            finally:
+                con.close()
+
+            meta = pq.read_metadata(str(output_file))
+            geo_meta = json.loads(meta.metadata[b"geo"].decode("utf-8"))
+
+            # Secondary column (boundary) should have EPSG:3857 preserved
+            boundary_crs = geo_meta["columns"]["boundary"].get("crs", {})
+            assert boundary_crs.get("id", {}).get("code") == 3857, (
+                f"Strategy {strategy} did not preserve CRS for secondary column"
+            )

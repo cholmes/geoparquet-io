@@ -128,6 +128,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 custom_metadata=custom_metadata,
                 bbox=bbox,
                 geometry_types=geometry_types,
+                geometry_info=geometry_info,
             )
 
             self._rewrite_with_metadata(

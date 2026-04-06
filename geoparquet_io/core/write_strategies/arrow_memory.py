@@ -104,6 +104,7 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
                 input_crs=input_crs,
                 custom_metadata=custom_metadata,
                 verbose=verbose,
+                geometry_info=geometry_info,
             )
 
         _write_table_with_settings(

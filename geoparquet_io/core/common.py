@@ -2716,6 +2716,7 @@ def _apply_geoparquet_metadata(
     custom_metadata: dict | None = None,
     verbose: bool = False,
     edges: str | None = None,
+    geometry_info: dict | None = None,
 ):
     """
     Apply GeoParquet metadata to an Arrow Table based on version.
@@ -2740,6 +2741,10 @@ def _apply_geoparquet_metadata(
         verbose: Whether to print verbose output
         edges: Edge interpretation, "spherical" or "planar" (default None = planar).
                Use "spherical" for data from BigQuery or other S2-based sources.
+        geometry_info: Dict containing multi-geometry column info with keys:
+            - "primary": primary geometry column name
+            - "secondary": list of secondary geometry column names
+            - "metadata": dict mapping column names to their metadata
 
     Returns:
         pa.Table: Table with GeoParquet metadata applied
@@ -2802,6 +2807,29 @@ def _apply_geoparquet_metadata(
     if computed_bbox:
         col_meta["bbox"] = computed_bbox
         geo_meta["columns"][geometry_column] = col_meta
+
+    # Handle secondary geometry columns from geometry_info
+    if geometry_info:
+        secondary_columns = geometry_info.get("secondary", [])
+        column_metadata = geometry_info.get("metadata", {})
+
+        for sec_col in secondary_columns:
+            if sec_col not in geo_meta["columns"]:
+                geo_meta["columns"][sec_col] = {}
+
+            sec_meta = geo_meta["columns"][sec_col]
+
+            # Copy metadata from input for secondary columns
+            if sec_col in column_metadata:
+                input_sec_meta = column_metadata[sec_col]
+                for key, value in input_sec_meta.items():
+                    # Preserve input metadata (crs, encoding, geometry_types, etc.)
+                    if key not in sec_meta:
+                        sec_meta[key] = value
+
+            # Ensure encoding is set (required by spec)
+            if "encoding" not in sec_meta:
+                sec_meta["encoding"] = "WKB"
 
     # Assemble and apply final metadata
     return _assemble_and_apply_geo_metadata(
@@ -3240,8 +3268,12 @@ def write_parquet_with_metadata(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, output_file)
 
-    # Auto-detect geometry column and version if not provided
-    geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
+    # Use geometry column from geometry_info if provided, otherwise auto-detect
+    # This ensures original column names are preserved (fixes #328)
+    if geometry_info and geometry_info.get("primary"):
+        geometry_column = geometry_info["primary"]
+    else:
+        geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
 
     if geoparquet_version is None:
         geoparquet_version = extract_version_from_metadata(original_metadata)

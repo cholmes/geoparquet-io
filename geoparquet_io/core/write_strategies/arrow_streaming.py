@@ -150,6 +150,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             should_add_geo_metadata,
             precomputed_geom_types,
             precomputed_bbox,
+            geometry_info,
         )
 
         # Prepare writer kwargs
@@ -210,6 +211,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         should_add_geo_metadata: bool,
         precomputed_geom_types: list[str],
         precomputed_bbox: list[float] | None,
+        geometry_info: dict | None = None,
     ) -> dict | None:
         """Build geo metadata for query results."""
         from geoparquet_io.core.common import create_geo_metadata, is_default_crs
@@ -234,6 +236,29 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         col_meta["geometry_types"] = precomputed_geom_types
         if precomputed_bbox is not None:
             col_meta["bbox"] = precomputed_bbox
+
+        # Handle secondary geometry columns from geometry_info
+        if geometry_info:
+            secondary_columns = geometry_info.get("secondary", [])
+            column_metadata = geometry_info.get("metadata", {})
+
+            for sec_col in secondary_columns:
+                if sec_col not in geo_meta["columns"]:
+                    geo_meta["columns"][sec_col] = {}
+
+                sec_meta = geo_meta["columns"][sec_col]
+
+                # Copy metadata from input for secondary columns
+                if sec_col in column_metadata:
+                    input_sec_meta = column_metadata[sec_col]
+                    for key, value in input_sec_meta.items():
+                        # Preserve input metadata (crs, encoding, geometry_types, etc.)
+                        if key not in sec_meta:
+                            sec_meta[key] = value
+
+                # Ensure encoding is set (required by spec)
+                if "encoding" not in sec_meta:
+                    sec_meta["encoding"] = "WKB"
 
         return geo_meta
 
