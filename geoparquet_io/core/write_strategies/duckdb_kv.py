@@ -178,6 +178,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         verbose: bool,
         custom_metadata: dict | None = None,
         memory_limit: str | None = None,
+        geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA."""
         from geoparquet_io.core.common import is_remote_url, upload_if_remote
@@ -225,6 +226,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                     custom_metadata,
                     output_path,
                     verbose,
+                    geometry_info,
                 )
 
             if is_remote:
@@ -301,6 +303,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         custom_metadata: dict | None,
         output_path: str,
         verbose: bool,
+        geometry_info: dict | None = None,
     ) -> None:
         """Write with geo metadata (v1.0, v1.1, v2.0)."""
         from geoparquet_io.core.common import (
@@ -313,6 +316,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             original_metadata=original_metadata,
             input_crs=input_crs,
             custom_metadata=custom_metadata,
+            geometry_info=geometry_info,
         )
 
         col_meta = geo_meta["columns"][geometry_column]

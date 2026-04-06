@@ -93,6 +93,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         verbose: bool,
         custom_metadata: dict | None = None,
+        geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using streaming RecordBatch approach."""
         from geoparquet_io.core.common import (

@@ -3187,6 +3187,7 @@ def write_parquet_with_metadata(
     input_crs=None,
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
+    geometry_info: dict | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -3220,6 +3221,10 @@ def write_parquet_with_metadata(
             - "disk-rewrite": Write with DuckDB, then rewrite with PyArrow
         memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB').
             If None, auto-detects based on available system/container memory.
+        geometry_info: Dict containing multi-geometry column info with keys:
+            - "primary": primary geometry column name
+            - "secondary": list of secondary geometry column names
+            - "metadata": dict mapping column names to their metadata (crs, encoding, etc.)
 
     Returns:
         None
@@ -3303,6 +3308,7 @@ def write_parquet_with_metadata(
                 "input_crs": input_crs,
                 "verbose": verbose,
                 "custom_metadata": custom_metadata,
+                "geometry_info": geometry_info,
             }
             if strategy_enum == WriteStrategy.DUCKDB_KV:
                 write_kwargs["memory_limit"] = memory_limit

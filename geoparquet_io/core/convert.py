@@ -115,6 +115,76 @@ def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=No
     return None
 
 
+def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
+    """Detect all geometry columns from a GeoParquet file.
+
+    Reads the GeoParquet metadata to find all geometry columns listed
+    in the `columns` dict, distinguishing primary from secondary columns.
+
+    For non-GeoParquet files, returns only the detected primary column
+    (multi-geometry is only supported for GeoParquet input).
+
+    Args:
+        input_file: Path to input file
+        verbose: Print debug output
+
+    Returns:
+        dict with keys:
+            - "primary": str - name of primary geometry column
+            - "secondary": list[str] - names of secondary geometry columns
+            - "metadata": dict - per-column metadata from input (crs, encoding, etc.)
+    """
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+
+    result = {"primary": None, "secondary": [], "metadata": {}}
+
+    # Only GeoParquet files can have multiple geometry columns with metadata
+    if not _is_parquet_file(input_file):
+        # For non-parquet, detect single geometry column the standard way
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_file))
+        try:
+            geom_col = _detect_geometry_column(con, input_file, verbose, is_parquet=False)
+            if geom_col:
+                result["primary"] = geom_col
+                result["metadata"][geom_col] = {"encoding": "WKB"}
+        finally:
+            con.close()
+        return result
+
+    safe_url = safe_file_url(input_file, verbose=False)
+    geo_meta = get_geo_metadata(safe_url)
+
+    if not geo_meta:
+        # No GeoParquet metadata - detect single column from schema
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_file))
+        try:
+            geom_col = _detect_geometry_column(con, input_file, verbose, is_parquet=True)
+            if geom_col:
+                result["primary"] = geom_col
+                result["metadata"][geom_col] = {"encoding": "WKB"}
+        finally:
+            con.close()
+        return result
+
+    # Extract from GeoParquet metadata
+    primary_col = geo_meta.get("primary_column", "geometry")
+    columns = geo_meta.get("columns", {})
+
+    result["primary"] = primary_col
+
+    for col_name, col_meta in columns.items():
+        result["metadata"][col_name] = col_meta
+        if col_name != primary_col:
+            result["secondary"].append(col_name)
+
+    if verbose:
+        debug(
+            f"Detected geometry columns - primary: {primary_col}, secondary: {result['secondary']}"
+        )
+
+    return result
+
+
 def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     """Calculate dataset bounds from input file."""
     if verbose:
@@ -839,14 +909,33 @@ def _convert_csv_path(
 def _convert_spatial_path(
     con, input_file, skip_hilbert, verbose, is_parquet=False, layer=None, geoparquet_version=None
 ):
-    """Handle standard spatial format conversion path. Returns SQL query."""
+    """Handle standard spatial format conversion path.
+
+    Returns:
+        tuple: (query, geometry_info) where geometry_info contains primary/secondary columns
+               and their metadata. Returns (None, None) if no geometry found.
+    """
     from geoparquet_io.core.common import check_bbox_structure, should_skip_bbox
 
-    geom_column = _detect_geometry_column(
-        con, input_file, verbose, is_parquet=is_parquet, layer=layer
-    )
+    # Use multi-geometry detection for parquet files
+    if is_parquet:
+        geom_info = detect_all_geometry_columns(input_file, verbose=verbose)
+        geom_column = geom_info["primary"]
+        secondary_columns = geom_info["secondary"]
+    else:
+        # For non-parquet, use standard single-column detection
+        geom_column = _detect_geometry_column(
+            con, input_file, verbose, is_parquet=False, layer=layer
+        )
+        secondary_columns = []
+        geom_info = {
+            "primary": geom_column,
+            "secondary": [],
+            "metadata": {geom_column: {"encoding": "WKB"}} if geom_column else {},
+        }
+
     if geom_column is None:
-        return None
+        return None, None
 
     # Determine if bbox should be skipped for this version
     skip_bbox = should_skip_bbox(geoparquet_version)
@@ -876,6 +965,8 @@ def _convert_spatial_path(
     )
 
     if verbose:
+        if secondary_columns:
+            debug(f"Preserving secondary geometry columns: {secondary_columns}")
         if skip_bbox:
             msg = "Reading input (skipping bbox for native geo types)..."
             if not skip_hilbert:
@@ -890,7 +981,7 @@ def _convert_spatial_path(
                 msg = "Pass 1: Reading input, adding bbox, and applying Hilbert ordering..."
         debug(msg)
 
-    return _build_conversion_query(
+    query = _build_conversion_query(
         input_file,
         geom_column,
         skip_hilbert,
@@ -901,6 +992,8 @@ def _convert_spatial_path(
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
     )
+
+    return query, geom_info
 
 
 def read_spatial_to_arrow(
@@ -1313,8 +1406,9 @@ def convert_to_geoparquet(
                 verbose,
                 geoparquet_version=geoparquet_version,
             )
+            geometry_info = None
         else:
-            query = _convert_spatial_path(
+            query, geometry_info = _convert_spatial_path(
                 con,
                 input_url,
                 skip_hilbert,
@@ -1364,6 +1458,7 @@ def convert_to_geoparquet(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_crs=effective_crs,
+            geometry_info=geometry_info,
         )
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 
