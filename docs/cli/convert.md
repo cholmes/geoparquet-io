@@ -64,7 +64,7 @@ gpio convert geojson data.parquet output.geojson
 | `--pretty` | false | Pretty-print with indentation |
 | `--lco KEY=VALUE` | none | GDAL layer creation option (repeatable) |
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 |
+| `--aws-profile NAME` | none | AWS profile for S3 |
 
 ## To GeoPackage
 
@@ -88,7 +88,7 @@ gpio convert data.parquet output.gpkg
 | `--layer-name TEXT` | features | Layer name in GeoPackage |
 | `--overwrite` | false | Overwrite existing file |
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 |
+| `--aws-profile NAME` | none | AWS profile for S3 |
 
 ## To FlatGeobuf
 
@@ -107,7 +107,7 @@ gpio convert data.parquet output.fgb
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 |
+| `--aws-profile NAME` | none | AWS profile for S3 |
 
 ## To CSV
 
@@ -134,7 +134,7 @@ gpio convert data.parquet output.csv
 | `--no-wkt` | false | Exclude WKT geometry column |
 | `--no-bbox` | false | Exclude bbox column if present |
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 |
+| `--aws-profile NAME` | none | AWS profile for S3 |
 
 ## To Shapefile
 
@@ -166,7 +166,7 @@ gpio convert data.parquet output.shp
 | `--encoding TEXT` | UTF-8 | Character encoding for attribute data |
 | `--overwrite` | false | Overwrite existing file |
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 |
+| `--aws-profile NAME` | none | AWS profile for S3 |
 
 ## Reproject
 

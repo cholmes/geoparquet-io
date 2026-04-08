@@ -45,7 +45,7 @@ done
 Read from and write to cloud storage:
 
 ```bash
-gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --profile my-aws
+gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --aws-profile my-aws
 gpio sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet
 ```
 

@@ -192,7 +192,7 @@ gpio add bbox https://example.com/data.parquet | \
 
 # S3 to S3 processing
 gpio add bbox s3://source-bucket/data.parquet \
-    s3://dest-bucket/optimized.parquet --profile my-aws
+    s3://dest-bucket/optimized.parquet --aws-profile my-aws
 ```
 
 ### Python Version

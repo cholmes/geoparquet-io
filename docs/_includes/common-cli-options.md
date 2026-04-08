@@ -13,5 +13,5 @@
 --preview          # Preview results (partition commands)
 --hive             # Use Hive-style partitioning
 --overwrite        # Overwrite existing files
---profile NAME     # AWS profile for S3 operations
+--aws-profile NAME # AWS profile for S3 operations
 ```

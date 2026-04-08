@@ -2,6 +2,7 @@
 Benchmark utilities for comparing GeoParquet conversion methods.
 
 Tests available converters and reports performance metrics.
+Includes EXPLAIN ANALYZE support for DuckDB query plan analysis.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import click
 import duckdb
 import psutil
 
+from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
 from geoparquet_io.core.logging_config import progress
 
 # Converter registry with detection functions
@@ -699,3 +701,250 @@ def run_benchmark(
     finally:
         if cleanup_output and output_dir.exists():
             shutil.rmtree(output_dir)
+
+
+def _normalize_extra_info(extra_info: dict | str) -> str:
+    """Convert extra_info to a string regardless of input type."""
+    if isinstance(extra_info, dict):
+        parts = []
+        for key, value in extra_info.items():
+            if isinstance(value, list):
+                parts.append(f"{key}: {', '.join(str(v) for v in value)}")
+            else:
+                parts.append(f"{key}: {value}")
+        return "\n".join(parts)
+    return str(extra_info) if extra_info else ""
+
+
+def _collect_operators(node: dict, depth: int = 0) -> list[dict]:
+    """Recursively collect operators from a query plan tree."""
+    # Support both DuckDB profiling format and simplified format
+    name = node.get("operator_name") or node.get("name", "UNKNOWN")
+    timing = node.get("operator_timing") or node.get("timing", 0.0)
+    cardinality = node.get("operator_cardinality") or node.get("cardinality", 0)
+    raw_extra = node.get("extra_info", "")
+
+    operators = [
+        {
+            "name": name,
+            "timing": timing,
+            "cardinality": cardinality,
+            "extra_info": _normalize_extra_info(raw_extra),
+            "depth": depth,
+        }
+    ]
+
+    for child in node.get("children", []):
+        operators.extend(_collect_operators(child, depth + 1))
+
+    return operators
+
+
+def _detect_filter_pushdown(operators: list[dict]) -> bool:
+    """Check if any operator indicates filter pushdown."""
+    for op in operators:
+        extra = op.get("extra_info", "")
+        if isinstance(extra, dict):
+            extra = str(extra)
+        if "filter" in extra.lower():
+            return True
+        if op["name"] == "FILTER":
+            return True
+    return False
+
+
+def _detect_row_group_skip(operators: list[dict]) -> bool:
+    """Check if any operator shows row group skipping."""
+    for op in operators:
+        extra = op.get("extra_info", "")
+        if isinstance(extra, dict):
+            extra = str(extra)
+        if "Row Groups" in extra or "Row Group" in extra:
+            parts = extra.split("Row Group")
+            for part in parts[1:]:
+                # Look for patterns like "1/3" meaning 1 of 3 scanned
+                stripped = part.lstrip("s:").strip()
+                if "/" in stripped:
+                    nums = stripped.split("/")[0:2]
+                    try:
+                        scanned = int(nums[0].strip())
+                        total = int(nums[1].strip().split()[0])
+                        if scanned < total:
+                            return True
+                    except (ValueError, IndexError):
+                        pass
+    return False
+
+
+def parse_query_plan(plan: dict) -> dict:
+    """
+    Parse a DuckDB EXPLAIN ANALYZE JSON plan into a structured result.
+
+    Args:
+        plan: The JSON query plan from DuckDB profiling output.
+
+    Returns:
+        Dictionary with operators list, filter/skip detection, and total time.
+    """
+    operators = _collect_operators(plan)
+    total_time = sum(op["timing"] for op in operators)
+
+    return {
+        "operators": operators,
+        "has_filter_pushdown": _detect_filter_pushdown(operators),
+        "row_groups_skipped": _detect_row_group_skip(operators),
+        "total_time": total_time,
+    }
+
+
+def _format_explain_table(parsed: dict) -> str:
+    """Format explain results as a human-readable table."""
+    lines = []
+    lines.append("=" * 70)
+    lines.append("QUERY PLAN ANALYSIS")
+    lines.append("=" * 70)
+    lines.append("")
+
+    # Operator table
+    lines.append(f"{'Operator':<35} {'Time (s)':<12} {'Rows':<12}")
+    lines.append("-" * 59)
+
+    for op in parsed["operators"]:
+        indent = "  " * op["depth"]
+        name = f"{indent}{op['name']}"
+        lines.append(f"{name:<35} {op['timing']:<12.6f} {op['cardinality']:<12}")
+
+        # Show extra info if present (indented below)
+        if op["extra_info"]:
+            for info_line in op["extra_info"].split("\n"):
+                info_line = info_line.strip()
+                if info_line:
+                    lines.append(f"  {indent}  {info_line}")
+
+    lines.append("")
+    lines.append(f"Total time: {parsed['total_time']:.6f}s")
+    lines.append("")
+
+    # Summary
+    lines.append("Observations:")
+    pushdown_status = "detected" if parsed["has_filter_pushdown"] else "not detected"
+    lines.append(f"  Filter pushdown: {pushdown_status}")
+    skip_status = "detected" if parsed["row_groups_skipped"] else "not detected"
+    lines.append(f"  Row group pruning: {skip_status}")
+
+    return "\n".join(lines)
+
+
+def format_explain_output(parsed: dict, output_format: str = "table") -> str:
+    """
+    Format explain results for display.
+
+    Args:
+        parsed: Parsed query plan from parse_query_plan().
+        output_format: Either "table" or "json".
+
+    Returns:
+        Formatted string.
+    """
+    if output_format == "json":
+        return json.dumps(parsed, indent=2)
+    return _format_explain_table(parsed)
+
+
+def _get_explain_connection(file_path: str) -> duckdb.DuckDBPyConnection:
+    """Create a DuckDB connection configured for EXPLAIN ANALYZE.
+
+    Uses the shared get_duckdb_connection helper to ensure consistent
+    handling of local files and remote URLs (S3, HTTP, etc.).
+    """
+    conn = get_duckdb_connection(
+        load_spatial=True,
+        load_httpfs=needs_httpfs(file_path),
+    )
+    conn.execute("SET enable_profiling = 'json';")
+    conn.execute("SET profiling_output = '';")
+    return conn
+
+
+def _build_explain_query(file_path: str, query: str | None) -> str:
+    """Build the EXPLAIN ANALYZE query string."""
+    if query:
+        sql = query.replace("{file}", file_path)
+    else:
+        sql = f"SELECT * FROM read_parquet('{file_path}')"
+    return f"EXPLAIN ANALYZE {sql}"
+
+
+def explain_analyze(
+    file_path: str,
+    query: str | None = None,
+) -> dict:
+    """
+    Run EXPLAIN ANALYZE on a DuckDB query against a Parquet file.
+
+    Shows per-operator timing, estimated vs actual cardinality,
+    and detects filter pushdown and row group pruning.
+
+    Args:
+        file_path: Path to the input Parquet file (local path or URL).
+        query: Optional SQL query. Use {file} as placeholder for the file path.
+               Defaults to SELECT * FROM read_parquet('{file}').
+
+    Returns:
+        Parsed query plan dictionary with operators, timing, and analysis.
+
+    Raises:
+        ValueError: If the file does not exist or query fails.
+    """
+    conn = _get_explain_connection(file_path)
+
+    try:
+        explain_query = _build_explain_query(file_path, query)
+        result = conn.execute(explain_query)
+        rows = result.fetchall()
+
+        # DuckDB EXPLAIN ANALYZE returns rows with explain_key and explain_value
+        # The JSON profile is in the second column of the last row
+        raw_plan = ""
+        plan_json = None
+
+        for row in rows:
+            # Try to find JSON content in the row
+            for col in row:
+                if isinstance(col, str):
+                    raw_plan = col
+                    try:
+                        plan_json = json.loads(col)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+        if plan_json:
+            parsed = parse_query_plan(plan_json)
+        else:
+            # Fall back to text-based parsing if JSON is not available
+            parsed = {
+                "operators": [
+                    {
+                        "name": "QUERY_RESULT",
+                        "timing": 0.0,
+                        "cardinality": 0,
+                        "extra_info": raw_plan,
+                        "depth": 0,
+                    }
+                ],
+                "has_filter_pushdown": "filter" in raw_plan.lower(),
+                "row_groups_skipped": False,
+                "total_time": 0.0,
+            }
+
+        parsed["raw_plan"] = raw_plan
+        return parsed
+
+    except duckdb.IOException as e:
+        # Convert DuckDB file errors to ValueError for cleaner API
+        raise ValueError(f"File not found or inaccessible: {file_path}") from e
+    except duckdb.Error as e:
+        # Convert other DuckDB errors to ValueError
+        raise ValueError(f"Query failed: {e}") from e
+    finally:
+        conn.close()

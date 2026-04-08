@@ -10,15 +10,30 @@ gpio inspect --help
 
 This will show all available options for the `inspect` command.
 
+## Subcommands
+
+- `inspect summary` - File summary (default)
+- `inspect head` - Preview first N rows
+- `inspect tail` - Preview last N rows
+- `inspect stats` - Column statistics and compression ratios
+- `inspect meta` - Parquet metadata, GeoParquet metadata, and bloom filter info
+- `inspect layers` - List layers in multi-layer formats (GeoPackage, FileGDB)
+
 ## Options
 
 - `--head [N]` - Show first N rows (defaults to 10 if N not specified)
 - `--tail [N]` - Show last N rows (defaults to 10 if N not specified)
-- `--stats` - Show column statistics (nulls, min/max, unique counts)
+- `--stats` - Show column statistics (nulls, min/max, unique counts) and per-column compression ratios
 - `--json` - Output as JSON for scripting
 - `--geo-metadata` - Show GeoParquet metadata from 'geo' key
-- `--parquet-metadata` - Show Parquet file metadata
+- `--parquet-metadata` - Show Parquet file metadata (includes bloom filter info)
 - `--parquet-geo-metadata` - Show geospatial metadata from Parquet footer
+
+### inspect meta Options
+
+- `--geo-stats` - Show per-row-group geo_bbox bounding box statistics
+- `--row-groups N` - Number of row groups to display (default: 1)
+- `--json` - Output as JSON
 
 ## Examples
 

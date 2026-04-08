@@ -315,3 +315,87 @@ class TestCheckMetadataAndBbox:
         """Test check_metadata_and_bbox with verbose flag."""
         # Should not raise
         check_metadata_and_bbox(places_test_file, verbose=True, return_results=False)
+
+
+class TestV2UpgradeSuggestion:
+    """Tests for v2.0 upgrade suggestion in check output for v1.1 files."""
+
+    def test_v1_file_suggests_v2_upgrade(self, places_test_file):
+        """Test that checking a v1.1 file includes a v2.0 upgrade suggestion."""
+        result = check_metadata_and_bbox(
+            places_test_file, verbose=False, return_results=True, quiet=True
+        )
+        assert result["file_type"] == "geoparquet_v1"
+        # Should have v2 upgrade suggestion in recommendations
+        v2_recs = [r for r in result["recommendations"] if "2.0" in r]
+        assert len(v2_recs) > 0, "Expected v2.0 upgrade recommendation for v1 file"
+
+    def test_v1_file_upgrade_suggestion_mentions_benefits(self, places_test_file):
+        """Test that the v2.0 upgrade suggestion mentions key benefits."""
+        result = check_metadata_and_bbox(
+            places_test_file, verbose=False, return_results=True, quiet=True
+        )
+        v2_recs = " ".join(r for r in result["recommendations"] if "2.0" in r)
+        assert (
+            "spatial" in v2_recs.lower()
+            or "filter" in v2_recs.lower()
+            or "stats" in v2_recs.lower()
+        ), "v2.0 upgrade suggestion should mention spatial filtering or stats benefits"
+
+    def test_v2_file_does_not_suggest_upgrade(self, places_test_file):
+        """Test that checking a v2.0 file does NOT suggest v2.0 upgrade."""
+        from unittest.mock import patch
+
+        v2_info = {
+            "has_geo_metadata": True,
+            "geo_version": "2.0.0",
+            "has_native_geo_types": True,
+            "file_type": "geoparquet_v2",
+            "bbox_recommended": False,
+        }
+        with patch(
+            "geoparquet_io.core.check_parquet_structure.detect_geoparquet_file_type",
+            return_value=v2_info,
+        ):
+            result = check_metadata_and_bbox(
+                places_test_file, verbose=False, return_results=True, quiet=True
+            )
+        assert result["file_type"] == "geoparquet_v2"
+        v2_recs = [
+            r for r in result.get("recommendations", []) if "upgrade" in r.lower() and "2.0" in r
+        ]
+        assert len(v2_recs) == 0, "v2 file should NOT suggest v2.0 upgrade"
+
+    def test_parquet_geo_only_does_not_suggest_upgrade(self, places_test_file):
+        """Test that checking a parquet-geo-only file does NOT suggest v2.0 upgrade."""
+        from unittest.mock import patch
+
+        pgo_info = {
+            "has_geo_metadata": False,
+            "geo_version": None,
+            "has_native_geo_types": True,
+            "file_type": "parquet_geo_only",
+            "bbox_recommended": False,
+        }
+        with patch(
+            "geoparquet_io.core.check_parquet_structure.detect_geoparquet_file_type",
+            return_value=pgo_info,
+        ):
+            result = check_metadata_and_bbox(
+                places_test_file, verbose=False, return_results=True, quiet=True
+            )
+        assert result["file_type"] == "parquet_geo_only"
+        v2_recs = [
+            r for r in result.get("recommendations", []) if "upgrade" in r.lower() and "2.0" in r
+        ]
+        assert len(v2_recs) == 0, "parquet-geo-only file should NOT suggest v2.0 upgrade"
+
+    def test_v1_file_info_output_includes_upgrade_suggestion(self, places_test_file, caplog):
+        """Test that the info output for v1 files includes v2.0 upgrade suggestion."""
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            check_metadata_and_bbox(
+                places_test_file, verbose=False, return_results=False, quiet=False
+            )
+        assert "2.0" in caplog.text, "Expected v2.0 mentioned in check log output for v1 file"

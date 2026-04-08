@@ -15,7 +15,7 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
     gpio sort hilbert input.parquet output.parquet
 
     # From HTTPS to S3
-    gpio sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet --profile prod
+    gpio sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet --aws-profile prod
     ```
 
 === "Python"
@@ -37,6 +37,13 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 - Increases compression ratios
 - Optimizes cloud-native access patterns
 - Enhances query performance
+
+!!! warning "GeoParquet version matters"
+    Hilbert sorting to GeoParquet v1.1 (the default) provides **no spatial filter pushdown benefit** because v1.1 files lack native `geo_bbox` row group statistics. Use `--geoparquet-version 2.0` to enable native geo stats that allow query engines to skip irrelevant row groups.
+
+    ```bash
+    gpio sort hilbert input.parquet output.parquet --geoparquet-version 2.0
+    ```
 
 ## Options
 
@@ -66,13 +73,16 @@ gpio sort hilbert input.parquet output.parquet --verbose
 Control row group sizes for optimal performance:
 
 ```bash
-# Exact row count
-gpio sort hilbert input.parquet output.parquet --row-group-size 100000
+# Recommended for spatial filter pushdown (GeoParquet 2.0)
+gpio sort hilbert input.parquet output.parquet --row-group-size 30000 --geoparquet-version 2.0
 
 # Target size in MB/GB
 gpio sort hilbert input.parquet output.parquet --row-group-size-mb 256MB
 gpio sort hilbert input.parquet output.parquet --row-group-size-mb 1GB
 ```
+
+!!! tip "Optimal row group size for spatial queries"
+    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, use **10,000-50,000 rows per group**. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups.
 
 ## Column Ordering
 
@@ -123,10 +133,13 @@ Column sorting:
 
 The output file:
 
-- Follows GeoParquet 1.1 spec
+- Defaults to GeoParquet 1.1 spec (use `--geoparquet-version 2.0` for native spatial stats)
 - Preserves CRS information
 - Includes bbox covering metadata
 - Uses optimal row group sizes
+
+!!! note "Version options"
+    Use `--geoparquet-version` to control the output format: `1.1` (default), `2.0` (recommended for spatial filter pushdown), or `parquet-geo-only` (Parquet native geo types without GeoParquet metadata).
 
 ## See Also
 

@@ -10,7 +10,7 @@ from geoparquet_io.core.common import (
     needs_httpfs,
     parse_geo_metadata,
 )
-from geoparquet_io.core.duckdb_metadata import get_usable_columns
+from geoparquet_io.core.duckdb_metadata import get_compression_stats, get_usable_columns
 from geoparquet_io.core.inspect_utils import (
     extract_file_info,
     extract_geo_info,
@@ -331,6 +331,7 @@ def inspect_stats(
         con.close()
 
     statistics = get_column_statistics(file_to_inspect, columns_info)
+    compression_stats = get_compression_stats(file_to_inspect)
 
     return {
         "is_partition": partition_info["is_partition"],
@@ -339,6 +340,7 @@ def inspect_stats(
         "geo_info": geo_info,
         "columns_info": columns_info,
         "statistics": statistics,
+        "compression_stats": compression_stats,
     }
 
 
@@ -357,6 +359,8 @@ def format_stats_output(
     Returns:
         Formatted string for json/markdown, or None for terminal (prints directly)
     """
+    compression_stats = result.get("compression_stats")
+
     if json_output:
         return format_json_output(
             result["file_info"],
@@ -364,6 +368,7 @@ def format_stats_output(
             result["columns_info"],
             None,
             result["statistics"],
+            compression_stats=compression_stats,
         )
     elif markdown_output:
         return format_markdown_output(
@@ -373,6 +378,7 @@ def format_stats_output(
             None,
             None,
             result["statistics"],
+            compression_stats=compression_stats,
         )
     else:
         format_terminal_output(
@@ -382,6 +388,7 @@ def format_stats_output(
             None,
             None,
             result["statistics"],
+            compression_stats=compression_stats,
         )
         return None
 
@@ -393,6 +400,7 @@ def display_metadata(
     parquet_geo: bool = False,
     row_groups: int = 1,
     json_output: bool = False,
+    geo_stats: bool = False,
 ) -> None:
     """Display metadata for a GeoParquet file.
 
@@ -403,13 +411,19 @@ def display_metadata(
         parquet_geo: Show only Parquet geospatial metadata
         row_groups: Number of row groups to display
         json_output: Output as JSON
+        geo_stats: Show per-row-group geo_bbox statistics
     """
     from geoparquet_io.core.metadata_utils import (
         format_all_metadata,
         format_geoparquet_metadata,
         format_parquet_geo_metadata,
         format_parquet_metadata_enhanced,
+        format_row_group_geo_stats,
     )
+
+    if geo_stats:
+        format_row_group_geo_stats(parquet_file, json_output, row_groups)
+        return
 
     # Count how many specific flags were set
     specific_flags = sum([parquet, geoparquet, parquet_geo])

@@ -82,7 +82,7 @@ Shows:
 
     ```bash
     # Column statistics (nulls, min/max, unique counts)
-    gpio inspect data.parquet --stats
+    gpio inspect stats data.parquet
 
     # Combine with preview
     gpio inspect data.parquet --head --stats
@@ -107,6 +107,28 @@ Shows:
     # Geometry columns have null counts only
     print(stats['geometry']['nulls'])
     ```
+
+### Compression Ratios
+
+`gpio inspect stats` also shows per-column compression ratios, including the compression codec, compressed and uncompressed sizes, and the compression ratio:
+
+=== "CLI"
+
+    ```bash
+    gpio inspect stats data.parquet
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    stats = ops.compression_stats('data.parquet')
+    for col in stats:
+        print(f"{col['column']}: {col['compression']} ratio={col['ratio']:.2f}")
+    ```
+
+Output includes a "Compression Ratios" table showing which columns benefit most from compression.
 
 ## GeoParquet Metadata
 
@@ -190,6 +212,90 @@ This shows metadata from the Parquet specification for geospatial types:
 - Custom geospatial key-value metadata
 
 **Note:** This is different from `--geo-metadata` which shows GeoParquet metadata from the 'geo' key.
+
+## Bloom Filter Information
+
+`gpio inspect meta` includes a bloom filter summary section showing which columns have bloom filters, coverage percentages, and total bloom filter bytes:
+
+```bash
+# Bloom filter info is shown automatically
+gpio inspect meta data.parquet
+
+# JSON output includes bloom filter details
+gpio inspect meta data.parquet --json
+```
+
+Bloom filters enable efficient point lookups on low-cardinality columns. DuckDB 1.5+ automatically writes bloom filters when creating Parquet files.
+
+## Per-Row-Group Geo Statistics
+
+View bounding box statistics for each row group to verify spatial locality:
+
+=== "CLI"
+
+    ```bash
+    # Show per-row-group geo_bbox statistics
+    gpio inspect meta data.parquet --geo-stats
+
+    # Limit to first 5 row groups
+    gpio inspect meta data.parquet --geo-stats --row-groups 5
+
+    # JSON output
+    gpio inspect meta data.parquet --geo-stats --json
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api.ops import get_row_group_geo_stats
+
+    stats = get_row_group_geo_stats('hilbert_sorted.parquet')
+
+    for rg in stats:
+        print(f"RG {rg['row_group_id']}: {rg['num_rows']} rows, "
+              f"bbox=[{rg['xmin']:.2f}, {rg['ymin']:.2f}, "
+              f"{rg['xmax']:.2f}, {rg['ymax']:.2f}]")
+    ```
+
+This is useful for:
+
+- Verifying spatial locality after Hilbert sorting
+- Checking that row groups have tight bounding boxes
+- Debugging spatial filter pushdown performance
+
+**Stats Sources:** Works with native Parquet geo statistics (GeoParquet 2.0, parquet-geo-only) and bbox column statistics.
+
+## Listing Layers
+
+For multi-layer formats (GeoPackage, FileGDB), list available layers:
+
+=== "CLI"
+
+    ```bash
+    # List layers in GeoPackage
+    gpio inspect layers multi.gpkg
+
+    # List layers in FileGDB
+    gpio inspect layers data.gdb
+
+    # JSON output for scripting
+    gpio inspect layers multi.gpkg --json
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # List layers in a multi-layer file
+    layers = gpio.list_layers('multi.gpkg')
+    print(layers)  # ['buildings', 'roads', 'parcels']
+
+    # Read a specific layer
+    table = gpio.read('multi.gpkg', layer='buildings')
+    ```
+
+Returns layer names for files with 2+ layers. Single-layer files return nothing.
 
 ## JSON Output
 

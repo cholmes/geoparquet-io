@@ -104,6 +104,27 @@ class TestConvertLayerAPI:
         assert result.num_rows == 42
         assert "geometry" in result.column_names
 
+    def test_convert_sequential_layers_no_sigabrt(self, multilayer_gpkg, tmp_path):
+        """Sequential layer reads should not cause SIGABRT on macOS ARM64.
+
+        Regression test for issue #322: SIGABRT in read_spatial_to_arrow when
+        converting multiple GeoPackage layers sequentially on macOS ARM64.
+
+        The fix adds gc.collect() after closing DuckDB connections to ensure
+        GDAL's internal handles are fully released before the next read.
+        """
+        layers = ["buildings", "roads"]
+
+        # Convert all layers sequentially - this would crash before the fix
+        for layer in layers:
+            output = tmp_path / f"{layer}.parquet"
+            convert(multilayer_gpkg, layer=layer).write(str(output))
+
+            # Verify each output
+            result = pq.read_table(str(output))
+            assert result.num_rows == 42
+            assert "geometry" in result.column_names
+
 
 class TestReadSpatialToArrowLayer:
     """Tests for read_spatial_to_arrow() with layer parameter."""

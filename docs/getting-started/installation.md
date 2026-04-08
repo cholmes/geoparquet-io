@@ -57,7 +57,7 @@ uv sync --all-extras
 
 - **Python**: 3.10 or higher
 - **PyArrow**: 12.0.0+
-- **DuckDB**: 1.1.3+
+- **DuckDB**: 1.5.0+
 
 All dependencies are automatically installed when you install geoparquet-io.
 

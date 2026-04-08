@@ -1,4 +1,4 @@
-# GeoParquet-IO Examples
+# geoparquet-io Examples
 
 This directory contains example scripts and Jupyter notebooks demonstrating how to use geoparquet-io.
 

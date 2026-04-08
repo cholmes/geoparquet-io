@@ -2050,6 +2050,41 @@ class Table:
         )
         return CheckResult(results, check_type="spatial")
 
+    def check_spatial_pushdown(self) -> CheckResult:
+        """
+        Check spatial filter pushdown readiness (prospective).
+
+        Evaluates whether the table would support efficient spatial filter
+        pushdown by writing to a temp file and analyzing per-row-group bbox
+        statistics. Returns an estimated skip rate representing how many row
+        groups a typical regional query can skip.
+
+        Note:
+            This method writes the table to a temporary file with default
+            settings to compute metrics. For metrics on an existing file's
+            actual row group structure, use the CLI command
+            ``gpio check spatial --file`` or the standalone function
+            ``geoparquet_io.check_spatial_pushdown(file_path)``.
+
+        Returns:
+            CheckResult with pushdown readiness metrics
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> result = table.check_spatial_pushdown()
+            >>> if result.passed():
+            ...     print("Good pushdown readiness")
+            >>> print(result.details())
+        """
+        from geoparquet_io.api.check import CheckResult
+        from geoparquet_io.core.check_spatial_order import check_spatial_pushdown_readiness
+
+        results = self._with_temp_file(
+            check_spatial_pushdown_readiness,
+            verbose=False,
+        )
+        return CheckResult(results, check_type="spatial_pushdown")
+
     def check_compression(self) -> CheckResult:
         """
         Check compression settings on geometry column.
@@ -2119,6 +2154,53 @@ class Table:
             check_row_groups, verbose=False, return_results=True, quiet=True, profile=profile
         )
         return CheckResult(results, check_type="row_groups")
+
+    def check_bloom_filters(self) -> CheckResult:
+        """
+        Check bloom filter presence on columns.
+
+        Bloom filters enable efficient point lookups on low-cardinality columns
+        (city names, land use types, integer ranges).
+
+        Returns:
+            CheckResult with bloom filter analysis
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> result = table.check_bloom_filters()
+            >>> print(result.to_dict())
+        """
+        from geoparquet_io.api.check import CheckResult
+        from geoparquet_io.core.check_parquet_structure import check_bloom_filters
+
+        results = self._with_temp_file(
+            check_bloom_filters, verbose=False, return_results=True, quiet=True
+        )
+        return CheckResult(results, check_type="bloom_filters")
+
+    def check_optimization(self) -> CheckResult:
+        """
+        Check combined spatial query optimization.
+
+        Evaluates five factors that affect spatial query performance:
+        native geo types, geo bbox stats, spatial sorting, row group size,
+        and compression.
+
+        Returns:
+            CheckResult with optimization analysis including score and level
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> result = table.check_optimization()
+            >>> print(result.to_dict()['score'], '/', result.to_dict()['total_checks'])
+        """
+        from geoparquet_io.api.check import CheckResult
+        from geoparquet_io.core.check_optimization import check_optimization
+
+        results = self._with_temp_file(
+            check_optimization, verbose=False, return_results=True, quiet=True
+        )
+        return CheckResult(results, check_type="optimization")
 
     def validate(self, version: str | None = None) -> CheckResult:
         """
@@ -2433,6 +2515,38 @@ class Table:
             },
             compression=compression,
             compression_level=compression_level,
+        )
+
+    @classmethod
+    def explain_analyze(
+        cls,
+        file_path: str,
+        query: str | None = None,
+    ) -> dict:
+        """
+        Run EXPLAIN ANALYZE on a DuckDB query against a Parquet file.
+
+        Shows per-operator timing, cardinality, filter pushdown detection,
+        and row group pruning analysis.
+
+        Args:
+            file_path: Path to the input Parquet file.
+            query: Optional SQL query. Use {file} as placeholder for the file path.
+                   Defaults to SELECT * FROM read_parquet('{file}').
+
+        Returns:
+            Dictionary with operators, timing, and analysis results.
+
+        Example:
+            >>> result = Table.explain_analyze('input.parquet')
+            >>> for op in result['operators']:
+            ...     print(f"{op['name']}: {op['timing']:.6f}s")
+        """
+        from geoparquet_io.core.benchmark import explain_analyze as _explain_analyze
+
+        return _explain_analyze(
+            file_path=file_path,
+            query=query,
         )
 
     def __repr__(self) -> str:

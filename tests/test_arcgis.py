@@ -764,3 +764,524 @@ class TestNetworkIntegration:
         table = gpio.extract_arcgis(self.SMALL_SERVICE)
         assert table.num_rows >= 0
         assert "geometry" in table.column_names
+
+
+class TestAlignTableToSchema:
+    """Unit tests for the _align_table_to_schema helper function."""
+
+    def test_reorders_columns_to_match_schema(self):
+        """Test that columns are reordered to match target schema."""
+        from geoparquet_io.core.arcgis import _align_table_to_schema
+
+        # Source table with different column order
+        source = pa.table(
+            {
+                "c": [3, 6],
+                "a": [1, 4],
+                "b": [2, 5],
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("a", pa.int64()),
+                pa.field("b", pa.int64()),
+                pa.field("c", pa.int64()),
+            ]
+        )
+
+        result = _align_table_to_schema(source, target_schema)
+
+        assert result.column_names == ["a", "b", "c"]
+        assert result.column("a").to_pylist() == [1, 4]
+        assert result.column("b").to_pylist() == [2, 5]
+        assert result.column("c").to_pylist() == [3, 6]
+
+    def test_drops_extra_columns(self):
+        """Test that extra columns not in target schema are dropped."""
+        from geoparquet_io.core.arcgis import _align_table_to_schema
+
+        source = pa.table(
+            {
+                "a": [1, 2],
+                "b": [3, 4],
+                "extra": ["x", "y"],  # Not in target schema
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("a", pa.int64()),
+                pa.field("b", pa.int64()),
+            ]
+        )
+
+        result = _align_table_to_schema(source, target_schema)
+
+        assert result.column_names == ["a", "b"]
+        assert "extra" not in result.column_names
+
+    def test_adds_missing_columns_with_nulls(self):
+        """Test that missing columns are filled with nulls."""
+        from geoparquet_io.core.arcgis import _align_table_to_schema
+
+        source = pa.table(
+            {
+                "a": [1, 2],
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("a", pa.int64()),
+                pa.field("missing", pa.string()),
+            ]
+        )
+
+        result = _align_table_to_schema(source, target_schema)
+
+        assert result.column_names == ["a", "missing"]
+        assert result.column("missing").to_pylist() == [None, None]
+
+    def test_handles_all_mismatches_together(self):
+        """Test reorder + drop + add in combination."""
+        from geoparquet_io.core.arcgis import _align_table_to_schema
+
+        source = pa.table(
+            {
+                "z": [9, 10],  # wrong position
+                "a": [1, 2],  # should be first
+                "extra": ["x", "y"],  # should be dropped
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("a", pa.int64()),
+                pa.field("missing", pa.float64()),  # should be added as null
+                pa.field("z", pa.int64()),
+            ]
+        )
+
+        result = _align_table_to_schema(source, target_schema)
+
+        assert result.column_names == ["a", "missing", "z"]
+        assert result.column("a").to_pylist() == [1, 2]
+        assert result.column("missing").to_pylist() == [None, None]
+        assert result.column("z").to_pylist() == [9, 10]
+        assert "extra" not in result.column_names
+
+
+class TestSchemaMismatchBetweenBatches:
+    """Tests for issue #334: Schema mismatch with mixed-type chunks.
+
+    When extracting from ArcGIS, different pages may have different inferred
+    types for the same field (e.g., int64 vs double) due to the actual data
+    values in each batch.
+    """
+
+    @pytest.fixture
+    def output_file(self, tmp_path):
+        """Create a temporary output file path."""
+        output = tmp_path / f"test_output_{uuid.uuid4()}.parquet"
+        yield str(output)
+        safe_unlink(output)
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_int_to_double_type_variance(self, mock_fetch, output_file):
+        """Test that double fields with integer values in some batches are handled.
+
+        Reproduces issue #334: When a double field (like TownGlValu) has only
+        whole numbers in some batches, DuckDB infers int64, causing schema
+        mismatch when cast to the correct float64 from ArcGIS metadata.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        # Page 1: value field has decimal values (inferred as double)
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    "properties": {"OBJECTID": 1, "TownGlValu": 15000.50},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.6, 44.3]},
+                    "properties": {"OBJECTID": 2, "TownGlValu": 25000.75},
+                },
+            ],
+        }
+
+        # Page 2: value field has only whole numbers (may be inferred as int64)
+        page2 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.7, 44.4]},
+                    "properties": {"OBJECTID": 3, "TownGlValu": 30000},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.8, 44.5]},
+                    "properties": {"OBJECTID": 4, "TownGlValu": 40000},
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1, page2])
+
+        # Layer metadata correctly defines TownGlValu as double
+        layer_info = ArcGISLayerInfo(
+            name="VT Property Transfers",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "TownGlValu", "type": "esriFieldTypeDouble", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=4,
+        )
+
+        # This should NOT raise a schema mismatch error
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 4
+
+        # Verify all values are present and correctly typed as float64
+        table = pq.read_table(output_file)
+        assert table.num_rows == 4
+        assert table.schema.field("TownGlValu").type == pa.float64()
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_null_column_becoming_string(self, mock_fetch, output_file):
+        """Test that columns with nulls in early batches are handled.
+
+        When a column has all nulls in batch 1, DuckDB may infer it as null type.
+        Later batches with actual values should still work.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        # Page 1: description is null
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    "properties": {"OBJECTID": 1, "description": None},
+                },
+            ],
+        }
+
+        # Page 2: description has actual values
+        page2 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.6, 44.3]},
+                    "properties": {"OBJECTID": 2, "description": "Some text"},
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1, page2])
+
+        layer_info = ArcGISLayerInfo(
+            name="Test Layer",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "description", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=2,
+        )
+
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 2
+
+        table = pq.read_table(output_file)
+        assert table.num_rows == 2
+        assert table.schema.field("description").type == pa.string()
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_multiple_type_variance_columns(self, mock_fetch, output_file):
+        """Test multiple columns with type variance across batches."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        # Page 1: mixed types
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    "properties": {
+                        "OBJECTID": 1,
+                        "price": 100.50,  # float
+                        "count": 10,  # int
+                        "rating": None,  # null
+                    },
+                },
+            ],
+        }
+
+        # Page 2: different inference
+        page2 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.6, 44.3]},
+                    "properties": {
+                        "OBJECTID": 2,
+                        "price": 200,  # whole number (might infer as int)
+                        "count": 20,
+                        "rating": 4.5,  # now has value
+                    },
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1, page2])
+
+        layer_info = ArcGISLayerInfo(
+            name="Test Layer",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "price", "type": "esriFieldTypeDouble", "nullable": True},
+                {"name": "count", "type": "esriFieldTypeInteger", "nullable": True},
+                {"name": "rating", "type": "esriFieldTypeSingle", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=2,
+        )
+
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 2
+
+        table = pq.read_table(output_file)
+        assert table.num_rows == 2
+        assert table.schema.field("price").type == pa.float64()
+        assert table.schema.field("count").type == pa.int32()
+        assert table.schema.field("rating").type == pa.float32()
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_column_order_mismatch(self, mock_fetch, output_file):
+        """Test that column order differences between batches are handled.
+
+        DuckDB may return columns in different order than the ArcGIS metadata.
+        This should not cause a schema mismatch error.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        # Properties order differs from layer_info field order
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    # Note: properties order is name, OBJECTID, value
+                    "properties": {"name": "First", "OBJECTID": 1, "value": 100.0},
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1])
+
+        # Layer metadata defines: OBJECTID, name, value (different order!)
+        layer_info = ArcGISLayerInfo(
+            name="Test Layer",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+                {"name": "value", "type": "esriFieldTypeDouble", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=1,
+        )
+
+        # This should NOT raise a schema mismatch error
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 1
+
+        table = pq.read_table(output_file)
+        assert table.num_rows == 1
+        # Verify schema matches target, not source order
+        assert table.schema.names == ["geometry", "OBJECTID", "name", "value"]
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_extra_columns_from_service(self, mock_fetch, output_file):
+        """Test that extra columns from service not in metadata are dropped.
+
+        Some ArcGIS services return more fields than listed in metadata.
+        We should only keep fields defined in layer metadata.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    "properties": {
+                        "OBJECTID": 1,
+                        "name": "Test",
+                        "extra_field": "should_be_dropped",  # Not in metadata
+                    },
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1])
+
+        layer_info = ArcGISLayerInfo(
+            name="Test Layer",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=1,
+        )
+
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 1
+
+        table = pq.read_table(output_file)
+        assert table.num_rows == 1
+        # extra_field should NOT be in the output
+        assert "extra_field" not in table.schema.names
+        assert table.schema.names == ["geometry", "OBJECTID", "name"]
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_handles_missing_columns_from_service(self, mock_fetch, output_file):
+        """Test that missing columns from service are filled with nulls.
+
+        Some ArcGIS services may not return all fields in every response.
+        Missing fields should be filled with nulls of the correct type.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        page1 = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-72.5, 44.2]},
+                    "properties": {
+                        "OBJECTID": 1,
+                        # "name" is missing from this response
+                    },
+                },
+            ],
+        }
+
+        mock_fetch.return_value = iter([page1])
+
+        layer_info = ArcGISLayerInfo(
+            name="Test Layer",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=1,
+        )
+
+        total = _stream_features_to_parquet(
+            service_url="https://example.com/FeatureServer/0",
+            layer_info=layer_info,
+            output_path=output_file,
+        )
+
+        assert total == 1
+
+        table = pq.read_table(output_file)
+        assert table.num_rows == 1
+        # name should be present (as null) even though it wasn't in the service response
+        assert "name" in table.schema.names
+        assert table.column("name")[0].as_py() is None
+
+
+@pytest.mark.network
+class TestRealWorldSchemaMismatch:
+    """Integration tests for schema mismatch with real-world ArcGIS services.
+
+    These tests require network access and validate the fix for issue #334
+    against actual ArcGIS REST endpoints that exhibited the problem.
+    """
+
+    # Vermont property transfer dataset from issue #334
+    VT_PROPERTY_SERVICE = (
+        "https://services1.arcgis.com/BkFxaEFNwHqX3tAw/arcgis/rest/services/"
+        "FS_VCGI_OPENDATA_Cadastral_PTTR_point_WM_v1_view/FeatureServer/0"
+    )
+
+    @pytest.fixture
+    def output_file(self, tmp_path):
+        """Create a temporary output file path."""
+        output = tmp_path / f"vt_property_{uuid.uuid4()}.parquet"
+        yield str(output)
+        safe_unlink(output)
+
+    def test_vermont_property_transfers_issue_334(self, output_file):
+        """Test extraction from VT property transfer dataset that triggered #334.
+
+        This dataset has the TownGlValu field (esriFieldTypeDouble) which caused
+        schema mismatches when some batches only had integer values.
+        """
+        import geoparquet_io as gpio
+
+        # Extract a subset to keep test fast but still exercise multiple batches
+        table = gpio.extract_arcgis(
+            self.VT_PROPERTY_SERVICE,
+            limit=5000,  # Multiple pages to trigger potential schema issues
+        )
+
+        assert table.num_rows > 0
+        assert "geometry" in table.column_names
+
+        # Verify the schema is consistent (no schema mismatch error occurred)
+        # If we got here without error, the fix is working
+        assert table.schema is not None

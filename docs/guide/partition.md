@@ -72,7 +72,7 @@ Partition by string column values or prefixes:
     gpio partition string input.parquet output/ --column region --hive
 
     # To cloud storage
-    gpio partition string s3://bucket/input.parquet s3://bucket/output/ --column region --profile prod
+    gpio partition string s3://bucket/input.parquet s3://bucket/output/ --column region --aws-profile prod
     ```
 
 === "Python"

@@ -12,7 +12,7 @@ Add precomputed bounding boxes for faster spatial queries:
     gpio add bbox input.parquet output.parquet
 
     # Works with remote files
-    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --profile prod
+    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --aws-profile prod
     ```
 
 === "Python"

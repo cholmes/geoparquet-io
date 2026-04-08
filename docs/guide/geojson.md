@@ -216,7 +216,7 @@ File output uses DuckDB's GDAL integration to produce properly formatted GeoJSON
 | `--pretty` | false | Pretty-print the JSON output with indentation |
 | `--lco KEY=VALUE` | none | GDAL layer creation option (may be repeated) |
 | `--verbose` | false | Show debug output |
-| `--profile NAME` | none | AWS profile for S3 files |
+| `--aws-profile NAME` | none | AWS profile for S3 files |
 
 ### Coordinate Precision
 
@@ -316,7 +316,7 @@ Read from S3, GCS, or Azure:
 
 ```bash
 # From S3 with profile
-gpio convert geojson s3://bucket/data.parquet --profile my-aws | tippecanoe -P -o output.pmtiles
+gpio convert geojson s3://bucket/data.parquet --aws-profile my-aws | tippecanoe -P -o output.pmtiles
 
 # From public URL
 gpio convert geojson https://example.com/data.parquet | tippecanoe -P -o output.pmtiles

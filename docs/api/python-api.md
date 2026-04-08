@@ -785,6 +785,51 @@ row_group_result = table.check_row_groups()
 details = result.to_dict()
 ```
 
+#### `check_optimization()`
+
+Evaluate spatial query optimization across five factors (native geo types, geo bbox stats, spatial sorting, row group size, ZSTD compression). Returns a score from 0 to 5.
+
+```python
+result = table.check_optimization()
+details = result.to_dict()
+print(f"Score: {details['score']}/5 - {details['level']}")
+```
+
+#### `check_spatial_pushdown()`
+
+Check spatial filter pushdown readiness by analyzing row group bounding box overlap.
+
+```python
+result = table.check_spatial_pushdown()
+details = result.to_dict()
+print(f"Skip rate: {details['estimated_skip_rate']}")
+print(f"Bbox area ratio: {details['avg_bbox_area_ratio']}")
+```
+
+#### `check_bloom_filters()`
+
+Check bloom filter presence across columns.
+
+```python
+result = table.check_bloom_filters()
+details = result.to_dict()
+```
+
+#### `Table.explain_analyze(file_path, query=None)`
+
+Run DuckDB EXPLAIN ANALYZE on a query against a Parquet file. This is a classmethod, not an instance method.
+
+```python
+result = Table.explain_analyze('data.parquet')
+print(result)
+
+# Custom query
+result = Table.explain_analyze(
+    'data.parquet',
+    query="SELECT * FROM read_parquet('{file}') WHERE id > 10"
+)
+```
+
 #### `validate(version=None)`
 
 Validate against GeoParquet specification.
@@ -1018,6 +1063,15 @@ pq.write_table(table, 'output.parquet')
 | `ops.extract(table, columns=None, exclude_columns=None, bbox=None, where=None, limit=None, geometry_column=None)` | Filter columns/rows |
 | `ops.read_bigquery(table_id, project=None, credentials_file=None, where=None, bbox=None, bbox_mode='auto', bbox_threshold=500000, limit=None, columns=None, exclude_columns=None)` | Read BigQuery table |
 | `ops.from_arcgis(service_url, token=None, where='1=1', bbox=None, include_cols=None, exclude_cols=None, limit=None)` | Fetch ArcGIS Feature Service |
+| `ops.convert_to_geojson(table, output, precision=7, write_bbox=False, id_field=None)` | Convert to GeoJSON |
+| `ops.convert_to_geopackage(table, output, layer_name='features', overwrite=False)` | Convert to GeoPackage |
+| `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
+| `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
+| `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
+| `ops.from_wfs(service_url, typename, version='1.1.0', bbox=None, limit=None, max_workers=1)` | Fetch from WFS service |
+| `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
+| `ops.compression_stats(path)` | Per-column compression ratios |
+| `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |
 
 ## Pipeline Composition
 
@@ -1180,6 +1234,27 @@ result.to_dict()         # Full results as dictionary
 # Can be used as boolean
 if result:
     print("Passed!")
+```
+
+### Row Group Geo Statistics
+
+Inspect per-row-group bounding box statistics to verify spatial locality:
+
+```python
+from geoparquet_io.api.ops import get_row_group_geo_stats
+
+# Get stats for each row group
+stats = get_row_group_geo_stats('hilbert_sorted.parquet')
+
+for rg in stats:
+    print(f"Row group {rg['row_group_id']}: "
+          f"{rg['num_rows']} rows, "
+          f"bbox=[{rg['xmin']:.2f}, {rg['ymin']:.2f}, "
+          f"{rg['xmax']:.2f}, {rg['ymax']:.2f}]")
+
+# Works with both:
+# - Native Parquet geo stats (GeoParquet 2.0, parquet-geo-only)
+# - Bbox column statistics (files with a bbox column)
 ```
 
 ## See Also

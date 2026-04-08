@@ -37,7 +37,7 @@ jobs:
         run: uv run lint-imports
 
       - name: Check CLAUDE.md sections are current
-        run: uv run python scripts/generate_claude_md_sections.py --check
+        run: uv run python scripts/doc_sync.py --check
 
       - name: Check code complexity (informational)
         run: uv run xenon --max-absolute=E --max-modules=D --max-average=C geoparquet_io tests
@@ -47,8 +47,8 @@ jobs:
         run: uv run vulture
         continue-on-error: true
 
-      - name: Check freshness markers
-        run: uv run python scripts/update_freshness.py --check --warn-days 30
+      - name: Check freshness markers (menard)
+        run: uv run menard audit --exit-code
         continue-on-error: true
 
       - name: Check spelling

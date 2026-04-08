@@ -733,6 +733,44 @@ def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
     return parse_crs_string_to_projjson("EPSG:4326")
 
 
+def _align_table_to_schema(table: pa.Table, target_schema: pa.Schema) -> pa.Table:
+    """
+    Align a table's columns to match a target schema.
+
+    This handles three types of mismatches between DuckDB output and ArcGIS metadata:
+    1. Column order differences - reorders columns to match target schema
+    2. Extra columns - drops columns not in target schema
+    3. Missing columns - adds null columns of the correct type
+
+    This is critical for handling schema variance in paginated ArcGIS responses
+    (issue #334), where different batches may have different column ordering or
+    missing/extra fields.
+
+    Args:
+        table: Source table from DuckDB with potentially different column order
+        target_schema: Target schema from ArcGIS layer metadata
+
+    Returns:
+        Table with columns aligned to target schema
+    """
+    source_columns = set(table.column_names)
+    target_columns = [field.name for field in target_schema]
+
+    aligned_arrays = []
+    for field in target_schema:
+        if field.name in source_columns:
+            # Column exists - select it (handles reordering)
+            col = table.column(field.name)
+            aligned_arrays.append(col)
+        else:
+            # Column missing - create null array of correct type
+            null_array = pa.nulls(table.num_rows, type=field.type)
+            aligned_arrays.append(null_array)
+
+    # Create new table with aligned columns (automatically drops extra columns)
+    return pa.table(dict(zip(target_columns, aligned_arrays, strict=True)))
+
+
 def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
     """
     Build a fixed PyArrow schema from ArcGIS layer metadata.
@@ -923,6 +961,11 @@ def _stream_features_to_parquet(
                 continue
 
             page_count += 1
+
+            # Align columns to target schema (handles order/missing/extra columns)
+            # This is required because DuckDB may return columns in different order
+            # than ArcGIS metadata, or some batches may have different fields
+            page_table = _align_table_to_schema(page_table, target_schema)
 
             # Cast to fixed schema (handles type mismatches between batches)
             try:

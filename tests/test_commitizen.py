@@ -234,8 +234,8 @@ class TestPreCommitConfig:
         cz_hook = next(h for h in hooks if h["id"] == "commitizen")
         assert "commit-msg" in cz_hook.get("stages", [])
 
-    def test_legacy_hook_skips_conventional_commits(self):
-        """Verify the legacy check-commit-msg hook skips conventional commits."""
+    def test_commitizen_hook_runs_at_commit_msg_stage(self):
+        """Verify commitizen hook runs at commit-msg stage (replaces legacy check-commit-msg)."""
         pre_commit_cfg = _REPO_ROOT / ".pre-commit-config.yaml"
 
         import yaml
@@ -244,26 +244,17 @@ class TestPreCommitConfig:
             config = yaml.safe_load(f)
 
         repos = config.get("repos", [])
-        local_repos = [r for r in repos if r.get("repo") == "local"]
-        assert local_repos, "No local repo found in .pre-commit-config.yaml"
+        commitizen_repos = [
+            r for r in repos if isinstance(r.get("repo"), str) and "commitizen" in r["repo"]
+        ]
+        assert commitizen_repos, "No commitizen repo found in .pre-commit-config.yaml"
 
-        # Search all local repo sections for the check-commit-msg hook
-        all_local_hooks = []
-        for local_repo in local_repos:
-            all_local_hooks.extend(local_repo.get("hooks", []))
-        commit_msg_hooks = [h for h in all_local_hooks if h.get("id") == "check-commit-msg"]
-        assert commit_msg_hooks, "check-commit-msg hook not found"
-
-        # The hook's bash script should contain the conventional commit skip pattern
-        hook = commit_msg_hooks[0]
-        # The entry is "bash" and args contain the script
-        script = "\n".join(hook.get("args", []))
-        assert "commitizen" in script.lower() or "conventional" in script.lower(), (
-            "Legacy check-commit-msg hook should mention commitizen/conventional skip"
+        hooks = commitizen_repos[0].get("hooks", [])
+        cz_hook = next((h for h in hooks if h["id"] == "commitizen"), None)
+        assert cz_hook is not None, "commitizen hook not found"
+        assert "commit-msg" in cz_hook.get("stages", []), (
+            "commitizen hook should run at commit-msg stage"
         )
-        # Check the regex pattern covers the expected types
-        for commit_type in ["feat", "fix", "docs", "refactor", "chore", "test"]:
-            assert commit_type in script, f"Legacy hook skip regex should include '{commit_type}'"
 
 
 # ---------------------------------------------------------------------------

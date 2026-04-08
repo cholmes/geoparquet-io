@@ -986,8 +986,9 @@ class TestExtractCLI:
 
 
 @pytest.mark.slow
+@pytest.mark.network
 class TestExtractRemote:
-    """Tests for extract with remote files (marked slow - skip in CI)."""
+    """Tests for extract with remote files (requires network access)."""
 
     @pytest.fixture
     def output_file(self):

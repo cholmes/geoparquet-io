@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 
+import random as _random
+
 from geoparquet_io.core.common import (
     find_primary_geometry_column,
     get_duckdb_connection,
@@ -336,3 +338,233 @@ def check_spatial_order(
         return ratio
     finally:
         con.close()
+
+
+def _compute_data_extent(row_group_bboxes: list[dict]) -> dict:
+    """Compute the total spatial extent across all row group bboxes.
+
+    Args:
+        row_group_bboxes: List of dicts with xmin, ymin, xmax, ymax keys.
+
+    Returns:
+        Dict with xmin, ymin, xmax, ymax for the full extent.
+
+    Raises:
+        ValueError: If row_group_bboxes is empty.
+    """
+    if not row_group_bboxes:
+        raise ValueError("No row group bboxes provided")
+    return {
+        "xmin": min(b["xmin"] for b in row_group_bboxes),
+        "ymin": min(b["ymin"] for b in row_group_bboxes),
+        "xmax": max(b["xmax"] for b in row_group_bboxes),
+        "ymax": max(b["ymax"] for b in row_group_bboxes),
+    }
+
+
+def _generate_sample_query_bboxes(
+    extent: dict,
+    num_samples: int = 10,
+    query_fraction: float = 0.1,
+    seed: int | None = None,
+) -> list[dict]:
+    """Generate random sample query bboxes within the data extent.
+
+    Each sample covers approximately ``query_fraction`` of the extent in each
+    dimension (so the area fraction is roughly query_fraction^2).
+
+    Args:
+        extent: Dict with xmin, ymin, xmax, ymax for the full data extent.
+        num_samples: Number of sample bboxes to generate.
+        query_fraction: Fraction of each dimension the query should span.
+        seed: Optional random seed for reproducibility.
+
+    Returns:
+        List of bbox dicts with xmin, ymin, xmax, ymax.
+    """
+    rng = _random.Random(seed)  # nosec B311 - not used for security
+    x_range = extent["xmax"] - extent["xmin"]
+    y_range = extent["ymax"] - extent["ymin"]
+    query_width = x_range * query_fraction
+    query_height = y_range * query_fraction
+
+    samples = []
+    for _ in range(num_samples):
+        x_start = rng.uniform(extent["xmin"], extent["xmax"] - query_width)  # nosec B311
+        y_start = rng.uniform(extent["ymin"], extent["ymax"] - query_height)  # nosec B311
+        samples.append(
+            {
+                "xmin": x_start,
+                "ymin": y_start,
+                "xmax": x_start + query_width,
+                "ymax": y_start + query_height,
+            }
+        )
+    return samples
+
+
+def _compute_skip_rate_for_query(query_bbox: dict, row_group_bboxes: list[dict]) -> float:
+    """Compute the fraction of row groups that can be skipped for a query bbox.
+
+    A row group can be skipped if its bbox does not overlap with the query bbox.
+
+    Args:
+        query_bbox: The query bbox dict with xmin, ymin, xmax, ymax.
+        row_group_bboxes: List of row group bbox dicts.
+
+    Returns:
+        Float between 0.0 and 1.0 representing the fraction skippable.
+    """
+    if not row_group_bboxes:
+        return 0.0
+    skipped = sum(1 for rg in row_group_bboxes if not _bboxes_overlap(query_bbox, rg))
+    return skipped / len(row_group_bboxes)
+
+
+def _compute_avg_bbox_area_ratio(row_group_bboxes: list[dict], extent: dict) -> float:
+    """Compute average ratio of row group bbox area to total extent area.
+
+    Lower values mean tighter row group bboxes (better spatial locality).
+
+    Args:
+        row_group_bboxes: List of row group bbox dicts.
+        extent: The total data extent dict.
+
+    Returns:
+        Average area ratio (0.0 to 1.0). Returns 0.0 if extent area is zero.
+    """
+    extent_area = (extent["xmax"] - extent["xmin"]) * (extent["ymax"] - extent["ymin"])
+    if extent_area <= 0:
+        return 0.0
+    ratios = []
+    for rg in row_group_bboxes:
+        rg_area = (rg["xmax"] - rg["xmin"]) * (rg["ymax"] - rg["ymin"])
+        ratios.append(rg_area / extent_area)
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
+def check_spatial_pushdown_readiness(
+    parquet_file: str,
+    verbose: bool = False,
+    num_samples: int = 20,
+    query_fraction: float = 0.1,
+    seed: int = 42,
+) -> dict:
+    """Check how well a file supports spatial filter pushdown.
+
+    Evaluates whether the file has geo_bbox metadata per row group, measures
+    spatial locality, and estimates what percentage of row groups a typical
+    regional query could skip.
+
+    Args:
+        parquet_file: Path to the GeoParquet file.
+        verbose: If True, log detailed progress.
+        num_samples: Number of random sample queries to evaluate.
+        query_fraction: Fraction of each dimension each sample query spans.
+        seed: Random seed for reproducible sample queries.
+
+    Returns:
+        Dict with keys:
+            has_geo_bbox (bool): Whether file has per-RG geo_bbox stats.
+            num_row_groups (int): Number of row groups in the file.
+            estimated_skip_rate (float): Average fraction of RGs skippable.
+            avg_bbox_area_ratio (float): Average RG bbox area / total extent area.
+            passed (bool): True if skip rate >= 0.5 (good pushdown readiness).
+            issues (list[str]): Problems found.
+            recommendations (list[str]): Suggestions for improvement.
+    """
+    from geoparquet_io.core.duckdb_metadata import (
+        get_per_row_group_bbox_stats,
+        has_bbox_column,
+    )
+
+    safe_url = safe_file_url(parquet_file, verbose)
+
+    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+
+    issues: list[str] = []
+    recommendations: list[str] = []
+
+    if not has_bbox or not bbox_col_name:
+        if verbose:
+            debug("No geo_bbox column found, pushdown not possible")
+        issues.append(
+            "File has no geo_bbox column. "
+            "Spatial filter pushdown requires per-row-group bbox stats (GeoParquet 2.0+)."
+        )
+        recommendations.append("Add bbox column with 'gpio add bbox' and upgrade to GeoParquet 2.0")
+        return {
+            "has_geo_bbox": False,
+            "num_row_groups": 0,
+            "estimated_skip_rate": 0.0,
+            "avg_bbox_area_ratio": 0.0,
+            "passed": False,
+            "issues": issues,
+            "recommendations": recommendations,
+        }
+
+    if verbose:
+        debug(f"Using bbox column: {bbox_col_name}")
+
+    row_group_bboxes = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+    num_rgs = len(row_group_bboxes)
+
+    if verbose:
+        debug(f"Found {num_rgs} row groups with bbox stats")
+
+    if num_rgs <= 1:
+        if verbose:
+            debug("Only 0 or 1 row groups, skip rate is trivially 0.0")
+        return {
+            "has_geo_bbox": True,
+            "num_row_groups": num_rgs,
+            "estimated_skip_rate": 0.0,
+            "avg_bbox_area_ratio": 0.0,
+            "passed": False,  # Can't skip any row groups with only 0-1 row groups
+            "issues": ["Single row group provides no pushdown benefit"],
+            "recommendations": ["Consider using smaller row groups for spatial queries"],
+        }
+
+    extent = _compute_data_extent(row_group_bboxes)
+    avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
+
+    if verbose:
+        debug(f"Data extent: {extent}")
+        debug(f"Average bbox area ratio: {avg_area_ratio:.4f}")
+
+    sample_bboxes = _generate_sample_query_bboxes(
+        extent, num_samples=num_samples, query_fraction=query_fraction, seed=seed
+    )
+    skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in sample_bboxes]
+    avg_skip_rate = sum(skip_rates) / len(skip_rates)
+
+    if verbose:
+        debug(f"Estimated average skip rate: {avg_skip_rate:.2%}")
+
+    passed = avg_skip_rate >= 0.5
+
+    if not passed:
+        issues.append(
+            f"Low spatial filter pushdown efficiency (estimated skip rate: {avg_skip_rate:.0%})"
+        )
+        recommendations.append(
+            "Apply Hilbert spatial ordering with 'gpio sort hilbert' to improve pushdown"
+        )
+
+    if avg_area_ratio > 0.5:
+        issues.append(
+            f"Row group bboxes are large relative to data extent (avg ratio: {avg_area_ratio:.2f})"
+        )
+        recommendations.append(
+            "Spatially sorting and re-partitioning may produce tighter row group bboxes"
+        )
+
+    return {
+        "has_geo_bbox": True,
+        "num_row_groups": num_rgs,
+        "estimated_skip_rate": avg_skip_rate,
+        "avg_bbox_area_ratio": avg_area_ratio,
+        "passed": passed,
+        "issues": issues,
+        "recommendations": recommendations,
+    }

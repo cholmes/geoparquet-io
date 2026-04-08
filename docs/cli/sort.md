@@ -20,6 +20,29 @@ Sort by Hilbert space-filling curve for optimal spatial ordering:
 gpio sort hilbert input.parquet output.parquet [OPTIONS]
 ```
 
+Options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-g, --geometry-column` | auto-detect | Geometry column name |
+| `--add-bbox` | - | Add bbox column if missing |
+| `--compression` | ZSTD | Compression codec (ZSTD, SNAPPY, GZIP, etc.) |
+| `--compression-level` | - | Compression level |
+| `--row-group-size` | - | Exact row count per group (10k-50k recommended for spatial pushdown) |
+| `--row-group-size-mb` | - | Target group size in MB/GB |
+| `--geoparquet-version` | 1.1 | Output version: `1.1`, `2.0`, or `parquet-geo-only` |
+| `--overwrite` | - | Overwrite existing output file |
+| `--verbose` | - | Verbose output |
+| `--show-sql` | - | Show generated SQL |
+
+### quadkey
+
+Sort by quadkey for spatial locality:
+
+```bash
+gpio sort quadkey input.parquet output.parquet [OPTIONS]
+```
+
 ### column
 
 Sort by any column(s):
@@ -33,3 +56,6 @@ Arguments:
 
 Options:
 - `--descending` - Sort in descending order
+- `--compression` - Compression codec
+- `--geoparquet-version` - Output GeoParquet version
+- `--overwrite` - Overwrite existing output

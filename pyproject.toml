@@ -37,7 +37,7 @@ dependencies = [
     "jsonschema>=4.0.0",  # Required for pystac validation
     "psutil>=5.9.0",
     "obstore>=0.8.2",
-    "aiohttp>=3.8.0",  # Required by fsspec for HTTP/HTTPS support
+    "aiohttp>=3.13.4",  # Required by fsspec for HTTP/HTTPS support (CVE-2026-* fixes)
     "s3fs>=2023.9.0",  # Required by fsspec for S3 support
     "geoarrow-pyarrow>=0.1.0",  # Required for CRS handling in Parquet native geo types
     "pyproj>=3.0.0",  # Required for CRS handling and PROJJSON generation
@@ -78,11 +78,14 @@ dev = [
     "import-linter>=2.0",
     "bandit>=1.7",
     "pip-audit>=2.7",
+    "menard @ git+https://github.com/nlebovits/menard.git",
+    "deptry>=0.25.0",
 ]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
+    "pymdown-extensions>=10.18",  # Fix: 10.17.1 has filename=None bug with pygments
 ]
 benchmark = [
     "geopandas>=0.14.0",
@@ -90,8 +93,13 @@ benchmark = [
     "fiona>=1.9.0",
 ]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["geoparquet_io"]
+# Include markdown skill files in wheel
+artifacts = ["geoparquet_io/skills/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -307,3 +315,19 @@ dev = [
     "pytest>=9.0.1",
     "pytest-cov>=7.0.0",
 ]
+
+[tool.deptry]
+# DEP002: unused dependencies - skip because optional/benchmark extras aren't always used
+ignore = ["DEP002"]
+# Exclude virtual env, tests, and benchmarks from analysis
+exclude = [".venv", "tests", "geoparquet_io/benchmarks"]
+# Known transitive dependencies that appear unused but are required
+per_rule_ignores = {DEP003 = ["tomli"]}
+
+[tool.menard]
+mode = "block"
+transitive_depth = 1
+enforce_symmetry = true
+require_links = ["geoparquet_io/**/*.py"]
+exempt = ["tests/**"]
+doc_paths = ["docs/**/*.md", "README.md", "CLAUDE.md", "geoparquet_io/skills/*.md"]

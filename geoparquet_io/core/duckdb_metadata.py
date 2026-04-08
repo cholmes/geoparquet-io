@@ -579,6 +579,51 @@ def get_row_group_metadata(parquet_file: str, con=None) -> list[dict]:
             connection.close()
 
 
+def get_compression_stats(parquet_file: str, con=None) -> list[dict]:
+    """Get per-column compression statistics from Parquet metadata.
+
+    Queries parquet_metadata() and aggregates compressed/uncompressed sizes
+    per column across all row groups.
+
+    Args:
+        parquet_file: Path or URL to the parquet file
+        con: Optional existing DuckDB connection
+
+    Returns:
+        List of dicts ordered by compressed_bytes descending, each with:
+        - column_name: Column path in schema
+        - compression: Compression codec name
+        - compressed_bytes: Total compressed size in bytes
+        - uncompressed_bytes: Total uncompressed size in bytes
+        - ratio: Compression ratio (uncompressed / compressed), rounded to 2 decimals
+    """
+    safe_url = _safe_url(parquet_file)
+    connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
+
+    try:
+        result = connection.execute(f"""
+            SELECT
+                path_in_schema AS column_name,
+                ANY_VALUE(compression) AS compression,
+                SUM(total_compressed_size)::BIGINT AS compressed_bytes,
+                SUM(total_uncompressed_size)::BIGINT AS uncompressed_bytes,
+                ROUND(
+                    SUM(total_uncompressed_size)::FLOAT
+                    / NULLIF(SUM(total_compressed_size), 0),
+                    2
+                ) AS ratio
+            FROM parquet_metadata('{safe_url}')
+            GROUP BY path_in_schema
+            ORDER BY compressed_bytes DESC
+        """).fetchall()
+
+        columns = [desc[0] for desc in connection.description]
+        return [dict(zip(columns, row, strict=True)) for row in result]
+    finally:
+        if should_close:
+            connection.close()
+
+
 def get_row_count(parquet_file: str, con=None) -> int:
     """Get total row count from file metadata."""
     metadata = get_file_metadata(parquet_file, con)
@@ -946,6 +991,46 @@ def get_row_group_stats_summary(parquet_file: str, con=None) -> dict:
             connection.close()
 
 
+def get_bloom_filter_info(parquet_file: str, con=None) -> list[dict]:
+    """
+    Get bloom filter information for all columns in a parquet file.
+
+    Queries parquet_metadata() for bloom_filter_offset and bloom_filter_length
+    to determine which columns have bloom filters and their coverage.
+
+    Returns list of dicts sorted by bloom filter presence (filtered columns first),
+    each containing:
+        - column_name: Name of the column
+        - row_groups: Total number of row groups
+        - row_groups_with_bloom_filter: Number of row groups with a bloom filter
+        - bloom_filter_coverage_pct: Percentage of row groups with bloom filters
+        - total_bloom_filter_bytes: Total size of bloom filter data in bytes
+    """
+    safe_url = _safe_url(parquet_file)
+    connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
+
+    try:
+        result = connection.execute(f"""
+            SELECT
+                path_in_schema AS column_name,
+                COUNT(*) AS row_groups,
+                COUNT(bloom_filter_offset) AS row_groups_with_bloom_filter,
+                ROUND(
+                    100.0 * COUNT(bloom_filter_offset) / COUNT(*), 1
+                ) AS bloom_filter_coverage_pct,
+                COALESCE(SUM(bloom_filter_length), 0) AS total_bloom_filter_bytes
+            FROM parquet_metadata('{safe_url}')
+            GROUP BY path_in_schema
+            ORDER BY row_groups_with_bloom_filter DESC, path_in_schema
+        """).fetchall()
+
+        columns = [desc[0] for desc in connection.description]
+        return [dict(zip(columns, row, strict=True)) for row in result]
+    finally:
+        if should_close:
+            connection.close()
+
+
 def get_column_stats(parquet_file: str, column_name: str, con=None) -> list[dict]:
     """
     Get per-row-group statistics for a specific column.
@@ -1162,6 +1247,63 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
 
     except Exception:
         return {}
+    finally:
+        if should_close:
+            connection.close()
+
+
+def get_per_row_group_native_geo_stats(
+    parquet_file: str, geometry_column: str | None = None, con=None
+) -> list[dict]:
+    """
+    Get per-row-group native Parquet geo_bbox statistics.
+
+    Works with GeoParquet 2.0 / parquet-geo-only files that store geo_bbox
+    in native Parquet column statistics (no separate bbox column needed).
+
+    Args:
+        parquet_file: Path to the parquet file
+        geometry_column: Name of the geometry column (auto-detected if None)
+        con: Optional existing DuckDB connection
+
+    Returns:
+        List of dicts with row_group_id, xmin, ymin, xmax, ymax (empty if no stats)
+    """
+    safe_url = _safe_url(parquet_file)
+    connection, should_close = _get_connection_for_file(parquet_file, con)
+
+    try:
+        # Auto-detect geometry column if not specified
+        if not geometry_column:
+            geometry_column = find_primary_geometry_column_duckdb(parquet_file, con)
+
+        result = connection.execute(f"""
+            SELECT
+                row_group_id,
+                geo_bbox.xmin as xmin,
+                geo_bbox.ymin as ymin,
+                geo_bbox.xmax as xmax,
+                geo_bbox.ymax as ymax
+            FROM parquet_metadata('{safe_url}')
+            WHERE path_in_schema = '{geometry_column}'
+              AND geo_bbox IS NOT NULL
+              AND geo_bbox.xmin IS NOT NULL
+            ORDER BY row_group_id
+        """).fetchall()
+
+        return [
+            {
+                "row_group_id": row[0],
+                "xmin": row[1],
+                "ymin": row[2],
+                "xmax": row[3],
+                "ymax": row[4],
+            }
+            for row in result
+        ]
+
+    except Exception:
+        return []
     finally:
         if should_close:
             connection.close()

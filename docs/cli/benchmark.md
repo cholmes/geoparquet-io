@@ -1,18 +1,27 @@
 # benchmark Command
 
-Benchmark GeoParquet conversion performance across different methods.
+Benchmark GeoParquet conversion and operation performance.
 
-## Quick Reference
+## Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `compare` | Compare converter performance on a single file |
+| `explain` | Show DuckDB query plan analysis (EXPLAIN ANALYZE) |
+| `suite` | Run comprehensive benchmark suite |
+| `report` | View and compare benchmark results |
+
+## gpio benchmark compare
+
+Compare converter performance on a single file.
+
+### Quick Reference
 
 ```bash
-gpio benchmark INPUT_FILE [OPTIONS]
+gpio benchmark compare INPUT_FILE [OPTIONS]
 ```
 
-## Description
-
-Tests available conversion methods (DuckDB, GeoPandas with Fiona/PyOGRIO, GDAL ogr2ogr) on an input geospatial file and reports time and memory usage.
-
-## Available Converters
+### Available Converters
 
 | Converter | Description | Install |
 |-----------|-------------|---------|
@@ -28,7 +37,7 @@ uv pip install geoparquet-io[benchmark]
 # or: pip install geoparquet-io[benchmark]
 ```
 
-## Options
+### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -40,39 +49,25 @@ uv pip install geoparquet-io[benchmark]
 | `--format table\|json` | table | Output format |
 | `--quiet` | - | Suppress progress output |
 
-## Examples
-
-### Basic Benchmark
+### Examples
 
 ```bash
-gpio benchmark input.geojson
+# Basic comparison
+gpio benchmark compare input.geojson
+
+# Specific converters with more iterations
+gpio benchmark compare input.shp --converters duckdb,geopandas_pyogrio --iterations 5
+
+# Save results and keep output files
+gpio benchmark compare input.gpkg --output-json results.json --keep-output ./output
+
+# JSON output
+gpio benchmark compare input.geojson --format json
 ```
 
-Runs all available converters with 3 iterations each.
+### Output
 
-### Specific Converters
-
-```bash
-gpio benchmark input.shp --converters duckdb,geopandas_pyogrio --iterations 5
-```
-
-### Save Results
-
-```bash
-gpio benchmark input.gpkg --output-json results.json --keep-output ./output
-```
-
-Saves JSON results and keeps the converted Parquet files.
-
-### JSON Output
-
-```bash
-gpio benchmark input.geojson --format json
-```
-
-## Output
-
-### Table Format (default)
+#### Table Format (default)
 
 ```
 ======================================================================
@@ -93,9 +88,97 @@ GeoPandas (PyOGRIO)       59.957 +/- 1.078   1196.7 +/- 0.0
 Fastest: DuckDB (29.751s)
 ```
 
-### JSON Format
+## gpio benchmark explain
 
-Includes environment info, file metadata, raw results per iteration, and aggregated statistics.
+Show DuckDB query plan analysis using EXPLAIN ANALYZE.
+
+### Quick Reference
+
+```bash
+gpio benchmark explain INPUT_FILE [OPTIONS]
+```
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--query, -q` | `SELECT *` | Custom SQL query (use `{file}` as placeholder) |
+| `--format` | table | Output format: `table` or `json` |
+| `--output, -o` | - | Save results to JSON file |
+
+### Examples
+
+```bash
+# Basic query plan analysis
+gpio benchmark explain input.parquet
+
+# JSON output
+gpio benchmark explain input.parquet --format json
+
+# Custom query with filter (to test pushdown)
+gpio benchmark explain input.parquet --query "SELECT * FROM read_parquet('{file}') WHERE id > 10"
+
+# Save to file
+gpio benchmark explain input.parquet --output plan.json
+```
+
+### Output
+
+The explain command shows:
+
+- **Operators**: Query plan operators with timing and row counts
+- **Filter pushdown**: Whether filters are pushed to the Parquet reader
+- **Row group pruning**: Whether row groups are skipped based on metadata
+
+#### Table Format (default)
+
+```
+======================================================================
+QUERY PLAN ANALYSIS
+======================================================================
+
+Operator                            Time (s)     Rows
+-----------------------------------------------------------
+PROJECTION                          0.000500     100
+  PARQUET_SCAN                      0.001000     100
+    File: input.parquet
+    Filters: id>10
+    Row Groups: 1/3
+
+Total time: 0.001500s
+
+Observations:
+  Filter pushdown: detected
+  Row group pruning: detected
+```
+
+## gpio benchmark suite
+
+Run comprehensive benchmark suite across multiple operations.
+
+```bash
+gpio benchmark suite [OPTIONS]
+```
+
+Runs a configurable suite of gpio operations (convert, add, sort, partition) on test files and generates detailed reports.
+
+## gpio benchmark report
+
+View and compare benchmark results from previous runs.
+
+```bash
+gpio benchmark report [OPTIONS] [RESULT_FILES]...
+```
+
+### Examples
+
+```bash
+# View single result file
+gpio benchmark report results.json
+
+# Compare multiple runs
+gpio benchmark report results/*.json
+```
 
 ## Interpreting Results
 

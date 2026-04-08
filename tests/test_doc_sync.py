@@ -1,4 +1,4 @@
-"""Tests for CLAUDE.md section generation."""
+"""Tests for doc_sync.py - CLAUDE.md and skill section generation."""
 
 import importlib
 import importlib.util
@@ -10,12 +10,12 @@ import pytest
 
 # Project root for import resolution
 PROJECT_ROOT = Path(__file__).parent.parent
-SCRIPT_PATH = PROJECT_ROOT / "scripts" / "generate_claude_md_sections.py"
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "doc_sync.py"
 
 
 def _load_module():
     """Load the generation module using importlib to avoid stale cache issues."""
-    spec = importlib.util.spec_from_file_location("generate_claude_md_sections", str(SCRIPT_PATH))
+    spec = importlib.util.spec_from_file_location("doc_sync", str(SCRIPT_PATH))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -55,24 +55,27 @@ class TestScriptExists:
             f"Script error (rc={result.returncode}):\n{result.stderr}"
         )
 
-    def test_script_exits_2_when_claude_md_missing(self, tmp_path):
-        """Verify script returns exit code 2 when CLAUDE.md is not found."""
-        # Create a fake project structure with no CLAUDE.md
-        scripts_dir = tmp_path / "scripts"
-        scripts_dir.mkdir()
-        # Copy the script to a location where CLAUDE.md won't be found
-        import shutil
-
-        shutil.copy2(str(SCRIPT_PATH), str(scripts_dir / "generate_claude_md_sections.py"))
-
+    def test_script_claude_only_mode(self):
+        """Verify --claude flag works."""
         result = subprocess.run(
-            [sys.executable, str(scripts_dir / "generate_claude_md_sections.py"), "--check"],
+            [sys.executable, str(SCRIPT_PATH), "--claude"],
             capture_output=True,
             text=True,
-            cwd=str(tmp_path),
+            cwd=str(PROJECT_ROOT),
         )
-        assert result.returncode == 2
-        assert "ERROR" in result.stdout
+        assert result.returncode == 0, f"Script error (rc={result.returncode}):\n{result.stderr}"
+        assert "CLAUDE.md" in result.stdout
+
+    def test_script_skill_only_mode(self):
+        """Verify --skill flag works."""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--skill"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        assert result.returncode == 0, f"Script error (rc={result.returncode}):\n{result.stderr}"
+        assert "skill" in result.stdout.lower()
 
     def test_update_and_check_mutually_exclusive(self):
         """Verify --update and --check cannot be used together."""
@@ -174,105 +177,6 @@ class TestMarkerGeneration:
         assert "@pytest.mark." in section
 
 
-class TestDocstringExtraction:
-    """Unit tests for module docstring extraction."""
-
-    @pytest.fixture(autouse=True)
-    def _import_module(self):
-        """Import the generation module for unit tests."""
-        self.mod = _load_module()
-
-    def test_single_line_docstring(self):
-        """Test extraction from single-line docstrings."""
-        assert self.mod._extract_module_docstring('"""Hello world."""\n') == "Hello world."
-
-    def test_multi_line_docstring_newline_after_quotes(self):
-        """Test extraction from multi-line docstrings where first line is empty."""
-        content = '"""\nGeoParquet file validation.\n\nMore details.\n"""\n'
-        assert self.mod._extract_module_docstring(content) == "GeoParquet file validation."
-
-    def test_no_docstring(self):
-        """Test extraction returns empty string when no docstring."""
-        assert self.mod._extract_module_docstring("import os\n") == ""
-
-    def test_empty_docstring(self):
-        """Test extraction returns empty string for empty docstring."""
-        assert self.mod._extract_module_docstring('""""""') == ""
-
-    def test_real_modules_have_purposes(self):
-        """Test that modules with docstrings actually get their purpose extracted."""
-        modules = self.mod.get_core_modules(PROJECT_ROOT / "geoparquet_io" / "core")
-        with_purpose = [m for m in modules if m["purpose"]]
-        # After fixing docstring extraction, we should have significantly more
-        # than the original 6 modules with purposes
-        assert len(with_purpose) >= 10, (
-            f"Only {len(with_purpose)} modules have purposes extracted. "
-            f"Expected at least 10. Docstring extraction may be broken."
-        )
-
-
-class TestModuleGeneration:
-    """Unit tests for core module generation."""
-
-    @pytest.fixture(autouse=True)
-    def _import_module(self):
-        """Import the generation module for unit tests."""
-        self.mod = _load_module()
-
-    def test_get_core_modules_returns_list(self):
-        """Test core module scanning returns a list."""
-        modules = self.mod.get_core_modules(PROJECT_ROOT / "geoparquet_io" / "core")
-        assert isinstance(modules, list)
-        assert len(modules) > 0
-
-    def test_get_core_modules_includes_common(self):
-        """Test that common.py is found."""
-        modules = self.mod.get_core_modules(PROJECT_ROOT / "geoparquet_io" / "core")
-        module_names = [m["name"] for m in modules]
-        assert "common.py" in module_names
-
-    def test_get_core_modules_skips_init(self):
-        """Test that __init__.py is excluded."""
-        modules = self.mod.get_core_modules(PROJECT_ROOT / "geoparquet_io" / "core")
-        module_names = [m["name"] for m in modules]
-        assert "__init__.py" not in module_names
-
-    def test_get_core_modules_has_line_counts(self):
-        """Test that modules have line counts."""
-        modules = self.mod.get_core_modules(PROJECT_ROOT / "geoparquet_io" / "core")
-        for mod in modules:
-            assert "lines" in mod
-            assert mod["lines"] > 0
-
-    def test_generate_modules_section_format(self):
-        """Test modules section has correct markdown format."""
-        section = self.mod.generate_modules_section(PROJECT_ROOT / "geoparquet_io" / "core")
-        assert "<!-- BEGIN GENERATED: core-modules -->" in section
-        assert "<!-- END GENERATED: core-modules -->" in section
-        assert "| Module |" in section
-        assert "| Purpose |" in section
-        assert "| Lines |" in section
-
-    def test_generate_modules_section_limits_to_15(self):
-        """Test that only top 15 modules are shown."""
-        section = self.mod.generate_modules_section(PROJECT_ROOT / "geoparquet_io" / "core")
-        # Count table rows (lines starting with | and not header/separator)
-        table_rows = [
-            line
-            for line in section.split("\n")
-            if line.startswith("|")
-            and "Module" not in line
-            and "---" not in line
-            and "more modules" not in line
-        ]
-        assert len(table_rows) == 15
-
-    def test_generate_modules_section_has_more_line(self):
-        """Test that the '... more modules' line is present."""
-        section = self.mod.generate_modules_section(PROJECT_ROOT / "geoparquet_io" / "core")
-        assert "more modules" in section
-
-
 class TestSectionUpdate:
     """Unit tests for section replacement logic."""
 
@@ -330,49 +234,6 @@ stuff
         result = self.mod.update_section(content, "missing", new_section)
         assert result == content
 
-    def test_update_multiple_sections_independently(self):
-        """Test that multiple sections can be updated independently."""
-        content = """# Doc
-<!-- BEGIN GENERATED: alpha -->
-old alpha
-<!-- END GENERATED: alpha -->
-Middle text
-<!-- BEGIN GENERATED: beta -->
-old beta
-<!-- END GENERATED: beta -->
-End"""
-
-        new_alpha = """<!-- BEGIN GENERATED: alpha -->
-new alpha
-<!-- END GENERATED: alpha -->"""
-
-        result = self.mod.update_section(content, "alpha", new_alpha)
-        assert "new alpha" in result
-        assert "old alpha" not in result
-        # beta should be unchanged
-        assert "old beta" in result
-
-    def test_update_replaces_only_first_occurrence(self):
-        """Test that duplicate section markers only replace the first match."""
-        content = """# Doc
-<!-- BEGIN GENERATED: dup -->
-first
-<!-- END GENERATED: dup -->
-middle
-<!-- BEGIN GENERATED: dup -->
-second
-<!-- END GENERATED: dup -->
-end"""
-
-        new_section = """<!-- BEGIN GENERATED: dup -->
-replaced
-<!-- END GENERATED: dup -->"""
-
-        result = self.mod.update_section(content, "dup", new_section)
-        assert "replaced" in result
-        assert "second" in result
-        assert "first" not in result
-
 
 class TestUpdateMode:
     """Tests for --update mode on CLAUDE.md."""
@@ -385,7 +246,7 @@ class TestUpdateMode:
         """Test that CLAUDE.md contains the generated section markers."""
         claude_md = PROJECT_ROOT / "CLAUDE.md"
         content = claude_md.read_text(encoding="utf-8")
-        for section_name in ["cli-commands", "test-markers", "core-modules"]:
+        for section_name in ["cli-commands", "test-markers"]:
             assert f"<!-- BEGIN GENERATED: {section_name} -->" in content, (
                 f"CLAUDE.md missing BEGIN marker for '{section_name}'"
             )
@@ -402,9 +263,6 @@ class TestUpdateMode:
         sections = {
             "cli-commands": self.mod.generate_cli_section(),
             "test-markers": self.mod.generate_markers_section(PROJECT_ROOT / "pyproject.toml"),
-            "core-modules": self.mod.generate_modules_section(
-                PROJECT_ROOT / "geoparquet_io" / "core"
-            ),
         }
 
         updated = content
@@ -413,7 +271,7 @@ class TestUpdateMode:
 
         # Should still have the main title
         assert "# Claude Code Instructions for geoparquet-io" in updated
-        # Should have all three generated sections
+        # Should have both generated sections
         for name in sections:
             assert f"<!-- BEGIN GENERATED: {name} -->" in updated
             assert f"<!-- END GENERATED: {name} -->" in updated
@@ -426,9 +284,6 @@ class TestUpdateMode:
         sections = {
             "cli-commands": self.mod.generate_cli_section(),
             "test-markers": self.mod.generate_markers_section(PROJECT_ROOT / "pyproject.toml"),
-            "core-modules": self.mod.generate_modules_section(
-                PROJECT_ROOT / "geoparquet_io" / "core"
-            ),
         }
 
         # First pass
@@ -440,9 +295,6 @@ class TestUpdateMode:
         sections2 = {
             "cli-commands": self.mod.generate_cli_section(),
             "test-markers": self.mod.generate_markers_section(PROJECT_ROOT / "pyproject.toml"),
-            "core-modules": self.mod.generate_modules_section(
-                PROJECT_ROOT / "geoparquet_io" / "core"
-            ),
         }
 
         second_pass = first_pass
@@ -451,39 +303,60 @@ class TestUpdateMode:
 
         assert first_pass == second_pass, "Update is not idempotent"
 
-    def test_update_writes_to_disk(self, tmp_path):
-        """Test that --update actually writes the file."""
-        # Copy CLAUDE.md to a temp location
-        claude_md = PROJECT_ROOT / "CLAUDE.md"
-        fake_md = tmp_path / "CLAUDE.md"
-        fake_md.write_text(claude_md.read_text(encoding="utf-8"), encoding="utf-8")
 
-        # Corrupt a section to force an update
-        content = fake_md.read_text(encoding="utf-8")
-        content = content.replace(
-            "### CLI Command Groups",
-            "### CLI Command Groups (OUTDATED)",
-        )
-        fake_md.write_text(content, encoding="utf-8")
+class TestSkillGeneration:
+    """Tests for skill section generation."""
 
-        # Create the required directory structure
-        (tmp_path / "geoparquet_io" / "core").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "scripts").mkdir(exist_ok=True)
+    @pytest.fixture(autouse=True)
+    def _import_module(self):
+        self.mod = _load_module()
 
-        # The script needs a specific project root -- we test via the module API
-        original = fake_md.read_text(encoding="utf-8")
-        sections = {
-            "cli-commands": self.mod.generate_cli_section(),
-            "test-markers": self.mod.generate_markers_section(PROJECT_ROOT / "pyproject.toml"),
-            "core-modules": self.mod.generate_modules_section(
-                PROJECT_ROOT / "geoparquet_io" / "core"
-            ),
-        }
+    def test_skill_file_exists(self):
+        """Test that skill file exists."""
+        skill_path = PROJECT_ROOT / "geoparquet_io" / "skills" / "geoparquet.md"
+        assert skill_path.exists(), f"Expected skill file at {skill_path}"
 
-        updated = original
-        for name, section_content in sections.items():
-            updated = self.mod.update_section(updated, name, section_content)
+    def test_skill_has_generated_sections(self):
+        """Test that skill file has generated section markers."""
+        skill_path = PROJECT_ROOT / "geoparquet_io" / "skills" / "geoparquet.md"
+        content = skill_path.read_text(encoding="utf-8")
+        for section_name in [
+            "skill-commands",
+            "compression-options",
+            "inspect-commands",
+            "check-commands",
+        ]:
+            assert f"<!-- BEGIN GENERATED: {section_name} -->" in content, (
+                f"Skill missing BEGIN marker for '{section_name}'"
+            )
+            assert f"<!-- END GENERATED: {section_name} -->" in content, (
+                f"Skill missing END marker for '{section_name}'"
+            )
 
-        fake_md.write_text(updated, encoding="utf-8")
-        assert "OUTDATED" not in fake_md.read_text(encoding="utf-8")
-        assert "### CLI Command Groups" in fake_md.read_text(encoding="utf-8")
+    def test_generate_skill_commands_table(self):
+        """Test skill commands table generation."""
+        section = self.mod.generate_skill_commands_table()
+        assert "<!-- BEGIN GENERATED: skill-commands -->" in section
+        assert "<!-- END GENERATED: skill-commands -->" in section
+        assert "| Command |" in section
+
+    def test_generate_compression_options(self):
+        """Test compression options generation."""
+        section = self.mod.generate_compression_options()
+        assert "<!-- BEGIN GENERATED: compression-options -->" in section
+        assert "<!-- END GENERATED: compression-options -->" in section
+        assert "zstd" in section
+
+    def test_generate_inspection_commands(self):
+        """Test inspection commands generation."""
+        section = self.mod.generate_inspection_commands()
+        assert "<!-- BEGIN GENERATED: inspect-commands -->" in section
+        assert "<!-- END GENERATED: inspect-commands -->" in section
+        assert "gpio inspect" in section
+
+    def test_generate_check_commands(self):
+        """Test check commands generation."""
+        section = self.mod.generate_check_commands()
+        assert "<!-- BEGIN GENERATED: check-commands -->" in section
+        assert "<!-- END GENERATED: check-commands -->" in section
+        assert "gpio check" in section

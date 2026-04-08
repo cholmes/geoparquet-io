@@ -33,157 +33,171 @@ repos:
         additional_dependencies:
           - tomli
 
-    # find unused code
-  - repo: https://github.com/jendrikseipp/vulture
-    rev: 'v2.14'
-    hooks:
-      - id: vulture
-
-    # monitor code complexity
-  - repo: https://github.com/rubik/xenon
-    rev: v0.9.0
-    hooks:
-    - id: xenon
-      args: ['--max-absolute=E', '--max-modules=D', '--max-average=C']
-
-    # enforce architecture: core must not import click, api must not import cli
+  # -------------------------------------------------------------------------
+  # Local hooks - commit stage (fast, <10s total)
+  # -------------------------------------------------------------------------
   - repo: local
     hooks:
-    - id: import-linter
-      name: import-linter
-      entry: uv run lint-imports
-      language: system
-      pass_filenames: false
-      always_run: true
-
-    # enforce logger usage over click.echo in core/
-  - repo: local
-    hooks:
-    - id: no-click-echo
-      name: no-click-echo
-      description: Use logger instead of click.echo in core/
-      entry: bash
-      args:
-        - -c
-        - |
-          if grep -rn "click\.echo" geoparquet_io/core/ --include="*.py" | grep -v "logging_config.py"; then
-            echo "ERROR: Use logger instead of click.echo in core/. See CLAUDE.md Logging section."
-            exit 1
-          fi
-      language: system
-      pass_filenames: false
-      types: [python]
-
-    - id: check-api-for-cli
-      name: check-api-for-cli
-      description: Remind to add Python API for new CLI commands
-      entry: bash
-      args:
-        - -c
-        - |
-          # This is a reminder hook - it doesn't fail, just warns
-          if git diff --cached --name-only | grep -q "geoparquet_io/cli/main.py"; then
-            echo "⚠️  Reminder: If you added new CLI commands, ensure you also:"
-            echo "   1. Added corresponding methods to api/table.py"
-            echo "   2. Added corresponding functions to api/ops.py"
-            echo "   3. Updated docs/api/python-api.md"
-            echo "   See CLAUDE.md Quick Checklist for details."
-          fi
-      language: system
-      pass_filenames: false
-      always_run: true
-
-    - id: validate-claude-md
-      name: validate-claude-md
-      description: Validate CLAUDE.md against the actual codebase
-      entry: uv run python scripts/validate_claude_md.py
-      language: system
-      files: ^(CLAUDE\.md|geoparquet_io/cli/main\.py|pyproject\.toml)$
-      pass_filenames: false
-
-    - id: check-commit-msg
-      name: check-commit-msg
-      description: Enforce imperative mood in commit messages (legacy - commitizen hook preferred)
-      entry: bash
-      args:
-        - -c
-        - |
-          # Works with worktrees - uses passed filename
-          commit_file="$1"
-          if [ -f "$commit_file" ]; then
-            first_line=$(head -n1 "$commit_file")
-            # Skip merge commits
-            if echo "$first_line" | grep -q "^Merge"; then
-              exit 0
+      # Block DuckDB 1.5 anti-patterns that cause crashes
+      - id: duckdb-antipatterns
+        name: duckdb-antipatterns
+        description: Block DuckDB patterns that crash in 1.5+
+        entry: bash
+        args:
+          - -c
+          - |
+            errors=0
+            # fetch_arrow_table() crashes with TransactionContext error
+            # Exclude comments (lines starting with #) and docstrings
+            if grep -rn "\.fetch_arrow_table()" geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "DuckDB 1.5"; then
+              echo "ERROR: Use .arrow().read_all() instead of .fetch_arrow_table() (crashes in DuckDB 1.5)"
+              errors=1
             fi
-            # Skip conventional commits (handled by commitizen hook)
-            if echo "$first_line" | grep -qE "^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\(.+\))?!?:"; then
-              exit 0
+            # to_arrow_table() also crashes
+            if grep -rn "\.to_arrow_table()" geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "DuckDB 1.5"; then
+              echo "ERROR: Use .arrow().read_all() instead of .to_arrow_table() (crashes in DuckDB 1.5)"
+              errors=1
             fi
-            # Check if starts with capital letter (imperative mood)
-            first_char=$(echo "$first_line" | cut -c1)
-            if [[ "$first_char" =~ [a-z] ]]; then
-              echo "Commit message should start with a capital letter (imperative mood)"
-              echo "   Bad:  'added new feature' or 'adding new feature'"
-              echo "   Good: 'Add new feature' or 'feat(cli): add new feature'"
-              echo "   See CLAUDE.md for commit message guidelines"
+            # TRY_CAST to GEOMETRY is broken - only match actual SQL, not comments
+            if grep -rn 'TRY_CAST.*AS GEOMETRY' geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "DuckDB 1.5" | grep -v "instead of"; then
+              echo "ERROR: Use TRY(ST_GeomFromText(x)) instead of TRY_CAST(x AS GEOMETRY)"
+              errors=1
+            fi
+            exit $errors
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      # enforce logger usage over click.echo in core/
+      - id: no-click-echo
+        name: no-click-echo
+        description: Use logger instead of click.echo in core/
+        entry: bash
+        args:
+          - -c
+          - |
+            if grep -rn "click\.echo" geoparquet_io/core/ --include="*.py" | grep -v "logging_config.py"; then
+              echo "ERROR: Use logger instead of click.echo in core/. See CLAUDE.md Logging section."
               exit 1
             fi
-          fi
-      language: system
-      pass_filenames: true
-      stages: [commit-msg]
+        language: system
+        pass_filenames: false
+        types: [python]
 
-    - id: fast-tests
-      name: fast-tests
-      description: Run fast tests (optional - enable with ENABLE_PRE_PUSH_TESTS=1)
-      entry: bash
-      args:
-        - -c
-        - |
-          # Only run if explicitly enabled via environment variable
-          if [ "$ENABLE_PRE_PUSH_TESTS" = "1" ]; then
-            echo "Running fast tests..."
-            uv run pytest -n auto -m "not slow and not network" --tb=short
-          else
-            # Silent pass - tests not enabled
-            exit 0
-          fi
-      language: system
-      pass_filenames: false
-      stages: [push]
-
-    - id: update-freshness
-      name: update-freshness
-      description: Update CLAUDE.md freshness markers when mapped files change
-      entry: uv run python scripts/update_freshness.py --update
-      language: system
-      files: ^(geoparquet_io/cli/main\.py|geoparquet_io/core/common\.py|geoparquet_io/cli/decorators\.py|pyproject\.toml)$
-      pass_filenames: false
-
-    - id: update-claude-md-sections
-      name: update-claude-md-sections
-      description: Auto-update generated CLAUDE.md sections
-      entry: uv run python scripts/generate_claude_md_sections.py --update
-      language: system
-      files: ^(geoparquet_io/cli/main\.py|pyproject\.toml|geoparquet_io/core/.*\.py)$
-      pass_filenames: false
-
-    - id: sync-dependencies
-      name: sync-dependencies
-      description: Auto-sync dependencies when pyproject.toml changes
-      entry: bash
-      args:
-        - -c
-        - |
-          # Check if pyproject.toml was changed
-          if git diff --cached --name-only | grep -q "^pyproject.toml$"; then
-            if command -v uv &> /dev/null; then
-              echo "📦 pyproject.toml changed, running uv sync..."
-              uv sync --all-extras
-              echo "✅ Dependencies synced"
+      - id: check-api-for-cli
+        name: check-api-for-cli
+        description: Remind to add Python API for new CLI commands
+        entry: bash
+        args:
+          - -c
+          - |
+            # This is a reminder hook - it doesn't fail, just warns
+            if git diff --cached --name-only | grep -q "geoparquet_io/cli/main.py"; then
+              echo "⚠️  Reminder: If you added new CLI commands, ensure you also:"
+              echo "   1. Added corresponding methods to api/table.py"
+              echo "   2. Added corresponding functions to api/ops.py"
+              echo "   3. Updated docs/api/python-api.md"
+              echo "   See CLAUDE.md Quick Checklist for details."
             fi
-          fi
-      language: system
-      pass_filenames: false
-      always_run: true
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: validate-claude-md
+        name: validate-claude-md
+        description: Validate CLAUDE.md against the actual codebase
+        entry: uv run python scripts/validate_claude_md.py
+        language: system
+        files: ^(CLAUDE\.md|geoparquet_io/cli/main\.py|pyproject\.toml)$
+        pass_filenames: false
+
+      - id: doc-sync
+        name: doc-sync
+        description: Auto-update generated doc sections (CLAUDE.md, SKILL.md, contributing.md)
+        entry: uv run python scripts/doc_sync.py --update
+        language: system
+        files: ^(geoparquet_io/cli/main\.py|geoparquet_io/cli/decorators\.py|pyproject\.toml|geoparquet_io/core/.*\.py|scripts/doc_sync\.py|docs/contributing\.md)$
+        pass_filenames: false
+
+      - id: menard-check
+        name: menard-check
+        description: Check if documentation is stale relative to code changes
+        entry: uv run menard check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: sync-dependencies
+        name: sync-dependencies
+        description: Auto-sync dependencies when pyproject.toml changes
+        entry: bash
+        args:
+          - -c
+          - |
+            # Check if pyproject.toml was changed
+            if git diff --cached --name-only | grep -q "^pyproject.toml$"; then
+              if command -v uv &> /dev/null; then
+                echo "📦 pyproject.toml changed, running uv sync..."
+                uv sync --all-extras
+                echo "✅ Dependencies synced"
+              fi
+            fi
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  # -------------------------------------------------------------------------
+  # Pre-push hooks (thorough checks, can be slower)
+  # -------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: deptry
+        name: deptry
+        description: Check for dependency issues
+        entry: uv run deptry .
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: vulture
+        name: vulture
+        description: Find unused code
+        entry: uv run vulture geoparquet_io/ --min-confidence 80
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: xenon
+        name: xenon
+        description: Monitor code complexity
+        entry: uv run xenon --max-absolute=E --max-modules=D --max-average=C geoparquet_io/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: import-linter
+        name: import-linter
+        description: Enforce architecture (core must not import click, api must not import cli)
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: fast-tests
+        name: fast-tests
+        description: Run fast tests (optional - enable with ENABLE_PRE_PUSH_TESTS=1)
+        entry: bash
+        args:
+          - -c
+          - |
+            # Only run if explicitly enabled via environment variable
+            if [ "$ENABLE_PRE_PUSH_TESTS" = "1" ]; then
+              echo "Running fast tests..."
+              uv run pytest -n auto -m "not slow and not network" --tb=short
+            else
+              # Silent pass - tests not enabled
+              exit 0
+            fi
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

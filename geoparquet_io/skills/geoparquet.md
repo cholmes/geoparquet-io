@@ -3,6 +3,8 @@ name: GeoParquet
 description: Convert spatial data (GeoJSON, Shapefile, etc.) to optimized GeoParquet using the gpio CLI. Analyzes files, recommends settings, and publishes to cloud storage.
 ---
 
+<!-- freshness: last-verified: 2026-04-02, maps-to: geoparquet_io/cli/main.py -->
+
 # GeoParquet Skill
 
 You are helping a user work with spatial data and publish optimized GeoParquet files. You have access to the `gpio` CLI tool (geoparquet-io) for all GeoParquet operations.
@@ -22,40 +24,58 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 
 ## Available Commands
 
-### Inspection & Analysis
+<!-- BEGIN GENERATED: skill-commands -->
+### Command Reference
+
+| Command | Subcommands | Description |
+|---------|-------------|-------------|
+| `gpio add` | a5, admin-divisions, bbox, bbox-metadata, h3, kdtree, quadkey, s2 | Commands for enhancing GeoParquet files in various ways. |
+| `gpio benchmark` | compare, explain, report, suite | Benchmark GeoParquet performance. Commands for measuring... |
+| `gpio check` | all, bbox, compression, optimization, row-group, spatial, spec, stac | Check GeoParquet files for best practices. By default, runs... |
+| `gpio convert` | csv, flatgeobuf, geojson, geopackage, geoparquet, reproject, shapefile | Convert between formats and coordinate systems.... |
+| `gpio extract` | arcgis, bigquery, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
+| `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
+| `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
+| `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
+| `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
+| `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
+<!-- END GENERATED: skill-commands -->
+
+---
+
+<!-- BEGIN GENERATED: inspect-commands -->
+### Inspection Commands
 
 ```bash
-# Quick overview of a GeoParquet file
-gpio inspect <file>
-
-# Preview first/last rows
-gpio inspect head <file> --count 5
-gpio inspect tail <file> --count 5
-
-# Detailed statistics
-gpio inspect stats <file>
-
-# Full metadata (GeoParquet spec, Parquet structure)
-gpio inspect meta <file>
-gpio inspect meta <file> --json  # Machine-readable
+gpio inspect head <file>  # Show first N rows of data (default: 10).
+gpio inspect layers <file>  # List layers in multi-layer formats (GeoP
+gpio inspect meta <file>  # Show comprehensive metadata (Parquet, Ge
+gpio inspect stats <file>  # Show column statistics (nulls, min/max,
+gpio inspect summary <file>  # Show quick metadata summary (default).
+gpio inspect tail <file>  # Show last N rows of data (default: 10).
 ```
+<!-- END GENERATED: inspect-commands -->
 
-### Validation & Best Practices
+<!-- BEGIN GENERATED: check-commands -->
+### Validation Commands
 
 ```bash
-# Run all checks (compression, bbox, row groups, spatial order, spec)
+# Run all checks
 gpio check all <file>
 
 # Individual checks
-gpio check compression <file>
 gpio check bbox <file>
-gpio check spatial <file>
+gpio check compression <file>
+gpio check optimization <file>
 gpio check row-group <file>
+gpio check spatial <file>
 gpio check spec <file>
+gpio check stac <file>
 
 # Auto-fix issues
-gpio check all <file> --fix --output <fixed_file>
+gpio check all <file> --fix --fix-output <fixed_file>
 ```
+<!-- END GENERATED: check-commands -->
 
 ### Format Conversion
 
@@ -80,19 +100,19 @@ gpio convert reproject <input> <output> --target-crs EPSG:4326
 
 ```bash
 # Extract by bounding box
-gpio extract <input> <output> --bbox "minx,miny,maxx,maxy"
+gpio extract geoparquet <input> <output> --bbox "minx,miny,maxx,maxy"
 
 # Extract specific columns
-gpio extract <input> <output> --columns "id,name,geometry"
+gpio extract geoparquet <input> <output> --include-cols "id,name,geometry"
 
 # Filter with SQL WHERE clause
-gpio extract <input> <output> --where "population > 10000"
+gpio extract geoparquet <input> <output> --where "population > 10000"
 
 # Limit rows
-gpio extract <input> <output> --limit 1000
+gpio extract geoparquet <input> <output> --limit 1000
 
 # Combine filters
-gpio extract <input> <output> --bbox "-122.5,37.5,-122.0,38.0" --where "type='building'"
+gpio extract geoparquet <input> <output> --bbox "-122.5,37.5,-122.0,38.0" --where "type='building'"
 ```
 
 ### Sorting (Spatial Optimization)
@@ -117,11 +137,14 @@ gpio add bbox <input> <output>
 # Add bbox covering metadata to existing bbox column
 gpio add bbox-metadata <file>
 
-# Add country codes based on geometry location
-gpio add country-codes <input> <output>
+# Add admin division columns (country, state, etc.) based on geometry location
+gpio add admin-divisions <input> <output>
 
 # Add quadkey column
 gpio add quadkey <input> <output> --resolution 12
+
+# Add H3 index column
+gpio add h3 <input> <output> --resolution 7
 ```
 
 ### Partitioning (For Large Datasets)
@@ -134,10 +157,13 @@ gpio partition admin <input> <output_dir>
 gpio partition string <input> <output_dir> --column "region"
 
 # Partition using KD-tree (balanced spatial splits)
-gpio partition kdtree <input> <output_dir> --max-rows-per-file 1000000
+gpio partition kdtree <input> <output_dir> --partitions 16
 
 # Partition by quadkey
 gpio partition quadkey <input> <output_dir> --resolution 6
+
+# Partition by H3 index
+gpio partition h3 <input> <output_dir> --resolution 4
 ```
 
 ### Publishing
@@ -158,15 +184,18 @@ gpio publish upload <local_dir> s3://bucket/path/ --recursive
 
 ---
 
-## Compression Options
+<!-- freshness: last-verified: 2026-04-02, maps-to: geoparquet_io/cli/decorators.py -->
+<!-- BEGIN GENERATED: compression-options -->
+### Compression Options
 
-Most commands accept these options:
+Most write commands accept these options:
 
-```bash
---compression zstd|snappy|gzip|lz4|brotli|none  # Default: zstd
---compression-level 1-22                         # For zstd (default: 3)
---row-group-size 100000                          # Rows per group (default: varies)
-```
+| Option | Values | Default |
+|--------|--------|---------|
+| `--compression` | zstd, snappy, gzip, lz4, brotli, uncompressed | zstd |
+| `--compression-level` | 1-22 (for zstd) | 15 |
+| `--row-group-size` | Number of rows per group | varies by command |
+<!-- END GENERATED: compression-options -->
 
 **Recommendations:**
 - `zstd` (default): Best balance of compression ratio and speed
@@ -185,7 +214,7 @@ First, determine what you're working with:
 
 - **URL to remote file**: Download it first or access directly if gpio supports it
 - **Local file**: Work with it directly
-- **Supported formats**: GeoJSON, Shapefile (.shp), FlatGeobuf (.fgb), GeoPackage (.gpkg), CSV with geometry, existing Parquet
+- **Supported formats**: GeoJSON, Shapefile (.shp), FlatGeobuf (.fgb), GeoPackage (.gpkg), FileGDB (.gdb), CSV with geometry, existing Parquet
 
 For URLs, you may need to download first:
 ```bash
@@ -198,11 +227,12 @@ Before converting, understand what you have:
 
 ```bash
 # If already GeoParquet, inspect directly
-gpio inspect <file>
+gpio inspect summary <file>
 gpio inspect stats <file>
 
-# For other formats, you can often inspect with DuckDB or convert first
-# then inspect the result
+# For multi-layer formats (GeoPackage, FileGDB)
+gpio inspect layers <file>
+gpio convert geoparquet <input> <output> --layer <layer_name>
 ```
 
 Key things to report to the user:
@@ -264,7 +294,7 @@ gpio partition admin <input> ./partitioned/
 gpio partition quadkey <input> ./partitioned/ --resolution 6
 
 # By kdtree (balanced file sizes)
-gpio partition kdtree <input> ./partitioned/ --max-rows-per-file 500000
+gpio partition kdtree <input> ./partitioned/ --partitions 8
 ```
 
 ### Step 7: Generate STAC Metadata
@@ -299,13 +329,13 @@ gpio can read directly from cloud storage:
 
 ```bash
 # Public S3 files (no auth needed)
-gpio inspect s3://bucket/public-file.parquet
+gpio inspect summary s3://bucket/public-file.parquet
 
 # Private S3 files (uses ~/.aws/credentials)
-gpio inspect s3://bucket/private-file.parquet --profile my-profile
+gpio inspect summary s3://bucket/private-file.parquet --aws-profile my-profile
 
 # HTTP/HTTPS URLs
-gpio inspect https://example.com/data.parquet
+gpio inspect summary https://example.com/data.parquet
 ```
 
 For S3 writes, ensure AWS credentials are configured:

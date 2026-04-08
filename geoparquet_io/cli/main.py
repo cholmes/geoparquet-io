@@ -701,6 +701,38 @@ def check_spatial(
                     )
                 )
 
+        # Pushdown readiness metric
+        if show_output:
+            from geoparquet_io.core.check_spatial_order import check_spatial_pushdown_readiness
+
+            try:
+                pushdown = check_spatial_pushdown_readiness(
+                    file_path, verbose=verbose and show_output
+                )
+            except Exception as e:
+                if verbose:
+                    click.echo(f"  Debug: Pushdown check failed: {e}", err=True)
+                pushdown = {"has_geo_bbox": False}
+
+            click.echo("\nSpatial Filter Pushdown Readiness:")
+            if pushdown.get("has_geo_bbox"):
+                skip_pct = pushdown["estimated_skip_rate"] * 100
+                click.echo(f"  Row groups: {pushdown['num_row_groups']}")
+                click.echo(f"  Estimated skip rate: {skip_pct:.0f}%")
+                click.echo(f"  Avg bbox area ratio: {pushdown['avg_bbox_area_ratio']:.2f}")
+                if pushdown["passed"]:
+                    click.echo(click.style("  ✓ Good pushdown readiness", fg="green"))
+                else:
+                    click.echo(click.style("  ⚠️  Low pushdown efficiency", fg="yellow"))
+            else:
+                click.echo(
+                    click.style(
+                        "  ⚠️  No geo_bbox column found. "
+                        "Add bbox with 'gpio add bbox' for pushdown support.",
+                        fg="yellow",
+                    )
+                )
+
         # Record result for summary
         runner.record_result(file_path, result)
 
@@ -2056,6 +2088,12 @@ def inspect_stats(parquet_file, json_output, markdown_output, verbose):
     default=1,
     help="Number of row groups to display (default: 1)",
 )
+@click.option(
+    "--geo-stats",
+    "meta_geo_stats",
+    is_flag=True,
+    help="Show per-row-group geo_bbox statistics",
+)
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting")
 @verbose_option
 def inspect_meta(
@@ -2064,6 +2102,7 @@ def inspect_meta(
     meta_parquet,
     meta_parquet_geo,
     meta_row_groups,
+    meta_geo_stats,
     json_output,
     verbose,
 ):
@@ -2076,6 +2115,7 @@ def inspect_meta(
         gpio inspect meta data.parquet --geo          # GeoParquet 'geo' key only
         gpio inspect meta data.parquet --parquet      # Parquet file metadata only
         gpio inspect meta data.parquet --row-groups 5 # Show 5 row groups
+        gpio inspect meta data.parquet --geo-stats    # Per-row-group bbox stats
     """
     from geoparquet_io.core.common import (
         setup_aws_profile_if_needed,
@@ -2094,9 +2134,55 @@ def inspect_meta(
             meta_parquet_geo,
             meta_row_groups,
             json_output,
+            meta_geo_stats,
         )
     except Exception as e:
         raise _friendly_parquet_error(e, parquet_file) from e
+
+
+@inspect.command(name="layers", cls=GlobAwareCommand)
+@click.argument("input_file")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting")
+@verbose_option
+def inspect_layers(input_file, json_output, verbose):
+    """List layers in multi-layer formats (GeoPackage, FileGDB).
+
+    Returns layer names for files with 2+ layers. Single-layer files
+    (GeoJSON, Shapefile, Parquet) or multi-layer files with only 1 layer
+    return nothing.
+
+    \b
+    Examples:
+        gpio inspect layers multi.gpkg          # List layers in GeoPackage
+        gpio inspect layers data.gdb            # List layers in FileGDB
+        gpio inspect layers multi.gpkg --json   # JSON output for scripting
+    """
+    import json
+
+    from geoparquet_io.core.layers import list_layers
+
+    try:
+        layers = list_layers(input_file)
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    if layers is None:
+        if json_output:
+            click.echo(json.dumps({"layers": None, "count": 0}))
+        else:
+            click.echo("No layers found (single-layer format or file with 0-1 layers)")
+        return
+
+    if json_output:
+        click.echo(json.dumps({"layers": layers, "count": len(layers)}))
+    else:
+        click.echo(f"Found {len(layers)} layers:")
+        for layer in layers:
+            click.echo(f"  - {layer}")
 
 
 # Extract commands group
@@ -2941,9 +3027,12 @@ def _handle_meta_display(
     parquet_geo: bool,
     row_groups: int,
     json_output: bool,
+    geo_stats: bool = False,
 ) -> None:
     """CLI wrapper for metadata display - delegates to core function."""
-    display_metadata(parquet_file, parquet, geoparquet, parquet_geo, row_groups, json_output)
+    display_metadata(
+        parquet_file, parquet, geoparquet, parquet_geo, row_groups, json_output, geo_stats
+    )
 
 
 # Sort commands group
@@ -5504,6 +5593,130 @@ def check_spec(
         raise click.ClickException(str(e)) from e
 
 
+@check.command(name="optimization", cls=GlobAwareCommand)
+@click.argument("parquet_file")
+@click.option("--verbose", is_flag=True, help="Print detailed diagnostics")
+@check_partition_options
+def check_optimization_cmd(
+    parquet_file,
+    verbose,
+    check_all_files,
+    check_sample,
+):
+    """Check combined spatial query optimization.
+
+    Evaluates five factors that affect spatial query performance:
+
+    \b
+    1. Native geo types (v2.0 or parquet-geo-only)
+    2. Per-row-group geo bbox statistics
+    3. Spatial sorting (Hilbert or similar)
+    4. Row group size (10k-50k rows optimal)
+    5. ZSTD compression on geometry column
+
+    \b
+    Scoring:
+      5/5  Fully optimized for spatial queries
+      3-4  Partially optimized, improvements possible
+      0-2  Not optimized for spatial queries
+
+    \b
+    Examples:
+      gpio check optimization data.parquet
+      gpio check optimization data.parquet --verbose
+    """
+    from geoparquet_io.core.check_optimization import check_optimization
+    from geoparquet_io.core.partition_reader import get_files_to_check
+
+    configure_verbose(verbose)
+
+    files_to_check, notice = get_files_to_check(
+        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
+    )
+
+    if notice:
+        click.echo(click.style(f"\U0001f4c1 {notice}", fg="cyan"))
+
+    if not files_to_check:
+        click.echo(click.style("No parquet files found", fg="red"))
+        return
+
+    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
+
+    for file_path in files_to_check:
+        runner.start_file(file_path)
+
+        show_output = runner.verbose or not runner.is_multi_file
+        quiet = not show_output
+
+        result = check_optimization(
+            file_path, verbose=verbose and show_output, return_results=True, quiet=quiet
+        )
+
+        runner.record_result(file_path, result)
+
+    runner.print_summary()
+
+
+# Skills command (for LLM integration)
+@cli.command()
+@click.option("--show", is_flag=True, help="Print skill content to stdout")
+@click.option("--copy", "copy_to", type=click.Path(), help="Copy skill to directory")
+@click.option("--name", default="geoparquet", help="Skill name (default: geoparquet)")
+def skills(show: bool, copy_to: str | None, name: str):
+    """List and access LLM skills for gpio.
+
+    Skills are markdown files that help LLMs (ChatGPT, Claude, etc.) work
+    effectively with the gpio CLI tool.
+
+    \b
+    Examples:
+      gpio skills              # List available skills
+      gpio skills --show       # Print skill to stdout (for piping to LLM)
+      gpio skills --copy .     # Copy skill to current directory
+
+    \b
+    Using with LLMs:
+      # Paste skill content into a conversation
+      gpio skills --show | pbcopy
+
+      # Or reference the installed file
+      gpio skills  # Shows file path
+    """
+    from geoparquet_io.skills import get_skill_content, get_skill_path, list_skills
+
+    try:
+        if show:
+            # Print content to stdout
+            click.echo(get_skill_content(name))
+        elif copy_to:
+            # Copy skill to directory
+            from pathlib import Path
+            from shutil import copy2
+
+            dest_dir = Path(copy_to)
+            if not dest_dir.is_dir():
+                raise click.ClickException(f"Not a directory: {copy_to}")
+
+            src = get_skill_path(name)
+            dest = dest_dir / f"{name}.md"
+            copy2(src, dest)
+            click.echo(f"Copied skill to: {dest}")
+        else:
+            # List available skills
+            available = list_skills()
+            click.echo("Available gpio skills:\n")
+            for skill_name in available:
+                skill_path = get_skill_path(skill_name)
+                click.echo(f"  {skill_name}")
+                click.echo(f"    Path: {skill_path}")
+            click.echo("\nUsage:")
+            click.echo("  gpio skills --show       # Print to stdout")
+            click.echo("  gpio skills --copy .     # Copy to current directory")
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e)) from e
+
+
 # Benchmark commands group
 @cli.group()
 @click.pass_context
@@ -5516,6 +5729,7 @@ def benchmark(ctx):
     Subcommands:
       suite    Run comprehensive benchmark suite
       compare  Compare converter performance on a single file
+      explain  Show DuckDB query plan analysis (EXPLAIN ANALYZE)
       report   View and compare benchmark results
     """
     ctx.ensure_object(dict)
@@ -5737,6 +5951,73 @@ def benchmark_suite(
     if output:
         Path(output).write_text(result.to_json())
         success(f"Results saved to {output}")
+
+
+@benchmark.command("explain")
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option(
+    "--query",
+    "-q",
+    type=str,
+    default=None,
+    help="Custom SQL query. Use {file} as placeholder for file path.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format (default: table)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Save results to JSON file",
+)
+@verbose_option
+def benchmark_explain(
+    input_file,
+    query,
+    output_format,
+    output,
+    verbose,
+):
+    """
+    Show DuckDB query plan analysis (EXPLAIN ANALYZE).
+
+    Runs EXPLAIN ANALYZE on a DuckDB query against a GeoParquet file to reveal
+    per-operator timing, cardinality, filter pushdown, and row group pruning.
+
+    \b
+    Example:
+        gpio benchmark explain input.parquet
+        gpio benchmark explain input.parquet --format json
+        gpio benchmark explain input.parquet --query "SELECT * FROM read_parquet('{file}') WHERE id > 10"
+        gpio benchmark explain input.parquet --output plan.json
+    """
+    configure_verbose(verbose)
+    from geoparquet_io.core.benchmark import (
+        explain_analyze,
+        format_explain_output,
+    )
+    from geoparquet_io.core.logging_config import progress
+
+    result = explain_analyze(
+        file_path=input_file,
+        query=query,
+    )
+
+    formatted = format_explain_output(result, output_format=output_format)
+    progress(formatted)
+
+    if output:
+        from pathlib import Path
+
+        json_output = format_explain_output(result, output_format="json")
+        Path(output).write_text(json_output)
+        progress(f"\nResults saved to: {output}")
 
 
 @benchmark.command("report")

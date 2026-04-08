@@ -908,6 +908,30 @@ def _create_stats_table(
     return stats_table
 
 
+def _create_compression_stats_table(compression_stats: list[dict]) -> Table:
+    """Create the per-column compression ratios table."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Column", style="white")
+    table.add_column("Compression", style="cyan")
+    table.add_column("Compressed", style="yellow", justify="right")
+    table.add_column("Uncompressed", style="blue", justify="right")
+    table.add_column("Ratio", style="green", justify="right")
+
+    for entry in compression_stats:
+        compressed = format_size(entry["compressed_bytes"])
+        uncompressed = format_size(entry["uncompressed_bytes"])
+        ratio = f"{entry['ratio']}x" if entry["ratio"] is not None else "-"
+        table.add_row(
+            entry["column_name"],
+            entry["compression"],
+            compressed,
+            uncompressed,
+            ratio,
+        )
+
+    return table
+
+
 def format_terminal_output(
     file_info: dict[str, Any],
     geo_info: dict[str, Any],
@@ -915,6 +939,7 @@ def format_terminal_output(
     preview_table: pa.Table | None = None,
     preview_mode: str | None = None,
     stats: dict[str, dict[str, Any]] | None = None,
+    compression_stats: list[dict] | None = None,
 ) -> None:
     """
     Format and print terminal output using Rich.
@@ -926,6 +951,7 @@ def format_terminal_output(
         preview_table: Optional preview data table
         preview_mode: "head" or "tail" (when preview_table is provided)
         stats: Optional statistics dict
+        compression_stats: Optional per-column compression ratios
     """
     console = Console()
 
@@ -972,6 +998,12 @@ def format_terminal_output(
         console.print("Statistics:")
         console.print(_create_stats_table(columns_info, stats))
 
+    # Compression stats table
+    if compression_stats:
+        console.print()
+        console.print("Compression Ratios:")
+        console.print(_create_compression_stats_table(compression_stats))
+
     console.print()
 
 
@@ -981,6 +1013,7 @@ def format_json_output(
     columns_info: list[dict[str, Any]],
     preview_table: pa.Table | None = None,
     stats: dict[str, dict[str, Any]] | None = None,
+    compression_stats: list[dict] | None = None,
 ) -> str:
     """
     Format output as JSON.
@@ -991,6 +1024,7 @@ def format_json_output(
         columns_info: Column information list
         preview_table: Optional preview data table
         stats: Optional statistics dict
+        compression_stats: Optional per-column compression ratios
 
     Returns:
         str: JSON string
@@ -1036,6 +1070,12 @@ def format_json_output(
         output["statistics"] = stats
     else:
         output["statistics"] = None
+
+    # Add compression stats if available
+    if compression_stats:
+        output["compression_stats"] = compression_stats
+    else:
+        output["compression_stats"] = None
 
     return json.dumps(output, indent=2)
 
@@ -1381,6 +1421,7 @@ def format_markdown_output(
     preview_table: pa.Table | None = None,
     preview_mode: str | None = None,
     stats: dict[str, dict[str, Any]] | None = None,
+    compression_stats: list[dict] | None = None,
 ) -> str:
     """
     Format output as Markdown for README files or documentation.
@@ -1392,6 +1433,7 @@ def format_markdown_output(
         preview_table: Optional preview data table
         preview_mode: "head" or "tail" (when preview_table is provided)
         stats: Optional statistics dict
+        compression_stats: Optional per-column compression ratios
 
     Returns:
         str: Markdown string
@@ -1542,6 +1584,24 @@ def format_markdown_output(
                 max_str = max_str[:17] + "..."
 
             lines.append(f"| {col_name} | {nulls:,} | {min_str} | {max_str} | {unique_str} |")
+
+        lines.append("")
+
+    # Compression stats table
+    if compression_stats:
+        lines.append("### Compression Ratios")
+        lines.append("")
+        lines.append("| Column | Compression | Compressed | Uncompressed | Ratio |")
+        lines.append("|--------|-------------|------------|--------------|-------|")
+
+        for entry in compression_stats:
+            compressed = format_size(entry["compressed_bytes"])
+            uncompressed = format_size(entry["uncompressed_bytes"])
+            ratio = f"{entry['ratio']}x" if entry["ratio"] is not None else "-"
+            lines.append(
+                f"| {entry['column_name']} | {entry['compression']}"
+                f" | {compressed} | {uncompressed} | {ratio} |"
+            )
 
         lines.append("")
 

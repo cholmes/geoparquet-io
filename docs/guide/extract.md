@@ -431,7 +431,7 @@ gpio extract s3://my-bucket/data.parquet output.parquet \
 
 # Extract from S3 with specific profile
 gpio extract s3://my-bucket/data.parquet output.parquet \
-  --profile my-aws-profile \
+  --aws-profile my-aws-profile \
   --bbox 0,0,10,10
 ```
 

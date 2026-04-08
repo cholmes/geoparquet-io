@@ -47,7 +47,7 @@ pip install geoparquet-io
 
 ```bash
 # Option 1: Use AWS profile
-gpio inspect s3://bucket/file.parquet --profile my-profile
+gpio inspect s3://bucket/file.parquet --aws-profile my-profile
 
 # Option 2: Set environment variables
 export AWS_ACCESS_KEY_ID=your_key

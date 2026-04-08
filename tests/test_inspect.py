@@ -841,6 +841,74 @@ class TestInspectSubcommands:
 
         assert result.exit_code == 0
 
+    def test_inspect_meta_geo_stats_flag(self, runner, test_file):
+        """Test meta subcommand with --geo-stats flag shows per-RG bbox table."""
+        result = runner.invoke(cli, ["inspect", "meta", test_file, "--geo-stats"])
+
+        assert result.exit_code == 0
+        assert "Row Group" in result.output
+        assert "xmin" in result.output
+        assert "ymin" in result.output
+        assert "xmax" in result.output
+        assert "ymax" in result.output
+
+    def test_inspect_meta_geo_stats_json(self, runner, test_file):
+        """Test meta subcommand with --geo-stats and --json outputs valid JSON."""
+        result = runner.invoke(cli, ["inspect", "meta", test_file, "--geo-stats", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "row_group_geo_stats" in data
+        assert isinstance(data["row_group_geo_stats"], list)
+        if len(data["row_group_geo_stats"]) > 0:
+            first = data["row_group_geo_stats"][0]
+            assert "row_group_id" in first
+            assert "xmin" in first
+            assert "ymin" in first
+            assert "xmax" in first
+            assert "ymax" in first
+
+    def test_inspect_meta_geo_stats_no_bbox(self, runner):
+        """Test --geo-stats on file without bbox/native stats shows informative message."""
+        no_bbox_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+        result = runner.invoke(cli, ["inspect", "meta", no_bbox_file, "--geo-stats"])
+
+        assert result.exit_code == 0
+        # Should indicate no geo stats available (native or bbox column)
+        assert "No geo statistics found" in result.output or "no geo" in result.output.lower()
+
+    def test_inspect_meta_without_geo_stats_unchanged(self, runner, test_file):
+        """Test that without --geo-stats the output does not include the geo stats table."""
+        result = runner.invoke(cli, ["inspect", "meta", test_file])
+
+        assert result.exit_code == 0
+        # The dedicated geo stats table header should not appear without the flag
+        assert "Per-Row-Group geo_bbox Statistics" not in result.output
+
+    def test_inspect_meta_geo_stats_python_api(self, test_file):
+        """Test Python API for getting per-row-group geo_bbox stats."""
+        from geoparquet_io.api.ops import get_row_group_geo_stats
+
+        stats = get_row_group_geo_stats(test_file)
+        assert isinstance(stats, list)
+        assert len(stats) > 0
+        first = stats[0]
+        assert "row_group_id" in first
+        assert "num_rows" in first
+        assert "xmin" in first
+        assert "ymin" in first
+        assert "xmax" in first
+        assert "ymax" in first
+        assert first["num_rows"] > 0
+
+    def test_inspect_meta_geo_stats_python_api_no_bbox(self):
+        """Test Python API returns empty list for files without bbox."""
+        from geoparquet_io.api.ops import get_row_group_geo_stats
+
+        no_bbox_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+        stats = get_row_group_geo_stats(no_bbox_file)
+        assert stats == []
+
     def test_inspect_stats_subcommand_markdown(self, runner, test_file):
         """Test stats subcommand with markdown output."""
         result = runner.invoke(cli, ["inspect", "stats", test_file, "--markdown"])

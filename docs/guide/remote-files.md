@@ -10,7 +10,7 @@ gpio uses different libraries for reads and writes:
 
 - **Writes**: All commands write to remote destinations using obstore. When you specify a remote output path, gpio writes to a local temp file first, then uploads via obstore automatically.
 
-The `--profile` flag is available on all commands for AWS authentication.
+The `--aws-profile` flag is available on all commands for AWS authentication.
 
 ### gpio publish upload
 
@@ -32,7 +32,7 @@ geoparquet-io uses standard cloud provider authentication. Configure your creden
 Credentials are automatically discovered in this order:
 
 1. **Environment variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-2. **AWS profile**: `~/.aws/credentials` via `AWS_PROFILE` env var or `--profile` flag
+2. **AWS profile**: `~/.aws/credentials` via `AWS_PROFILE` env var or `--aws-profile` flag
 3. **IAM role**: EC2/ECS/EKS instance metadata (when running on AWS infrastructure)
 
 **Examples:**
@@ -49,9 +49,9 @@ Credentials are automatically discovered in this order:
     gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet
 
     # Use a named AWS profile (convenient CLI flag)
-    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --profile production
+    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --aws-profile production
 
-    # Or set AWS_PROFILE environment variable (equivalent to --profile)
+    # Or set AWS_PROFILE environment variable (equivalent to --aws-profile)
     export AWS_PROFILE=production
     gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet
     ```
@@ -76,7 +76,7 @@ Credentials are automatically discovered in this order:
     gpio.read('s3://bucket/input.parquet').add_bbox().upload('s3://bucket/output.parquet')
     ```
 
-**Note:** The `--profile` flag is available on all commands and sets `AWS_PROFILE` for you.
+**Note:** The `--aws-profile` flag is available on all commands and sets `AWS_PROFILE` for you.
 
 ### Azure Blob Storage
 
@@ -159,7 +159,7 @@ For efficient workflows, process data locally and pipe to upload. This uses Arro
 gpio extract --bbox "-122.5,37.5,-122.0,38.0" input.parquet | \
   gpio add bbox - | \
   gpio sort hilbert - local_output.parquet && \
-  gpio publish upload local_output.parquet s3://bucket/output.parquet --profile prod
+  gpio publish upload local_output.parquet s3://bucket/output.parquet --aws-profile prod
 ```
 
 Or use the Python API for zero-copy streaming:
