@@ -29,6 +29,7 @@ from geoparquet_io.core.check_parquet_structure import (
 )
 from geoparquet_io.core.common import (
     detect_parquet_geometry_column,
+    find_primary_geometry_column,
     get_parquet_metadata,
     parse_geo_metadata,
 )
@@ -248,8 +249,11 @@ class TestConvertCore:
         assert os.path.exists(temp_output_file)
         compression_info = get_compression_info(temp_output_file)
         # Check that geometry column has ZSTD compression
-        geom_compression = compression_info.get("geometry")
-        assert geom_compression == "ZSTD"
+        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_compression = compression_info.get(geom_col)
+        assert geom_compression == "ZSTD", (
+            f"Expected ZSTD for '{geom_col}', got {geom_compression}. Keys: {list(compression_info.keys())}"
+        )
 
         # Verify output passes check_all validation
         results = check_all(temp_output_file, return_results=True, quiet=True)
@@ -275,8 +279,11 @@ class TestConvertBestPractices:
         convert_to_geoparquet(shapefile_input, temp_output_file)
 
         compression_info = get_compression_info(temp_output_file)
-        geom_compression = compression_info.get("geometry")
-        assert geom_compression == "ZSTD", "Expected ZSTD compression on geometry column"
+        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_compression = compression_info.get(geom_col)
+        assert geom_compression == "ZSTD", (
+            f"Expected ZSTD compression on geometry column '{geom_col}'"
+        )
 
     def test_bbox_column_exists(self, shapefile_input, temp_output_file):
         """Verify bbox column is added."""

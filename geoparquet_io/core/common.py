@@ -49,6 +49,32 @@ def _needs_s3_auth(exception: Exception) -> bool:
     return any(ind in error_str for ind in auth_indicators)
 
 
+def quote_identifier(name: str) -> str:
+    """
+    Quote a SQL identifier for safe use in DuckDB queries.
+
+    Escapes embedded double quotes by doubling them, then wraps in double quotes.
+    This handles column/table names with spaces, special characters, reserved words,
+    or uppercase letters that need to be preserved.
+
+    Args:
+        name: The identifier (column name, table name, etc.) to quote
+
+    Returns:
+        A safely quoted identifier string
+
+    Examples:
+        >>> quote_identifier("geometry")
+        '"geometry"'
+        >>> quote_identifier("My Geometry")
+        '"My Geometry"'
+        >>> quote_identifier('col"name')
+        '"col""name"'
+    """
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
 # GeoParquet version configuration
 # Maps CLI version options to DuckDB parameters and metadata settings
 # Note: For v2, we skip pyarrow rewrite to preserve native Parquet Geometry types
@@ -1159,8 +1185,9 @@ def find_primary_geometry_column(parquet_file, verbose=False):
     Find the primary geometry column from GeoParquet metadata.
 
     Looks up the geometry column name from GeoParquet metadata. Falls back
-    to 'geometry' if no metadata is present or if the primary column is
-    not specified.
+    to detect_parquet_geometry_column() (which checks standard geometry column
+    names in the schema) if no metadata is present or if the primary column
+    is not specified. Final fallback is 'geometry'.
 
     Args:
         parquet_file: Path to the parquet file (local or remote URL)
@@ -1177,17 +1204,21 @@ def find_primary_geometry_column(parquet_file, verbose=False):
     if verbose and geo_meta:
         debug(f"\nGeo metadata: {json.dumps(geo_meta, indent=2)}")
 
-    if not geo_meta:
-        return "geometry"
+    if geo_meta:
+        if isinstance(geo_meta, dict):
+            primary = geo_meta.get("primary_column")
+            if primary:
+                return primary
+        elif isinstance(geo_meta, list):
+            for col in geo_meta:
+                if isinstance(col, dict) and col.get("primary", False):
+                    name = col.get("name")
+                    if name:
+                        return name
 
-    if isinstance(geo_meta, dict):
-        return geo_meta.get("primary_column", "geometry")
-    elif isinstance(geo_meta, list):
-        for col in geo_meta:
-            if isinstance(col, dict) and col.get("primary", False):
-                return col.get("name", "geometry")
-
-    return "geometry"
+    # No geo metadata or no primary_column specified - use schema-based detection
+    detected = detect_parquet_geometry_column(parquet_file, verbose=verbose)
+    return detected if detected else "geometry"
 
 
 # Standard geometry column names for fallback detection

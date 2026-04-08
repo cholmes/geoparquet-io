@@ -20,6 +20,7 @@ from geoparquet_io.core.common import (
     is_remote_url,
     needs_httpfs,
     parse_crs_string_to_projjson,
+    quote_identifier,
     safe_file_url,
     setup_aws_profile_if_needed,
     show_remote_read_message,
@@ -29,7 +30,6 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.partition_reader import require_single_file
-from geoparquet_io.core.stream_io import _quote_identifier
 
 
 def _validate_layer_name(layer: str) -> str:
@@ -196,12 +196,15 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     else:
         table_expr = f"ST_Read('{input_file}')"
 
+    # Quote column name to handle special characters, spaces, and reserved words
+    quoted_geom = quote_identifier(geom_column)
+
     bounds_query = f"""
         SELECT
-            MIN(ST_XMin({geom_column})) as xmin,
-            MIN(ST_YMin({geom_column})) as ymin,
-            MAX(ST_XMax({geom_column})) as xmax,
-            MAX(ST_YMax({geom_column})) as ymax
+            MIN(ST_XMin({quoted_geom})) as xmin,
+            MIN(ST_YMin({quoted_geom})) as ymin,
+            MAX(ST_XMax({quoted_geom})) as xmax,
+            MAX(ST_YMax({quoted_geom})) as ymax
         FROM {table_expr}
     """
     bounds_result = con.execute(bounds_query).fetchone()
@@ -775,10 +778,14 @@ def _build_conversion_query(
     # Build exclusion list - only exclude existing bbox if needed
     # NOTE: We preserve the original geometry column name (no renaming to "geometry")
     # This fixes #328: non-standard geometry column names should be preserved
+    # Quote column names to handle special characters, spaces, and reserved words
+    quoted_geom = quote_identifier(geom_column)
+    quoted_bbox = quote_identifier(existing_bbox_col) if existing_bbox_col else None
+
     exclude_cols = []
     if existing_bbox_col and skip_bbox:
         # For 2.0: remove existing bbox column (not needed for native geo types)
-        exclude_cols.append(existing_bbox_col)
+        exclude_cols.append(quoted_bbox)
 
     exclude_clause = ", ".join(exclude_cols) if exclude_cols else None
 
@@ -805,12 +812,12 @@ def _build_conversion_query(
         if existing_bbox_col:
             # Remove old bbox before adding new one
             base_select = f"""
-                SELECT * EXCLUDE ({existing_bbox_col}),
+                SELECT * EXCLUDE ({quoted_bbox}),
                     STRUCT_PACK(
-                        xmin := ST_XMin({geom_column}),
-                        ymin := ST_YMin({geom_column}),
-                        xmax := ST_XMax({geom_column}),
-                        ymax := ST_YMax({geom_column})
+                        xmin := ST_XMin({quoted_geom}),
+                        ymin := ST_YMin({quoted_geom}),
+                        xmax := ST_XMax({quoted_geom}),
+                        ymax := ST_YMax({quoted_geom})
                     ) AS bbox
                 FROM {table_expr}
             """
@@ -818,10 +825,10 @@ def _build_conversion_query(
             base_select = f"""
                 SELECT *,
                     STRUCT_PACK(
-                        xmin := ST_XMin({geom_column}),
-                        ymin := ST_YMin({geom_column}),
-                        xmax := ST_XMax({geom_column}),
-                        ymax := ST_YMax({geom_column})
+                        xmin := ST_XMin({quoted_geom}),
+                        ymin := ST_YMin({quoted_geom}),
+                        xmax := ST_XMax({quoted_geom}),
+                        ymax := ST_YMax({quoted_geom})
                     ) AS bbox
                 FROM {table_expr}
             """
@@ -832,7 +839,7 @@ def _build_conversion_query(
     xmin, ymin, xmax, ymax = bounds
     return f"""{base_select}
         ORDER BY ST_Hilbert(
-            {geom_column},
+            {quoted_geom},
             ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))
         )
     """
@@ -1196,7 +1203,7 @@ def _read_csv_to_arrow(
 
     # Build query based on geometry type
     if geom_info["type"] == "wkt":
-        wkt_col = _quote_identifier(geom_info["wkt_column"])
+        wkt_col = quote_identifier(geom_info["wkt_column"])
         if skip_invalid:
             # Use a CTE to evaluate TRY(ST_GeomFromText(...)) once, avoiding
             # repeated re-evaluation that can segfault in DuckDB 1.5.
@@ -1219,8 +1226,8 @@ def _read_csv_to_arrow(
                 WHERE {wkt_col} IS NOT NULL
             """
     else:  # latlon
-        lat_col = _quote_identifier(geom_info["lat_column"])
-        lon_col = _quote_identifier(geom_info["lon_column"])
+        lat_col = quote_identifier(geom_info["lat_column"])
+        lon_col = quote_identifier(geom_info["lon_column"])
         query = f"""
             SELECT * EXCLUDE ({lat_col}, {lon_col}),
                    ST_AsWKB(ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))) AS geometry
@@ -1240,7 +1247,7 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
     if geom_column is None:
         warn("No geometry column found in input file. Reading as plain table.")
         return None
-    quoted_geom = _quote_identifier(geom_column)
+    quoted_geom = quote_identifier(geom_column)
 
     if is_parquet:
         table_expr = f"read_parquet('{input_url}')"
