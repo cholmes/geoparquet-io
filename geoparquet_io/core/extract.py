@@ -19,6 +19,7 @@ import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
+    STANDARD_GEOMETRY_NAMES,
     check_bbox_structure,
     find_primary_geometry_column,
     get_crs_display_name,
@@ -818,7 +819,7 @@ def _extract_streaming(
         # Find geometry column
         geom_col = find_geometry_column_from_metadata(metadata)
         if not geom_col:
-            for name in ["geometry", "geom", "the_geom"]:
+            for name in STANDARD_GEOMETRY_NAMES:
                 if name in all_columns:
                     geom_col = name
                     break

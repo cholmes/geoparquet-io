@@ -27,7 +27,11 @@ from geoparquet_io.core.check_parquet_structure import (
     get_compression_info,
     get_row_group_stats,
 )
-from geoparquet_io.core.common import get_parquet_metadata, parse_geo_metadata
+from geoparquet_io.core.common import (
+    detect_parquet_geometry_column,
+    get_parquet_metadata,
+    parse_geo_metadata,
+)
 from geoparquet_io.core.convert import convert_to_geoparquet
 
 
@@ -1152,3 +1156,158 @@ class TestConvertNoGeometry:
         # Shapefile should also use ST_Read
         shp_query = _build_plain_select_query("data.shp", is_parquet=False, is_csv=False)
         assert "ST_Read" in shp_query
+
+
+class TestCustomGeometryColumnName:
+    """Test that convert respects GeoParquet metadata for non-standard geometry column names."""
+
+    @pytest.fixture
+    def custom_geom_parquet(self, tmp_path):
+        """Create a GeoParquet file with a non-standard geometry column name and proper metadata."""
+        import json
+
+        import shapely
+
+        geom1 = shapely.Point(1.0, 2.0)
+        geom2 = shapely.Point(3.0, 4.0)
+        table = pa.table(
+            {
+                "id": [1, 2],
+                "name": ["a", "b"],
+                "my_custom_geom": [shapely.to_wkb(geom1), shapely.to_wkb(geom2)],
+            }
+        )
+
+        geo_metadata = {
+            "version": "1.1.0",
+            "primary_column": "my_custom_geom",
+            "columns": {
+                "my_custom_geom": {
+                    "encoding": "WKB",
+                    "geometry_types": ["Point"],
+                    "crs": {
+                        "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+                        "type": "GeographicCRS",
+                        "name": "WGS 84",
+                        "id": {"authority": "EPSG", "code": 4326},
+                    },
+                }
+            },
+        }
+
+        existing_meta = table.schema.metadata or {}
+        new_meta = {**existing_meta, b"geo": json.dumps(geo_metadata).encode("utf-8")}
+        table = table.replace_schema_metadata(new_meta)
+
+        path = str(tmp_path / "custom_geom.parquet")
+        pq.write_table(table, path)
+        return path
+
+    def test_convert_detects_custom_geometry_column_from_metadata(
+        self, custom_geom_parquet, temp_output_file
+    ):
+        """Convert should use GeoParquet metadata to find geometry column, not just hardcoded names."""
+        convert_to_geoparquet(custom_geom_parquet, temp_output_file)
+
+        assert os.path.exists(temp_output_file)
+
+        metadata, _ = get_parquet_metadata(temp_output_file, verbose=False)
+        geo_meta = parse_geo_metadata(metadata, verbose=False)
+        assert geo_meta is not None, "Expected GeoParquet metadata in output"
+        # Convert normalizes geometry column name to 'geometry'
+        assert "geometry" in geo_meta.get("columns", {})
+
+    def test_convert_custom_geom_preserves_data(self, custom_geom_parquet, temp_output_file):
+        """Convert should preserve all rows when geometry column has a custom name."""
+        convert_to_geoparquet(custom_geom_parquet, temp_output_file)
+
+        con = duckdb.connect()
+        count = con.execute(f"SELECT COUNT(*) FROM '{temp_output_file}'").fetchone()[0]
+        assert count == 2
+        con.close()
+
+
+class TestDetectParquetGeometryColumn:
+    """Test the shared detect_parquet_geometry_column function."""
+
+    def _make_geoparquet(self, tmp_path, geom_col_name, include_metadata=True):
+        """Helper to create a GeoParquet file with a given geometry column name."""
+        import json
+
+        import shapely
+
+        geom = shapely.Point(1.0, 2.0)
+        table = pa.table(
+            {
+                "id": [1],
+                geom_col_name: [shapely.to_wkb(geom)],
+            }
+        )
+
+        if include_metadata:
+            geo_metadata = {
+                "version": "1.1.0",
+                "primary_column": geom_col_name,
+                "columns": {
+                    geom_col_name: {
+                        "encoding": "WKB",
+                        "geometry_types": ["Point"],
+                    }
+                },
+            }
+            existing_meta = table.schema.metadata or {}
+            new_meta = {**existing_meta, b"geo": json.dumps(geo_metadata).encode("utf-8")}
+            table = table.replace_schema_metadata(new_meta)
+
+        path = str(tmp_path / f"{geom_col_name}.parquet")
+        pq.write_table(table, path)
+        return path
+
+    def test_finds_custom_column_from_metadata(self, tmp_path):
+        """Should find geometry column from GeoParquet metadata, not just hardcoded names."""
+        path = self._make_geoparquet(tmp_path, "my_custom_geom")
+        result = detect_parquet_geometry_column(path)
+        assert result == "my_custom_geom"
+
+    def test_finds_standard_column_without_metadata(self, tmp_path):
+        """Should fall back to name-based detection when no GeoParquet metadata exists."""
+        path = self._make_geoparquet(tmp_path, "geometry", include_metadata=False)
+        result = detect_parquet_geometry_column(path)
+        assert result == "geometry"
+
+    def test_returns_none_for_plain_parquet(self, tmp_path):
+        """Should return None when file has no geo metadata and no standard geometry column."""
+        table = pa.table({"id": [1], "value": [42.0]})
+        path = str(tmp_path / "plain.parquet")
+        pq.write_table(table, path)
+        result = detect_parquet_geometry_column(path)
+        assert result is None
+
+    def test_metadata_takes_priority_over_column_names(self, tmp_path):
+        """When metadata says primary_column is X, return X even if 'geometry' column also exists."""
+        import json
+
+        import shapely
+
+        geom = shapely.Point(1.0, 2.0)
+        table = pa.table(
+            {
+                "id": [1],
+                "geometry": [shapely.to_wkb(geom)],
+                "the_real_geom": [shapely.to_wkb(geom)],
+            }
+        )
+
+        geo_metadata = {
+            "version": "1.1.0",
+            "primary_column": "the_real_geom",
+            "columns": {"the_real_geom": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        meta = {b"geo": json.dumps(geo_metadata).encode("utf-8")}
+        table = table.replace_schema_metadata(meta)
+
+        path = str(tmp_path / "priority.parquet")
+        pq.write_table(table, path)
+
+        result = detect_parquet_geometry_column(path)
+        assert result == "the_real_geom"

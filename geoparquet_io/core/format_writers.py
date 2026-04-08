@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import (
+    detect_parquet_geometry_column,
     extract_crs_from_parquet,
     get_duckdb_connection,
     is_default_crs,
@@ -37,9 +38,6 @@ ERROR_NO_GEOMETRY = "No geometry column found. Expected 'geometry', 'geom', or '
 ERROR_NO_COMPATIBLE_COLUMNS = (
     "No compatible columns for {format} format. All columns are complex types (STRUCT, LIST, MAP)."
 )
-
-# Geometry column names to check for
-GEOMETRY_COLUMNS = ["geometry", "geom", "wkb_geometry"]
 
 # Format configuration for GDAL-based writers
 GDAL_FORMATS = {
@@ -212,9 +210,8 @@ def write_gdal_format(
             pf = pq.ParquetFile(f)
             schema = pf.schema_arrow
 
-        # Check for geometry column (case-insensitive)
-        column_names_lower = [field.name.lower() for field in schema]
-        has_geometry = any(col in column_names_lower for col in GEOMETRY_COLUMNS)
+        # Check for geometry column using GeoParquet metadata first, then name-based fallback
+        has_geometry = detect_parquet_geometry_column(input_url, verbose=verbose) is not None
 
         # FlatGeobuf requires geometry - fail early with a clear message
         if not has_geometry and format_name == "flatgeobuf":
@@ -335,11 +332,8 @@ def write_csv(
             schema = pf.schema_arrow
             columns = [field.name for field in schema]
 
-        # Find geometry column (optional for plain Parquet files)
-        geom_col = next(
-            (col for col in ["geometry", "geom", "wkb_geometry"] if col in columns),
-            None,
-        )
+        # Find geometry column from GeoParquet metadata first, then name-based fallback
+        geom_col = detect_parquet_geometry_column(input_url, verbose=verbose)
 
         if not geom_col:
             warn("No geometry column found. Converting as plain CSV without WKT.")
@@ -454,15 +448,9 @@ def write_geojson(
     validate_profile_for_urls(profile, input_path)
     setup_aws_profile_if_needed(profile, input_path)
 
-    # Check if input has geometry column
+    # Check if input has geometry column using GeoParquet metadata first
     input_url = safe_file_url(input_path, verbose)
-    import fsspec
-
-    with fsspec.open(input_url, "rb") as f:
-        pf = pq.ParquetFile(f)
-        schema = pf.schema_arrow
-    column_names_lower = [field.name.lower() for field in schema]
-    has_geometry = any(col in column_names_lower for col in GEOMETRY_COLUMNS)
+    has_geometry = detect_parquet_geometry_column(input_url, verbose=verbose) is not None
 
     if not has_geometry:
         # Reject GeoJSON export without geometry data

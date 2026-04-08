@@ -23,7 +23,7 @@ import click
 import duckdb
 import psutil
 
-from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
+from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES, get_duckdb_connection, needs_httpfs
 from geoparquet_io.core.logging_config import progress
 
 # Converter registry with detection functions
@@ -129,7 +129,7 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
         geom_col = None
         for col_info in schema:
             col_name = col_info[0].lower()
-            if col_name in ["geometry", "geom", "wkb_geometry", "shape"]:
+            if col_name in [n.lower() for n in STANDARD_GEOMETRY_NAMES]:
                 geom_col = col_info[0]
                 break
 

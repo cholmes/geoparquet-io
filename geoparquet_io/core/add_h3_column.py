@@ -6,6 +6,7 @@ import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
+    STANDARD_GEOMETRY_NAMES,
     add_computed_column,
     find_primary_geometry_column,
     get_duckdb_connection,
@@ -276,7 +277,7 @@ def _add_h3_streaming(
 
         # Find geometry column from common names
         geom_col = None
-        for name in ["geometry", "geom", "the_geom", "wkb_geometry"]:
+        for name in STANDARD_GEOMETRY_NAMES:
             if name in col_names:
                 geom_col = name
                 break

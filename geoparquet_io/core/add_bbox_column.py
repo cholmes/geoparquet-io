@@ -5,6 +5,7 @@ from __future__ import annotations
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
+    STANDARD_GEOMETRY_NAMES,
     add_computed_column,
     check_bbox_structure,
     detect_geoparquet_file_type,
@@ -248,7 +249,7 @@ def _add_bbox_streaming(
 
         # Find geometry column from common names
         geom_col = None
-        for name in ["geometry", "geom", "the_geom", "wkb_geometry"]:
+        for name in STANDARD_GEOMETRY_NAMES:
             if name in col_names:
                 geom_col = name
                 break

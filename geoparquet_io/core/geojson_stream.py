@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import duckdb
 
+from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES
+
 # RFC 8142 record separator character
 RS = "\x1e"
 
@@ -349,9 +351,8 @@ def _find_geometry_column(
 
     # Look for common geometry column names
     columns = [col[0] for col in result.description]
-    common_names = ["geometry", "geom", "wkb_geometry", "the_geom", "shape"]
 
-    for name in common_names:
+    for name in STANDARD_GEOMETRY_NAMES:
         for col in columns:
             if col.lower() == name:
                 return col
