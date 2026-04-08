@@ -237,6 +237,67 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
     ogrinfo multilayer.gpkg
     ```
 
+## GeoParquet-to-GeoParquet Conversion
+
+When converting between GeoParquet files, special handling is applied to preserve GeoParquet-specific features.
+
+### Multiple Geometry Columns
+
+GeoParquet files can have multiple geometry columns (e.g., `geometry` for point locations and `boundary` for polygon boundaries). When converting, all geometry columns are preserved with their:
+
+- Original column names
+- CRS (coordinate reference system)
+- Encoding (WKB)
+- Geometry types
+
+=== "CLI"
+
+    ```bash
+    # Both geometry columns preserved
+    gpio convert input_multi_geom.parquet output.parquet
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Both geometry columns preserved automatically
+    gpio.convert('input_multi_geom.parquet').write('output.parquet')
+
+    # With Hilbert sorting (uses primary geometry column)
+    gpio.convert('input_multi_geom.parquet').sort_hilbert().write('output.parquet')
+    ```
+
+!!! note "Bbox and Hilbert Ordering"
+    Bbox computation and Hilbert spatial ordering use the **primary geometry column only**. Secondary geometry columns are preserved but do not influence spatial indexing.
+
+### Custom Geometry Column Names
+
+GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:
+
+=== "CLI"
+
+    ```bash
+    # Input has primary_column: "the_geom"
+    # Output preserves "the_geom" (not renamed to "geometry")
+    gpio convert input.parquet output.parquet
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Input has primary_column: "the_geom"
+    # Output preserves "the_geom" (not renamed to "geometry")
+    gpio.convert('input.parquet').write('output.parquet')
+
+    # Custom geometry column names are automatically detected
+    # For files without GeoParquet metadata, specify the column:
+    gpio.convert('input.parquet', geometry_column='the_geom').write('output.parquet')
+    ```
+
 ## Remote Files
 
 Read from cloud storage or HTTPS:

@@ -31,6 +31,7 @@ def build_geo_metadata(
     custom_metadata: dict | None = None,
     bbox: list[float] | None = None,
     geometry_types: list[str] | None = None,
+    geometry_info: dict | None = None,
 ) -> dict:
     """
     Build GeoParquet metadata - single source of truth for all strategies.
@@ -39,13 +40,17 @@ def build_geo_metadata(
     duplicated across strategies.
 
     Args:
-        geometry_column: Name of the geometry column
+        geometry_column: Name of the geometry column (primary)
         geoparquet_version: Target GeoParquet version (1.0, 1.1, 2.0)
         original_metadata: Original file metadata to parse for existing geo metadata
-        input_crs: PROJJSON dict with CRS to apply
+        input_crs: PROJJSON dict with CRS to apply to primary column
         custom_metadata: Custom metadata (e.g., H3 covering info)
-        bbox: Bounding box [xmin, ymin, xmax, ymax]
-        geometry_types: List of geometry types (e.g., ["Point", "MultiPoint"])
+        bbox: Bounding box [xmin, ymin, xmax, ymax] for primary column
+        geometry_types: List of geometry types for primary column
+        geometry_info: Multi-geometry column info dict with keys:
+            - "primary": primary geometry column name
+            - "secondary": list of secondary geometry column names
+            - "metadata": dict mapping column names to their metadata
 
     Returns:
         dict: Complete geo metadata structure ready for embedding in Parquet
@@ -83,6 +88,29 @@ def build_geo_metadata(
     if custom_metadata:
         for key, value in custom_metadata.items():
             col_meta[key] = value
+
+    # Handle secondary geometry columns from geometry_info
+    if geometry_info:
+        secondary_columns = geometry_info.get("secondary", [])
+        column_metadata = geometry_info.get("metadata", {})
+
+        for sec_col in secondary_columns:
+            if sec_col not in geo_meta["columns"]:
+                geo_meta["columns"][sec_col] = {}
+
+            sec_meta = geo_meta["columns"][sec_col]
+
+            # Copy metadata from input for secondary columns
+            if sec_col in column_metadata:
+                input_sec_meta = column_metadata[sec_col]
+                for key, value in input_sec_meta.items():
+                    # Preserve input metadata (crs, encoding, geometry_types, etc.)
+                    if key not in sec_meta:
+                        sec_meta[key] = value
+
+            # Ensure encoding is set (required by spec)
+            if "encoding" not in sec_meta:
+                sec_meta["encoding"] = "WKB"
 
     return geo_meta
 
@@ -204,6 +232,7 @@ class BaseWriteStrategy(ABC):
         input_crs: dict | None,
         verbose: bool,
         custom_metadata: dict | None = None,
+        geometry_info: dict | None = None,
     ) -> None:
         """
         Write query results to GeoParquet file.
@@ -222,6 +251,7 @@ class BaseWriteStrategy(ABC):
             input_crs: CRS dict from input file
             verbose: Enable verbose logging
             custom_metadata: Optional dict with custom metadata (e.g., H3 covering info)
+            geometry_info: Multi-geometry column info from input file
         """
         ...
 

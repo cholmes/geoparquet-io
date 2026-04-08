@@ -49,6 +49,32 @@ def _needs_s3_auth(exception: Exception) -> bool:
     return any(ind in error_str for ind in auth_indicators)
 
 
+def quote_identifier(name: str) -> str:
+    """
+    Quote a SQL identifier for safe use in DuckDB queries.
+
+    Escapes embedded double quotes by doubling them, then wraps in double quotes.
+    This handles column/table names with spaces, special characters, reserved words,
+    or uppercase letters that need to be preserved.
+
+    Args:
+        name: The identifier (column name, table name, etc.) to quote
+
+    Returns:
+        A safely quoted identifier string
+
+    Examples:
+        >>> quote_identifier("geometry")
+        '"geometry"'
+        >>> quote_identifier("My Geometry")
+        '"My Geometry"'
+        >>> quote_identifier('col"name')
+        '"col""name"'
+    """
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
 # GeoParquet version configuration
 # Maps CLI version options to DuckDB parameters and metadata settings
 # Note: For v2, we skip pyarrow rewrite to preserve native Parquet Geometry types
@@ -1159,8 +1185,9 @@ def find_primary_geometry_column(parquet_file, verbose=False):
     Find the primary geometry column from GeoParquet metadata.
 
     Looks up the geometry column name from GeoParquet metadata. Falls back
-    to 'geometry' if no metadata is present or if the primary column is
-    not specified.
+    to detect_parquet_geometry_column() (which checks standard geometry column
+    names in the schema) if no metadata is present or if the primary column
+    is not specified. Final fallback is 'geometry'.
 
     Args:
         parquet_file: Path to the parquet file (local or remote URL)
@@ -1177,17 +1204,21 @@ def find_primary_geometry_column(parquet_file, verbose=False):
     if verbose and geo_meta:
         debug(f"\nGeo metadata: {json.dumps(geo_meta, indent=2)}")
 
-    if not geo_meta:
-        return "geometry"
+    if geo_meta:
+        if isinstance(geo_meta, dict):
+            primary = geo_meta.get("primary_column")
+            if primary:
+                return primary
+        elif isinstance(geo_meta, list):
+            for col in geo_meta:
+                if isinstance(col, dict) and col.get("primary", False):
+                    name = col.get("name")
+                    if name:
+                        return name
 
-    if isinstance(geo_meta, dict):
-        return geo_meta.get("primary_column", "geometry")
-    elif isinstance(geo_meta, list):
-        for col in geo_meta:
-            if isinstance(col, dict) and col.get("primary", False):
-                return col.get("name", "geometry")
-
-    return "geometry"
+    # No geo metadata or no primary_column specified - use schema-based detection
+    detected = detect_parquet_geometry_column(parquet_file, verbose=verbose)
+    return detected if detected else "geometry"
 
 
 # Standard geometry column names for fallback detection
@@ -2716,6 +2747,7 @@ def _apply_geoparquet_metadata(
     custom_metadata: dict | None = None,
     verbose: bool = False,
     edges: str | None = None,
+    geometry_info: dict | None = None,
 ):
     """
     Apply GeoParquet metadata to an Arrow Table based on version.
@@ -2740,6 +2772,10 @@ def _apply_geoparquet_metadata(
         verbose: Whether to print verbose output
         edges: Edge interpretation, "spherical" or "planar" (default None = planar).
                Use "spherical" for data from BigQuery or other S2-based sources.
+        geometry_info: Dict containing multi-geometry column info with keys:
+            - "primary": primary geometry column name
+            - "secondary": list of secondary geometry column names
+            - "metadata": dict mapping column names to their metadata
 
     Returns:
         pa.Table: Table with GeoParquet metadata applied
@@ -2802,6 +2838,29 @@ def _apply_geoparquet_metadata(
     if computed_bbox:
         col_meta["bbox"] = computed_bbox
         geo_meta["columns"][geometry_column] = col_meta
+
+    # Handle secondary geometry columns from geometry_info
+    if geometry_info:
+        secondary_columns = geometry_info.get("secondary", [])
+        column_metadata = geometry_info.get("metadata", {})
+
+        for sec_col in secondary_columns:
+            if sec_col not in geo_meta["columns"]:
+                geo_meta["columns"][sec_col] = {}
+
+            sec_meta = geo_meta["columns"][sec_col]
+
+            # Copy metadata from input for secondary columns
+            if sec_col in column_metadata:
+                input_sec_meta = column_metadata[sec_col]
+                for key, value in input_sec_meta.items():
+                    # Preserve input metadata (crs, encoding, geometry_types, etc.)
+                    if key not in sec_meta:
+                        sec_meta[key] = value
+
+            # Ensure encoding is set (required by spec)
+            if "encoding" not in sec_meta:
+                sec_meta["encoding"] = "WKB"
 
     # Assemble and apply final metadata
     return _assemble_and_apply_geo_metadata(
@@ -3187,6 +3246,7 @@ def write_parquet_with_metadata(
     input_crs=None,
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
+    geometry_info: dict | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -3220,6 +3280,10 @@ def write_parquet_with_metadata(
             - "disk-rewrite": Write with DuckDB, then rewrite with PyArrow
         memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB').
             If None, auto-detects based on available system/container memory.
+        geometry_info: Dict containing multi-geometry column info with keys:
+            - "primary": primary geometry column name
+            - "secondary": list of secondary geometry column names
+            - "metadata": dict mapping column names to their metadata (crs, encoding, etc.)
 
     Returns:
         None
@@ -3235,8 +3299,12 @@ def write_parquet_with_metadata(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, output_file)
 
-    # Auto-detect geometry column and version if not provided
-    geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
+    # Use geometry column from geometry_info if provided, otherwise auto-detect
+    # This ensures original column names are preserved (fixes #328)
+    if geometry_info and geometry_info.get("primary"):
+        geometry_column = geometry_info["primary"]
+    else:
+        geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
 
     if geoparquet_version is None:
         geoparquet_version = extract_version_from_metadata(original_metadata)
@@ -3303,6 +3371,7 @@ def write_parquet_with_metadata(
                 "input_crs": input_crs,
                 "verbose": verbose,
                 "custom_metadata": custom_metadata,
+                "geometry_info": geometry_info,
             }
             if strategy_enum == WriteStrategy.DUCKDB_KV:
                 write_kwargs["memory_limit"] = memory_limit

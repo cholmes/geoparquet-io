@@ -29,6 +29,7 @@ from geoparquet_io.core.check_parquet_structure import (
 )
 from geoparquet_io.core.common import (
     detect_parquet_geometry_column,
+    find_primary_geometry_column,
     get_parquet_metadata,
     parse_geo_metadata,
 )
@@ -248,8 +249,11 @@ class TestConvertCore:
         assert os.path.exists(temp_output_file)
         compression_info = get_compression_info(temp_output_file)
         # Check that geometry column has ZSTD compression
-        geom_compression = compression_info.get("geometry")
-        assert geom_compression == "ZSTD"
+        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_compression = compression_info.get(geom_col)
+        assert geom_compression == "ZSTD", (
+            f"Expected ZSTD for '{geom_col}', got {geom_compression}. Keys: {list(compression_info.keys())}"
+        )
 
         # Verify output passes check_all validation
         results = check_all(temp_output_file, return_results=True, quiet=True)
@@ -275,8 +279,11 @@ class TestConvertBestPractices:
         convert_to_geoparquet(shapefile_input, temp_output_file)
 
         compression_info = get_compression_info(temp_output_file)
-        geom_compression = compression_info.get("geometry")
-        assert geom_compression == "ZSTD", "Expected ZSTD compression on geometry column"
+        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_compression = compression_info.get(geom_col)
+        assert geom_compression == "ZSTD", (
+            f"Expected ZSTD compression on geometry column '{geom_col}'"
+        )
 
     def test_bbox_column_exists(self, shapefile_input, temp_output_file):
         """Verify bbox column is added."""
@@ -341,8 +348,10 @@ class TestConvertBestPractices:
         con.execute("INSTALL spatial;")
         con.execute("LOAD spatial;")
 
+        # Get actual geometry column name (DuckDB uses "geom" for shapefile conversion)
+        geom_col = find_primary_geometry_column(temp_output_file)
         result = con.execute(
-            f"SELECT ST_AsText(geometry) FROM '{temp_output_file}' LIMIT 1"
+            f"SELECT ST_AsText(\"{geom_col}\") FROM '{temp_output_file}' LIMIT 1"
         ).fetchone()
         assert result is not None
         con.close()
@@ -359,8 +368,9 @@ class TestConvertBestPractices:
         result = con.execute(f"DESCRIBE SELECT * FROM '{temp_output_file}'").fetchall()
         column_names = [row[0] for row in result]
 
-        # Should have geometry and bbox at minimum
-        assert "geometry" in column_names
+        # Should have geometry (detected dynamically) and bbox at minimum
+        geom_col = find_primary_geometry_column(temp_output_file)
+        assert geom_col in column_names, f"Expected geometry column '{geom_col}' in {column_names}"
         assert "bbox" in column_names
 
         # Should have some attribute columns from the shapefile
@@ -435,9 +445,10 @@ class TestConvertCLI:
         assert result.exit_code == 0
         assert os.path.exists(temp_output_file)
 
-        # Verify ZSTD compression was applied
+        # Verify ZSTD compression was applied (use dynamic geometry column detection)
         compression_info = get_compression_info(temp_output_file)
-        assert compression_info.get("geometry") == "ZSTD"
+        geom_col = find_primary_geometry_column(temp_output_file)
+        assert compression_info.get(geom_col) == "ZSTD", f"Expected ZSTD for '{geom_col}'"
 
     def test_cli_invalid_input(self):
         """Test error handling for missing input."""
@@ -1214,8 +1225,8 @@ class TestCustomGeometryColumnName:
         metadata, _ = get_parquet_metadata(temp_output_file, verbose=False)
         geo_meta = parse_geo_metadata(metadata, verbose=False)
         assert geo_meta is not None, "Expected GeoParquet metadata in output"
-        # Convert normalizes geometry column name to 'geometry'
-        assert "geometry" in geo_meta.get("columns", {})
+        # Convert preserves original geometry column name (not renamed to 'geometry')
+        assert "my_custom_geom" in geo_meta.get("columns", {})
 
     def test_convert_custom_geom_preserves_data(self, custom_geom_parquet, temp_output_file):
         """Convert should preserve all rows when geometry column has a custom name."""

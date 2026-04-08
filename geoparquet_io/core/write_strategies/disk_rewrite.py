@@ -55,6 +55,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         verbose: bool,
         custom_metadata: dict | None = None,
+        geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY then PyArrow rewrite."""
         from geoparquet_io.core.common import (
@@ -127,6 +128,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 custom_metadata=custom_metadata,
                 bbox=bbox,
                 geometry_types=geometry_types,
+                geometry_info=geometry_info,
             )
 
             self._rewrite_with_metadata(

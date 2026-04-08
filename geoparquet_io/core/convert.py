@@ -20,6 +20,7 @@ from geoparquet_io.core.common import (
     is_remote_url,
     needs_httpfs,
     parse_crs_string_to_projjson,
+    quote_identifier,
     safe_file_url,
     setup_aws_profile_if_needed,
     show_remote_read_message,
@@ -29,7 +30,6 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.partition_reader import require_single_file
-from geoparquet_io.core.stream_io import _quote_identifier
 
 
 def _validate_layer_name(layer: str) -> str:
@@ -115,6 +115,76 @@ def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=No
     return None
 
 
+def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
+    """Detect all geometry columns from a GeoParquet file.
+
+    Reads the GeoParquet metadata to find all geometry columns listed
+    in the `columns` dict, distinguishing primary from secondary columns.
+
+    For non-GeoParquet files, returns only the detected primary column
+    (multi-geometry is only supported for GeoParquet input).
+
+    Args:
+        input_file: Path to input file
+        verbose: Print debug output
+
+    Returns:
+        dict with keys:
+            - "primary": str - name of primary geometry column
+            - "secondary": list[str] - names of secondary geometry columns
+            - "metadata": dict - per-column metadata from input (crs, encoding, etc.)
+    """
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+
+    result = {"primary": None, "secondary": [], "metadata": {}}
+
+    # Only GeoParquet files can have multiple geometry columns with metadata
+    if not _is_parquet_file(input_file):
+        # For non-parquet, detect single geometry column the standard way
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_file))
+        try:
+            geom_col = _detect_geometry_column(con, input_file, verbose, is_parquet=False)
+            if geom_col:
+                result["primary"] = geom_col
+                result["metadata"][geom_col] = {"encoding": "WKB"}
+        finally:
+            con.close()
+        return result
+
+    safe_url = safe_file_url(input_file, verbose=False)
+    geo_meta = get_geo_metadata(safe_url)
+
+    if not geo_meta:
+        # No GeoParquet metadata - detect single column from schema
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_file))
+        try:
+            geom_col = _detect_geometry_column(con, input_file, verbose, is_parquet=True)
+            if geom_col:
+                result["primary"] = geom_col
+                result["metadata"][geom_col] = {"encoding": "WKB"}
+        finally:
+            con.close()
+        return result
+
+    # Extract from GeoParquet metadata
+    primary_col = geo_meta.get("primary_column", "geometry")
+    columns = geo_meta.get("columns", {})
+
+    result["primary"] = primary_col
+
+    for col_name, col_meta in columns.items():
+        result["metadata"][col_name] = col_meta
+        if col_name != primary_col:
+            result["secondary"].append(col_name)
+
+    if verbose:
+        debug(
+            f"Detected geometry columns - primary: {primary_col}, secondary: {result['secondary']}"
+        )
+
+    return result
+
+
 def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     """Calculate dataset bounds from input file."""
     if verbose:
@@ -126,12 +196,15 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     else:
         table_expr = f"ST_Read('{input_file}')"
 
+    # Quote column name to handle special characters, spaces, and reserved words
+    quoted_geom = quote_identifier(geom_column)
+
     bounds_query = f"""
         SELECT
-            MIN(ST_XMin({geom_column})) as xmin,
-            MIN(ST_YMin({geom_column})) as ymin,
-            MAX(ST_XMax({geom_column})) as xmax,
-            MAX(ST_YMax({geom_column})) as ymax
+            MIN(ST_XMin({quoted_geom})) as xmin,
+            MIN(ST_YMin({quoted_geom})) as ymin,
+            MAX(ST_XMax({quoted_geom})) as xmax,
+            MAX(ST_YMax({quoted_geom})) as ymax
         FROM {table_expr}
     """
     bounds_result = con.execute(bounds_query).fetchone()
@@ -702,43 +775,63 @@ def _build_conversion_query(
     else:
         table_expr = _build_st_read_expr(input_file, layer)
 
-    # Build exclusion list - always exclude geom_column, optionally exclude existing bbox
-    exclude_cols = [geom_column]
+    # Build exclusion list - only exclude existing bbox if needed
+    # NOTE: We preserve the original geometry column name (no renaming to "geometry")
+    # This fixes #328: non-standard geometry column names should be preserved
+    # Quote column names to handle special characters, spaces, and reserved words
+    quoted_geom = quote_identifier(geom_column)
+    quoted_bbox = quote_identifier(existing_bbox_col) if existing_bbox_col else None
+
+    exclude_cols = []
     if existing_bbox_col and skip_bbox:
         # For 2.0: remove existing bbox column (not needed for native geo types)
-        exclude_cols.append(existing_bbox_col)
-    exclude_clause = ", ".join(exclude_cols)
+        exclude_cols.append(quoted_bbox)
+
+    exclude_clause = ", ".join(exclude_cols) if exclude_cols else None
 
     if skip_bbox:
-        # For 2.0/parquet-geo-only: don't add bbox column
-        base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry
-            FROM {table_expr}
-        """
+        # For 2.0/parquet-geo-only: don't add bbox column, preserve original geometry name
+        if exclude_clause:
+            base_select = f"""
+                SELECT * EXCLUDE ({exclude_clause})
+                FROM {table_expr}
+            """
+        else:
+            base_select = f"""
+                SELECT *
+                FROM {table_expr}
+            """
     elif preserve_existing_bbox:
         # For 1.x with existing bbox: preserve existing bbox column, don't add new one
         base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry
+            SELECT *
             FROM {table_expr}
         """
     else:
-        # For 1.x without existing bbox: add bbox column
-        base_select = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                {geom_column} AS geometry,
-                STRUCT_PACK(
-                    xmin := ST_XMin({geom_column}),
-                    ymin := ST_YMin({geom_column}),
-                    xmax := ST_XMax({geom_column}),
-                    ymax := ST_YMax({geom_column})
-                ) AS bbox
-            FROM {table_expr}
-        """
+        # For 1.x without existing bbox: add bbox column, preserve original geometry name
+        if existing_bbox_col:
+            # Remove old bbox before adding new one
+            base_select = f"""
+                SELECT * EXCLUDE ({quoted_bbox}),
+                    STRUCT_PACK(
+                        xmin := ST_XMin({quoted_geom}),
+                        ymin := ST_YMin({quoted_geom}),
+                        xmax := ST_XMax({quoted_geom}),
+                        ymax := ST_YMax({quoted_geom})
+                    ) AS bbox
+                FROM {table_expr}
+            """
+        else:
+            base_select = f"""
+                SELECT *,
+                    STRUCT_PACK(
+                        xmin := ST_XMin({quoted_geom}),
+                        ymin := ST_YMin({quoted_geom}),
+                        xmax := ST_XMax({quoted_geom}),
+                        ymax := ST_YMax({quoted_geom})
+                    ) AS bbox
+                FROM {table_expr}
+            """
 
     if skip_hilbert:
         return base_select
@@ -746,7 +839,7 @@ def _build_conversion_query(
     xmin, ymin, xmax, ymax = bounds
     return f"""{base_select}
         ORDER BY ST_Hilbert(
-            {geom_column},
+            {quoted_geom},
             ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))
         )
     """
@@ -839,14 +932,33 @@ def _convert_csv_path(
 def _convert_spatial_path(
     con, input_file, skip_hilbert, verbose, is_parquet=False, layer=None, geoparquet_version=None
 ):
-    """Handle standard spatial format conversion path. Returns SQL query."""
+    """Handle standard spatial format conversion path.
+
+    Returns:
+        tuple: (query, geometry_info) where geometry_info contains primary/secondary columns
+               and their metadata. Returns (None, None) if no geometry found.
+    """
     from geoparquet_io.core.common import check_bbox_structure, should_skip_bbox
 
-    geom_column = _detect_geometry_column(
-        con, input_file, verbose, is_parquet=is_parquet, layer=layer
-    )
+    # Use multi-geometry detection for parquet files
+    if is_parquet:
+        geom_info = detect_all_geometry_columns(input_file, verbose=verbose)
+        geom_column = geom_info["primary"]
+        secondary_columns = geom_info["secondary"]
+    else:
+        # For non-parquet, use standard single-column detection
+        geom_column = _detect_geometry_column(
+            con, input_file, verbose, is_parquet=False, layer=layer
+        )
+        secondary_columns = []
+        geom_info = {
+            "primary": geom_column,
+            "secondary": [],
+            "metadata": {geom_column: {"encoding": "WKB"}} if geom_column else {},
+        }
+
     if geom_column is None:
-        return None
+        return None, None
 
     # Determine if bbox should be skipped for this version
     skip_bbox = should_skip_bbox(geoparquet_version)
@@ -876,6 +988,8 @@ def _convert_spatial_path(
     )
 
     if verbose:
+        if secondary_columns:
+            debug(f"Preserving secondary geometry columns: {secondary_columns}")
         if skip_bbox:
             msg = "Reading input (skipping bbox for native geo types)..."
             if not skip_hilbert:
@@ -890,7 +1004,7 @@ def _convert_spatial_path(
                 msg = "Pass 1: Reading input, adding bbox, and applying Hilbert ordering..."
         debug(msg)
 
-    return _build_conversion_query(
+    query = _build_conversion_query(
         input_file,
         geom_column,
         skip_hilbert,
@@ -901,6 +1015,8 @@ def _convert_spatial_path(
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
     )
+
+    return query, geom_info
 
 
 def read_spatial_to_arrow(
@@ -1087,7 +1203,7 @@ def _read_csv_to_arrow(
 
     # Build query based on geometry type
     if geom_info["type"] == "wkt":
-        wkt_col = _quote_identifier(geom_info["wkt_column"])
+        wkt_col = quote_identifier(geom_info["wkt_column"])
         if skip_invalid:
             # Use a CTE to evaluate TRY(ST_GeomFromText(...)) once, avoiding
             # repeated re-evaluation that can segfault in DuckDB 1.5.
@@ -1110,8 +1226,8 @@ def _read_csv_to_arrow(
                 WHERE {wkt_col} IS NOT NULL
             """
     else:  # latlon
-        lat_col = _quote_identifier(geom_info["lat_column"])
-        lon_col = _quote_identifier(geom_info["lon_column"])
+        lat_col = quote_identifier(geom_info["lat_column"])
+        lon_col = quote_identifier(geom_info["lon_column"])
         query = f"""
             SELECT * EXCLUDE ({lat_col}, {lon_col}),
                    ST_AsWKB(ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))) AS geometry
@@ -1131,7 +1247,7 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
     if geom_column is None:
         warn("No geometry column found in input file. Reading as plain table.")
         return None
-    quoted_geom = _quote_identifier(geom_column)
+    quoted_geom = quote_identifier(geom_column)
 
     if is_parquet:
         table_expr = f"read_parquet('{input_url}')"
@@ -1313,8 +1429,9 @@ def convert_to_geoparquet(
                 verbose,
                 geoparquet_version=geoparquet_version,
             )
+            geometry_info = None
         else:
-            query = _convert_spatial_path(
+            query, geometry_info = _convert_spatial_path(
                 con,
                 input_url,
                 skip_hilbert,
@@ -1364,6 +1481,7 @@ def convert_to_geoparquet(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_crs=effective_crs,
+            geometry_info=geometry_info,
         )
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 
