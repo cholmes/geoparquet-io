@@ -2658,7 +2658,23 @@ def extract_arcgis(
 )
 @click.option(
     "--geography-column",
-    help="Name of GEOGRAPHY column to convert to geometry (auto-detected if not set)",
+    help="Column containing geometry data. Auto-detected for native GEOGRAPHY columns. "
+    "Specify to parse a VARCHAR column as WKT or GeoJSON geometry.",
+)
+@click.option(
+    "--geometry-format",
+    type=click.Choice(["wkt", "geojson"], case_sensitive=False),
+    default="wkt",
+    help="Format of geometry data in VARCHAR columns (default: wkt). "
+    "Only used when --geography-column points to a non-GEOGRAPHY column.",
+)
+@click.option(
+    "--edges",
+    type=click.Choice(["spherical", "planar"], case_sensitive=False),
+    default=None,
+    help="Edge interpretation for GeoParquet metadata. "
+    "Native GEOGRAPHY columns default to 'spherical' (BigQuery uses S2). "
+    "VARCHAR columns default to 'planar'. Use this to override.",
 )
 @output_format_options
 @geoparquet_version_option
@@ -2680,6 +2696,8 @@ def extract_bigquery_cmd(
     bbox_threshold,
     limit,
     geography_column,
+    geometry_format,
+    edges,
     compression,
     compression_level,
     row_group_size,
@@ -2705,8 +2723,10 @@ def extract_bigquery_cmd(
     2. GOOGLE_APPLICATION_CREDENTIALS environment variable
     3. gcloud auth application-default credentials
 
-    GEOGRAPHY columns are automatically converted to GeoParquet geometry
-    with spherical edges (edges: "spherical" in metadata).
+    Native GEOGRAPHY columns are automatically converted to GeoParquet geometry
+    with spherical edges. If your geometry is stored as a VARCHAR column
+    (WKT or GeoJSON), use --geography-column and --geometry-format to parse it.
+    If no geometry column is found, the output is plain Parquet.
 
     \b
     Limitations:
@@ -2733,6 +2753,20 @@ def extract_bigquery_cmd(
         # Select specific columns
         gpio extract bigquery myproject.geodata.buildings output.parquet \\
             --include-cols "id,name,geography"
+
+        \b
+        # Parse a VARCHAR column as WKT geometry
+        gpio extract bigquery myproject.dataset.table output.parquet \\
+            --geography-column geometry --geometry-format wkt
+
+        \b
+        # Parse a GeoJSON geometry column
+        gpio extract bigquery myproject.dataset.table output.parquet \\
+            --geography-column geojson_col --geometry-format geojson
+
+        \b
+        # Extract without geometry (plain Parquet)
+        gpio extract bigquery myproject.dataset.table output.parquet
     """
     from geoparquet_io.core.extract_bigquery import extract_bigquery
 
@@ -2764,6 +2798,8 @@ def extract_bigquery_cmd(
             include_cols=include_cols,
             exclude_cols=exclude_cols,
             geography_column=geography_column,
+            geometry_format=geometry_format,
+            edges=edges,
             dry_run=dry_run,
             show_sql=show_sql,
             verbose=verbose,

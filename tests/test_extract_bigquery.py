@@ -188,6 +188,276 @@ class TestExtractBigQueryTable:
         assert "name" in result.column_names
 
 
+class TestBuildGeometrySelectExpr:
+    """Test _build_geometry_select_expr handles different column types."""
+
+    def test_varchar_type_uses_geomfromtext(self):
+        """Test that VARCHAR columns get ST_GeomFromText wrapping."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        expr = _build_geometry_select_expr("geometry", "VARCHAR")
+        assert "ST_GeomFromText" in expr
+        assert "ST_AsWKB" in expr
+        assert '"geometry"' in expr
+
+    def test_geometry_type_uses_direct_aswkb(self):
+        """Test that GEOMETRY-typed columns use ST_AsWKB directly."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        expr = _build_geometry_select_expr("geometry", "GEOMETRY")
+        assert "ST_AsWKB" in expr
+        assert "ST_GeomFromText" not in expr
+
+    def test_string_type_uses_geomfromtext(self):
+        """Test that STRING type (another non-GEOMETRY type) uses ST_GeomFromText."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        expr = _build_geometry_select_expr("geom", "STRING")
+        assert "ST_GeomFromText" in expr
+        assert "ST_AsWKB" in expr
+
+    def test_varchar_geometry_query_executes(self):
+        """Test that the generated SQL for VARCHAR geometry actually works."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_exec AS SELECT 1 AS id, 'POINT(1.5 2.5)' AS geometry")
+
+        expr = _build_geometry_select_expr("geometry", "VARCHAR")
+        result = con.execute(f"SELECT {expr} FROM test_exec").fetchall()
+        assert len(result) == 1
+        # geometry column should be BLOB (WKB bytes)
+        assert isinstance(result[0][0], bytes)
+        con.close()
+
+    def test_geojson_format(self):
+        """Test that GeoJSON format uses ST_GeomFromGeoJSON."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        expr = _build_geometry_select_expr("geom", "VARCHAR", geometry_format="geojson")
+        assert "ST_GeomFromGeoJSON" in expr
+        assert "ST_AsWKB" in expr
+        assert "ST_GeomFromText" not in expr
+
+    def test_geojson_format_query_executes(self):
+        """Test that GeoJSON format SQL actually works."""
+        from geoparquet_io.core.extract_bigquery import _build_geometry_select_expr
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute(
+            """CREATE TABLE test_geojson AS
+            SELECT 1 AS id,
+            '{"type":"Point","coordinates":[1.5,2.5]}' AS geom"""
+        )
+
+        expr = _build_geometry_select_expr("geom", "VARCHAR", geometry_format="geojson")
+        result = con.execute(f"SELECT {expr} FROM test_geojson").fetchall()
+        assert len(result) == 1
+        assert isinstance(result[0][0], bytes)
+        con.close()
+
+
+class TestNoGeometryPlainParquet:
+    """Test that tables without geometry are written as plain Parquet."""
+
+    def test_no_geometry_detected_returns_none(self):
+        """Test that _detect_geometry_column_from_schema returns None for non-GEOMETRY columns."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        # Table with a "geometry" column that is VARCHAR, not GEOMETRY type
+        con.execute("CREATE TABLE test_no_geom AS SELECT 1 AS id, 'POINT(0 0)' AS geometry")
+
+        # Should NOT detect "geometry" by name - only native GEOMETRY type
+        result = _detect_geometry_column_from_schema(con, "test_no_geom", table_source="local")
+        assert result is None
+        con.close()
+
+    def test_detects_native_geometry_type(self):
+        """Test that native GEOMETRY columns are still detected."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_native AS SELECT 1 AS id, ST_Point(0, 0) AS geometry")
+
+        result = _detect_geometry_column_from_schema(con, "test_native", table_source="local")
+        assert result == "geometry"
+        con.close()
+
+    def test_explicit_varchar_column_returns_none(self):
+        """Test that specifying a VARCHAR column returns None (not error)."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_varchar AS SELECT 1 AS id, 'POINT(0 0)' AS geom")
+
+        # Should return None - column exists but isn't GEOMETRY type
+        result = _detect_geometry_column_from_schema(
+            con, "test_varchar", geography_column="geom", table_source="local"
+        )
+        assert result is None
+        con.close()
+
+    def test_nonexistent_column_raises_error(self):
+        """Test that specifying a nonexistent column raises ValueError."""
+        from geoparquet_io.core.extract_bigquery import _detect_geometry_column_from_schema
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute("CREATE TABLE test_noexist AS SELECT 1 AS id")
+
+        with pytest.raises(ValueError, match="not found"):
+            _detect_geometry_column_from_schema(
+                con, "test_noexist", geography_column="geom", table_source="local"
+            )
+        con.close()
+
+
+class TestEdgesParameter:
+    """Test edge interpretation logic for native vs VARCHAR geometry columns."""
+
+    def test_python_api_has_edges_parameter(self):
+        """Test that Python API exposes edges parameter."""
+        import inspect
+
+        from geoparquet_io.api import Table, ops
+
+        # Check Table.from_bigquery
+        sig = inspect.signature(Table.from_bigquery)
+        assert "edges" in sig.parameters
+        assert "geography_column" in sig.parameters
+        assert "geometry_format" in sig.parameters
+
+        # Check ops.read_bigquery
+        sig = inspect.signature(ops.read_bigquery)
+        assert "edges" in sig.parameters
+        assert "geography_column" in sig.parameters
+        assert "geometry_format" in sig.parameters
+
+    def test_python_api_parameter_defaults(self):
+        """Test that Python API has correct default values."""
+        import inspect
+
+        from geoparquet_io.api import Table, ops
+
+        # Check Table.from_bigquery defaults
+        sig = inspect.signature(Table.from_bigquery)
+        assert sig.parameters["edges"].default is None
+        assert sig.parameters["geography_column"].default is None
+        assert sig.parameters["geometry_format"].default == "wkt"
+
+        # Check ops.read_bigquery defaults
+        sig = inspect.signature(ops.read_bigquery)
+        assert sig.parameters["edges"].default is None
+        assert sig.parameters["geography_column"].default is None
+        assert sig.parameters["geometry_format"].default == "wkt"
+
+    def test_core_function_has_edges_parameter(self):
+        """Test that core extract_bigquery function has edges parameter."""
+        import inspect
+
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        sig = inspect.signature(extract_bigquery)
+        assert "edges" in sig.parameters
+        assert sig.parameters["edges"].default is None
+
+
+class TestColumnNameResolution:
+    """Test column name case resolution for VARCHAR columns."""
+
+    def test_resolve_column_name_case_insensitive(self):
+        """Test that _resolve_column_name finds the actual schema spelling."""
+        from geoparquet_io.core.extract_bigquery import _resolve_column_name
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE test_case AS SELECT 1 AS id, 'POINT(0 0)' AS Geometry")
+
+        # Should resolve "geometry" to "Geometry" (actual schema spelling)
+        resolved = _resolve_column_name(con, "test_case", "geometry", table_source="local")
+        assert resolved == "Geometry"
+
+        # Should resolve "GEOMETRY" to "Geometry"
+        resolved = _resolve_column_name(con, "test_case", "GEOMETRY", table_source="local")
+        assert resolved == "Geometry"
+
+        con.close()
+
+    def test_resolve_column_name_returns_input_if_not_found(self):
+        """Test that _resolve_column_name returns input if column not found."""
+        from geoparquet_io.core.extract_bigquery import _resolve_column_name
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE test_missing AS SELECT 1 AS id")
+
+        resolved = _resolve_column_name(con, "test_missing", "nonexistent", table_source="local")
+        assert resolved == "nonexistent"
+
+        con.close()
+
+
+class TestBboxFiltersWithVarchar:
+    """Test bbox filter generation for VARCHAR WKT/GeoJSON columns."""
+
+    def test_bbox_filter_native_geometry(self):
+        """Test that native GEOMETRY columns use direct ST_INTERSECTS."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10", "geom", use_server_side=True, is_native_geometry=True
+        )
+        assert len(bq_filters) == 1
+        assert "ST_INTERSECTS(geom," in bq_filters[0]
+        assert "ST_GEOGFROMTEXT(geom" not in bq_filters[0]
+
+    def test_bbox_filter_varchar_wkt(self):
+        """Test that VARCHAR WKT columns wrap with ST_GEOGFROMTEXT."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=True,
+            is_native_geometry=False,
+            geometry_format="wkt",
+        )
+        assert len(bq_filters) == 1
+        assert "ST_GEOGFROMTEXT(geom)" in bq_filters[0]
+
+    def test_bbox_filter_varchar_geojson(self):
+        """Test that VARCHAR GeoJSON columns wrap with ST_GEOGFROMGEOJSON."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=True,
+            is_native_geometry=False,
+            geometry_format="geojson",
+        )
+        assert len(bq_filters) == 1
+        assert "ST_GEOGFROMGEOJSON(geom)" in bq_filters[0]
+
+    def test_local_filter_varchar_wkt(self):
+        """Test that local filtering wraps VARCHAR WKT with ST_GeomFromText."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=False,
+            is_native_geometry=False,
+            geometry_format="wkt",
+        )
+        assert len(local_filters) == 1
+        assert 'ST_GeomFromText("geom")' in local_filters[0]
+
+
 class TestDryRun:
     """Test dry-run functionality."""
 

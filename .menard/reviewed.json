@@ -22,13 +22,6 @@
       "reviewed_by": "Claude"
     },
     {
-      "code_file": "geoparquet_io/core/convert.py",
-      "doc_target": "docs/guide/convert.md",
-      "reviewed_at": "2026-04-02T14:58:46.661608+00:00",
-      "code_commit_at_review": "bbfd1d5",
-      "reviewed_by": "Claude"
-    },
-    {
       "code_file": "geoparquet_io/core/benchmark.py",
       "doc_target": "docs/cli/benchmark.md",
       "reviewed_at": "2026-04-02T14:59:15.848217+00:00",
@@ -111,6 +104,13 @@
       "reviewed_at": "2026-04-03T09:05:36.252265+00:00",
       "code_commit_at_review": "56d2c60",
       "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/convert.py",
+      "doc_target": "docs/guide/convert.md",
+      "reviewed_at": "2026-04-08T12:06:29.681564+00:00",
+      "code_commit_at_review": "009a2b7",
+      "reviewed_by": "claude"
     }
   ]
 }

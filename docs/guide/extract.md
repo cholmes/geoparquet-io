@@ -662,13 +662,15 @@ gcloud auth application-default login
 gpio extract bigquery myproject.geodata.table output.parquet
 ```
 
-### GEOGRAPHY Column Handling
+### Geometry Column Handling
 
-BigQuery `GEOGRAPHY` columns are automatically converted to GeoParquet geometry:
+#### Native GEOGRAPHY Columns
+
+BigQuery `GEOGRAPHY` columns (native spatial type) are automatically detected and converted to GeoParquet geometry:
 
 - GEOGRAPHY data is returned in WGS84 (EPSG:4326)
-- The geometry column is auto-detected by common names (`geography`, `geom`, `geometry`)
-- Use `--geography-column` to specify explicitly if needed
+- Only native GEOGRAPHY-typed columns are auto-detected
+- Use `--geography-column` to specify explicitly if the column has an unusual name
 
 ```bash
 # Explicit geography column
@@ -676,9 +678,48 @@ gpio extract bigquery myproject.geodata.parcels output.parquet \
   --geography-column "parcel_boundary"
 ```
 
+#### VARCHAR Columns (WKT/GeoJSON)
+
+If your geometry is stored as text in a VARCHAR column (WKT or GeoJSON format), use `--geography-column` with `--geometry-format`:
+
+=== "CLI"
+
+    ```bash
+    # Parse WKT geometry from VARCHAR column
+    gpio extract bigquery myproject.dataset.table output.parquet \
+      --geography-column geometry --geometry-format wkt
+
+    # Parse GeoJSON geometry from VARCHAR column
+    gpio extract bigquery myproject.dataset.table output.parquet \
+      --geography-column geojson_col --geometry-format geojson
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Parse WKT geometry from VARCHAR column
+    table = gpio.Table.from_bigquery(
+        'myproject.dataset.table',
+        geography_column='geometry',
+        geometry_format='wkt'
+    )
+    table.write('output.parquet')
+    ```
+
+#### No Geometry Column
+
+If no geometry column is found, the output is plain Parquet (not GeoParquet):
+
+```bash
+# Extract table without geometry - outputs plain Parquet
+gpio extract bigquery myproject.dataset.plain_table output.parquet
+```
+
 ### Spherical Edges
 
-BigQuery GEOGRAPHY uses **spherical geodesic edges** (S2-based), meaning lines between points follow the shortest path on a sphere rather than planar straight lines. This is automatically reflected in the output GeoParquet metadata:
+BigQuery GEOGRAPHY uses **spherical geodesic edges** (S2-based), meaning lines between points follow the shortest path on a sphere rather than planar straight lines. This is automatically reflected in the output GeoParquet metadata for native GEOGRAPHY columns:
 
 ```json
 {
@@ -691,7 +732,26 @@ BigQuery GEOGRAPHY uses **spherical geodesic edges** (S2-based), meaning lines b
 }
 ```
 
-This ensures downstream tools correctly interpret the geometry edges. Most GIS tools assume planar edges by default, so the `edges: "spherical"` metadata is important for accurate analysis.
+**Edge interpretation defaults:**
+
+| Geometry Source | Default Edges |
+|-----------------|---------------|
+| Native GEOGRAPHY column | `spherical` |
+| VARCHAR column (WKT/GeoJSON) | `planar` (no edges metadata) |
+
+You can override the default with `--edges`:
+
+```bash
+# Force spherical edges for VARCHAR geometry
+gpio extract bigquery myproject.dataset.table output.parquet \
+  --geography-column geometry --geometry-format wkt --edges spherical
+
+# Force planar edges for native GEOGRAPHY (unusual)
+gpio extract bigquery myproject.dataset.table output.parquet \
+  --edges planar
+```
+
+This ensures downstream tools correctly interpret the geometry edges. Most GIS tools assume planar edges by default, so the `edges: "spherical"` metadata is important for accurate analysis with native GEOGRAPHY data.
 
 ### Limitations
 

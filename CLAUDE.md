@@ -81,7 +81,7 @@ geoparquet_io/
 | `extract.py` | Extract columns and rows from GeoParquet files. | 1225 |
 | `metadata_utils.py` | Utilities for extracting and formatting GeoParquet... | 1197 |
 | `wfs.py` | WFS (Web Feature Service) to GeoParquet conversion... | 1193 |
-| `extract_bigquery.py` |  | 934 |
+| `extract_bigquery.py` |  | 1044 |
 | `partition_common.py` |  | 908 |
 | `admin_datasets.py` |  | 735 |
 | `partition_admin_hierarchical.py` |  | 698 |
