@@ -368,6 +368,96 @@ class TestEdgesParameter:
         assert sig.parameters["edges"].default is None
 
 
+class TestColumnNameResolution:
+    """Test column name case resolution for VARCHAR columns."""
+
+    def test_resolve_column_name_case_insensitive(self):
+        """Test that _resolve_column_name finds the actual schema spelling."""
+        from geoparquet_io.core.extract_bigquery import _resolve_column_name
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE test_case AS SELECT 1 AS id, 'POINT(0 0)' AS Geometry")
+
+        # Should resolve "geometry" to "Geometry" (actual schema spelling)
+        resolved = _resolve_column_name(con, "test_case", "geometry", table_source="local")
+        assert resolved == "Geometry"
+
+        # Should resolve "GEOMETRY" to "Geometry"
+        resolved = _resolve_column_name(con, "test_case", "GEOMETRY", table_source="local")
+        assert resolved == "Geometry"
+
+        con.close()
+
+    def test_resolve_column_name_returns_input_if_not_found(self):
+        """Test that _resolve_column_name returns input if column not found."""
+        from geoparquet_io.core.extract_bigquery import _resolve_column_name
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE test_missing AS SELECT 1 AS id")
+
+        resolved = _resolve_column_name(con, "test_missing", "nonexistent", table_source="local")
+        assert resolved == "nonexistent"
+
+        con.close()
+
+
+class TestBboxFiltersWithVarchar:
+    """Test bbox filter generation for VARCHAR WKT/GeoJSON columns."""
+
+    def test_bbox_filter_native_geometry(self):
+        """Test that native GEOMETRY columns use direct ST_INTERSECTS."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10", "geom", use_server_side=True, is_native_geometry=True
+        )
+        assert len(bq_filters) == 1
+        assert "ST_INTERSECTS(geom," in bq_filters[0]
+        assert "ST_GEOGFROMTEXT(geom" not in bq_filters[0]
+
+    def test_bbox_filter_varchar_wkt(self):
+        """Test that VARCHAR WKT columns wrap with ST_GEOGFROMTEXT."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=True,
+            is_native_geometry=False,
+            geometry_format="wkt",
+        )
+        assert len(bq_filters) == 1
+        assert "ST_GEOGFROMTEXT(geom)" in bq_filters[0]
+
+    def test_bbox_filter_varchar_geojson(self):
+        """Test that VARCHAR GeoJSON columns wrap with ST_GEOGFROMGEOJSON."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=True,
+            is_native_geometry=False,
+            geometry_format="geojson",
+        )
+        assert len(bq_filters) == 1
+        assert "ST_GEOGFROMGEOJSON(geom)" in bq_filters[0]
+
+    def test_local_filter_varchar_wkt(self):
+        """Test that local filtering wraps VARCHAR WKT with ST_GeomFromText."""
+        from geoparquet_io.core.extract_bigquery import _build_bbox_filters
+
+        bq_filters, local_filters = _build_bbox_filters(
+            "0,0,10,10",
+            "geom",
+            use_server_side=False,
+            is_native_geometry=False,
+            geometry_format="wkt",
+        )
+        assert len(local_filters) == 1
+        assert 'ST_GeomFromText("geom")' in local_filters[0]
+
+
 class TestDryRun:
     """Test dry-run functionality."""
 

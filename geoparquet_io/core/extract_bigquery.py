@@ -511,6 +511,35 @@ def _get_column_type(
     return "VARCHAR"
 
 
+def _resolve_column_name(
+    con: duckdb.DuckDBPyConnection,
+    table_id: str,
+    column_name: str,
+    table_source: str = "bigquery",
+) -> str:
+    """
+    Resolve a column name to its actual schema spelling (case-sensitive).
+
+    Args:
+        con: DuckDB connection
+        table_id: BigQuery table ID or local table name
+        column_name: Column name (possibly with different case)
+        table_source: "bigquery" for bigquery_scan, "local" for local tables
+
+    Returns:
+        The actual column name from the schema, or the input if not found
+    """
+    if table_source == "bigquery":
+        schema_query = f"DESCRIBE SELECT * FROM bigquery_scan('{table_id}') LIMIT 0"
+    else:
+        schema_query = f"DESCRIBE SELECT * FROM {table_id} LIMIT 0"
+    schema_result = con.execute(schema_query).fetchall()
+    for row in schema_result:
+        if row[0].lower() == column_name.lower():
+            return row[0]
+    return column_name
+
+
 def _build_geometry_select_expr(
     column_name: str,
     column_type: str,
@@ -721,9 +750,18 @@ def _build_bbox_filters(
     bbox: str,
     geom_col: str,
     use_server_side: bool,
+    is_native_geometry: bool = True,
+    geometry_format: str = "wkt",
 ) -> tuple[list[str], list[str]]:
     """
     Build bbox filter strings for server-side and local filtering.
+
+    Args:
+        bbox: Bounding box string "xmin,ymin,xmax,ymax"
+        geom_col: Geometry column name
+        use_server_side: Whether to use BigQuery server-side filtering
+        is_native_geometry: Whether the column is native GEOMETRY type
+        geometry_format: Format of VARCHAR geometry columns ("wkt" or "geojson")
 
     Returns:
         Tuple of (bq_filters list, local_conditions list)
@@ -735,11 +773,35 @@ def _build_bbox_filters(
     local_conditions = []
 
     if use_server_side:
-        bbox_filter = f"ST_INTERSECTS({geom_col}, ST_GEOGFROMTEXT(''{wkt}''))"
+        # BigQuery server-side filter
+        if is_native_geometry:
+            # Native GEOGRAPHY column - use directly
+            bbox_filter = f"ST_INTERSECTS({geom_col}, ST_GEOGFROMTEXT(''{wkt}''))"
+        elif geometry_format == "geojson":
+            # VARCHAR with GeoJSON - parse first
+            bbox_filter = (
+                f"ST_INTERSECTS(ST_GEOGFROMGEOJSON({geom_col}), ST_GEOGFROMTEXT(''{wkt}''))"
+            )
+        else:
+            # VARCHAR with WKT - parse first
+            bbox_filter = f"ST_INTERSECTS(ST_GEOGFROMTEXT({geom_col}), ST_GEOGFROMTEXT(''{wkt}''))"
         bq_filters.append(bbox_filter)
         debug(f"BigQuery filter: {bbox_filter}")
     else:
-        bbox_filter = f"ST_Intersects(\"{geom_col}\", ST_GeomFromText('{wkt}'))"
+        # DuckDB local filter
+        if is_native_geometry:
+            # Native GEOMETRY column - use directly
+            bbox_filter = f"ST_Intersects(\"{geom_col}\", ST_GeomFromText('{wkt}'))"
+        elif geometry_format == "geojson":
+            # VARCHAR with GeoJSON - parse first
+            bbox_filter = (
+                f"ST_Intersects(ST_GeomFromGeoJSON(\"{geom_col}\"), ST_GeomFromText('{wkt}'))"
+            )
+        else:
+            # VARCHAR with WKT - parse first
+            bbox_filter = (
+                f"ST_Intersects(ST_GeomFromText(\"{geom_col}\"), ST_GeomFromText('{wkt}'))"
+            )
         local_conditions.append(bbox_filter)
         debug(f"DuckDB filter: {bbox_filter}")
 
@@ -912,7 +974,8 @@ def _execute_bigquery_extraction(
             if geography_column:
                 # User explicitly specified a column that isn't native GEOMETRY -
                 # still use it, parsing as WKT or GeoJSON
-                geom_col = geography_column
+                # Resolve to actual schema spelling for case-insensitive matching
+                geom_col = _resolve_column_name(con, validated_table_id, geography_column)
                 debug(
                     f"Using '{geom_col}' as geometry column (parsing as {geometry_format.upper()})"
                 )
@@ -953,6 +1016,8 @@ def _execute_bigquery_extraction(
             geom_col=geom_col,
             where=where,
             limit=limit,
+            is_native_geometry=is_native_geometry,
+            geometry_format=geometry_format,
         )
 
         if show_sql:
@@ -984,10 +1049,21 @@ def _execute_bigquery_extraction(
                     edges=final_edges,
                 )
             else:
-                # No geometry - write plain Parquet
+                # No geometry - write plain Parquet with same compression settings
                 import pyarrow.parquet as pq
 
-                pq.write_table(result, output_parquet, compression="ZSTD")
+                # Map row_group_size_mb to row_group_size (bytes)
+                rg_size = int(row_group_size_mb * 1024 * 1024) if row_group_size_mb else None
+                # row_group_rows takes precedence if specified
+                final_rg_size = row_group_rows if row_group_rows else rg_size
+
+                pq.write_table(
+                    result,
+                    output_parquet,
+                    compression=compression,
+                    compression_level=compression_level,
+                    row_group_size=final_rg_size,
+                )
 
             success(f"Extracted {row_count:,} rows to {output_parquet}")
             return None
@@ -1006,6 +1082,8 @@ def _build_bigquery_query(
     geom_col: str | None,
     where: str | None,
     limit: int | None,
+    is_native_geometry: bool = True,
+    geometry_format: str = "wkt",
 ) -> str:
     """Build the BigQuery query with filters applied."""
     bq_filters: list[str] = []
@@ -1016,7 +1094,9 @@ def _build_bigquery_query(
         use_server_side = _determine_bbox_strategy(
             con, validated_table_id, bbox_mode, bbox_threshold
         )
-        bq_filters, local_conditions = _build_bbox_filters(bbox, geom_col, use_server_side)
+        bq_filters, local_conditions = _build_bbox_filters(
+            bbox, geom_col, use_server_side, is_native_geometry, geometry_format
+        )
     elif bbox and not geom_col:
         warn("--bbox specified but no geometry column detected; ignoring spatial filter")
 
