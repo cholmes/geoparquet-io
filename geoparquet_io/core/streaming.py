@@ -233,7 +233,9 @@ def find_geometry_column_from_table(table: pa.Table) -> str | None:
         return geom_col
 
     # Fall back to common names
-    for name in ["geometry", "geom", "the_geom", "wkb_geometry"]:
+    from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES
+
+    for name in STANDARD_GEOMETRY_NAMES:
         if name in table.column_names:
             return name
 

@@ -1210,8 +1210,10 @@ def detect_parquet_geometry_column(parquet_file, verbose=False):
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
 
-    # 1. Check GeoParquet metadata first
+    # Normalize path for consistent handling of URLs and local files
     safe_url = safe_file_url(parquet_file, verbose=False)
+
+    # 1. Check GeoParquet metadata first
     geo_meta = get_geo_metadata(safe_url)
     if geo_meta and isinstance(geo_meta, dict):
         primary = geo_meta.get("primary_column")
@@ -1220,20 +1222,25 @@ def detect_parquet_geometry_column(parquet_file, verbose=False):
                 debug(f"Detected geometry column from metadata: {primary}")
             return primary
 
-    # 2. Fall back to name-based detection from schema
-    import pyarrow.parquet as pq
-
+    # 2. Fall back to name-based detection from schema using DuckDB
+    # (DuckDB handles local files, S3, GCS, and HTTP URLs natively)
+    con = None
     try:
-        schema = pq.read_schema(parquet_file)
-        column_names = [field.name for field in schema]
+        con = get_duckdb_connection(load_httpfs=needs_httpfs(safe_url))
+        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_url}')").fetchall()
+        column_names = [row[0] for row in result]
         for std_name in STANDARD_GEOMETRY_NAMES:
             for col in column_names:
                 if col.lower() == std_name.lower():
                     if verbose:
                         debug(f"Detected geometry column from schema: {col}")
                     return col
-    except Exception:
-        pass
+    except OSError as e:
+        if verbose:
+            debug(f"Failed to read schema: {e}")
+    finally:
+        if con:
+            con.close()
 
     if verbose:
         debug("No geometry column found in parquet file")
@@ -2048,8 +2055,7 @@ def _detect_geometry_from_query(
     # Detect from query schema
     try:
         columns = _get_query_columns(con, query)
-        common_names = ["geometry", "geom", "wkb_geometry", "shape", "the_geom"]
-        for name in common_names:
+        for name in STANDARD_GEOMETRY_NAMES:
             # Case-insensitive match
             for col in columns:
                 if col.lower() == name.lower():
@@ -3361,7 +3367,7 @@ def write_geoparquet_table(
                 geometry_column = "geometry"
         else:
             # Check for common geometry column names
-            for name in ["geometry", "geom", "wkb_geometry"]:
+            for name in STANDARD_GEOMETRY_NAMES:
                 if name in table.column_names:
                     geometry_column = name
                     break

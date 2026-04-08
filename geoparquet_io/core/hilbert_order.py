@@ -10,6 +10,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import (
     DEFAULT_GEOPARQUET_VERSION,
+    STANDARD_GEOMETRY_NAMES,
     add_bbox,
     find_primary_geometry_column,
     get_bbox_advice,
@@ -277,7 +278,7 @@ def _hilbert_order_streaming(
         # Find geometry column
         geom_col = geometry_column
         if geom_col == "geometry" or geom_col not in col_names:
-            for name in ["geometry", "geom", "the_geom", "wkb_geometry"]:
+            for name in STANDARD_GEOMETRY_NAMES:
                 if name in col_names:
                     geom_col = name
                     break
