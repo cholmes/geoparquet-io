@@ -347,6 +347,9 @@ def read_bigquery(
     limit: int | None = None,
     columns: list[str] | None = None,
     exclude_columns: list[str] | None = None,
+    geography_column: str | None = None,
+    geometry_format: str = "wkt",
+    edges: str | None = None,
 ) -> pa.Table:
     """
     Read data from a BigQuery table.
@@ -354,8 +357,9 @@ def read_bigquery(
     Uses DuckDB's BigQuery extension with the Storage Read API for
     efficient Arrow-based scanning with filter pushdown.
 
-    BigQuery GEOGRAPHY columns are automatically converted to GeoParquet
-    geometry with spherical edges.
+    Native GEOGRAPHY columns are automatically detected and converted
+    with spherical edges. VARCHAR columns containing WKT or GeoJSON
+    can be parsed by specifying geography_column and geometry_format.
 
     Args:
         table_id: Fully qualified BigQuery table ID (project.dataset.table)
@@ -368,6 +372,11 @@ def read_bigquery(
         limit: Maximum rows to extract
         columns: Columns to include (None = all)
         exclude_columns: Columns to exclude
+        geography_column: Column containing geometry data. Auto-detected
+            for native GEOGRAPHY columns. Specify to parse VARCHAR columns.
+        geometry_format: Format of VARCHAR geometry ("wkt" or "geojson")
+        edges: Edge interpretation ("spherical" or "planar"). Native
+            GEOGRAPHY columns default to "spherical", VARCHAR to "planar".
 
     Returns:
         PyArrow Table with BigQuery data
@@ -385,6 +394,13 @@ def read_bigquery(
         >>> table = ops.read_bigquery('myproject.geodata.buildings')
         >>> table = ops.add_bbox(table)
         >>> pq.write_table(table, 'output.parquet')
+
+        >>> # Parse VARCHAR column as WKT geometry
+        >>> table = ops.read_bigquery(
+        ...     'myproject.dataset.table',
+        ...     geography_column='geometry',
+        ...     geometry_format='wkt'
+        ... )
     """
     from geoparquet_io.core.extract_bigquery import extract_bigquery
 
@@ -420,6 +436,9 @@ def read_bigquery(
         limit=limit,
         include_cols=include_cols,
         exclude_cols=exclude_cols,
+        geography_column=geography_column,
+        geometry_format=geometry_format,
+        edges=edges,
         verbose=False,
     )
 

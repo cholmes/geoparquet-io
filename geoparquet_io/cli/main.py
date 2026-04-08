@@ -2582,6 +2582,14 @@ def extract_arcgis(
     help="Format of geometry data in VARCHAR columns (default: wkt). "
     "Only used when --geography-column points to a non-GEOGRAPHY column.",
 )
+@click.option(
+    "--edges",
+    type=click.Choice(["spherical", "planar"], case_sensitive=False),
+    default=None,
+    help="Edge interpretation for GeoParquet metadata. "
+    "Native GEOGRAPHY columns default to 'spherical' (BigQuery uses S2). "
+    "VARCHAR columns default to 'planar'. Use this to override.",
+)
 @output_format_options
 @geoparquet_version_option
 @overwrite_option
@@ -2603,6 +2611,7 @@ def extract_bigquery_cmd(
     limit,
     geography_column,
     geometry_format,
+    edges,
     compression,
     compression_level,
     row_group_size,
@@ -2704,6 +2713,7 @@ def extract_bigquery_cmd(
             exclude_cols=exclude_cols,
             geography_column=geography_column,
             geometry_format=geometry_format,
+            edges=edges,
             dry_run=dry_run,
             show_sql=show_sql,
             verbose=verbose,

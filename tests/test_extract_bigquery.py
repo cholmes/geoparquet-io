@@ -318,6 +318,56 @@ class TestNoGeometryPlainParquet:
         con.close()
 
 
+class TestEdgesParameter:
+    """Test edge interpretation logic for native vs VARCHAR geometry columns."""
+
+    def test_python_api_has_edges_parameter(self):
+        """Test that Python API exposes edges parameter."""
+        import inspect
+
+        from geoparquet_io.api import Table, ops
+
+        # Check Table.from_bigquery
+        sig = inspect.signature(Table.from_bigquery)
+        assert "edges" in sig.parameters
+        assert "geography_column" in sig.parameters
+        assert "geometry_format" in sig.parameters
+
+        # Check ops.read_bigquery
+        sig = inspect.signature(ops.read_bigquery)
+        assert "edges" in sig.parameters
+        assert "geography_column" in sig.parameters
+        assert "geometry_format" in sig.parameters
+
+    def test_python_api_parameter_defaults(self):
+        """Test that Python API has correct default values."""
+        import inspect
+
+        from geoparquet_io.api import Table, ops
+
+        # Check Table.from_bigquery defaults
+        sig = inspect.signature(Table.from_bigquery)
+        assert sig.parameters["edges"].default is None
+        assert sig.parameters["geography_column"].default is None
+        assert sig.parameters["geometry_format"].default == "wkt"
+
+        # Check ops.read_bigquery defaults
+        sig = inspect.signature(ops.read_bigquery)
+        assert sig.parameters["edges"].default is None
+        assert sig.parameters["geography_column"].default is None
+        assert sig.parameters["geometry_format"].default == "wkt"
+
+    def test_core_function_has_edges_parameter(self):
+        """Test that core extract_bigquery function has edges parameter."""
+        import inspect
+
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        sig = inspect.signature(extract_bigquery)
+        assert "edges" in sig.parameters
+        assert sig.parameters["edges"].default is None
+
+
 class TestDryRun:
     """Test dry-run functionality."""
 

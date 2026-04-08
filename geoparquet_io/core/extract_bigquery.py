@@ -761,6 +761,7 @@ def extract_bigquery(
     exclude_cols: str | None = None,
     geography_column: str | None = None,
     geometry_format: str = "wkt",
+    edges: str | None = None,
     dry_run: bool = False,
     show_sql: bool = False,
     verbose: bool = False,
@@ -803,6 +804,9 @@ def extract_bigquery(
             Auto-detected for native GEOGRAPHY columns. Use this to
             specify a VARCHAR column containing WKT or GeoJSON geometry.
         geometry_format: Format of geometry in VARCHAR columns ("wkt" or "geojson")
+        edges: Edge interpretation for GeoParquet metadata ("spherical" or "planar").
+            If None (default), uses "spherical" for native GEOGRAPHY columns (BigQuery
+            uses S2 spherical geometry) and "planar" for VARCHAR columns.
         dry_run: Show SQL without executing
         show_sql: Print SQL being executed
         verbose: Enable verbose output
@@ -850,6 +854,7 @@ def extract_bigquery(
         credentials_file=credentials_file,
         geography_column=geography_column,
         geometry_format=geometry_format,
+        edges=edges,
         include_list=include_list,
         exclude_list=exclude_list,
         bbox=bbox,
@@ -875,6 +880,7 @@ def _execute_bigquery_extraction(
     credentials_file: str | None,
     geography_column: str | None,
     geometry_format: str = "wkt",
+    edges: str | None = None,
     include_list: list[str] | None,
     exclude_list: list[str] | None,
     bbox: str | None,
@@ -899,6 +905,7 @@ def _execute_bigquery_extraction(
     ) as con:
         # Detect geometry column from schema (native GEOMETRY type only)
         geom_col = _detect_geometry_column_from_schema(con, validated_table_id, geography_column)
+        is_native_geometry = geom_col is not None  # Track whether geometry is native GEOGRAPHY type
         if geom_col:
             debug(f"Detected geometry column: {geom_col}")
         else:
@@ -915,6 +922,17 @@ def _execute_bigquery_extraction(
                     "without GeoParquet metadata. Use --geography-column to "
                     "specify a column containing WKT or GeoJSON geometry."
                 )
+
+        # Determine edge interpretation for GeoParquet metadata
+        # - If explicitly set, use that value
+        # - Native GEOGRAPHY columns use spherical edges (BigQuery uses S2)
+        # - VARCHAR columns default to planar (None) since edge interpretation is unknown
+        if edges is not None:
+            final_edges = edges
+        elif is_native_geometry:
+            final_edges = "spherical"
+        else:
+            final_edges = None  # Planar (no edges metadata)
 
         # Build column list and SELECT clause
         cols_to_select = _build_column_list(
@@ -963,7 +981,7 @@ def _execute_bigquery_extraction(
                     row_group_rows=row_group_rows,
                     geoparquet_version=geoparquet_version,
                     verbose=verbose,
-                    edges="spherical",
+                    edges=final_edges,
                 )
             else:
                 # No geometry - write plain Parquet
