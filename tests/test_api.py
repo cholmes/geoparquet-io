@@ -586,6 +586,52 @@ class TestOpsNewFunctions:
         assert result.num_rows == 766
 
 
+class TestTablePartitionByA5:
+    """Tests for Table.partition_by_a5() method."""
+
+    @pytest.fixture
+    def sample_table(self):
+        """Create a sample Table from test data."""
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.fixture
+    def output_dir(self):
+        """Create a temporary output directory."""
+        tmp_dir = Path(tempfile.gettempdir()) / f"test_part_a5_{uuid.uuid4()}"
+        yield tmp_dir
+        # Cleanup
+        if tmp_dir.exists():
+            import shutil
+
+            shutil.rmtree(tmp_dir)
+
+    def test_partition_by_a5_basic(self, sample_table, output_dir):
+        """Test basic A5 partitioning."""
+        # Use low resolution (4) to ensure partitions have enough rows
+        # Higher resolutions create too many tiny partitions with test data
+        result = sample_table.partition_by_a5(output_dir, resolution=4, overwrite=True)
+
+        assert isinstance(result, dict)
+        assert "file_count" in result
+        assert result["file_count"] > 0
+        assert output_dir.exists()
+        parquet_files = list(output_dir.rglob("*.parquet"))
+        assert len(parquet_files) > 0
+
+    def test_partition_by_a5_hive_style(self, sample_table, output_dir):
+        """Test Hive-style A5 partitioning."""
+        # Use low resolution (4) to ensure partitions have enough rows
+        result = sample_table.partition_by_a5(output_dir, resolution=4, hive=True, overwrite=True)
+
+        assert result["file_count"] > 0
+        # Check for Hive-style directories
+        subdirs = [d for d in output_dir.iterdir() if d.is_dir()]
+        assert len(subdirs) > 0
+        assert any("a5_cell=" in d.name for d in subdirs)
+
+
 class TestReadPartition:
     """Tests for the read_partition() function."""
 
