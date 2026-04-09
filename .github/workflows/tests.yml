@@ -6,6 +6,7 @@ on:
     branches: [ main ]
   schedule:
     - cron: '15 2 * * *'  # Run slow tests nightly at 2:15 AM UTC
+  workflow_dispatch:  # Allow manual triggering from Actions UI
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -132,7 +133,7 @@ jobs:
   test-windows:
     # Windows tests run only on main, scheduled runs, and manual dispatch
     # Windows is ~2x slower than Linux due to filesystem/process overhead
-    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -235,7 +236,7 @@ jobs:
 
   slow-tests-windows:
     # Windows slow tests run only on main, scheduled runs, and manual dispatch
-    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     strategy:
       fail-fast: false
