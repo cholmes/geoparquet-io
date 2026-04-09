@@ -408,6 +408,7 @@ class TestBenchmarkSuiteCLI:
             pq.write_table(table, path)
             yield str(path)
 
+    @pytest.mark.slow
     def test_benchmark_suite_runs(self, test_parquet):
         """Test that benchmark suite runs with a local file."""
         runner = CliRunner()

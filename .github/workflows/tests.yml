@@ -6,6 +6,11 @@ on:
     branches: [ main ]
   schedule:
     - cron: '15 2 * * *'  # Run slow tests nightly at 2:15 AM UTC
+  workflow_dispatch:  # Allow manual triggering from Actions UI
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -114,9 +119,11 @@ jobs:
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n auto --dist=loadfile -m "not slow and not network" -v --tb=short --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           else
-            uv run pytest -n auto -m "not slow and not network" -v --tb=short --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           fi
 
       - name: Upload coverage to Codecov
@@ -149,6 +156,8 @@ jobs:
           uv run pytest --nbmake examples/*.ipynb -v --nbmake-timeout=120 --no-cov
 
   slow-tests:
+    # Slow tests run on merge to main, schedule, and manual dispatch (not on PRs)
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -189,9 +198,11 @@ jobs:
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n auto --dist=loadfile -m "slow or network" -v --tb=short --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 --dist=loadfile -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            uv run pytest -n 3 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           else
-            uv run pytest -n auto -m "slow or network" -v --tb=short --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           fi
 
       - name: Upload slow test coverage to Codecov
