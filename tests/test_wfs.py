@@ -984,7 +984,9 @@ class TestWFSIntegration:
     TYPENAME = "geonode:cairo_od_stats"
 
     @pytest.mark.xfail(
-        reason="External WFS service (transportforcairo.com) unreliable", strict=False
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
     )
     def test_list_available_layers(self):
         """Test listing layers from real WFS."""
@@ -994,7 +996,9 @@ class TestWFSIntegration:
         assert len(layers) > 0
 
     @pytest.mark.xfail(
-        reason="External WFS service (transportforcairo.com) unreliable", strict=False
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
     )
     def test_extract_with_limit(self, tmp_path):
         """Test extracting features with limit."""
