@@ -241,49 +241,11 @@ This allows backwards compatibility:
 )
 
 
-class InspectDefaultGroup(click.Group):
-    """Custom Group that runs 'summary' when no subcommand is provided.
-
-    Also routes deprecated flags (--head, --tail, --stats, --meta, etc.) to legacy command.
-
-    This allows:
-    - gpio inspect data.parquet          -> invokes summary (default)
-    - gpio inspect head data.parquet     -> invokes head subcommand
-    - gpio inspect data.parquet --head   -> invokes legacy (deprecated)
-    - gpio inspect meta --parquet        -> invokes meta subcommand (not legacy)
-    """
-
-    # All deprecated flags that should route to the legacy command
-    deprecated_flags = {
-        "--head",
-        "--tail",
-        "--stats",
-        "--meta",
-        "--parquet",
-        "--geoparquet",
-        "--parquet-geo",
-        "--row-groups",
-    }
-
-    def parse_args(self, ctx, args):
-        # Handle --help for group
-        if "--help" in args and (not args or args[0] not in self.commands):
-            return super().parse_args(ctx, [a for a in args if a != "--help"] + ["--help"])
-
-        # FIRST: Check if first arg is a known subcommand - use it as-is
-        # This must come before deprecated flag checking so that
-        # `gpio inspect meta --parquet` routes to meta, not legacy
-        if args and not args[0].startswith("-") and args[0] in self.commands:
-            return super().parse_args(ctx, args)
-
-        # THEN: Check for deprecated flags - route to legacy command
-        # Only applies when no explicit subcommand was given
-        for flag in self.deprecated_flags:
-            if flag in args:
-                return super().parse_args(ctx, ["legacy"] + args)
-
-        # Default to 'summary' subcommand
-        return super().parse_args(ctx, ["summary"] + args)
+# InspectDefaultGroup: defaults to 'summary' when no subcommand is provided
+InspectDefaultGroup = create_default_group(
+    "summary",
+    "Custom Group that runs 'summary' when no subcommand is provided.",
+)
 
 
 @cli.group(cls=DefaultGroup)
