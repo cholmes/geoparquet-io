@@ -1522,6 +1522,53 @@ class Table:
             collect_stats=True,
         )
 
+    def partition_by_a5(
+        self,
+        output_dir: str | Path,
+        *,
+        resolution: int = 15,
+        compression: str = "ZSTD",
+        hive: bool = True,
+        overwrite: bool = False,
+    ) -> dict:
+        """
+        Partition the table into Hive-partitioned directory by A5 cell.
+
+        Uses the A5 discrete global grid system to partition data
+        by cell boundaries at the specified resolution.
+
+        Args:
+            output_dir: Output directory path
+            resolution: A5 resolution 0-30 (default: 15)
+            compression: Compression codec (default: ZSTD)
+            hive: Use Hive-style partitioning (default: True)
+            overwrite: Overwrite existing output directory
+
+        Returns:
+            dict with partition statistics (file_count, etc.)
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> stats = table.partition_by_a5('output/', resolution=12)
+            >>> print(f"Created {stats['file_count']} files")
+        """
+        from geoparquet_io.core.partition_by_a5 import partition_by_a5
+
+        return _run_partition_with_temp_file(
+            self._table,
+            self._geometry_column,
+            partition_by_a5,
+            output_dir,
+            temp_prefix="gpio_part_a5",
+            core_kwargs={
+                "resolution": resolution,
+                "hive": hive,
+                "overwrite": overwrite,
+            },
+            compression=compression,
+            collect_stats=True,
+        )
+
     def upload(
         self,
         destination: str,
