@@ -20,16 +20,15 @@ The `gpio inspect meta` command shows comprehensive metadata from GeoParquet fil
 === "Python"
 
     ```python
-    from geoparquet_io import Table
+    import geoparquet_io as gpio
 
-    table = Table("data.parquet")
+    table = gpio.read("data.parquet")
 
     # Get all metadata
     metadata = table.metadata()
 
-    # Access specific metadata
-    geo_metadata = table.geo_metadata()
-    parquet_metadata = table.parquet_metadata()
+    # Include parquet metadata
+    metadata = table.metadata(include_parquet_metadata=True)
     ```
 
 ## Metadata Types

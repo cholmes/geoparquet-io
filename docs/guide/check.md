@@ -229,7 +229,7 @@ Reports which columns have bloom filters, coverage percentages, and total bloom 
 === "Python"
 
     ```python
-    result = table.check_spec()
+    result = table.validate()
     if result.passed():
         print("Valid GeoParquet!")
     ```
