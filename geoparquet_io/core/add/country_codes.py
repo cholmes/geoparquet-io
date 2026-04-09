@@ -5,13 +5,13 @@ import duckdb
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    find_primary_geometry_column,
     get_bbox_advice,
     get_dataset_bounds,
     get_parquet_metadata,
-    safe_file_url,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 
 
@@ -120,7 +120,7 @@ def _handle_bbox_optimization(file_path, bbox_info, add_bbox_flag, file_label, v
         success(f"✓ Added bbox column and metadata to {file_label.lower()}")
     elif not bbox_info["has_bbox_metadata"]:
         progress(f"Adding bbox metadata to {file_label.lower()}...")
-        from geoparquet_io.core.add_bbox_metadata import add_bbox_metadata
+        from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
 
         add_bbox_metadata(file_path, verbose)
 

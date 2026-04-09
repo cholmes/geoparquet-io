@@ -1247,7 +1247,7 @@ def convert_arcgis_to_geoparquet(
     # Add bbox column for spatial query optimization
     if not skip_bbox and table.num_rows > 0:
         progress("Adding bbox column for spatial query optimization...")
-        from geoparquet_io.core.add_bbox_column import add_bbox_table
+        from geoparquet_io.core.add.bbox import add_bbox_table
 
         table = add_bbox_table(table, bbox_column_name="bbox", geometry_column="geometry")
 

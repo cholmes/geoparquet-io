@@ -15,31 +15,6 @@ import click
 
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 
-# Per-bucket cache for S3 buckets that require authentication
-# Buckets not in this set are accessed without credentials (works for public buckets)
-_s3_buckets_needing_auth: set[str] = set()
-
-
-def _extract_bucket_name(path: str) -> str:
-    """Extract bucket name from S3 URL."""
-    # s3://bucket-name/path -> bucket-name
-    path_without_protocol = path.split("://", 1)[1]
-    return path_without_protocol.split("/")[0]
-
-
-def _clear_s3_cache():
-    """Clear S3 access cache (useful for testing)."""
-    global _s3_buckets_needing_auth
-    _s3_buckets_needing_auth = set()
-
-
-def _needs_s3_auth(exception: Exception) -> bool:
-    """Detect if exception indicates S3 bucket requires authentication."""
-    error_str = str(exception).lower()
-    # 403 without credentials means we need to authenticate
-    auth_indicators = ["403", "forbidden", "access denied", "unauthorized"]
-    return any(ind in error_str for ind in auth_indicators)
-
 
 def is_remote_url(path):
     """

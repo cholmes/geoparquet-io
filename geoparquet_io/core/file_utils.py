@@ -165,7 +165,9 @@ def handle_output_overwrite(
         try:
             if output_file.resolve() == input_file.resolve():
                 raise click.ClickException(f"Cannot overwrite input file: {output_path}")
-        except (OSError, ValueError):
+        except (OSError, click.ClickException) as e:
+            if isinstance(e, click.ClickException):
+                raise
             pass
 
     if not overwrite:

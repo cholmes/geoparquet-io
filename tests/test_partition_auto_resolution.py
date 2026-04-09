@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from geoparquet_io.core.logging_config import get_logger
-from geoparquet_io.core.partition_auto_resolution import (
+from geoparquet_io.core.partition.auto_resolution import (
     _calculate_a5_resolution,
     _calculate_h3_resolution,
     _calculate_quadkey_resolution,

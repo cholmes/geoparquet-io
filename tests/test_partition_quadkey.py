@@ -13,8 +13,8 @@ import pytest
 from click import UsageError
 from click.testing import CliRunner
 
-from geoparquet_io.core.partition_by_quadkey import _validate_resolutions, partition_by_quadkey
-from geoparquet_io.core.partition_common import calculate_partition_stats
+from geoparquet_io.core.partition.by_quadkey import _validate_resolutions, partition_by_quadkey
+from geoparquet_io.core.partition.common import calculate_partition_stats
 from tests.conftest import safe_rmtree
 
 

@@ -7,16 +7,16 @@ glob patterns, hive-style) across all gpio commands.
 
 import os
 
-from geoparquet_io.core.common import (
+from geoparquet_io.core.file_utils import (
     get_all_parquet_files,
     get_first_parquet_file,
     has_glob_pattern,
     is_partition_path,
-    is_remote_url,
     resolve_partition_path,
     safe_file_url,
 )
 from geoparquet_io.core.logging_config import debug
+from geoparquet_io.core.remote import is_remote_url
 
 
 def build_read_parquet_expr(

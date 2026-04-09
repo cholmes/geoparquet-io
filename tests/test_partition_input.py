@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import check, extract, inspect
-from geoparquet_io.core.partition_reader import (
+from geoparquet_io.core.partition.reader import (
     build_read_parquet_expr,
     get_files_to_check,
     get_partition_info,

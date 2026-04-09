@@ -7,22 +7,24 @@ import tempfile
 import click
 import duckdb
 
-from geoparquet_io.core.add_bbox_column import add_bbox_column
-from geoparquet_io.core.add_bbox_metadata import add_bbox_metadata
+from geoparquet_io.core.add.bbox import add_bbox_column
+from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
 from geoparquet_io.core.common import (
     detect_geoparquet_file_type,
-    get_duckdb_connection,
     get_parquet_metadata,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.hilbert_order import hilbert_order
+from geoparquet_io.core.logging_config import debug, info, progress
+from geoparquet_io.core.remote import (
     get_remote_error_hint,
     is_remote_url,
     needs_httpfs,
     remote_write_context,
-    safe_file_url,
     setup_aws_profile_if_needed,
-    write_parquet_with_metadata,
 )
-from geoparquet_io.core.hilbert_order import hilbert_order
-from geoparquet_io.core.logging_config import debug, info, progress
 
 
 def fix_compression(

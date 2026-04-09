@@ -9,21 +9,19 @@ import mercantile
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    STANDARD_GEOMETRY_NAMES,
-    find_primary_geometry_column,
     get_bbox_advice,
-    get_crs_display_name,
-    get_duckdb_connection,
     get_parquet_metadata,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
-    setup_aws_profile_if_needed,
-    validate_profile_for_urls,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
+from geoparquet_io.core.crs_utils import get_crs_display_name
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_geo_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -31,6 +29,11 @@ from geoparquet_io.core.logging_config import (
     progress,
     success,
     warn,
+)
+from geoparquet_io.core.remote import (
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.partition_by_s2 import partition_by_s2
+from geoparquet_io.core.partition.by_s2 import partition_by_s2
 from tests.conftest import safe_unlink
 
 # Mark all tests as network-dependent (requires DuckDB community extension)
@@ -44,7 +44,7 @@ class TestPartitionByS2:
     def test_partition_with_existing_column(self, places_file, output_folder):
         """Test partitioning when S2 column already exists."""
         # First add S2 column
-        from geoparquet_io.core.add_s2_column import add_s2_column
+        from geoparquet_io.core.add.s2 import add_s2_column
 
         temp_file = str(Path(tempfile.gettempdir()) / f"with_s2_{uuid.uuid4()}.parquet")
         try:

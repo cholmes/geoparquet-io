@@ -1147,7 +1147,7 @@ filtered = arrow_result.filter(arrow_result['population'] > 1000)
 For power users who need direct access to core functions (e.g., for custom pipelines or when you need file-based operations without the Table wrapper):
 
 ```python
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.hilbert_order import hilbert_order
 
 # File-based operations

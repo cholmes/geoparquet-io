@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.add_quadkey_column import (
+from geoparquet_io.core.add.quadkey import (
     _is_geographic_crs,
     _lat_lon_to_quadkey,
 )

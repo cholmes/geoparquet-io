@@ -10,25 +10,28 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import (
     DEFAULT_GEOPARQUET_VERSION,
-    STANDARD_GEOMETRY_NAMES,
     add_bbox,
-    find_primary_geometry_column,
     get_bbox_advice,
     get_dataset_bounds,
-    get_duckdb_connection,
     get_parquet_metadata,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
+from geoparquet_io.core.logging_config import debug, info, success, warn
+from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import (
     get_remote_error_hint,
-    handle_output_overwrite,
     is_remote_url,
     needs_httpfs,
-    safe_file_url,
     setup_aws_profile_if_needed,
     show_remote_read_message,
     validate_profile_for_urls,
-    write_parquet_with_metadata,
 )
-from geoparquet_io.core.logging_config import debug, info, success, warn
-from geoparquet_io.core.partition_reader import require_single_file
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_table,

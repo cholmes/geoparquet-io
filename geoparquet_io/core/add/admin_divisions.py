@@ -12,15 +12,14 @@ import duckdb
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    find_primary_geometry_column,
     get_bbox_advice,
     get_parquet_metadata,
-    handle_output_overwrite,
-    safe_file_url,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
-from geoparquet_io.core.partition_reader import require_single_file
+from geoparquet_io.core.partition.reader import require_single_file
 
 
 def _build_admin_subquery(

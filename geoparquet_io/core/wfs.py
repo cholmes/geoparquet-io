@@ -1173,7 +1173,7 @@ def convert_wfs_to_geoparquet(
     # Add bbox column (unless skipped)
     if not skip_bbox and table.num_rows > 0:
         progress("Adding bbox column...")
-        from geoparquet_io.core.add_bbox_column import add_bbox_table
+        from geoparquet_io.core.add.bbox import add_bbox_table
 
         table = add_bbox_table(table, geometry_column="geometry")
         debug("Bbox column added")

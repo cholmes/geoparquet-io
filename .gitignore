@@ -198,3 +198,4 @@ cython_debug/
 .menard/import_graph.json
 .menard/import_graph.state
 .menard/symbols_cache.json
+.claude/worktrees/

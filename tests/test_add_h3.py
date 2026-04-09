@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.add_h3_column import add_h3_column, add_h3_table
+from geoparquet_io.core.add.h3 import add_h3_column, add_h3_table
 from tests.conftest import safe_unlink
 
 

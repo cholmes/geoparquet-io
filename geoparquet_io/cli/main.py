@@ -27,19 +27,19 @@ from geoparquet_io.cli.decorators import (
     write_strategy_option,
 )
 from geoparquet_io.cli.fix_helpers import handle_fix_common
-from geoparquet_io.core.add_a5_column import add_a5_column as add_a5_column_impl
-from geoparquet_io.core.add_bbox_column import add_bbox_column as add_bbox_column_impl
-from geoparquet_io.core.add_bbox_metadata import add_bbox_metadata as add_bbox_metadata_impl
-from geoparquet_io.core.add_h3_column import add_h3_column as add_h3_column_impl
-from geoparquet_io.core.add_kdtree_column import add_kdtree_column as add_kdtree_column_impl
-from geoparquet_io.core.add_quadkey_column import add_quadkey_column as add_quadkey_column_impl
-from geoparquet_io.core.add_s2_column import add_s2_column as add_s2_column_impl
+from geoparquet_io.core.add.a5 import add_a5_column as add_a5_column_impl
+from geoparquet_io.core.add.bbox import add_bbox_column as add_bbox_column_impl
+from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata as add_bbox_metadata_impl
+from geoparquet_io.core.add.h3 import add_h3_column as add_h3_column_impl
+from geoparquet_io.core.add.kdtree import add_kdtree_column as add_kdtree_column_impl
+from geoparquet_io.core.add.quadkey import add_quadkey_column as add_quadkey_column_impl
+from geoparquet_io.core.add.s2 import add_s2_column as add_s2_column_impl
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.check_parquet_structure import check_all as check_structure_impl
 from geoparquet_io.core.check_spatial_order import check_spatial_order as check_spatial_impl
-from geoparquet_io.core.common import validate_parquet_extension
 from geoparquet_io.core.convert import convert_to_geoparquet
 from geoparquet_io.core.extract import extract as extract_impl
+from geoparquet_io.core.file_utils import validate_parquet_extension
 from geoparquet_io.core.hilbert_order import hilbert_order as hilbert_impl
 from geoparquet_io.core.inspect import (
     display_metadata,
@@ -57,17 +57,17 @@ from geoparquet_io.core.inspect import (
     inspect_summary as _inspect_summary_core,
 )
 from geoparquet_io.core.logging_config import configure_verbose, setup_cli_logging
-from geoparquet_io.core.partition_admin_hierarchical import (
+from geoparquet_io.core.partition.admin_hierarchical import (
     partition_by_admin_hierarchical as partition_admin_hierarchical_impl,
 )
-from geoparquet_io.core.partition_by_a5 import partition_by_a5 as partition_by_a5_impl
-from geoparquet_io.core.partition_by_h3 import partition_by_h3 as partition_by_h3_impl
-from geoparquet_io.core.partition_by_kdtree import partition_by_kdtree as partition_by_kdtree_impl
-from geoparquet_io.core.partition_by_quadkey import (
+from geoparquet_io.core.partition.by_a5 import partition_by_a5 as partition_by_a5_impl
+from geoparquet_io.core.partition.by_h3 import partition_by_h3 as partition_by_h3_impl
+from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree as partition_by_kdtree_impl
+from geoparquet_io.core.partition.by_quadkey import (
     partition_by_quadkey as partition_by_quadkey_impl,
 )
-from geoparquet_io.core.partition_by_s2 import partition_by_s2 as partition_by_s2_impl
-from geoparquet_io.core.partition_by_string import (
+from geoparquet_io.core.partition.by_s2 import partition_by_s2 as partition_by_s2_impl
+from geoparquet_io.core.partition.by_string import (
     partition_by_string as partition_by_string_impl,
 )
 from geoparquet_io.core.reproject import reproject as reproject_core
@@ -423,7 +423,7 @@ def check_all(
 ):
     """Check compression, bbox, row groups, spatial order, and spec compliance."""
     from geoparquet_io.core.common import is_remote_url, show_remote_read_message
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 
@@ -616,7 +616,7 @@ def check_spatial(
 ):
     """Check spatial ordering."""
     from geoparquet_io.core.check_fixes import fix_spatial_ordering
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 
@@ -751,7 +751,7 @@ def check_compression_cmd(
     """Check geometry column compression."""
     from geoparquet_io.core.check_fixes import fix_compression
     from geoparquet_io.core.check_parquet_structure import check_compression
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 
@@ -838,7 +838,7 @@ def check_bbox_cmd(
     """
     from geoparquet_io.core.check_fixes import fix_bbox_all, fix_bbox_removal
     from geoparquet_io.core.check_parquet_structure import check_metadata_and_bbox
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 
@@ -969,7 +969,7 @@ def check_row_group_cmd(
     """Check row group size."""
     from geoparquet_io.core.check_fixes import fix_row_groups
     from geoparquet_io.core.check_parquet_structure import check_row_groups
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 
@@ -2513,7 +2513,7 @@ def extract_arcgis(
           --limit 500
     """
     from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
-    from geoparquet_io.core.common import validate_parquet_extension
+    from geoparquet_io.core.file_utils import validate_parquet_extension
 
     configure_verbose(verbose)
 
@@ -3437,7 +3437,7 @@ def add_country_codes(
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
     # Use new multi-dataset implementation
-    from geoparquet_io.core.add_admin_divisions_multi import add_admin_divisions_multi
+    from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
 
     # Parse levels
     if levels:
@@ -5588,7 +5588,7 @@ def check_optimization_cmd(
       gpio check optimization data.parquet --verbose
     """
     from geoparquet_io.core.check_optimization import check_optimization
-    from geoparquet_io.core.partition_reader import get_files_to_check
+    from geoparquet_io.core.partition.reader import get_files_to_check
 
     configure_verbose(verbose)
 

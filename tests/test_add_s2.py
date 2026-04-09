@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.add_s2_column import add_s2_column, add_s2_table
+from geoparquet_io.core.add.s2 import add_s2_column, add_s2_table
 from tests.conftest import safe_unlink
 
 

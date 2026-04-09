@@ -8,11 +8,9 @@ import uuid
 
 import click
 
-from geoparquet_io.core.add_quadkey_column import add_quadkey_column
-from geoparquet_io.core.common import safe_file_url
-from geoparquet_io.core.constants import (
-    DEFAULT_QUADKEY_COLUMN_NAME,
-)
+from geoparquet_io.core.add.h3 import add_h3_column
+from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -21,8 +19,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -30,76 +28,54 @@ from geoparquet_io.core.partition_common import (
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
-def _validate_resolutions(resolution, partition_resolution):
-    """Validate resolution parameters."""
-    if not 0 <= resolution <= 23:
-        raise click.UsageError(f"Resolution must be between 0 and 23, got {resolution}")
-    if not 0 <= partition_resolution <= 23:
-        raise click.UsageError(
-            f"Partition resolution must be between 0 and 23, got {partition_resolution}"
-        )
-    if partition_resolution > resolution:
-        raise click.UsageError(
-            f"Partition resolution ({partition_resolution}) cannot exceed "
-            f"column resolution ({resolution})"
-        )
-
-
-def _ensure_quadkey_column(
-    input_parquet, quadkey_column_name, resolution, use_centroid, verbose, profile
-):
-    """Ensure quadkey column exists, adding it if needed.
+def _ensure_h3_column(input_parquet, h3_column_name, resolution, verbose):
+    """Ensure H3 column exists, adding it if needed.
 
     Returns:
-        tuple: (input_file_to_use, temp_file_or_none)
+        tuple: (input_file_to_use, column_existed, temp_file_or_none)
     """
     from geoparquet_io.core.duckdb_metadata import get_column_names
 
     safe_url = safe_file_url(input_parquet, verbose)
     column_names = get_column_names(safe_url)
 
-    if quadkey_column_name in column_names:
+    if h3_column_name in column_names:
         if verbose:
-            debug(f"Using existing quadkey column '{quadkey_column_name}'")
-        return input_parquet, None
+            debug(f"Using existing H3 column '{h3_column_name}'")
+        return input_parquet, True, None
 
     if verbose:
-        debug(f"Quadkey column '{quadkey_column_name}' not found. Adding it now...")
+        debug(f"H3 column '{h3_column_name}' not found. Adding it now...")
 
     temp_file = os.path.join(
-        tempfile.gettempdir(),
-        f"quadkey_enriched_{uuid.uuid4().hex}_{os.path.basename(input_parquet)}",
+        tempfile.gettempdir(), f"h3_enriched_{uuid.uuid4().hex}_{os.path.basename(input_parquet)}"
     )
 
     try:
-        add_quadkey_column(
+        add_h3_column(
             input_parquet=input_parquet,
             output_parquet=temp_file,
-            quadkey_column_name=quadkey_column_name,
-            resolution=resolution,
-            use_centroid=use_centroid,
+            h3_column_name=h3_column_name,
+            h3_resolution=resolution,
             dry_run=False,
             verbose=verbose,
             compression="ZSTD",
             compression_level=15,
             row_group_size_mb=None,
             row_group_rows=None,
-            profile=profile,
         )
         if verbose:
-            debug(f"Quadkey column added successfully at resolution {resolution}")
-        return temp_file, temp_file
+            debug(f"H3 column added successfully at resolution {resolution}")
+        return temp_file, False, temp_file
     except Exception as e:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add quadkey column: {str(e)}") from e
+        raise click.ClickException(f"Failed to add H3 column: {str(e)}") from e
 
 
-def _run_quadkey_preview(
-    input_parquet, quadkey_column_name, partition_resolution, preview_limit, verbose
-):
-    """Run partition preview and analysis for quadkey."""
-    from geoparquet_io.core.partition_common import (
+def _run_preview(input_parquet, h3_column_name, preview_limit, verbose):
+    """Run partition preview and analysis."""
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )
@@ -107,8 +83,8 @@ def _run_quadkey_preview(
     try:
         analyze_partition_strategy(
             input_parquet=input_parquet,
-            column_name=quadkey_column_name,
-            column_prefix_length=partition_resolution,
+            column_name=h3_column_name,
+            column_prefix_length=None,
             verbose=True,
         )
     except PartitionAnalysisError:
@@ -119,26 +95,24 @@ def _run_quadkey_preview(
     progress("\n" + "=" * 70)
     preview_partition(
         input_parquet=input_parquet,
-        column_name=quadkey_column_name,
-        column_prefix_length=partition_resolution,
+        column_name=h3_column_name,
+        column_prefix_length=None,
         limit=preview_limit,
         verbose=verbose,
     )
 
 
-def partition_by_quadkey(
+def partition_by_h3(
     input_parquet: str,
     output_folder: str,
-    quadkey_column_name: str = DEFAULT_QUADKEY_COLUMN_NAME,
+    h3_column_name: str = DEFAULT_H3_COLUMN_NAME,
     resolution: int | None = None,
-    partition_resolution: int | None = None,
-    use_centroid: bool = False,
     hive: bool = False,
     overwrite: bool = False,
     preview: bool = False,
     preview_limit: int = 15,
     verbose: bool = False,
-    keep_quadkey_column: bool | None = None,
+    keep_h3_column: bool | None = None,
     force: bool = False,
     skip_analysis: bool = False,
     filename_prefix: str | None = None,
@@ -154,26 +128,44 @@ def partition_by_quadkey(
     max_partitions: int = 10000,
 ) -> None:
     """
-    Partition a GeoParquet file by quadkey cells.
+    Partition a GeoParquet file by H3 cells at specified resolution.
 
     Supports Arrow IPC streaming for input:
     - Input "-" reads from stdin (output is always a directory)
 
     Auto-resolution mode:
-    - Use --auto to automatically calculate optimal zoom level based on data size
+    - Use --auto to automatically calculate optimal resolution based on data size
     - Specify --target-rows to control partition size (default: 100,000 rows)
     - Specify --max-partitions to limit total partition count (default: 10,000)
 
     Args:
+        input_parquet: Input GeoParquet file (local, remote URL, or "-" for stdin)
+        output_folder: Output directory (always writes to directory, no stdout support)
+        h3_column_name: Name of the H3 column (default: 'h3_cell')
+        resolution: H3 resolution level (0-15). Required unless --auto is used
+        hive: Use Hive-style partitioning (column=value directories)
+        overwrite: Overwrite existing output directory
+        preview: Preview partition distribution without writing
+        preview_limit: Max number of partitions to show in preview
+        verbose: Print verbose output
+        keep_h3_column: Keep H3 column in output partitions
+        force: Force operation even if analysis suggests issues
+        skip_analysis: Skip partition analysis
+        filename_prefix: Prefix for output filenames
+        profile: AWS profile name (S3 only, optional)
+        geoparquet_version: GeoParquet version to write
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level (default: 15)
+        row_group_size_mb: Row group size in MB (mutually exclusive with row_group_rows)
+        row_group_rows: Row group size in number of rows (mutually exclusive with row_group_size_mb)
+        memory_limit: DuckDB memory limit for write operations (e.g., "2GB")
         auto: Automatically calculate optimal resolution (default: False)
         target_rows: Target rows per partition for auto mode (default: 100000)
         max_partitions: Maximum partitions for auto mode (default: 10000)
-        resolution: Quadkey resolution for column (0-23). If None and not auto, uses default.
-        partition_resolution: Zoom level for partitioning (0-23). If None, uses resolution value.
     """
     configure_verbose(verbose)
 
-    # Handle stdin input first
+    # Handle stdin input first (before resolution calculation)
     stdin_temp_file = None
     actual_input = input_parquet
 
@@ -181,81 +173,68 @@ def partition_by_quadkey(
         stdin_temp_file = read_stdin_to_temp_file(verbose)
         actual_input = stdin_temp_file
 
-    # Handle auto-resolution
-    if auto:
-        if resolution is not None or partition_resolution is not None:
-            if stdin_temp_file and os.path.exists(stdin_temp_file):
-                os.remove(stdin_temp_file)
-            raise click.UsageError(
-                "Cannot specify --resolution or --partition-resolution with --auto"
-            )
+    # Validate resolution parameter
+    if auto and resolution is not None:
+        raise click.UsageError("Cannot specify both --auto and --resolution")
 
+    if not auto and resolution is None:
+        raise click.UsageError("Must specify either --resolution or --auto")
+
+    # Calculate auto resolution if requested
+    if auto:
         try:
-            calculated_resolution = calculate_auto_resolution(
+            resolution = calculate_auto_resolution(
                 input_parquet=actual_input,
-                spatial_index_type="quadkey",
+                spatial_index_type="h3",
                 target_rows_per_partition=target_rows,
                 max_partitions=max_partitions,
                 min_resolution=0,
-                max_resolution=23,
+                max_resolution=15,
                 verbose=verbose,
                 profile=profile,
             )
-            resolution = calculated_resolution
-            partition_resolution = calculated_resolution
-            info(f"Auto-calculated quadkey zoom level: {resolution}")
+            info(f"Auto-calculated H3 resolution: {resolution}")
         except Exception as e:
             if stdin_temp_file and os.path.exists(stdin_temp_file):
                 os.remove(stdin_temp_file)
             raise click.ClickException(f"Auto-resolution calculation failed: {str(e)}") from e
-    else:
-        # Require explicit resolution values (consistent with H3/A5)
-        if resolution is None or partition_resolution is None:
-            if stdin_temp_file and os.path.exists(stdin_temp_file):
-                os.remove(stdin_temp_file)
-            raise click.UsageError(
-                "Must specify either --auto or both --resolution and --partition-resolution"
-            )
 
-    _validate_resolutions(resolution, partition_resolution)
+    # Validate resolved resolution
+    if not 0 <= resolution <= 15:
+        if stdin_temp_file and os.path.exists(stdin_temp_file):
+            os.remove(stdin_temp_file)
+        raise click.UsageError(f"H3 resolution must be between 0 and 15, got {resolution}")
 
-    if keep_quadkey_column is None:
-        keep_quadkey_column = hive
+    if keep_h3_column is None:
+        keep_h3_column = hive
 
     try:
-        working_parquet, temp_file = _ensure_quadkey_column(
-            actual_input, quadkey_column_name, resolution, use_centroid, verbose, profile
+        working_parquet, column_existed, temp_file = _ensure_h3_column(
+            actual_input, h3_column_name, resolution, verbose
         )
 
         if preview:
             try:
-                _run_quadkey_preview(
-                    working_parquet,
-                    quadkey_column_name,
-                    partition_resolution,
-                    preview_limit,
-                    verbose,
-                )
+                _run_preview(working_parquet, h3_column_name, preview_limit, verbose)
             finally:
                 if temp_file and os.path.exists(temp_file):
                     os.remove(temp_file)
             return
 
         progress(
-            f"Partitioning by quadkey at resolution {partition_resolution} "
-            f"(column: '{quadkey_column_name}')"
+            f"Partitioning by H3 cells at resolution {resolution} (column: '{h3_column_name}')"
         )
 
         try:
             num_partitions = partition_by_column(
                 input_parquet=working_parquet,
                 output_folder=output_folder,
-                column_name=quadkey_column_name,
-                column_prefix_length=partition_resolution,
+                column_name=h3_column_name,
+                column_prefix_length=None,
                 hive=hive,
                 overwrite=overwrite,
                 verbose=verbose,
-                keep_partition_column=keep_quadkey_column,
+                keep_partition_column=keep_h3_column,
                 force=force,
                 skip_analysis=skip_analysis,
                 filename_prefix=filename_prefix,
@@ -276,7 +255,7 @@ def partition_by_quadkey(
         finally:
             if temp_file and os.path.exists(temp_file):
                 if verbose:
-                    debug("Cleaning up temporary quadkey-enriched file...")
+                    debug("Cleaning up temporary H3-enriched file...")
                 os.remove(temp_file)
     finally:
         # Clean up stdin temp file

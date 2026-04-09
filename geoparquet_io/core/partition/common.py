@@ -6,17 +6,19 @@ import re
 import click
 
 from geoparquet_io.core.common import (
-    get_duckdb_connection,
     get_parquet_metadata,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.logging_config import debug, error, info, progress, warn
+from geoparquet_io.core.remote import (
     needs_httpfs,
     remote_write_context,
-    safe_file_url,
     setup_aws_profile_if_needed,
     show_remote_read_message,
     upload_if_remote,
-    write_parquet_with_metadata,
 )
-from geoparquet_io.core.logging_config import debug, error, info, progress, warn
 
 
 class PartitionAnalysisError(Exception):

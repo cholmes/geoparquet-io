@@ -3,35 +3,41 @@
 import pytest
 
 from geoparquet_io.core.common import (
-    _extract_crs_identifier,
     _get_geometry_type_name,
-    _validate_projjson,
-    _wrap_query_with_crs,
     calculate_row_group_size,
     check_bbox_structure,
     detect_geoparquet_file_type,
-    find_primary_geometry_column,
     format_size,
     get_bbox_advice,
-    get_crs_display_name,
-    get_duckdb_connection,
     get_parquet_metadata,
-    get_remote_error_hint,
-    has_glob_pattern,
-    is_azure_url,
+    parse_size_string,
+    should_skip_bbox,
+    validate_compression_settings,
+)
+from geoparquet_io.core.crs_utils import (
+    _extract_crs_identifier,
+    _validate_projjson,
+    _wrap_query_with_crs,
+    get_crs_display_name,
     is_default_crs,
-    is_gcs_url,
     is_geographic_crs,
+    parse_crs_string_to_projjson,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import (
+    has_glob_pattern,
     is_partition_path,
+    safe_file_url,
+    validate_parquet_extension,
+)
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
+from geoparquet_io.core.remote import (
+    get_remote_error_hint,
+    is_azure_url,
+    is_gcs_url,
     is_remote_url,
     is_s3_url,
     needs_httpfs,
-    parse_crs_string_to_projjson,
-    parse_size_string,
-    safe_file_url,
-    should_skip_bbox,
-    validate_compression_settings,
-    validate_parquet_extension,
 )
 
 

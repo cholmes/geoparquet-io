@@ -107,7 +107,7 @@ def _run_sort_hilbert(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 def _run_add_bbox(input_path: Path, output_dir: Path) -> dict[str, Any]:
     """Benchmark adding bbox column."""
-    from geoparquet_io.core.add_bbox_column import add_bbox_column
+    from geoparquet_io.core.add.bbox import add_bbox_column
 
     output_path = output_dir / "output.parquet"
     add_bbox_column(str(input_path), str(output_path), force=True)
@@ -116,7 +116,7 @@ def _run_add_bbox(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 def _run_partition_quadkey(input_path: Path, output_dir: Path) -> dict[str, Any]:
     """Benchmark quadkey partitioning."""
-    from geoparquet_io.core.partition_by_quadkey import partition_by_quadkey
+    from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
 
     output_path = output_dir / "partitioned"
     partition_by_quadkey(str(input_path), str(output_path), partition_resolution=4)
@@ -138,7 +138,7 @@ def _run_chain_extract_bbox_sort(input_path: Path, output_dir: Path) -> dict[str
     2. Add bbox column
     3. Sort by Hilbert curve
     """
-    from geoparquet_io.core.add_bbox_column import add_bbox_column
+    from geoparquet_io.core.add.bbox import add_bbox_column
     from geoparquet_io.core.extract import extract
     from geoparquet_io.core.hilbert_order import hilbert_order
 
@@ -180,7 +180,7 @@ def _run_chain_convert_optimize(input_path: Path, output_dir: Path) -> dict[str,
 
     Skips if no source format file is available alongside the parquet.
     """
-    from geoparquet_io.core.add_bbox_column import add_bbox_column
+    from geoparquet_io.core.add.bbox import add_bbox_column
     from geoparquet_io.core.convert import convert_to_geoparquet
     from geoparquet_io.core.hilbert_order import hilbert_order
 
@@ -232,7 +232,7 @@ def _run_chain_filter_reproject_partition(input_path: Path, output_dir: Path) ->
     Useful for measuring performance of multi-stage spatial processing.
     """
     from geoparquet_io.core.extract import extract
-    from geoparquet_io.core.partition_by_quadkey import partition_by_quadkey
+    from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
     from geoparquet_io.core.reproject import reproject
 
     # Step 1: Extract by bbox (Western Hemisphere)
@@ -304,7 +304,7 @@ def _run_sort_quadkey(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 def _run_add_h3(input_path: Path, output_dir: Path) -> dict[str, Any]:
     """Benchmark adding H3 column."""
-    from geoparquet_io.core.add_h3_column import add_h3_column
+    from geoparquet_io.core.add.h3 import add_h3_column
 
     output_path = output_dir / "output.parquet"
     add_h3_column(str(input_path), str(output_path), h3_resolution=9)
@@ -313,7 +313,7 @@ def _run_add_h3(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 def _run_add_quadkey(input_path: Path, output_dir: Path) -> dict[str, Any]:
     """Benchmark adding quadkey column."""
-    from geoparquet_io.core.add_quadkey_column import add_quadkey_column
+    from geoparquet_io.core.add.quadkey import add_quadkey_column
 
     output_path = output_dir / "output.parquet"
     add_quadkey_column(str(input_path), str(output_path), resolution=12)
@@ -326,7 +326,7 @@ def _run_add_country(input_path: Path, output_dir: Path) -> dict[str, Any]:
     Note: This operation uses the default Overture Maps admin boundaries,
     which requires network access and can be slow for the first run.
     """
-    from geoparquet_io.core.add_country_codes import add_country_codes
+    from geoparquet_io.core.add.country_codes import add_country_codes
 
     output_path = output_dir / "output.parquet"
     # Use default Overture countries (countries_parquet=None)
@@ -344,7 +344,7 @@ def _run_add_country(input_path: Path, output_dir: Path) -> dict[str, Any]:
 
 def _run_partition_h3(input_path: Path, output_dir: Path) -> dict[str, Any]:
     """Benchmark H3 partitioning."""
-    from geoparquet_io.core.partition_by_h3 import partition_by_h3
+    from geoparquet_io.core.partition.by_h3 import partition_by_h3
 
     output_path = output_dir / "partitioned_h3"
     partition_by_h3(
@@ -363,7 +363,7 @@ def _run_partition_country(input_path: Path, output_dir: Path) -> dict[str, Any]
     Note: This operation uses the Overture Maps admin boundaries,
     which requires network access and can be slow for the first run.
     """
-    from geoparquet_io.core.partition_admin_hierarchical import partition_by_admin_hierarchical
+    from geoparquet_io.core.partition.admin_hierarchical import partition_by_admin_hierarchical
 
     output_path = output_dir / "partitioned_country"
     num_partitions = partition_by_admin_hierarchical(

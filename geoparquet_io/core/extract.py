@@ -19,19 +19,19 @@ import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    STANDARD_GEOMETRY_NAMES,
     check_bbox_structure,
-    find_primary_geometry_column,
-    get_crs_display_name,
-    get_duckdb_connection,
-    get_duckdb_connection_for_s3,
     get_parquet_metadata,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.crs_utils import get_crs_display_name
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, get_duckdb_connection_for_s3
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
+from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_metadata,
@@ -597,7 +597,7 @@ def build_extract_query(
     hive_input: bool = False,
 ) -> str:
     """Build the complete extraction query."""
-    from geoparquet_io.core.partition_reader import build_read_parquet_expr
+    from geoparquet_io.core.partition.reader import build_read_parquet_expr
 
     col_list = ", ".join(f'"{c}"' for c in columns)
     # Use partition reader to build read_parquet expression with proper options

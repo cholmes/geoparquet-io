@@ -5,7 +5,7 @@ from unittest.mock import patch
 import click
 import pytest
 
-from geoparquet_io.core.partition_by_string import (
+from geoparquet_io.core.partition.by_string import (
     partition_by_string,
     validate_column_exists,
 )
@@ -62,11 +62,11 @@ class TestPartitionByString:
     def test_preview_with_partition_analysis_error(self, places_test_file, tmp_path):
         """Test preview mode when PartitionAnalysisError is raised (lines 103-105)."""
         # Import the actual exception class
-        from geoparquet_io.core.partition_common import PartitionAnalysisError
+        from geoparquet_io.core.partition.common import PartitionAnalysisError
 
         # Patch at the source module where it's defined
         with patch(
-            "geoparquet_io.core.partition_common.analyze_partition_strategy"
+            "geoparquet_io.core.partition.common.analyze_partition_strategy"
         ) as mock_analyze:
             mock_analyze.side_effect = PartitionAnalysisError("Test analysis error")
 
@@ -83,7 +83,7 @@ class TestPartitionByString:
         """Test preview mode when generic Exception is raised (lines 106-108)."""
         # Patch at the source module where it's defined
         with patch(
-            "geoparquet_io.core.partition_common.analyze_partition_strategy"
+            "geoparquet_io.core.partition.common.analyze_partition_strategy"
         ) as mock_analyze:
             mock_analyze.side_effect = Exception("Unexpected error")
 

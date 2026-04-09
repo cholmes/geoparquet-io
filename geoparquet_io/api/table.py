@@ -214,7 +214,7 @@ def read_partition(
         >>> table = gpio.read_partition('data/quadkey=*/*.parquet')
     """
     from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
-    from geoparquet_io.core.partition_reader import build_read_parquet_expr
+    from geoparquet_io.core.partition.reader import build_read_parquet_expr
     from geoparquet_io.core.streaming import find_geometry_column_from_table
 
     path_str = str(path)
@@ -1111,7 +1111,7 @@ class Table:
         Returns:
             New Table with bbox column added
         """
-        from geoparquet_io.core.add_bbox_column import add_bbox_table
+        from geoparquet_io.core.add.bbox import add_bbox_table
 
         result = add_bbox_table(
             self._table,
@@ -1137,7 +1137,7 @@ class Table:
         Returns:
             New Table with quadkey column added
         """
-        from geoparquet_io.core.add_quadkey_column import add_quadkey_table
+        from geoparquet_io.core.add.quadkey import add_quadkey_table
 
         result = add_quadkey_table(
             self._table,
@@ -1212,7 +1212,7 @@ class Table:
         Returns:
             New Table with H3 column added
         """
-        from geoparquet_io.core.add_h3_column import add_h3_table
+        from geoparquet_io.core.add.h3 import add_h3_table
 
         result = add_h3_table(
             self._table,
@@ -1236,7 +1236,7 @@ class Table:
         Returns:
             New Table with A5 column added
         """
-        from geoparquet_io.core.add_a5_column import add_a5_table
+        from geoparquet_io.core.add.a5 import add_a5_table
 
         result = add_a5_table(
             self._table,
@@ -1267,7 +1267,7 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> table.add_s2(level=13).write('output.parquet')
         """
-        from geoparquet_io.core.add_s2_column import add_s2_table
+        from geoparquet_io.core.add.s2 import add_s2_table
 
         result = add_s2_table(
             self._table,
@@ -1293,7 +1293,7 @@ class Table:
         Returns:
             New Table with KD-tree column added
         """
-        from geoparquet_io.core.add_kdtree_column import add_kdtree_table
+        from geoparquet_io.core.add.kdtree import add_kdtree_table
 
         result = add_kdtree_table(
             self._table,
@@ -1413,7 +1413,7 @@ class Table:
             >>> stats = table.partition_by_quadkey('output/', resolution=12)
             >>> print(f"Created {stats['file_count']} files")
         """
-        from geoparquet_io.core.partition_by_quadkey import partition_by_quadkey
+        from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1458,7 +1458,7 @@ class Table:
             >>> stats = table.partition_by_h3('output/', resolution=6)
             >>> print(f"Created {stats['file_count']} files")
         """
-        from geoparquet_io.core.partition_by_h3 import partition_by_h3
+        from geoparquet_io.core.partition.by_h3 import partition_by_h3
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1505,7 +1505,7 @@ class Table:
             >>> stats = table.partition_by_s2('output/', level=10)
             >>> print(f"Created {stats['file_count']} files")
         """
-        from geoparquet_io.core.partition_by_s2 import partition_by_s2
+        from geoparquet_io.core.partition.by_s2 import partition_by_s2
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1552,7 +1552,7 @@ class Table:
             >>> stats = table.partition_by_a5('output/', resolution=12)
             >>> print(f"Created {stats['file_count']} files")
         """
-        from geoparquet_io.core.partition_by_a5 import partition_by_a5
+        from geoparquet_io.core.partition.by_a5 import partition_by_a5
 
         return _run_partition_with_temp_file(
             self._table,
@@ -2318,7 +2318,7 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> enriched = table.add_admin_divisions(levels=["country", "admin1"])
         """
-        from geoparquet_io.core.add_admin_divisions_multi import add_admin_divisions_multi
+        from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
 
         result_table = self._with_temp_io_files(
             add_admin_divisions_multi,
@@ -2441,7 +2441,7 @@ class Table:
             ...     hive=True
             ... )
         """
-        from geoparquet_io.core.partition_by_string import partition_by_string
+        from geoparquet_io.core.partition.by_string import partition_by_string
 
         return _run_partition_with_temp_file(
             self._table,
@@ -2490,7 +2490,7 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> stats = table.partition_by_kdtree('output/', iterations=6)
         """
-        from geoparquet_io.core.partition_by_kdtree import partition_by_kdtree
+        from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
 
         return _run_partition_with_temp_file(
             self._table,
@@ -2544,7 +2544,7 @@ class Table:
             ...     levels=['country', 'admin1']
             ... )
         """
-        from geoparquet_io.core.partition_admin_hierarchical import (
+        from geoparquet_io.core.partition.admin_hierarchical import (
             partition_by_admin_hierarchical,
         )
 

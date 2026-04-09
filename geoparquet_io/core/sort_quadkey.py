@@ -10,20 +10,21 @@ import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.add_quadkey_column import add_quadkey_column, add_quadkey_table
+from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
 from geoparquet_io.core.common import (
-    get_duckdb_connection,
     get_parquet_metadata,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
-    setup_aws_profile_if_needed,
-    validate_profile_for_urls,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
+from geoparquet_io.core.remote import (
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    validate_profile_for_urls,
+)
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
 

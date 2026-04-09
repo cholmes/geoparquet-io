@@ -7,20 +7,21 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    get_duckdb_connection,
     get_parquet_metadata,
-    get_remote_error_hint,
-    handle_output_overwrite,
-    is_remote_url,
-    needs_httpfs,
-    safe_file_url,
-    setup_aws_profile_if_needed,
-    show_remote_read_message,
-    validate_profile_for_urls,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
+from geoparquet_io.core.remote import (
+    get_remote_error_hint,
+    is_remote_url,
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    show_remote_read_message,
+    validate_profile_for_urls,
+)
 from geoparquet_io.core.stream_io import execute_transform
 from geoparquet_io.core.streaming import is_stdin, should_stream_output
 

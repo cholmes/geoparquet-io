@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import pyarrow as pa
 
-from geoparquet_io.core.add_a5_column import add_a5_table
-from geoparquet_io.core.add_bbox_column import add_bbox_table
-from geoparquet_io.core.add_h3_column import add_h3_table
-from geoparquet_io.core.add_kdtree_column import add_kdtree_table
-from geoparquet_io.core.add_quadkey_column import add_quadkey_table
-from geoparquet_io.core.add_s2_column import add_s2_table
+from geoparquet_io.core.add.a5 import add_a5_table
+from geoparquet_io.core.add.bbox import add_bbox_table
+from geoparquet_io.core.add.h3 import add_h3_table
+from geoparquet_io.core.add.kdtree import add_kdtree_table
+from geoparquet_io.core.add.quadkey import add_quadkey_table
+from geoparquet_io.core.add.s2 import add_s2_table
 from geoparquet_io.core.extract import extract_table
 from geoparquet_io.core.hilbert_order import hilbert_order_table
 from geoparquet_io.core.reproject import reproject_table

@@ -8,8 +8,8 @@ import uuid
 
 import click
 
-from geoparquet_io.core.add_kdtree_column import add_kdtree_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.kdtree import add_kdtree_column
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -18,7 +18,7 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_common import partition_by_column, preview_partition
+from geoparquet_io.core.partition.common import partition_by_column, preview_partition
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
@@ -83,7 +83,7 @@ def _show_partition_preview(
 ) -> None:
     """Show partition analysis and preview."""
     try:
-        from geoparquet_io.core.partition_common import (
+        from geoparquet_io.core.partition.common import (
             PartitionAnalysisError,
             analyze_partition_strategy,
         )

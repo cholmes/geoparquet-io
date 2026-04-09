@@ -9,27 +9,32 @@ import click
 import duckdb
 
 from geoparquet_io.core.common import (
+    format_size,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.crs_utils import (
     _format_crs_display,
     detect_crs_from_spatial_file,
     extract_crs_from_parquet,
-    format_size,
-    get_duckdb_connection,
-    get_remote_error_hint,
     is_default_crs,
-    is_partition_path,
-    is_remote_url,
-    needs_httpfs,
     parse_crs_string_to_projjson,
-    quote_identifier,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.file_utils import (
+    is_partition_path,
     safe_file_url,
-    setup_aws_profile_if_needed,
-    show_remote_read_message,
     validate_output_path,
-    validate_profile_for_urls,
-    write_parquet_with_metadata,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
-from geoparquet_io.core.partition_reader import require_single_file
+from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import (
+    get_remote_error_hint,
+    is_remote_url,
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    show_remote_read_message,
+    validate_profile_for_urls,
+)
 
 
 def _validate_layer_name(layer: str) -> str:

@@ -236,7 +236,7 @@ gpio.read('input.parquet') \
 For file-based operations or when you need fine-grained control:
 
 ```python
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.hilbert_order import hilbert_order
 
 # Add bounding box (file-based)

@@ -24,7 +24,7 @@ from geoparquet_io.core.common import (
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.logging_config import debug, progress, success, warn
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.common import (
     sanitize_filename,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file

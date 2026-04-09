@@ -350,7 +350,7 @@ class TestAddCommands:
         """Test core add_h3_column function with invalid resolution (covers line 51)."""
         import click
 
-        from geoparquet_io.core.add_h3_column import add_h3_column
+        from geoparquet_io.core.add.h3 import add_h3_column
 
         # Test resolution too high (bypassing CLI validation)
         with pytest.raises(click.BadParameter) as exc_info:

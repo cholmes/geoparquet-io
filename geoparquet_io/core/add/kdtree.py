@@ -9,13 +9,9 @@ import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import (
-    find_primary_geometry_column,
-    get_duckdb_connection,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
-)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -24,7 +20,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_reader import require_single_file
+from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_table,

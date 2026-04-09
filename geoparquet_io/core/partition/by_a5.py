@@ -8,9 +8,9 @@ import uuid
 
 import click
 
-from geoparquet_io.core.add_a5_column import add_a5_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.a5 import add_a5_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -19,8 +19,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -75,7 +75,7 @@ def _ensure_a5_column(input_parquet, a5_column_name, resolution, verbose):
 
 def _run_preview(input_parquet, a5_column_name, preview_limit, verbose):
     """Run partition preview and analysis."""
-    from geoparquet_io.core.partition_common import (
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )

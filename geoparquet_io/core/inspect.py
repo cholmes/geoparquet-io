@@ -24,7 +24,7 @@ from geoparquet_io.core.inspect_utils import (
     get_column_statistics,
     get_preview_data,
 )
-from geoparquet_io.core.partition_reader import get_partition_info
+from geoparquet_io.core.partition.reader import get_partition_info
 
 
 def get_primary_geometry_column(parquet_file: str) -> str | None:

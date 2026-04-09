@@ -15,12 +15,12 @@ import uuid
 
 import click
 
-from geoparquet_io.core.add_s2_column import add_s2_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.s2 import add_s2_column
 from geoparquet_io.core.constants import (
     DEFAULT_S2_COLUMN_NAME,
     DEFAULT_S2_COMPRESSION_LEVEL,
 )
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -29,8 +29,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -83,7 +83,7 @@ def _ensure_s2_column(input_parquet, s2_column_name, level, verbose):
 
 def _run_preview(input_parquet, s2_column_name, preview_limit, verbose):
     """Run partition preview and analysis."""
-    from geoparquet_io.core.partition_common import (
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )
