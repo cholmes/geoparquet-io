@@ -1031,41 +1031,6 @@ def get_bloom_filter_info(parquet_file: str, con=None) -> list[dict]:
             connection.close()
 
 
-def get_column_stats(parquet_file: str, column_name: str, con=None) -> list[dict]:
-    """
-    Get per-row-group statistics for a specific column.
-
-    Returns list of dicts with row_group_id, stats_min, stats_max, stats_null_count.
-    """
-    safe_url = _safe_url(parquet_file)
-    connection, should_close = _get_connection_for_file(parquet_file, con)
-
-    try:
-        result = connection.execute(f"""
-            SELECT
-                row_group_id,
-                stats_min,
-                stats_max,
-                stats_null_count
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{column_name}'
-            ORDER BY row_group_id
-        """).fetchall()
-
-        return [
-            {
-                "row_group_id": row[0],
-                "stats_min": row[1],
-                "stats_max": row[2],
-                "stats_null_count": row[3],
-            }
-            for row in result
-        ]
-    finally:
-        if should_close:
-            connection.close()
-
-
 def has_bbox_column(parquet_file: str, con=None) -> tuple[bool, str | None]:
     """
     Check if file has a bbox struct column with proper structure.

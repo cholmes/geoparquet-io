@@ -205,7 +205,6 @@ module = [
     "geoparquet_io.core.reproject",
     "geoparquet_io.core.sort_by_column",
     "geoparquet_io.core.sort_quadkey",
-    "geoparquet_io.core.split_by_country",
     "geoparquet_io.core.stac",
     "geoparquet_io.core.stac_check",
     "geoparquet_io.core.stream_io",
