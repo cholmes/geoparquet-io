@@ -3,7 +3,6 @@ import os
 import re
 import shutil
 import tempfile
-import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +11,24 @@ import click
 import duckdb
 import pyarrow.parquet as pq
 
+# Re-export from extracted leaf modules for backwards compatibility
+# These functions were extracted from common.py to reduce module size
+# Import them here so existing code continues to work
+from geoparquet_io.core.file_utils import (  # noqa: E402,F401
+    get_all_parquet_files,
+    get_first_parquet_file,
+    get_remote_error_hint,
+    has_glob_pattern,
+    is_partition_path,
+    resolve_partition_path,
+    safe_file_url,
+    validate_parquet_extension,
+)
+from geoparquet_io.core.geometry_detection import (  # noqa: E402,F401
+    STANDARD_GEOMETRY_NAMES,
+    detect_parquet_geometry_column,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -20,6 +37,19 @@ from geoparquet_io.core.logging_config import (
     progress,
     success,
     warn,
+)
+from geoparquet_io.core.remote import (  # noqa: E402,F401
+    CLOUD_SCHEMES,
+    REMOTE_SCHEMES,
+    get_protocol,
+    is_azure_url,
+    is_gcs_url,
+    is_remote_url,
+    is_s3_url,
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    show_remote_read_message,
+    validate_profile_for_urls,
 )
 from geoparquet_io.core.streaming import extract_version_from_metadata
 
@@ -293,223 +323,6 @@ def detect_geoparquet_file_type_cache_clear():
 detect_geoparquet_file_type.cache_clear = detect_geoparquet_file_type_cache_clear
 
 
-def is_remote_url(path):
-    """
-    Check if path is a remote URL that DuckDB can read.
-
-    Supports:
-    - HTTP/HTTPS: http://, https://
-    - AWS S3: s3://, s3a://
-    - Azure: az://, azure://, abfs://, abfss://
-    - Google Cloud Storage: gs://, gcs://
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is a remote URL, False otherwise
-    """
-    if path is None:
-        return False
-    remote_schemes = [
-        "http://",
-        "https://",
-        "s3://",
-        "s3a://",
-        "gs://",
-        "gcs://",
-        "az://",
-        "azure://",
-        "abfs://",
-        "abfss://",
-    ]
-    return any(path.startswith(scheme) for scheme in remote_schemes)
-
-
-def has_glob_pattern(path: str) -> bool:
-    """
-    Check if path contains glob wildcards.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path contains glob characters (*, ?, [), False otherwise
-    """
-    return any(c in path for c in ("*", "?", "["))
-
-
-def is_partition_path(path: str) -> bool:
-    """
-    Check if path represents a partitioned dataset.
-
-    Detects:
-    - Local directories containing parquet files
-    - Paths with glob patterns (*, ?, [)
-    - Hive-style paths (key=value in path) for remote URLs
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path appears to be a partitioned dataset
-    """
-    # Check for glob patterns
-    if has_glob_pattern(path):
-        return True
-
-    # Check if local path is a directory
-    if not is_remote_url(path) and os.path.isdir(path):
-        return True
-
-    # Check for hive-style partitioning in remote URLs (key=value in path components)
-    if is_remote_url(path):
-        # Extract path portion after scheme and host
-        # e.g., s3://bucket/prefix/country=US/data.parquet -> prefix/country=US/data.parquet
-        path_parts = path.split("/")
-        # Check if any path component contains = (hive-style partition)
-        for part in path_parts[3:]:  # Skip scheme://host/bucket parts
-            if "=" in part and not part.endswith(".parquet"):
-                return True
-
-    return False
-
-
-def resolve_partition_path(path: str, hive_partitioning: bool | None = None) -> tuple[str, dict]:
-    """
-    Resolve a partition path to a format DuckDB can read.
-
-    For directories, converts to glob pattern. Returns the resolved path
-    and read_parquet options dict.
-
-    Args:
-        path: File path or URL (may be directory or glob pattern)
-        hive_partitioning: Explicitly enable/disable hive partitioning.
-                          If None, auto-detect from path structure.
-
-    Returns:
-        tuple: (resolved_path, read_options_dict)
-            - resolved_path: Path/glob pattern for DuckDB
-            - read_options_dict: Options for read_parquet (hive_partitioning, etc.)
-    """
-    options = {}
-    resolved = path
-
-    # Handle local directories
-    if not is_remote_url(path) and os.path.isdir(path):
-        try:
-            items = os.listdir(path)
-            subdirs = [d for d in items if os.path.isdir(os.path.join(path, d))]
-            has_parquet_files = any(
-                f.endswith(".parquet") for f in items if not os.path.isdir(os.path.join(path, f))
-            )
-            has_hive_subdirs = any("=" in d for d in subdirs)
-
-            if has_hive_subdirs:
-                # Hive-style partitioning with key=value directories
-                resolved = os.path.join(path, "**", "*.parquet")
-                options["hive_partitioning"] = True
-            elif subdirs and not has_parquet_files:
-                # Directory has subdirectories but no parquet files at top level
-                # Use recursive glob to find parquet files in subdirectories
-                resolved = os.path.join(path, "**", "*.parquet")
-            elif has_parquet_files:
-                # Flat directory with parquet files at top level
-                resolved = os.path.join(path, "*.parquet")
-            else:
-                # Fallback - try recursive
-                resolved = os.path.join(path, "**", "*.parquet")
-        except OSError:
-            # If we can't read the directory, use recursive glob
-            resolved = os.path.join(path, "**", "*.parquet")
-
-    # If path contains hive-style markers and hive_partitioning not explicitly set
-    # Check path components (directories) for hive-style key=value patterns
-    # Exclude glob patterns and the final filename from the check
-    if hive_partitioning is None:
-        path_parts = resolved.replace("\\", "/").split("/")
-        # Check directory components (not filename or glob patterns like ** or *.parquet)
-        dir_parts = [p for p in path_parts[:-1] if p and p not in ("**", "*")]
-        has_hive_dirs = any("=" in part for part in dir_parts)
-        if has_hive_dirs:
-            options["hive_partitioning"] = True
-    elif hive_partitioning is not None:
-        options["hive_partitioning"] = hive_partitioning
-
-    return resolved, options
-
-
-def get_first_parquet_file(partition_path: str) -> str | None:
-    """
-    Get the first parquet file from a partitioned dataset.
-
-    Used for metadata inspection when only need to check one file.
-
-    Args:
-        partition_path: Directory path or glob pattern
-
-    Returns:
-        str: Path to first parquet file, or None if none found
-    """
-    import glob as glob_module
-
-    if is_remote_url(partition_path):
-        # For remote, can't easily enumerate - return original path
-        # Caller should handle this case
-        return partition_path
-
-    if os.path.isdir(partition_path):
-        # Walk directory to find first parquet file
-        for root, _dirs, files in os.walk(partition_path):
-            for f in sorted(files):  # Sort for consistent ordering
-                if f.endswith(".parquet"):
-                    return os.path.join(root, f)
-        return None
-
-    if has_glob_pattern(partition_path):
-        # Use glob to find first match
-        matches = glob_module.glob(partition_path, recursive=True)
-        parquet_matches = [m for m in sorted(matches) if m.endswith(".parquet")]
-        return parquet_matches[0] if parquet_matches else None
-
-    # Single file
-    return partition_path
-
-
-def get_all_parquet_files(partition_path: str) -> list[str]:
-    """
-    Get all parquet files from a partitioned dataset.
-
-    Args:
-        partition_path: Directory path or glob pattern
-
-    Returns:
-        list: List of paths to all parquet files, sorted for consistent ordering
-    """
-    import glob as glob_module
-
-    if is_remote_url(partition_path):
-        # For remote, can't easily enumerate - return as single item
-        return [partition_path]
-
-    if os.path.isdir(partition_path):
-        # Walk directory to find all parquet files
-        parquet_files = []
-        for root, _dirs, files in os.walk(partition_path):
-            for f in files:
-                if f.endswith(".parquet"):
-                    parquet_files.append(os.path.join(root, f))
-        return sorted(parquet_files)
-
-    if has_glob_pattern(partition_path):
-        # Use glob to find all matches
-        matches = glob_module.glob(partition_path, recursive=True)
-        return sorted([m for m in matches if m.endswith(".parquet")])
-
-    # Single file
-    return [partition_path] if os.path.exists(partition_path) else []
-
-
 def upload_if_remote(local_path, remote_path, profile=None, is_directory=False, verbose=False):
     """
     Upload local file/dir to remote path if remote_path is a remote URL.
@@ -617,146 +430,6 @@ def remote_write_context(output_path, is_directory=False, verbose=False):
                     )
 
 
-def is_s3_url(path):
-    """
-    Check if path is an S3 URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is S3
-    """
-    return isinstance(path, str) and path.startswith(("s3://", "s3a://"))
-
-
-def is_azure_url(path):
-    """
-    Check if path is an Azure Blob Storage URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is Azure
-    """
-    return isinstance(path, str) and path.startswith(("az://", "azure://", "abfs://", "abfss://"))
-
-
-def is_gcs_url(path):
-    """
-    Check if path is a Google Cloud Storage URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is GCS
-    """
-    return isinstance(path, str) and path.startswith(("gs://", "gcs://"))
-
-
-def needs_httpfs(path):
-    """
-    Check if path requires httpfs extension (S3, Azure, GCS).
-
-    HTTP/HTTPS work without httpfs, but cloud storage protocols need it.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if httpfs extension is needed
-    """
-    httpfs_schemes = [
-        "s3://",
-        "s3a://",
-        "gs://",
-        "gcs://",
-        "az://",
-        "azure://",
-        "abfs://",
-        "abfss://",
-    ]
-    return any(path.startswith(scheme) for scheme in httpfs_schemes)
-
-
-def setup_aws_profile_if_needed(profile, *paths):
-    """
-    Set AWS_PROFILE environment variable if profile specified and S3 URLs detected.
-
-    This allows both DuckDB (via credential_chain) and obstore to use the specified
-    AWS profile for authentication. The profile is resolved using standard AWS SDK
-    mechanisms (reads from ~/.aws/credentials, ~/.aws/config, etc.).
-
-    Note: This is a convenience wrapper. Setting AWS_PROFILE env var directly
-    has the same effect.
-
-    Args:
-        profile: AWS profile name or None
-        *paths: Variable number of file paths to check for S3 URLs
-
-    Example:
-        setup_aws_profile_if_needed(profile, input_file, output_file)
-        # Equivalent to: os.environ['AWS_PROFILE'] = profile
-    """
-    if not profile:
-        return
-
-    # Check if any path is S3
-    has_s3 = any(p and is_s3_url(p) for p in paths)
-    if has_s3:
-        os.environ["AWS_PROFILE"] = profile
-
-
-def validate_profile_for_urls(profile, *urls):
-    """
-    Validate that profile parameter is only used with S3 URLs.
-
-    The --profile flag sets AWS credentials for S3 operations. Using it with
-    other cloud providers (GCS, Azure) would be confusing since they use
-    different authentication mechanisms.
-
-    Args:
-        profile: AWS profile name or None
-        *urls: Variable number of file paths to validate
-
-    Raises:
-        click.BadParameter: If profile is used with non-S3 remote URLs
-
-    Example:
-        validate_profile_for_urls(profile, input_file, output_file)
-    """
-    if not profile:
-        return
-
-    for url in urls:
-        if url and is_remote_url(url) and not is_s3_url(url):
-            protocol = url.split("://")[0].upper() if "://" in url else "unknown"
-            raise click.BadParameter(
-                f"--profile flag is only valid for S3 URLs, but got {protocol} URL: {url}\n"
-                f"For {protocol} authentication, use environment variables or default credentials."
-            )
-
-
-def show_remote_read_message(file_path, verbose=False):
-    """
-    Show consistent message when reading from remote files.
-
-    Args:
-        file_path: Path to check (local or remote)
-        verbose: If True, show detailed message
-    """
-    if not is_remote_url(file_path):
-        return
-
-    protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-    if verbose:
-        info(f"📡 Reading from {protocol}: {file_path}")
-    else:
-        info(f"📡 Reading from {protocol} (network operations may take time)...")
-
-
 def validate_output_path(output_path, verbose=False):
     """
     Validate output path for local files (remote URLs pass through).
@@ -784,46 +457,6 @@ def validate_output_path(output_path, verbose=False):
         raise click.ClickException(f"Output directory not found: {output_dir}")
     if not os.access(output_dir, os.W_OK):
         raise click.ClickException(f"No write permission for: {output_dir}")
-
-
-def validate_parquet_extension(output_file: str, any_extension: bool = False) -> None:
-    """
-    Validate that output file has .parquet extension.
-
-    By default, gpio commands that write parquet files require the output
-    to have a .parquet extension to prevent accidental misuse (e.g., writing
-    a parquet file with .geojson extension).
-
-    Args:
-        output_file: Output file path (local or remote)
-        any_extension: If True, skip validation and allow any extension
-
-    Raises:
-        click.ClickException: If extension is not .parquet and any_extension=False
-    """
-    # Skip for streaming output or no output specified
-    if output_file is None or output_file == "-":
-        return
-
-    # User explicitly allowed any extension
-    if any_extension:
-        return
-
-    # Extract the filename from the path (handles both local and remote URLs)
-    if "://" in output_file:
-        # Remote URL: extract path portion after protocol://bucket/
-        path_part = output_file.split("://", 1)[1]
-        filename = path_part.split("/")[-1] if "/" in path_part else path_part
-    else:
-        filename = os.path.basename(output_file)
-
-    # Check extension (case-insensitive)
-    _, ext = os.path.splitext(filename)
-    if ext.lower() != ".parquet":
-        raise click.ClickException(
-            f"Output file '{output_file}' does not have .parquet extension. "
-            f"Use --any-extension to allow non-standard extensions."
-        )
 
 
 def handle_output_overwrite(
@@ -1003,89 +636,6 @@ def get_duckdb_connection_for_s3(
         raise
 
 
-def safe_file_url(file_path, verbose=False):
-    """
-    Handle both local and remote files, returning safe URL.
-
-    For remote URLs, performs URL encoding if needed.
-    For local files, validates existence (unless it's a glob pattern).
-
-    Args:
-        file_path: Local file path or remote URL (may contain glob patterns)
-        verbose: Whether to print verbose output
-
-    Returns:
-        str: Safe URL or file path
-
-    Raises:
-        click.BadParameter: If local file doesn't exist (non-glob paths only)
-    """
-    if is_remote_url(file_path):
-        # Remote URL - URL encode if HTTP/HTTPS
-        if file_path.startswith(("http://", "https://")):
-            parsed = urllib.parse.urlparse(file_path)
-            # Preserve glob wildcards and hive-style partition markers for DuckDB
-            # These characters must not be encoded: * ? [ ] = , /
-            duckdb_safe_chars = "/*?[]=,"
-            encoded_path = urllib.parse.quote(parsed.path, safe=duckdb_safe_chars)
-            safe_url = parsed._replace(path=encoded_path).geturl()
-        else:
-            safe_url = file_path
-
-        if verbose:
-            protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-            debug(f"Reading from {protocol}: {safe_url}")
-        return safe_url
-    else:
-        # Local file - check existence (skip for glob patterns, DuckDB will handle)
-        if not has_glob_pattern(file_path) and not os.path.exists(file_path):
-            raise click.BadParameter(f"Local file not found: {file_path}")
-        return file_path
-
-
-def get_remote_error_hint(error_msg, file_path=""):
-    """
-    Generate helpful error messages for remote file access failures.
-
-    Args:
-        error_msg: Original error message from DuckDB or other library
-        file_path: The remote file path/URL that failed
-
-    Returns:
-        str: User-friendly error message with troubleshooting hints
-    """
-    # Simple pattern matching - check error type and return appropriate hint
-    error_lower = error_msg.lower()
-    path_lower = file_path.lower()
-
-    # Check for 403/auth errors
-    auth_error = "403" in error_msg or "forbidden" in error_lower or "access denied" in error_lower
-    if auth_error:
-        if "s3://" in path_lower:
-            return "Authentication required or access denied:\n  • S3: Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n  • Or configure ~/.aws/credentials file"
-        if "az://" in path_lower or "azure" in path_lower or "blob.core" in path_lower:
-            return "Authentication required or access denied:\n  • Azure: Check AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY\n  • Or set AZURE_STORAGE_SAS_TOKEN for SAS token auth"
-        if "gs://" in path_lower or "gcs://" in path_lower:
-            return "Authentication required or access denied:\n  • GCS: Check GOOGLE_APPLICATION_CREDENTIALS points to service account JSON"
-        return "Authentication required or access denied:\n  • File may be private or require authentication"
-
-    # Check for 404 errors
-    if "404" in error_msg or "not found" in error_lower or "does not exist" in error_lower:
-        base = "File not found at remote location:\n  • Verify the URL is correct\n  • Check the file exists at the specified path"
-        return f"{base}\n  • URL: {file_path}" if file_path else base
-
-    # Check for timeout
-    if "timeout" in error_lower or "timed out" in error_lower:
-        return "Connection timed out:\n  • Check network connectivity\n  • File may be very large - try a smaller file first\n  • Remote server may be slow or overloaded"
-
-    # Check for connection issues
-    if "unable to connect" in error_lower or "connection" in error_lower:
-        return "Cannot connect to remote server:\n  • Check network connectivity\n  • Verify the hostname/URL is correct\n  • Server may be down or unreachable"
-
-    # Generic
-    return "Remote file access failed:\n  • Check network connectivity\n  • Verify file URL and access permissions"
-
-
 def get_parquet_metadata(parquet_file, verbose=False):
     """
     Get Parquet file metadata using DuckDB for kv_metadata and PyArrow for schema.
@@ -1172,107 +722,6 @@ def parse_geo_metadata(metadata, verbose=False):
         if verbose:
             warn("Failed to parse geo metadata as JSON")
         return None
-
-
-def find_primary_geometry_column(parquet_file, verbose=False):
-    """
-    Find the primary geometry column from GeoParquet metadata.
-
-    Looks up the geometry column name from GeoParquet metadata. Falls back
-    to detect_parquet_geometry_column() (which checks standard geometry column
-    names in the schema) if no metadata is present or if the primary column
-    is not specified. Final fallback is 'geometry'.
-
-    Args:
-        parquet_file: Path to the parquet file (local or remote URL)
-        verbose: Print verbose output
-
-    Returns:
-        str: Name of the primary geometry column (defaults to 'geometry')
-    """
-    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
-
-    if verbose and geo_meta:
-        debug(f"\nGeo metadata: {json.dumps(geo_meta, indent=2)}")
-
-    if geo_meta:
-        if isinstance(geo_meta, dict):
-            primary = geo_meta.get("primary_column")
-            if primary:
-                return primary
-        elif isinstance(geo_meta, list):
-            for col in geo_meta:
-                if isinstance(col, dict) and col.get("primary", False):
-                    name = col.get("name")
-                    if name:
-                        return name
-
-    # No geo metadata or no primary_column specified - use schema-based detection
-    detected = detect_parquet_geometry_column(parquet_file, verbose=verbose)
-    return detected if detected else "geometry"
-
-
-# Standard geometry column names for fallback detection
-STANDARD_GEOMETRY_NAMES = ["geometry", "geom", "wkb_geometry", "shape", "the_geom"]
-
-
-def detect_parquet_geometry_column(parquet_file, verbose=False):
-    """
-    Detect the geometry column in a Parquet file.
-
-    Checks GeoParquet metadata first (primary_column), then falls back to
-    matching column names against standard geometry column names.
-
-    Args:
-        parquet_file: Path to the parquet file (local or remote URL)
-        verbose: Print verbose output
-
-    Returns:
-        str or None: Name of the geometry column, or None if not found
-    """
-    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-
-    # Normalize path for consistent handling of URLs and local files
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
-    # 1. Check GeoParquet metadata first
-    geo_meta = get_geo_metadata(safe_url)
-    if geo_meta and isinstance(geo_meta, dict):
-        primary = geo_meta.get("primary_column")
-        if primary:
-            if verbose:
-                debug(f"Detected geometry column from metadata: {primary}")
-            return primary
-
-    # 2. Fall back to name-based detection from schema using DuckDB
-    # (DuckDB handles local files, S3, GCS, and HTTP URLs natively)
-    con = None
-    try:
-        con = get_duckdb_connection(load_httpfs=needs_httpfs(safe_url))
-        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_url}')").fetchall()
-        column_names = [row[0] for row in result]
-        for std_name in STANDARD_GEOMETRY_NAMES:
-            for col in column_names:
-                if col.lower() == std_name.lower():
-                    if verbose:
-                        debug(f"Detected geometry column from schema: {col}")
-                    return col
-    except OSError as e:
-        if verbose:
-            debug(f"Failed to read schema: {e}")
-    finally:
-        if con:
-            con.close()
-
-    if verbose:
-        debug("No geometry column found in parquet file")
-    return None
-
-
-# CRS handling functions for GeoParquet 2.0 and parquet-geo-only
 
 
 def _extract_crs_identifier(crs_info):
