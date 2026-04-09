@@ -923,3 +923,73 @@ class TestInspectSubcommands:
 
         assert result.exit_code == 0
         assert "Show first N rows" in result.output
+
+
+class TestDeprecatedFlagRouting:
+    """Tests for deprecated flag routing to actual subcommands (Issue #360)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def test_file(self):
+        return os.path.join(os.path.dirname(__file__), "data", "places_test.parquet")
+
+    def test_deprecated_head_flag_routes_to_head_subcommand(self, runner, test_file):
+        """Test --head flag routes to head subcommand with deprecation warning."""
+        result = runner.invoke(cli, ["inspect", test_file, "--head"])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" in result.output
+        assert "gpio inspect head" in result.output
+        assert "Preview (first" in result.output
+
+    def test_deprecated_tail_flag_routes_to_tail_subcommand(self, runner, test_file):
+        """Test --tail flag routes to tail subcommand with deprecation warning."""
+        result = runner.invoke(cli, ["inspect", test_file, "--tail"])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" in result.output
+        assert "gpio inspect tail" in result.output
+        assert "Preview (last" in result.output
+
+    def test_deprecated_stats_flag_routes_to_stats_subcommand(self, runner, test_file):
+        """Test --stats flag routes to stats subcommand with deprecation warning."""
+        result = runner.invoke(cli, ["inspect", test_file, "--stats"])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" in result.output
+        assert "gpio inspect stats" in result.output
+
+    def test_deprecated_meta_flag_routes_to_meta_subcommand(self, runner, test_file):
+        """Test --meta flag routes to meta subcommand with deprecation warning."""
+        result = runner.invoke(cli, ["inspect", test_file, "--meta"])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" in result.output
+        assert "gpio inspect meta" in result.output
+
+    def test_deprecated_parquet_flag_routes_to_meta_subcommand(self, runner, test_file):
+        """Test --parquet flag routes to meta subcommand with deprecation warning."""
+        result = runner.invoke(cli, ["inspect", test_file, "--parquet"])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" in result.output
+        assert "gpio inspect meta" in result.output
+
+    def test_explicit_subcommand_takes_precedence_no_warning(self, runner, test_file):
+        """Test explicit subcommand does not trigger deprecation warning."""
+        result = runner.invoke(cli, ["inspect", "head", test_file])
+
+        assert result.exit_code == 0
+        assert "DeprecationWarning" not in result.output
+        assert "Preview (first" in result.output
+
+    def test_deprecation_warning_suggests_new_syntax(self, runner, test_file):
+        """Test deprecation warning suggests the correct new syntax."""
+        result = runner.invoke(cli, ["inspect", test_file, "--head"])
+
+        assert result.exit_code == 0
+        assert "'--head' flag is deprecated" in result.output
+        assert "Use 'gpio inspect head' instead" in result.output

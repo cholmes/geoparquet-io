@@ -23,20 +23,6 @@
     },
     {
       "code_file": "geoparquet_io/cli/main.py",
-      "doc_target": "docs/contributing.md",
-      "reviewed_at": "2026-04-02T14:59:35.690765+00:00",
-      "code_commit_at_review": "d71867c",
-      "reviewed_by": "Claude"
-    },
-    {
-      "code_file": "geoparquet_io/cli/main.py",
-      "doc_target": "CLAUDE.md#CLI Command Groups",
-      "reviewed_at": "2026-04-02T15:00:50.711976+00:00",
-      "code_commit_at_review": "d71867c",
-      "reviewed_by": "Claude"
-    },
-    {
-      "code_file": "geoparquet_io/cli/main.py",
       "doc_target": "CLAUDE.md#Architecture & Key Files",
       "reviewed_at": "2026-04-02T15:00:50.816535+00:00",
       "code_commit_at_review": "d71867c",
@@ -132,6 +118,27 @@
       "reviewed_at": "2026-04-08T12:41:03.061078+00:00",
       "code_commit_at_review": "7867f6b",
       "reviewed_by": "user"
+    },
+    {
+      "code_file": "geoparquet_io/cli/main.py",
+      "doc_target": "docs/contributing.md",
+      "reviewed_at": "2026-04-09T09:54:18.101714+00:00",
+      "code_commit_at_review": "2ac6257",
+      "reviewed_by": "claude-agent"
+    },
+    {
+      "code_file": "geoparquet_io/cli/main.py",
+      "doc_target": "geoparquet_io/skills/geoparquet.md#Command Reference",
+      "reviewed_at": "2026-04-09T09:54:20.000131+00:00",
+      "code_commit_at_review": "2ac6257",
+      "reviewed_by": "claude-agent"
+    },
+    {
+      "code_file": "geoparquet_io/cli/main.py",
+      "doc_target": "CLAUDE.md#CLI Command Groups",
+      "reviewed_at": "2026-04-09T09:54:22.442454+00:00",
+      "code_commit_at_review": "2ac6257",
+      "reviewed_by": "claude-agent"
     }
   ]
 }

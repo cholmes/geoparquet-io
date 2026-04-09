@@ -244,26 +244,30 @@ This allows backwards compatibility:
 class InspectDefaultGroup(click.Group):
     """Custom Group that runs 'summary' when no subcommand is provided.
 
-    Also routes deprecated flags (--head, --tail, --stats, --meta, etc.) to legacy command.
+    Also routes deprecated flags (--head, --tail, --stats, --meta, etc.) to their
+    corresponding subcommands with deprecation warnings.
 
     This allows:
     - gpio inspect data.parquet          -> invokes summary (default)
     - gpio inspect head data.parquet     -> invokes head subcommand
-    - gpio inspect data.parquet --head   -> invokes legacy (deprecated)
-    - gpio inspect meta --parquet        -> invokes meta subcommand (not legacy)
+    - gpio inspect data.parquet --head   -> invokes head subcommand (deprecated syntax)
+    - gpio inspect meta --parquet        -> invokes meta subcommand (not deprecated)
     """
 
-    # All deprecated flags that should route to the legacy command
-    deprecated_flags = {
-        "--head",
-        "--tail",
-        "--stats",
-        "--meta",
-        "--parquet",
-        "--geoparquet",
-        "--parquet-geo",
-        "--row-groups",
+    # Map deprecated flags to their target subcommands
+    deprecated_flag_to_subcommand = {
+        "--head": "head",
+        "--tail": "tail",
+        "--stats": "stats",
+        "--meta": "meta",
+        "--parquet": "meta",
+        "--geoparquet": "meta",
+        "--parquet-geo": "meta",
+        "--row-groups": "meta",
     }
+
+    # Flags that need to be passed through to the meta subcommand
+    meta_passthrough_flags = {"--parquet", "--geoparquet", "--parquet-geo", "--row-groups"}
 
     def parse_args(self, ctx, args):
         # Handle --help for group
@@ -272,15 +276,37 @@ class InspectDefaultGroup(click.Group):
 
         # FIRST: Check if first arg is a known subcommand - use it as-is
         # This must come before deprecated flag checking so that
-        # `gpio inspect meta --parquet` routes to meta, not legacy
+        # `gpio inspect meta --parquet` routes to meta, not deprecated path
         if args and not args[0].startswith("-") and args[0] in self.commands:
             return super().parse_args(ctx, args)
 
-        # THEN: Check for deprecated flags - route to legacy command
+        # THEN: Check for deprecated flags - route to actual subcommands with warning
         # Only applies when no explicit subcommand was given
-        for flag in self.deprecated_flags:
+        for flag, subcommand in self.deprecated_flag_to_subcommand.items():
             if flag in args:
-                return super().parse_args(ctx, ["legacy"] + args)
+                click.echo(
+                    click.style("DeprecationWarning: ", fg="yellow", bold=True)
+                    + click.style(
+                        f"'{flag}' flag is deprecated. Use 'gpio inspect {subcommand}' instead.",
+                        fg="yellow",
+                    ),
+                    err=True,
+                )
+                new_args = [subcommand]
+                if flag in self.meta_passthrough_flags:
+                    # Map deprecated flags to new meta subcommand flags
+                    flag_mapping = {
+                        "--parquet": "--parquet",
+                        "--geoparquet": "--geo",
+                        "--parquet-geo": "--parquet-geo",
+                        "--row-groups": "--row-groups",
+                    }
+                    new_args.extend(a for a in args if a != flag)
+                    if flag in flag_mapping:
+                        new_args.append(flag_mapping[flag])
+                else:
+                    new_args.extend(a for a in args if a != flag)
+                return super().parse_args(ctx, new_args)
 
         # Default to 'summary' subcommand
         return super().parse_args(ctx, ["summary"] + args)
