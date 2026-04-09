@@ -453,6 +453,7 @@ class TestAddBbox:
 class TestAddAdminDivisions:
     """Test add admin-divisions output format."""
 
+    @pytest.mark.slow
     def test_dry_run_format(self, sample_parquet, temp_output):
         """Test that dry-run validates command structure."""
         runner = CliRunner()

@@ -57,28 +57,11 @@ class TestSecurityToolAvailability:
 
 
 class TestSecurityScanResults:
-    """Run actual security scans and assert they pass."""
+    """Run actual security scans and assert they pass.
 
-    def test_bandit_passes(self):
-        """Verify bandit security scan passes with zero findings."""
-        result = subprocess.run(
-            [
-                "uv",
-                "run",
-                "bandit",
-                "-r",
-                "geoparquet_io/",
-                "-c",
-                "pyproject.toml",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-            cwd=_PROJECT_ROOT,
-        )
-        assert result.returncode == 0, (
-            f"Bandit found security issues:\n{result.stdout}\n{result.stderr}"
-        )
+    Note: test_bandit_passes was removed because bandit already runs
+    in CI's lint job. Running it again here was redundant (~10s overhead).
+    """
 
     @pytest.mark.network
     def test_pip_audit_passes(self):
