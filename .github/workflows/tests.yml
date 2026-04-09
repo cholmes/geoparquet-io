@@ -7,6 +7,10 @@ on:
   schedule:
     - cron: '15 2 * * *'  # Run slow tests nightly at 2:15 AM UTC
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -84,12 +88,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ['3.10', '3.11', '3.12', '3.13']
         exclude:
           - os: macos-latest
-            python-version: '3.10'
-          - os: windows-latest
             python-version: '3.10'
     steps:
       - uses: actions/checkout@v6
@@ -112,11 +114,10 @@ jobs:
       - name: Run fast tests with pytest (parallel)
         shell: bash
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n auto --dist=loadfile -m "not slow and not network" -v --tb=short --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           else
-            uv run pytest -n auto -m "not slow and not network" -v --tb=short --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           fi
 
       - name: Upload coverage to Codecov
@@ -127,6 +128,39 @@ jobs:
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
+
+  test-windows:
+    # Windows tests run only on main, scheduled runs, and manual dispatch
+    # Windows is ~2x slower than Linux due to filesystem/process overhead
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Pre-install DuckDB extensions
+        run: |
+          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+
+      - name: Run fast tests with pytest (parallel)
+        shell: bash
+        run: |
+          # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
+          uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
 
   notebooks:
     runs-on: ubuntu-latest
@@ -153,7 +187,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ['3.11']
     steps:
       - uses: actions/checkout@v6
@@ -174,6 +208,50 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install gdal
 
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Pre-install DuckDB extensions
+        run: |
+          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+
+      - name: Run slow and network tests (parallel)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            uv run pytest -n 3 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+          else
+            uv run pytest -n 4 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+          fi
+
+      - name: Upload slow test coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage.xml
+          flags: slowtests
+          name: codecov-slow
+          fail_ci_if_error: false
+
+  slow-tests-windows:
+    # Windows slow tests run only on main, scheduled runs, and manual dispatch
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11']
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
       # Note: GDAL is not easily installable on Windows via Chocolatey.
       # FileGDB tests will gracefully skip on Windows and run on Linux/macOS.
 
@@ -187,18 +265,5 @@ jobs:
       - name: Run slow and network tests (parallel)
         shell: bash
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n auto --dist=loadfile -m "slow or network" -v --tb=short --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
-          else
-            uv run pytest -n auto -m "slow or network" -v --tb=short --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
-          fi
-
-      - name: Upload slow test coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v5
-        with:
-          file: ./coverage.xml
-          flags: slowtests
-          name: codecov-slow
-          fail_ci_if_error: false
+          # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
+          uv run pytest -n 4 --dist=loadfile -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
