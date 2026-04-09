@@ -983,6 +983,9 @@ class TestWFSIntegration:
     WFS_URL = "https://data.transportforcairo.com/geoserver/geonode/ows"
     TYPENAME = "geonode:cairo_od_stats"
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable", strict=False
+    )
     def test_list_available_layers(self):
         """Test listing layers from real WFS."""
 
@@ -990,6 +993,9 @@ class TestWFSIntegration:
         layers = list_available_layers(self.WFS_URL)
         assert len(layers) > 0
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable", strict=False
+    )
     def test_extract_with_limit(self, tmp_path):
         """Test extracting features with limit."""
         from geoparquet_io.core.wfs import convert_wfs_to_geoparquet
