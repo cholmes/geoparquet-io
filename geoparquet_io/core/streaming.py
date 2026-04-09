@@ -18,14 +18,9 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
-
-if TYPE_CHECKING:
-    pass
-
 
 # Marker for stdin/stdout in CLI arguments
 STREAM_MARKER = "-"

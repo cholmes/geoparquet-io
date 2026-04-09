@@ -661,8 +661,8 @@ class TestCRSComparison:
 
         assert _extract_crs_identifier("EPSG:4326") == ("EPSG", 4326)
         assert _extract_crs_identifier("epsg:31287") == ("EPSG", 31287)
-        # OGC:CRS84 is a special case - not a numeric code, so returns None
-        assert _extract_crs_identifier("OGC:CRS84") is None
+        # OGC:CRS84 has non-numeric code, returned as string
+        assert _extract_crs_identifier("OGC:CRS84") == ("OGC", "CRS84")
 
     def test_extract_crs_identifier_from_urn(self):
         """Test extracting CRS identifier from URN format."""

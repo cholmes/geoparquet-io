@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from geoparquet_io.core.common import (
+    _extract_crs_identifier,
     format_size,
     is_remote_url,
     safe_file_url,
@@ -127,56 +128,9 @@ def _format_crs_for_display(crs_info: Any, include_default: bool = True) -> str:
     return crs_str[:50] + "..." if len(crs_str) > 50 else crs_str
 
 
-def _extract_crs_identifier(crs_info: Any) -> tuple[str, int] | None:
-    """
-    Extract normalized CRS identifier (authority, code) from various formats.
-
-    Handles:
-    - PROJJSON dicts with id.authority and id.code
-    - Strings like "EPSG:31287", "epsg:31287"
-    - URN format like "urn:ogc:def:crs:EPSG::31287"
-
-    Returns:
-        tuple of (authority, code) like ("EPSG", 31287), or None if not extractable
-    """
-    if isinstance(crs_info, dict):
-        # PROJJSON format - look for id.authority and id.code
-        if "id" in crs_info:
-            crs_id = crs_info["id"]
-            if isinstance(crs_id, dict):
-                authority = crs_id.get("authority", "").upper()
-                code = crs_id.get("code")
-                if authority and code:
-                    try:
-                        return (authority, int(code))
-                    except (ValueError, TypeError):
-                        pass  # Non-numeric code like "LAMB93"
-        return None
-
-    if isinstance(crs_info, str):
-        crs_str = crs_info.strip().upper()
-
-        # Handle "EPSG:31287" format
-        if ":" in crs_str and not crs_str.startswith("URN:"):
-            parts = crs_str.split(":")
-            if len(parts) == 2:
-                try:
-                    return (parts[0], int(parts[1]))
-                except ValueError:
-                    pass
-
-        # Handle URN format "urn:ogc:def:crs:EPSG::31287"
-        if crs_str.startswith("URN:OGC:DEF:CRS:"):
-            parts = crs_str.split(":")
-            if len(parts) >= 7:
-                authority = parts[4]
-                try:
-                    code = int(parts[-1])
-                    return (authority, code)
-                except ValueError:
-                    pass
-
-    return None
+# Note: _extract_crs_identifier is imported from common.py to avoid duplication
+# and circular imports. It's re-exported here for backwards compatibility with
+# tests that import from inspect_utils.
 
 
 def _crs_are_equivalent(crs1: Any, crs2: Any) -> bool:

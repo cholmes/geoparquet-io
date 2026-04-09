@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING
 
 from .base import (
     BaseWriteStrategy,
@@ -36,9 +35,6 @@ from .base import (
     build_geo_metadata,
     needs_metadata_rewrite,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 class WriteStrategyFactory:
