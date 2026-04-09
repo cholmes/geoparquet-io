@@ -586,7 +586,6 @@ class TestOpsNewFunctions:
         assert result.num_rows == 766
 
 
-@pytest.mark.network
 class TestTablePartitionByA5:
     """Tests for Table.partition_by_a5() method."""
 
@@ -610,7 +609,9 @@ class TestTablePartitionByA5:
 
     def test_partition_by_a5_basic(self, sample_table, output_dir):
         """Test basic A5 partitioning."""
-        result = sample_table.partition_by_a5(output_dir, resolution=10, overwrite=True, force=True)
+        # Use low resolution (4) to ensure partitions have enough rows
+        # Higher resolutions create too many tiny partitions with test data
+        result = sample_table.partition_by_a5(output_dir, resolution=4, overwrite=True)
 
         assert isinstance(result, dict)
         assert "file_count" in result
@@ -621,9 +622,8 @@ class TestTablePartitionByA5:
 
     def test_partition_by_a5_hive_style(self, sample_table, output_dir):
         """Test Hive-style A5 partitioning."""
-        result = sample_table.partition_by_a5(
-            output_dir, resolution=10, hive=True, overwrite=True, force=True
-        )
+        # Use low resolution (4) to ensure partitions have enough rows
+        result = sample_table.partition_by_a5(output_dir, resolution=4, hive=True, overwrite=True)
 
         assert result["file_count"] > 0
         # Check for Hive-style directories

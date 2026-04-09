@@ -590,7 +590,7 @@ stats = table.partition_by_s2('output/', level=10)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=True, overwrite=False, force=False, skip_analysis=False)`
+#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=True, overwrite=False)`
 
 Partition the table into a Hive-partitioned directory by A5 cell.
 
@@ -598,9 +598,6 @@ Partition the table into a Hive-partitioned directory by A5 cell.
 # Partition by A5
 stats = table.partition_by_a5('output/', resolution=12)
 print(f"Created {stats['file_count']} files")
-
-# Force partition even if analysis suggests issues
-stats = table.partition_by_a5('output/', resolution=12, force=True)
 ```
 
 #### `partition_by_string(output_dir, column, chars=None, hive=True, overwrite=False)`

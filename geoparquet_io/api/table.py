@@ -1530,8 +1530,6 @@ class Table:
         compression: str = "ZSTD",
         hive: bool = True,
         overwrite: bool = False,
-        force: bool = False,
-        skip_analysis: bool = False,
     ) -> dict:
         """
         Partition the table into Hive-partitioned directory by A5 cell.
@@ -1545,8 +1543,6 @@ class Table:
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: True)
             overwrite: Overwrite existing output directory
-            force: Force partitioning even if analysis suggests issues
-            skip_analysis: Skip partition analysis checks
 
         Returns:
             dict with partition statistics (file_count, etc.)
@@ -1568,8 +1564,6 @@ class Table:
                 "resolution": resolution,
                 "hive": hive,
                 "overwrite": overwrite,
-                "force": force,
-                "skip_analysis": skip_analysis,
             },
             compression=compression,
             collect_stats=True,
