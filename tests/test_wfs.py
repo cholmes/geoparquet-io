@@ -983,6 +983,11 @@ class TestWFSIntegration:
     WFS_URL = "https://data.transportforcairo.com/geoserver/geonode/ows"
     TYPENAME = "geonode:cairo_od_stats"
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
+    )
     def test_list_available_layers(self):
         """Test listing layers from real WFS."""
 
@@ -990,6 +995,11 @@ class TestWFSIntegration:
         layers = list_available_layers(self.WFS_URL)
         assert len(layers) > 0
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
+    )
     def test_extract_with_limit(self, tmp_path):
         """Test extracting features with limit."""
         from geoparquet_io.core.wfs import convert_wfs_to_geoparquet
@@ -1009,6 +1019,11 @@ class TestWFSIntegration:
         assert table.num_rows <= 10
         assert "geometry" in table.column_names
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
+    )
     def test_extract_with_bbox(self, tmp_path):
         """Test bbox filtering (Cairo region)."""
         from geoparquet_io.core.wfs import convert_wfs_to_geoparquet
@@ -1030,6 +1045,11 @@ class TestWFSIntegration:
         table = pq.read_table(output)
         assert table.num_rows >= 0  # May be 0 if no data in bbox
 
+    @pytest.mark.xfail(
+        reason="External WFS service (transportforcairo.com) unreliable",
+        raises=WFSError,
+        strict=False,
+    )
     def test_python_api(self):
         """Test Python API."""
         from geoparquet_io.api import Table
