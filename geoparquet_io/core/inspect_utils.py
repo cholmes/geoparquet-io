@@ -127,17 +127,18 @@ def _format_crs_for_display(crs_info: Any, include_default: bool = True) -> str:
     return crs_str[:50] + "..." if len(crs_str) > 50 else crs_str
 
 
-def _extract_crs_identifier(crs_info: Any) -> tuple[str, int] | None:
+def _extract_crs_identifier(crs_info: Any) -> tuple[str, int | str] | None:
     """
     Extract normalized CRS identifier (authority, code) from various formats.
 
     Handles:
     - PROJJSON dicts with id.authority and id.code
-    - Strings like "EPSG:31287", "epsg:31287"
+    - Strings like "EPSG:31287", "epsg:31287", "OGC:CRS84"
     - URN format like "urn:ogc:def:crs:EPSG::31287"
 
     Returns:
-        tuple of (authority, code) like ("EPSG", 31287), or None if not extractable
+        tuple of (authority, code) like ("EPSG", 31287) or ("OGC", "CRS84"), or None.
+        Code is int for numeric codes, str for non-numeric (e.g., CRS84).
     """
     if isinstance(crs_info, dict):
         # PROJJSON format - look for id.authority and id.code
@@ -147,23 +148,25 @@ def _extract_crs_identifier(crs_info: Any) -> tuple[str, int] | None:
                 authority = crs_id.get("authority", "").upper()
                 code = crs_id.get("code")
                 if authority and code:
+                    # Try to convert to int, but keep as string if not numeric
                     try:
                         return (authority, int(code))
                     except (ValueError, TypeError):
-                        pass  # Non-numeric code like "LAMB93"
+                        return (authority, str(code).upper())
         return None
 
     if isinstance(crs_info, str):
         crs_str = crs_info.strip().upper()
 
-        # Handle "EPSG:31287" format
+        # Handle "EPSG:31287" or "OGC:CRS84" format
         if ":" in crs_str and not crs_str.startswith("URN:"):
             parts = crs_str.split(":")
             if len(parts) == 2:
                 try:
                     return (parts[0], int(parts[1]))
                 except ValueError:
-                    pass
+                    # Non-numeric code (e.g., OGC:CRS84)
+                    return (parts[0], parts[1])
 
         # Handle URN format "urn:ogc:def:crs:EPSG::31287"
         if crs_str.startswith("URN:OGC:DEF:CRS:"):
@@ -171,10 +174,9 @@ def _extract_crs_identifier(crs_info: Any) -> tuple[str, int] | None:
             if len(parts) >= 7:
                 authority = parts[4]
                 try:
-                    code = int(parts[-1])
-                    return (authority, code)
+                    return (authority, int(parts[-1]))
                 except ValueError:
-                    pass
+                    return (authority, parts[-1])
 
     return None
 

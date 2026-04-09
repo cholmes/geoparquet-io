@@ -5,7 +5,6 @@ from __future__ import annotations
 import cProfile
 import gc
 import json
-import platform
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -14,12 +13,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import psutil
 
 from geoparquet_io.benchmarks.config import DEFAULT_THRESHOLDS, RegressionThresholds
 from geoparquet_io.benchmarks.operations import get_operation
 from geoparquet_io.benchmarks.profile_report import save_profile_data
+from geoparquet_io.core.benchmark import get_environment_info
 from geoparquet_io.core.logging_config import debug, progress
 
 
@@ -206,37 +205,6 @@ class SuiteResult:
             "config": self.config,
             "results": [asdict(r) for r in self.results],
         }
-
-
-def get_environment_info() -> dict[str, Any]:
-    """Collect environment information for benchmark results."""
-    env = {
-        "os": platform.system(),
-        "os_version": platform.version(),
-        "python_version": platform.python_version(),
-        "duckdb_version": duckdb.__version__,
-        "cpu": _get_cpu_info(),
-    }
-
-    try:
-        ram_gb = psutil.virtual_memory().total / (1024**3)
-        env["ram_gb"] = round(ram_gb, 1)
-    except Exception:
-        env["ram_gb"] = None
-
-    return env
-
-
-def _get_cpu_info() -> str:
-    """Get CPU information string."""
-    try:
-        cpu_count = psutil.cpu_count(logical=True)
-        processor = platform.processor()
-        if processor:
-            return f"{processor} / {cpu_count} cores"
-        return f"{cpu_count} cores"
-    except Exception:
-        return "Unknown"
 
 
 def _get_version() -> str:

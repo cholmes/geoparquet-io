@@ -23,6 +23,15 @@ from geoparquet_io.core.logging_config import (
 )
 from geoparquet_io.core.streaming import extract_version_from_metadata
 
+
+# Import _extract_crs_identifier from inspect_utils (canonical implementation)
+# Uses lazy import to avoid circular dependency
+def _extract_crs_identifier(crs_info):
+    from geoparquet_io.core.inspect_utils import _extract_crs_identifier as _impl
+
+    return _impl(crs_info)
+
+
 # Per-bucket cache for S3 buckets that require authentication
 # Buckets not in this set are accessed without credentials (works for public buckets)
 _s3_buckets_needing_auth: set[str] = set()
@@ -33,12 +42,6 @@ def _extract_bucket_name(path: str) -> str:
     # s3://bucket-name/path -> bucket-name
     path_without_protocol = path.split("://", 1)[1]
     return path_without_protocol.split("/")[0]
-
-
-def _clear_s3_cache():
-    """Clear S3 access cache (useful for testing)."""
-    global _s3_buckets_needing_auth
-    _s3_buckets_needing_auth = set()
 
 
 def _needs_s3_auth(exception: Exception) -> bool:
@@ -1275,101 +1278,6 @@ def detect_parquet_geometry_column(parquet_file, verbose=False):
 
     if verbose:
         debug("No geometry column found in parquet file")
-    return None
-
-
-def calculate_file_bounds(file_path, geom_column=None, verbose=False):
-    """
-    Calculate the bounding box of all geometries in a parquet file.
-
-    Uses DuckDB's spatial extension to compute the extent of all geometries.
-
-    Args:
-        file_path: Path to the parquet file (local or remote URL)
-        geom_column: Name of geometry column (auto-detected if None)
-        verbose: Print verbose output
-
-    Returns:
-        tuple: (xmin, ymin, xmax, ymax) or None if calculation fails
-    """
-    if geom_column is None:
-        geom_column = find_primary_geometry_column(file_path, verbose=False)
-
-    safe_url = safe_file_url(file_path, verbose=False)
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(file_path))
-
-    try:
-        # Quote column name to handle special characters, uppercase, etc.
-        quoted_geom = geom_column.replace('"', '""')
-        bounds_query = f"""
-            SELECT
-                MIN(ST_XMin("{quoted_geom}")) as xmin,
-                MIN(ST_YMin("{quoted_geom}")) as ymin,
-                MAX(ST_XMax("{quoted_geom}")) as xmax,
-                MAX(ST_YMax("{quoted_geom}")) as ymax
-            FROM read_parquet('{safe_url}')
-        """
-        result = con.execute(bounds_query).fetchone()
-
-        if result and all(v is not None for v in result):
-            if verbose:
-                debug(
-                    f"Calculated bounds: ({result[0]:.6f}, {result[1]:.6f}, "
-                    f"{result[2]:.6f}, {result[3]:.6f})"
-                )
-            return result
-        return None
-    except Exception as e:
-        if verbose:
-            debug(f"Failed to calculate bounds: {e}")
-        return None
-    finally:
-        con.close()
-
-
-# CRS handling functions for GeoParquet 2.0 and parquet-geo-only
-
-
-def _extract_crs_identifier(crs_info):
-    """
-    Extract normalized CRS identifier (authority, code) from various formats.
-
-    Handles PROJJSON dicts, "EPSG:CODE" strings, and URN formats.
-    Returns tuple of (authority, code) like ("EPSG", 31287) or ("OGC", "CRS84"), or None.
-    Code is int for numeric codes, str for non-numeric (e.g., CRS84).
-    """
-    if isinstance(crs_info, dict):
-        if "id" in crs_info:
-            crs_id = crs_info["id"]
-            if isinstance(crs_id, dict):
-                authority = crs_id.get("authority", "").upper()
-                code = crs_id.get("code")
-                if authority and code:
-                    # Try to convert to int, but keep as string if not numeric
-                    try:
-                        return (authority, int(code))
-                    except (ValueError, TypeError):
-                        return (authority, str(code).upper())
-        return None
-
-    if isinstance(crs_info, str):
-        crs_str = crs_info.strip().upper()
-        if ":" in crs_str and not crs_str.startswith("URN:"):
-            parts = crs_str.split(":")
-            if len(parts) == 2:
-                try:
-                    return (parts[0], int(parts[1]))
-                except ValueError:
-                    # Non-numeric code (e.g., OGC:CRS84)
-                    return (parts[0], parts[1])
-        if crs_str.startswith("URN:OGC:DEF:CRS:"):
-            parts = crs_str.split(":")
-            if len(parts) >= 7:
-                try:
-                    return (parts[4], int(parts[-1]))
-                except ValueError:
-                    return (parts[4], parts[-1])
-
     return None
 
 
