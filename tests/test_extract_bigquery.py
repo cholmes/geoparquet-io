@@ -597,38 +597,6 @@ class TestBigQueryConnection:
             "BigQueryConnection should not set deprecated bq_geography_as_geometry in v1.5"
         )
 
-    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
-    def test_deprecated_geography_param_emits_warning(self, mock_setup):
-        """Test that passing geography_as_geometry emits DeprecationWarning."""
-        import warnings
-
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
-
-        mock_setup.return_value = MagicMock()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            get_bigquery_connection(geography_as_geometry=True)
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-            assert "geography_as_geometry" in str(w[0].message)
-
-    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
-    def test_context_manager_deprecated_geography_param(self, mock_setup):
-        """Test BigQueryConnection also emits DeprecationWarning for old param."""
-        import warnings
-
-        from geoparquet_io.core.extract_bigquery import BigQueryConnection
-
-        mock_setup.return_value = MagicMock()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            with BigQueryConnection(geography_as_geometry=True) as _con:
-                pass
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
-
 
 # Integration tests that require BigQuery access
 @pytest.mark.network

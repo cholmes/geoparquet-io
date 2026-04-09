@@ -58,8 +58,3 @@ def format_comparison_table(comparisons: list[ComparisonResult]) -> str:
         )
 
     return "\n".join(lines)
-
-
-# NOTE: Markdown format deferred until needed for PR comments
-# def format_markdown(results): ...
-# def format_comparison_markdown(comparisons): ...

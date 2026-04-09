@@ -50,7 +50,6 @@ dependencies = [
 
 [project.scripts]
 gpio = "geoparquet_io:cli"
-gt = "geoparquet_io:cli"  # Legacy alias for backwards compatibility
 
 [project.urls]
 "Homepage" = "https://github.com/geoparquet/geoparquet-io"
