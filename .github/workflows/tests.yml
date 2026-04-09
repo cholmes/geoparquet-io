@@ -156,6 +156,8 @@ jobs:
           uv run pytest --nbmake examples/*.ipynb -v --nbmake-timeout=120 --no-cov
 
   slow-tests:
+    # Slow tests run on merge to main, schedule, and manual dispatch (not on PRs)
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
