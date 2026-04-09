@@ -50,13 +50,6 @@
       "reviewed_by": "Claude"
     },
     {
-      "code_file": "geoparquet_io/api/table.py",
-      "doc_target": "docs/api/python-api.md#Table Class",
-      "reviewed_at": "2026-04-02T15:00:51.133038+00:00",
-      "code_commit_at_review": "b1f6644",
-      "reviewed_by": "Claude"
-    },
-    {
       "code_file": "geoparquet_io/api/ops.py",
       "doc_target": "docs/api/python-api.md#Standalone Functions",
       "reviewed_at": "2026-04-02T15:00:51.241972+00:00",
@@ -132,6 +125,13 @@
       "reviewed_at": "2026-04-08T12:41:03.061078+00:00",
       "code_commit_at_review": "7867f6b",
       "reviewed_by": "user"
+    },
+    {
+      "code_file": "geoparquet_io/api/table.py",
+      "doc_target": "docs/api/python-api.md#Table Class",
+      "reviewed_at": "2026-04-09T10:53:18.559077+00:00",
+      "code_commit_at_review": "2ac6257",
+      "reviewed_by": "Claude"
     }
   ]
 }
