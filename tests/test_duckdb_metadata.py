@@ -292,7 +292,7 @@ class TestExtractCrsFromParquet:
 
     def test_extract_crs_from_projjson_reference(self, crs_projjson_file):
         """Test extracting CRS from file with projjson: reference."""
-        from geoparquet_io.core.common import extract_crs_from_parquet
+        from geoparquet_io.core.crs_utils import extract_crs_from_parquet
 
         crs = extract_crs_from_parquet(crs_projjson_file)
 
@@ -304,7 +304,7 @@ class TestExtractCrsFromParquet:
 
     def test_extract_crs_from_srid_format(self, crs_srid_file):
         """Test extracting CRS from file with srid: format."""
-        from geoparquet_io.core.common import extract_crs_from_parquet
+        from geoparquet_io.core.crs_utils import extract_crs_from_parquet
 
         crs = extract_crs_from_parquet(crs_srid_file)
 

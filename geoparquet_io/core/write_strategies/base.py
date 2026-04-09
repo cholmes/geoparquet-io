@@ -55,7 +55,8 @@ def build_geo_metadata(
     Returns:
         dict: Complete geo metadata structure ready for embedding in Parquet
     """
-    from geoparquet_io.core.common import GEOPARQUET_VERSIONS, is_default_crs
+    from geoparquet_io.core.common import GEOPARQUET_VERSIONS
+    from geoparquet_io.core.crs_utils import is_default_crs
 
     version_config = GEOPARQUET_VERSIONS.get(geoparquet_version, GEOPARQUET_VERSIONS["1.1"])
     metadata_version = version_config.get("metadata_version", "1.1.0")

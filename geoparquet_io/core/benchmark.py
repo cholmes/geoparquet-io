@@ -23,8 +23,10 @@ import click
 import duckdb
 import psutil
 
-from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES, get_duckdb_connection, needs_httpfs
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 from geoparquet_io.core.logging_config import progress
+from geoparquet_io.core.remote import needs_httpfs
 
 # Converter registry with detection functions
 CONVERTERS = {

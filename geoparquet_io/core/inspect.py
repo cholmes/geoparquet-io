@@ -4,13 +4,9 @@ This module contains the business logic for inspecting GeoParquet files,
 including summary, preview (head/tail), statistics, and metadata operations.
 """
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    get_parquet_metadata,
-    needs_httpfs,
-    parse_geo_metadata,
-)
+from geoparquet_io.core.common import get_parquet_metadata, parse_geo_metadata
 from geoparquet_io.core.duckdb_metadata import get_compression_stats, get_usable_columns
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.inspect_utils import (
     extract_file_info,
     extract_geo_info,
@@ -25,6 +21,7 @@ from geoparquet_io.core.inspect_utils import (
     get_preview_data,
 )
 from geoparquet_io.core.partition.reader import get_partition_info
+from geoparquet_io.core.remote import needs_httpfs
 
 
 def get_primary_geometry_column(parquet_file: str) -> str | None:
@@ -76,7 +73,7 @@ def inspect_summary(
     Returns:
         Dict with file_info, geo_info, columns_info, and optionally partition_summary
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.remote import (
         setup_aws_profile_if_needed,
         validate_profile_for_urls,
     )
@@ -202,7 +199,7 @@ def inspect_preview(
     Returns:
         Dict with file_info, geo_info, columns_info, preview_table, preview_mode
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.remote import (
         setup_aws_profile_if_needed,
         validate_profile_for_urls,
     )
@@ -301,7 +298,7 @@ def inspect_stats(
     Returns:
         Dict with file_info, geo_info, columns_info, statistics
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.remote import (
         setup_aws_profile_if_needed,
         validate_profile_for_urls,
     )

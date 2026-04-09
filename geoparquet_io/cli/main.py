@@ -422,8 +422,8 @@ def check_all(
     profile,
 ):
     """Check compression, bbox, row groups, spatial order, and spec compliance."""
-    from geoparquet_io.core.common import is_remote_url, show_remote_read_message
     from geoparquet_io.core.partition.reader import get_files_to_check
+    from geoparquet_io.core.remote import is_remote_url, show_remote_read_message
 
     configure_verbose(verbose)
 
@@ -1292,7 +1292,7 @@ def _reproject_impl_cli(
     memory_limit=None,
 ):
     """Shared reproject CLI implementation."""
-    from geoparquet_io.core.common import validate_profile_for_urls
+    from geoparquet_io.core.remote import validate_profile_for_urls
 
     # Configure verbose logging
     configure_verbose(verbose)
@@ -1506,9 +1506,9 @@ def convert_geojson(
     Note: GeoParquet input is automatically reprojected to WGS84 (EPSG:4326)
     for RFC 7946 compliance. Use --keep-crs to preserve the original CRS.
     """
-    from geoparquet_io.core.common import validate_profile_for_urls
     from geoparquet_io.core.format_writers import write_geojson
     from geoparquet_io.core.geojson_stream import convert_to_geojson
+    from geoparquet_io.core.remote import validate_profile_for_urls
 
     configure_verbose(verbose)
 
@@ -2079,7 +2079,7 @@ def inspect_meta(
         gpio inspect meta data.parquet --row-groups 5 # Show 5 row groups
         gpio inspect meta data.parquet --geo-stats    # Per-row-group bbox stats
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.remote import (
         setup_aws_profile_if_needed,
         validate_profile_for_urls,
     )
@@ -3574,7 +3574,7 @@ def add_bbox_metadata_cmd(parquet_file, verbose):
 
     If you need to add both the bbox column and metadata, use 'add bbox' instead.
     """
-    from geoparquet_io.core.common import setup_aws_profile_if_needed, validate_profile_for_urls
+    from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
 
     # Validate profile is only used with S3
     validate_profile_for_urls(None, parquet_file)
@@ -5430,7 +5430,7 @@ def check_stac_cmd(stac_file, verbose):
       \b
       gpio check stac output.json
     """
-    from geoparquet_io.core.common import setup_aws_profile_if_needed, validate_profile_for_urls
+    from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
     from geoparquet_io.core.stac_check import check_stac
 
     # Validate profile is only used with S3
@@ -5509,7 +5509,7 @@ def check_spec(
       # Skip data validation for faster check
       gpio check spec data.parquet --skip-data-validation
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.remote import (
         setup_aws_profile_if_needed,
         validate_profile_for_urls,
     )

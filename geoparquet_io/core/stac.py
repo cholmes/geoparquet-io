@@ -11,14 +11,10 @@ from pathlib import Path
 import click
 import pystac
 
-from geoparquet_io.core.common import (
-    find_primary_geometry_column,
-    get_dataset_bounds,
-    get_parquet_metadata,
-    is_remote_url,
-    parse_geo_metadata,
-)
+from geoparquet_io.core.common import get_dataset_bounds, get_parquet_metadata, parse_geo_metadata
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, warn
+from geoparquet_io.core.remote import is_remote_url
 
 
 def _detect_stac_file(file_path: Path) -> str | None:

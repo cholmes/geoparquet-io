@@ -83,7 +83,7 @@ class TestDuckDBUsedForRemoteFiles:
 
     def test_remote_url_detection(self):
         """Test is_remote_url correctly identifies remote URLs."""
-        from geoparquet_io.core.common import is_remote_url
+        from geoparquet_io.core.remote import is_remote_url
 
         # Remote URLs
         assert is_remote_url("s3://bucket/file.parquet") is True
@@ -288,7 +288,7 @@ class TestGeoArrowPyArrowCRSExtraction:
         # Import geoarrow to register extension types
         import geoarrow.pyarrow  # noqa: F401
 
-        from geoparquet_io.core.common import extract_crs_from_parquet
+        from geoparquet_io.core.crs_utils import extract_crs_from_parquet
 
         crs = extract_crs_from_parquet(fields_5070_file)
 

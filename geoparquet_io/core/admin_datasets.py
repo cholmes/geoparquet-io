@@ -16,7 +16,7 @@ from pathlib import Path
 import click
 import duckdb
 
-from geoparquet_io.core.common import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.logging_config import debug, info, warn
 
 # =============================================================================

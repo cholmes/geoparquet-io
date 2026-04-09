@@ -21,13 +21,10 @@ from typing import TYPE_CHECKING
 import duckdb
 import pyarrow as pa
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    get_parquet_metadata,
-    needs_httpfs,
-    safe_file_url,
-    write_parquet_with_metadata,
-)
+from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.streaming import (
     apply_geoarrow_extension_type,
     apply_metadata_to_table,

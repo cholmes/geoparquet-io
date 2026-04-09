@@ -3,13 +3,11 @@
 
 import random as _random
 
-from geoparquet_io.core.common import (
-    find_primary_geometry_column,
-    get_duckdb_connection,
-    needs_httpfs,
-    safe_file_url,
-)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress
+from geoparquet_io.core.remote import needs_httpfs
 
 
 def _bboxes_overlap(bbox1: dict, bbox2: dict) -> bool:
@@ -177,7 +175,8 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
     likely_hilbert_with_large_groups = False
     if len(row_group_bboxes) >= 5:  # Needs multiple row groups to be meaningful
         # Check average rows per group from parquet metadata
-        from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.remote import needs_httpfs
 
         con = get_duckdb_connection(load_spatial=False, load_httpfs=needs_httpfs(parquet_file))
         try:

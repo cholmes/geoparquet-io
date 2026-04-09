@@ -90,8 +90,8 @@ class TestGetCompressionStats:
 
     def test_with_existing_connection(self, test_file):
         """Should work with a provided DuckDB connection."""
-        from geoparquet_io.core.common import get_duckdb_connection
         from geoparquet_io.core.duckdb_metadata import get_compression_stats
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
         try:

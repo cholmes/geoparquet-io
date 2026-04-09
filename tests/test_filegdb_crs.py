@@ -13,10 +13,8 @@ import tempfile
 
 import pytest
 
-from geoparquet_io.core.common import (
-    detect_crs_from_spatial_file,
-    get_duckdb_connection,
-)
+from geoparquet_io.core.crs_utils import detect_crs_from_spatial_file
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
 # Timeout for ogr2ogr subprocess calls (seconds)
 OGR2OGR_TIMEOUT = 60

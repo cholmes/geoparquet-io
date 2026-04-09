@@ -16,15 +16,13 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from geoparquet_io.core.common import (
-    _extract_crs_identifier,
-    format_size,
-    is_remote_url,
-    safe_file_url,
-)
+from geoparquet_io.core.common import format_size
+from geoparquet_io.core.crs_utils import _extract_crs_identifier
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
 )
+from geoparquet_io.core.remote import is_remote_url
 
 
 def extract_file_info(parquet_file: str, con=None) -> dict[str, Any]:
@@ -603,12 +601,13 @@ def get_preview_data(
     Returns:
         tuple: (PyArrow table with data, mode: "head" or "tail")
     """
-    from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
     from geoparquet_io.core.duckdb_metadata import (
         detect_geometry_columns,
         get_geo_metadata,
         get_row_count,
     )
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.remote import needs_httpfs
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     total_rows = get_row_count(parquet_file)

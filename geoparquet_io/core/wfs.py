@@ -35,11 +35,9 @@ __all__ = [
     "wfs_to_table",
 ]
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    parse_crs_string_to_projjson,
-    write_geoparquet_table,
-)
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,

@@ -115,9 +115,7 @@ def _wrap_query_with_crs(
     input_crs: dict | None,
 ) -> str:
     """Wrap query with ST_SetCRS() — delegates to shared helper in common.py."""
-    from geoparquet_io.core.common import (
-        _wrap_query_with_crs as _common_wrap_query_with_crs,
-    )
+    from geoparquet_io.core.common import _wrap_query_with_crs as _common_wrap_query_with_crs
 
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
@@ -181,7 +179,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA."""
-        from geoparquet_io.core.common import is_remote_url, upload_if_remote
+        from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)
@@ -306,9 +304,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write with geo metadata (v1.0, v1.1, v2.0)."""
-        from geoparquet_io.core.common import (
-            _wrap_query_with_blob_conversion,
-        )
+        from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
 
         geo_meta = build_geo_metadata(
             geometry_column=geometry_column,
@@ -406,7 +402,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using DuckDB COPY TO with KV_METADATA."""
-        from geoparquet_io.core.common import _detect_version_from_table, get_duckdb_connection
+        from geoparquet_io.core.common import _detect_version_from_table
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)

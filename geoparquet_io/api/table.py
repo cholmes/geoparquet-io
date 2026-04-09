@@ -133,7 +133,7 @@ def _calculate_bounds_from_table(
     if table.num_rows == 0:
         return None
 
-    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
     con = None
     try:
@@ -213,8 +213,9 @@ def read_partition(
         >>> table = gpio.read_partition('partitioned_output/')
         >>> table = gpio.read_partition('data/quadkey=*/*.parquet')
     """
-    from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
     from geoparquet_io.core.partition.reader import build_read_parquet_expr
+    from geoparquet_io.core.remote import needs_httpfs
     from geoparquet_io.core.streaming import find_geometry_column_from_table
 
     path_str = str(path)
@@ -882,7 +883,7 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.common import is_remote_url, setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
 
@@ -937,7 +938,7 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.common import is_remote_url, setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload
 
         # Check if destination is remote
@@ -1615,7 +1616,7 @@ class Table:
         import uuid
         from pathlib import Path
 
-        from geoparquet_io.core.common import setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload as do_upload
 
         setup_aws_profile_if_needed(profile, destination)
@@ -1719,7 +1720,7 @@ class Table:
             >>> print(stats['population']['max'])
             10000000
         """
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = None
         try:

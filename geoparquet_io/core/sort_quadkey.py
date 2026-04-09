@@ -11,10 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
-from geoparquet_io.core.common import (
-    get_parquet_metadata,
-    write_parquet_with_metadata,
-)
+from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection

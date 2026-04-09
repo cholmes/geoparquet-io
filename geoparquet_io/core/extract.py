@@ -461,7 +461,7 @@ def get_schema_columns(input_parquet: str) -> list[str]:
     Returns:
         list: Column names
     """
-    from geoparquet_io.core.common import get_first_parquet_file, is_partition_path
+    from geoparquet_io.core.file_utils import get_first_parquet_file, is_partition_path
 
     # For partitions, use first file for schema
     file_to_check = input_parquet

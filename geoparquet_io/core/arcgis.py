@@ -20,13 +20,11 @@ import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    parse_crs_string_to_projjson,
-    setup_aws_profile_if_needed,
-    write_geoparquet_table,
-)
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
+from geoparquet_io.core.remote import setup_aws_profile_if_needed
 
 # ArcGIS Online token endpoint
 ARCGIS_ONLINE_TOKEN_URL = "https://www.arcgis.com/sharing/rest/generateToken"

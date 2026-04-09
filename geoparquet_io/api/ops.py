@@ -817,13 +817,13 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
         List of dicts with per-row-group bbox statistics.
         Empty list if no geo stats are available.
     """
-    from geoparquet_io.core.common import safe_file_url
     from geoparquet_io.core.duckdb_metadata import (
         get_file_metadata,
         get_per_row_group_bbox_stats,
         get_per_row_group_native_geo_stats,
         has_bbox_column,
     )
+    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.metadata_utils import (
         _get_num_rows_per_row_group,
         _merge_row_counts,

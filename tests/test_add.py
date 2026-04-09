@@ -387,7 +387,7 @@ class TestRemoteWriteSupport:
 
     def test_remote_url_detection(self):
         """Test that remote URLs are correctly detected."""
-        from geoparquet_io.core.common import is_remote_url
+        from geoparquet_io.core.remote import is_remote_url
 
         # Test S3 URLs
         assert is_remote_url("s3://bucket/file.parquet")
@@ -425,7 +425,7 @@ class TestRemoteWriteSupport:
             con.execute("INSTALL spatial; LOAD spatial;")
 
             # Simple query to read the test file
-            from geoparquet_io.core.common import safe_file_url
+            from geoparquet_io.core.file_utils import safe_file_url
 
             input_url = safe_file_url(buildings_test_file, False)
             query = f"SELECT * FROM '{input_url}' LIMIT 10"

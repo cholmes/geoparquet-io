@@ -6,10 +6,7 @@ import click
 import duckdb
 import pyarrow as pa
 
-from geoparquet_io.core.common import (
-    get_parquet_metadata,
-    write_parquet_with_metadata,
-)
+from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url

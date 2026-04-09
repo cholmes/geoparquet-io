@@ -56,10 +56,10 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
             _apply_geoparquet_metadata,
             _get_query_columns,
             _normalize_arrow_large_types,
-            _wrap_query_with_wkb_conversion,
             _write_table_with_settings,
             validate_compression_settings,
         )
+        from geoparquet_io.core.duckdb_utils import _wrap_query_with_wkb_conversion
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)

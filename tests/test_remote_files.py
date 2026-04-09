@@ -5,7 +5,8 @@ import os
 import pytest
 from click import BadParameter
 
-from geoparquet_io.core.common import is_remote_url, needs_httpfs, safe_file_url
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.remote import is_remote_url, needs_httpfs
 
 
 class TestRemoteURLDetection:
@@ -108,7 +109,7 @@ class TestRemoteFileReading:
 
     def test_geometry_column_https(self):
         """Test finding geometry column from HTTPS URL."""
-        from geoparquet_io.core.common import find_primary_geometry_column
+        from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 
         geom_col = find_primary_geometry_column(self.HTTPS_URL)
         assert geom_col == "geometry"
@@ -131,7 +132,7 @@ class TestRemoteFileReading:
 
     def test_duckdb_spatial_query_https(self):
         """Test DuckDB spatial query on HTTPS URL."""
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         query = f"""
@@ -162,7 +163,7 @@ class TestS3FileReading:
 
     def test_duckdb_query_s3(self):
         """Test DuckDB query on S3 URL."""
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         # No special configuration needed - DuckDB handles public S3 buckets automatically
         con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
@@ -186,7 +187,7 @@ class TestGetDuckDBConnection:
 
     def test_get_connection_defaults(self):
         """Test connection with defaults."""
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection()
         # Should have spatial extension loaded
@@ -196,7 +197,7 @@ class TestGetDuckDBConnection:
 
     def test_get_connection_with_httpfs(self):
         """Test connection with httpfs."""
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_httpfs=True)
         # Should have httpfs loaded (can't easily test without actual S3 access)
@@ -206,7 +207,7 @@ class TestGetDuckDBConnection:
         """Test connection without spatial."""
         import duckdb
 
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=False)
         # Spatial functions should not work (ST_Point is core in 1.5+, but ST_Buffer requires spatial)
@@ -220,7 +221,7 @@ class TestRemoteErrorHints:
 
     def test_get_remote_error_hint_403_s3(self):
         """Test hint for S3 403 Forbidden error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("403 Forbidden", "s3://bucket/file.parquet")
         assert "AWS_ACCESS_KEY_ID" in hint
@@ -228,7 +229,7 @@ class TestRemoteErrorHints:
 
     def test_get_remote_error_hint_403_azure(self):
         """Test hint for Azure 403 error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("Access Denied", "az://container/file.parquet")
         assert "AZURE_STORAGE_ACCOUNT_NAME" in hint
@@ -236,14 +237,14 @@ class TestRemoteErrorHints:
 
     def test_get_remote_error_hint_403_gcs(self):
         """Test hint for GCS 403 error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("Forbidden", "gs://bucket/file.parquet")
         assert "GOOGLE_APPLICATION_CREDENTIALS" in hint
 
     def test_get_remote_error_hint_404(self):
         """Test hint for 404 Not Found error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("404 Not Found", "https://example.com/file.parquet")
         assert "not found" in hint.lower()
@@ -251,7 +252,7 @@ class TestRemoteErrorHints:
 
     def test_get_remote_error_hint_timeout(self):
         """Test hint for timeout error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("Connection timed out", "https://example.com/file.parquet")
         assert "timed out" in hint.lower()
@@ -259,7 +260,7 @@ class TestRemoteErrorHints:
 
     def test_get_remote_error_hint_connection(self):
         """Test hint for connection error."""
-        from geoparquet_io.core.common import get_remote_error_hint
+        from geoparquet_io.core.remote import get_remote_error_hint
 
         hint = get_remote_error_hint("Unable to connect", "https://example.com/file.parquet")
         assert "connect" in hint.lower()

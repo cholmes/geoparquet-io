@@ -16,19 +16,17 @@ import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import (
-    detect_parquet_geometry_column,
-    extract_crs_from_parquet,
-    get_duckdb_connection,
-    is_default_crs,
+from geoparquet_io.core.crs_utils import extract_crs_from_parquet, is_default_crs
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url, validate_output_path
+from geoparquet_io.core.geometry_detection import detect_parquet_geometry_column
+from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
+from geoparquet_io.core.remote import (
     is_remote_url,
     needs_httpfs,
-    safe_file_url,
     setup_aws_profile_if_needed,
-    validate_output_path,
     validate_profile_for_urls,
 )
-from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 
 # Error message templates for consistency
 ERROR_REMOTE_OUTPUT = "{format} output path must be local. Use upload() for cloud destinations."
@@ -83,7 +81,7 @@ def _get_srs_parameter(input_path: str, verbose: bool = False) -> str | None:
     Returns:
         SRS string for GDAL (always returns a value for valid input)
     """
-    from geoparquet_io.core.common import _extract_crs_identifier
+    from geoparquet_io.core.crs_utils import _extract_crs_identifier
 
     crs = extract_crs_from_parquet(input_path, verbose)
 

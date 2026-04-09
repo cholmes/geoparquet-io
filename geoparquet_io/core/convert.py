@@ -8,10 +8,7 @@ import time
 import click
 import duckdb
 
-from geoparquet_io.core.common import (
-    format_size,
-    write_parquet_with_metadata,
-)
+from geoparquet_io.core.common import format_size, write_parquet_with_metadata
 from geoparquet_io.core.crs_utils import (
     _format_crs_display,
     detect_crs_from_spatial_file,
@@ -92,7 +89,10 @@ def _build_st_read_expr(input_url: str, layer: str | None = None) -> str:
 
 def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=None):
     """Detect geometry column name from input file."""
-    from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES, detect_parquet_geometry_column
+    from geoparquet_io.core.geometry_detection import (
+        STANDARD_GEOMETRY_NAMES,
+        detect_parquet_geometry_column,
+    )
 
     if verbose:
         debug("Detecting geometry column from input...")

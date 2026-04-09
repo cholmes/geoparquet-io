@@ -26,12 +26,12 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
-from geoparquet_io.core.common import (
+from geoparquet_io.core.convert import convert_to_geoparquet
+from geoparquet_io.core.crs_utils import (
     _extract_crs_identifier,
     extract_crs_from_parquet,
     is_default_crs,
 )
-from geoparquet_io.core.convert import convert_to_geoparquet
 from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
 from geoparquet_io.core.reproject import (
     _detect_crs_from_table,

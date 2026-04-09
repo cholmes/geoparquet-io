@@ -243,29 +243,39 @@ def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) 
 
 def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None) -> str:
     """
-    Wrap a query to convert geometry column to BLOB format.
+    Wrap query to convert geometry column to plain binary BLOB.
+
+    Unlike _wrap_query_with_wkb_conversion which produces WKB that DuckDB still
+    recognizes as spatial, this casts to BLOB to produce truly plain binary data.
+    Used for GeoParquet v1.x where we need plain binary WKB without geoarrow
+    extension types in the Parquet schema.
 
     Args:
-        query: Original SQL query
-        geometry_column: Name of the geometry column
-        con: Optional DuckDB connection for column discovery
+        query: Original SQL SELECT query
+        geometry_column: Name of the geometry column to convert
+        con: Optional DuckDB connection to verify column exists
 
     Returns:
-        Modified query with geometry converted to BLOB
+        str: Wrapped query with BLOB conversion, or original query if column doesn't exist
     """
-    quoted_geom = quote_identifier(geometry_column)
-
-    if con:
+    # If connection provided, check if geometry column exists in query output
+    if con is not None:
         try:
-            columns = _get_query_columns(con, query)
-            other_cols = [
-                quote_identifier(c) for c in columns if c.lower() != geometry_column.lower()
-            ]
-            if other_cols:
-                cols_str = ", ".join(other_cols)
-                return f"SELECT {cols_str}, ST_AsWKB({quoted_geom})::BLOB AS {quoted_geom} FROM ({query})"
+            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
+            if geometry_column not in schema_result.schema.names:
+                # Geometry column was excluded, return original query
+                return query
         except Exception:
+            # If check fails, try the conversion anyway
             pass
 
-    # Fallback: select all and convert geometry
-    return f"SELECT * EXCLUDE({quoted_geom}), ST_AsWKB({quoted_geom})::BLOB AS {quoted_geom} FROM ({query})"
+    # Quote column name to handle special characters
+    quoted_geom = geometry_column.replace('"', '""')
+
+    # Cast to BLOB to produce plain binary without geoarrow extension type
+    # Use SELECT * REPLACE to preserve column order
+    return f"""
+        WITH __arrow_source AS ({query})
+        SELECT * REPLACE (ST_AsWKB("{quoted_geom}")::BLOB AS "{quoted_geom}")
+        FROM __arrow_source
+    """

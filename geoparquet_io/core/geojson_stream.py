@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import duckdb
 
-from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES
+from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 
 # RFC 8142 record separator character
 RS = "\x1e"
@@ -415,13 +415,10 @@ def convert_to_geojson_stream(
     Returns:
         Number of features written
     """
-    from geoparquet_io.core.common import (
-        get_duckdb_connection,
-        needs_httpfs,
-        safe_file_url,
-        setup_aws_profile_if_needed,
-    )
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.logging_config import configure_verbose, debug, info, success
+    from geoparquet_io.core.remote import needs_httpfs, setup_aws_profile_if_needed
     from geoparquet_io.core.streaming import is_stdin
 
     configure_verbose(verbose)
@@ -532,7 +529,7 @@ def _convert_from_stream(
         CRS detection from Arrow IPC stream is limited. For pipeline use,
         ensure source data is already in WGS84 or use gpio convert reproject first.
     """
-    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
     from geoparquet_io.core.logging_config import debug, info, success
     from geoparquet_io.core.stream_io import _create_view_with_geometry
     from geoparquet_io.core.streaming import (

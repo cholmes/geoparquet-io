@@ -35,8 +35,8 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
-from geoparquet_io.core.common import is_remote_url
 from geoparquet_io.core.logging_config import debug
+from geoparquet_io.core.remote import is_remote_url
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def _list_filegdb_layers(path: str) -> list[str] | None:
     if not os.path.isdir(path):
         raise FileNotFoundError(f"FileGDB directory not found: {path}")
 
-    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
     con = get_duckdb_connection(load_spatial=True)
     try:

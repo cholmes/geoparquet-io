@@ -838,7 +838,7 @@ class TestCRSPreservation:
         )
 
         # Read back with DuckDB and verify CRS
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=True)
         try:
@@ -875,7 +875,7 @@ class TestCRSPreservation:
         )
 
         # Read back with DuckDB and verify CRS
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=True)
         try:

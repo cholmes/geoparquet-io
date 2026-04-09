@@ -86,7 +86,7 @@ def get_geoparquet_crs(parquet_file):
 
 def extract_crs_identifier(crs):
     """Extract (authority, code) from CRS dict or string."""
-    from geoparquet_io.core.common import _extract_crs_identifier
+    from geoparquet_io.core.crs_utils import _extract_crs_identifier
 
     return _extract_crs_identifier(crs)
 
@@ -421,7 +421,7 @@ class TestDefaultCRSHandling:
 
         This is an optimization - default CRS is implied.
         """
-        from geoparquet_io.core.common import is_default_crs
+        from geoparquet_io.core.crs_utils import is_default_crs
 
         convert_to_geoparquet(
             fields_geom_type_only_file,
