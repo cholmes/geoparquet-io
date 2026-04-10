@@ -59,17 +59,16 @@ class TestImportLinterConfiguration:
         assert "geoparquet_io.api" in contract["source_modules"]
         assert "geoparquet_io.cli" in contract["forbidden_modules"]
 
-    def test_core_no_click_has_ignore_imports(self, config):
-        """Existing violations must be tracked in ignore_imports."""
+    def test_core_no_click_ignore_imports_minimal(self, config):
+        """Click has been removed from core - only transitive ignores should remain."""
         contracts = {c["id"]: c for c in config["contracts_options"]}
         contract = contracts["core-no-click"]
         ignore_imports = contract.get("ignore_imports", [])
-        assert len(ignore_imports) > 0, (
-            "core-no-click should have ignore_imports for existing violations"
-        )
-        # Verify the wildcard pattern for existing core -> click violations
-        assert any("geoparquet_io.core.*" in imp and "click" in imp for imp in ignore_imports), (
-            "Expected wildcard ignore for geoparquet_io.core.* -> click"
+        # After PR #364, Click was removed from core entirely.
+        # Only transitive imports (e.g., benchmark_suite -> package root) may remain.
+        # No direct core.* -> click ignores should be needed anymore.
+        assert not any("-> click" in imp for imp in ignore_imports), (
+            f"Direct click ignores should no longer be needed, found: {ignore_imports}"
         )
 
     def test_api_no_cli_has_no_ignore_imports(self, config):

@@ -486,8 +486,8 @@ class TestWriteStrategiesWithMultiGeometry:
     def _setup_test_query(self, tmp_path, input_filename="input.parquet"):
         """Create test input and return connection + query for multi-geometry file."""
 
-        from geoparquet_io.core.common import get_duckdb_connection
         from geoparquet_io.core.convert import detect_all_geometry_columns
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         input_file = tmp_path / input_filename
         create_multi_geometry_geoparquet(str(input_file))
@@ -586,8 +586,9 @@ class TestWriteStrategiesWithMultiGeometry:
 
     def test_all_strategies_preserve_crs_for_secondary_columns(self, tmp_path):
         """All write strategies should preserve CRS for secondary columns."""
-        from geoparquet_io.core.common import get_duckdb_connection, write_parquet_with_metadata
+        from geoparquet_io.core.common import write_parquet_with_metadata
         from geoparquet_io.core.convert import detect_all_geometry_columns
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         strategies = ["duckdb-kv", "disk-rewrite", "in-memory", "streaming"]
 

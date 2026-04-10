@@ -19,12 +19,14 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
-import click
 import duckdb
 import psutil
 
-from geoparquet_io.core.common import STANDARD_GEOMETRY_NAMES, get_duckdb_connection, needs_httpfs
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError, GeoParquetError
+from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 from geoparquet_io.core.logging_config import progress
+from geoparquet_io.core.remote import needs_httpfs
 
 # Converter registry with detection functions
 CONVERTERS = {
@@ -113,16 +115,17 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
         conn.execute("SET geometry_always_xy = true;")
 
         # Get feature count and basic info
+        safe_filepath = _escape_sql_string(str(filepath))
         result = conn.execute(f"""
             SELECT COUNT(*) as cnt
-            FROM ST_Read('{filepath}')
+            FROM ST_Read('{safe_filepath}')
         """).fetchone()
 
         feature_count = result[0] if result else 0
 
         # Get schema to find geometry column
         schema = conn.execute(f"""
-            SELECT * FROM ST_Read('{filepath}') LIMIT 0
+            SELECT * FROM ST_Read('{safe_filepath}') LIMIT 0
         """).description
 
         # Find geometry column (common names)
@@ -138,7 +141,7 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
         if geom_col:
             geom_result = conn.execute(f"""
                 SELECT ST_GeometryType({geom_col}) as geom_type
-                FROM ST_Read('{filepath}')
+                FROM ST_Read('{safe_filepath}')
                 LIMIT 1
             """).fetchone()
             geom_type = geom_result[0] if geom_result else "unknown"
@@ -249,9 +252,11 @@ def benchmark_duckdb(input_path: Path, output_path: Path) -> tuple[float, float]
     conn = duckdb.connect()
     conn.execute("INSTALL spatial; LOAD spatial;")
     conn.execute("SET geometry_always_xy = true;")
+    safe_input = _escape_sql_string(str(input_path))
+    safe_output = _escape_sql_string(str(output_path))
     conn.execute(f"""
-        COPY (SELECT * FROM ST_Read('{input_path}'))
-        TO '{output_path}'
+        COPY (SELECT * FROM ST_Read('{safe_input}'))
+        TO '{safe_output}'
         (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
     """)
     conn.close()
@@ -506,7 +511,7 @@ def _check_invalid_converters(requested: list[str]) -> None:
     """Raise error if any requested converters are unknown."""
     invalid = [c for c in requested if c not in CONVERTERS]
     if invalid:
-        raise click.ClickException(
+        raise GeoParquetError(
             f"Unknown converters: {', '.join(invalid)}. Available: {', '.join(CONVERTERS.keys())}"
         )
 
@@ -516,7 +521,7 @@ def _check_unavailable_converters(requested: list[str], available: list[str]) ->
     unavailable = [c for c in requested if c not in available]
     if unavailable:
         msgs = [f"  {c}: {CONVERTERS[c]['install']}" for c in unavailable]
-        raise click.ClickException("Requested converters not available:\n" + "\n".join(msgs))
+        raise GeoParquetError("Requested converters not available:\n" + "\n".join(msgs))
 
 
 def _validate_converters(converters: list[str] | None, available: list[str]) -> list[str]:
@@ -654,13 +659,13 @@ def run_benchmark(
     input_path = Path(input_file)
 
     if not input_path.exists():
-        raise click.ClickException(f"Input file not found: {input_file}")
+        raise FileNotFoundGeoParquetError(input_file)
 
     available, missing = detect_available_converters()
     run_converters = _validate_converters(converters, available)
 
     if not run_converters:
-        raise click.ClickException("No converters available to run")
+        raise GeoParquetError("No converters available to run")
 
     if not quiet:
         _print_setup_info(input_path, run_converters, iterations, warmup, missing)
@@ -868,10 +873,11 @@ def _get_explain_connection(file_path: str) -> duckdb.DuckDBPyConnection:
 
 def _build_explain_query(file_path: str, query: str | None) -> str:
     """Build the EXPLAIN ANALYZE query string."""
+    safe_path = _escape_sql_string(file_path)
     if query:
-        sql = query.replace("{file}", file_path)
+        sql = query.replace("{file}", safe_path)
     else:
-        sql = f"SELECT * FROM read_parquet('{file_path}')"
+        sql = f"SELECT * FROM read_parquet('{safe_path}')"
     return f"EXPLAIN ANALYZE {sql}"
 
 

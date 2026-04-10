@@ -144,20 +144,18 @@ class TestValidateArcgisUrl:
 
     def test_invalid_url_no_server_type(self):
         """Test invalid URL without FeatureServer/MapServer."""
-        import click
-
         from geoparquet_io.core.arcgis import validate_arcgis_url
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
-        with pytest.raises(click.ClickException, match="Invalid ArcGIS URL"):
+        with pytest.raises(InvalidParameterError, match="(?i)invalid arcgis url"):
             validate_arcgis_url("https://example.com/rest/services/Test/0")
 
     def test_invalid_url_no_layer_id(self):
         """Test invalid URL without layer ID."""
-        import click
-
         from geoparquet_io.core.arcgis import validate_arcgis_url
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
-        with pytest.raises(click.ClickException, match="Missing layer ID in URL"):
+        with pytest.raises(InvalidParameterError, match="(?i)missing layer id"):
             validate_arcgis_url("https://example.com/rest/services/Test/FeatureServer")
 
 
@@ -179,15 +177,14 @@ class TestGenerateToken:
     @patch("geoparquet_io.core.arcgis._make_request")
     def test_invalid_credentials(self, mock_request):
         """Test error on invalid credentials."""
-        import click
-
         from geoparquet_io.core.arcgis import generate_token
+        from geoparquet_io.core.exceptions import GeoParquetError
 
         mock_request.return_value = {
             "error": {"code": 400, "message": "Invalid credentials", "details": []}
         }
 
-        with pytest.raises(click.ClickException, match="Invalid credentials"):
+        with pytest.raises(GeoParquetError, match="(?i)invalid credentials"):
             generate_token("user", "wrong_pass")
 
 

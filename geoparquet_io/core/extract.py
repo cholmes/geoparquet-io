@@ -15,23 +15,36 @@ import re
 import sys
 from pathlib import Path
 
-import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    STANDARD_GEOMETRY_NAMES,
     check_bbox_structure,
-    find_primary_geometry_column,
-    get_crs_display_name,
-    get_duckdb_connection,
-    get_duckdb_connection_for_s3,
     get_parquet_metadata,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.crs_utils import get_crs_display_name
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    get_duckdb_connection_for_s3,
+)
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    GeoParquetError,
+    InvalidParameterError,
+    ValidationError,
+)
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
+from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
+    is_remote_url,
+    needs_httpfs,
+)
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_metadata,
@@ -82,7 +95,7 @@ def validate_where_clause(where_clause: str) -> None:
         where_clause: The WHERE clause string to validate
 
     Raises:
-        click.ClickException: If dangerous SQL keywords are found
+        ValidationError: If dangerous SQL keywords are found
     """
     # Build pattern to match dangerous keywords as whole words (case-insensitive)
     # Use word boundaries to avoid false positives (e.g., "UPDATED_AT" shouldn't match)
@@ -96,7 +109,7 @@ def validate_where_clause(where_clause: str) -> None:
             found_keywords.append(keyword)
 
     if found_keywords:
-        raise click.ClickException(
+        raise ValidationError(
             f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
             "Only SELECT-style filtering expressions are allowed in --where. "
             "If you need to perform data modifications, use DuckDB directly."
@@ -260,28 +273,29 @@ def parse_bbox(bbox_str: str) -> tuple[float, float, float, float]:
         tuple: (xmin, ymin, xmax, ymax)
 
     Raises:
-        click.ClickException: If format is invalid or coordinates are reversed
+        InvalidParameterError: If format is invalid or coordinates are reversed
     """
     try:
         parts = [float(x.strip()) for x in bbox_str.split(",")]
         if len(parts) != 4:
-            raise click.ClickException(
-                f"Invalid bbox format. Expected 4 values (xmin,ymin,xmax,ymax), got {len(parts)}"
+            raise InvalidParameterError(
+                "bbox", f"expected 4 values (xmin,ymin,xmax,ymax), got {len(parts)}"
             )
         xmin, ymin, xmax, ymax = parts
 
         # Validate coordinate ordering
         if xmin > xmax or ymin > ymax:
-            raise click.ClickException(
-                f"Invalid bbox: coordinates appear to be reversed. "
+            raise InvalidParameterError(
+                "bbox",
+                f"coordinates appear to be reversed. "
                 f"xmin ({xmin}) must be <= xmax ({xmax}), and ymin ({ymin}) must be <= ymax ({ymax}). "
-                "Expected order: xmin,ymin,xmax,ymax."
+                "Expected order: xmin,ymin,xmax,ymax.",
             )
 
         return (xmin, ymin, xmax, ymax)
     except ValueError as e:
-        raise click.ClickException(
-            f"Invalid bbox format. Expected numeric values: xmin,ymin,xmax,ymax. Error: {e}"
+        raise InvalidParameterError(
+            "bbox", f"expected numeric values: xmin,ymin,xmax,ymax. Error: {e}"
         ) from e
 
 
@@ -297,7 +311,7 @@ def convert_geojson_to_wkt(geojson: dict) -> str:
     """
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        geojson_str = json.dumps(geojson).replace("'", "''")
+        geojson_str = _escape_sql_string(json.dumps(geojson))
         result = con.execute(f"""
             SELECT ST_AsText(ST_GeomFromGeoJSON('{geojson_str}'))
         """).fetchone()
@@ -309,8 +323,8 @@ def convert_geojson_to_wkt(geojson: dict) -> str:
 def _read_geometry_from_stdin() -> str:
     """Read geometry from stdin."""
     if sys.stdin.isatty():
-        raise click.ClickException(
-            "No geometry provided on stdin. Pipe geometry data or use @file syntax."
+        raise InvalidParameterError(
+            "geometry", "No geometry provided on stdin. Pipe geometry data or use @file syntax."
         )
     return sys.stdin.read().strip()
 
@@ -349,26 +363,29 @@ def _extract_geometry_from_geojson(geojson: dict, use_first: bool) -> dict:
         dict: The geometry object
 
     Raises:
-        click.ClickException: If geometry cannot be extracted
+        InvalidParameterError: If geometry cannot be extracted
     """
     if geojson.get("type") == "FeatureCollection":
         features = geojson.get("features", [])
         if not features:
-            raise click.ClickException("FeatureCollection is empty - no geometries found")
+            raise InvalidParameterError(
+                "geometry", "FeatureCollection is empty - no geometries found"
+            )
         if len(features) > 1 and not use_first:
-            raise click.ClickException(
+            raise InvalidParameterError(
+                "geometry",
                 f"Multiple geometries ({len(features)}) found in FeatureCollection. "
-                "Use --use-first-geometry to use only the first geometry."
+                "Use --use-first-geometry to use only the first geometry.",
             )
         geom = features[0].get("geometry")
         if not geom:
-            raise click.ClickException("First feature has no geometry")
+            raise InvalidParameterError("geometry", "First feature has no geometry")
         return geom
 
     if geojson.get("type") == "Feature":
         geom = geojson.get("geometry")
         if not geom:
-            raise click.ClickException("Feature has no geometry")
+            raise InvalidParameterError("geometry", "Feature has no geometry")
         return geom
 
     # Already a geometry object
@@ -380,14 +397,14 @@ def _parse_geojson_to_wkt(geometry_input: str, use_first: bool) -> str:
     try:
         geojson = json.loads(geometry_input)
     except json.JSONDecodeError as e:
-        raise click.ClickException(f"Invalid GeoJSON: {e}") from e
+        raise InvalidParameterError("geometry", f"Invalid GeoJSON: {e}") from e
 
     geojson = _extract_geometry_from_geojson(geojson, use_first)
 
     try:
         return convert_geojson_to_wkt(geojson)
     except Exception as e:
-        raise click.ClickException(f"Failed to convert GeoJSON to WKT: {e}") from e
+        raise GeoParquetError(f"Failed to convert GeoJSON to WKT: {e}") from e
 
 
 def _validate_wkt(wkt: str, original_input: str) -> str:
@@ -402,9 +419,10 @@ def _validate_wkt(wkt: str, original_input: str) -> str:
         "GEOMETRYCOLLECTION",
     )
     if not any(wkt.upper().startswith(prefix) for prefix in valid_prefixes):
-        raise click.ClickException(
-            f"Could not parse geometry input as GeoJSON or WKT.\n"
-            f"Input: {original_input[:100]}{'...' if len(original_input) > 100 else ''}"
+        raise InvalidParameterError(
+            "geometry",
+            f"Could not parse geometry input as GeoJSON or WKT. "
+            f"Input: {original_input[:100]}{'...' if len(original_input) > 100 else ''}",
         )
     return wkt
 
@@ -428,7 +446,7 @@ def parse_geometry_input(geometry_input: str, use_first: bool = False) -> str:
         str: WKT representation of the geometry
 
     Raises:
-        click.ClickException: If geometry cannot be parsed or multiple geometries found
+        InvalidParameterError: If geometry cannot be parsed or multiple geometries found
     """
     original_input = geometry_input
 
@@ -441,7 +459,7 @@ def parse_geometry_input(geometry_input: str, use_first: bool = False) -> str:
     if file_path:
         path = Path(file_path)
         if not path.exists():
-            raise click.ClickException(f"Geometry file not found: {file_path}")
+            raise FileNotFoundGeoParquetError(file_path, "geometry file")
         geometry_input = path.read_text().strip()
 
     # Parse to WKT
@@ -461,7 +479,7 @@ def get_schema_columns(input_parquet: str) -> list[str]:
     Returns:
         list: Column names
     """
-    from geoparquet_io.core.common import get_first_parquet_file, is_partition_path
+    from geoparquet_io.core.file_utils import get_first_parquet_file, is_partition_path
 
     # For partitions, use first file for schema
     file_to_check = input_parquet
@@ -540,16 +558,17 @@ def validate_columns(
         option_name: Name of the option for error message
 
     Raises:
-        click.ClickException: If any columns not found
+        InvalidParameterError: If any columns not found
     """
     if not requested_cols:
         return
 
     missing = set(requested_cols) - set(all_columns)
     if missing:
-        raise click.ClickException(
-            f"Columns not found in schema ({option_name}): {', '.join(sorted(missing))}\n"
-            f"Available columns: {', '.join(all_columns)}"
+        raise InvalidParameterError(
+            option_name,
+            f"Columns not found in schema: {', '.join(sorted(missing))}. "
+            f"Available columns: {', '.join(all_columns)}",
         )
 
 
@@ -581,7 +600,7 @@ def build_spatial_filter(
             )
 
     if geometry_wkt:
-        escaped_wkt = geometry_wkt.replace("'", "''")
+        escaped_wkt = _escape_sql_string(geometry_wkt)
         conditions.append(f"ST_Intersects(\"{geometry_col}\", ST_GeomFromText('{escaped_wkt}'))")
 
     return " AND ".join(conditions) if conditions else None
@@ -597,7 +616,7 @@ def build_extract_query(
     hive_input: bool = False,
 ) -> str:
     """Build the complete extraction query."""
-    from geoparquet_io.core.partition_reader import build_read_parquet_expr
+    from geoparquet_io.core.partition.reader import build_read_parquet_expr
 
     col_list = ", ".join(f'"{c}"' for c in columns)
     # Use partition reader to build read_parquet expression with proper options
@@ -885,8 +904,16 @@ def _print_dry_run_output(
 ) -> None:
     """Print dry run output."""
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    info(f"-- Input: {input_parquet}")
-    info(f"-- Output: {output_parquet}")
+    display_input = (
+        _sanitize_url_for_logging(input_parquet) if is_remote_url(input_parquet) else input_parquet
+    )
+    display_output = (
+        _sanitize_url_for_logging(output_parquet)
+        if is_remote_url(output_parquet)
+        else output_parquet
+    )
+    info(f"-- Input: {display_input}")
+    info(f"-- Output: {display_output}")
     info(f"-- Geometry column: {geometry_col}")
     if bbox_col:
         info(f"-- Bbox column: {bbox_col}")
@@ -1089,10 +1116,10 @@ def _validate_column_overlap(
     overlap = set(include_list) & set(exclude_list)
     non_special_overlap = overlap - special_cols
     if non_special_overlap:
-        raise click.ClickException(
-            f"Columns cannot be in both --include-cols and --exclude-cols: "
-            f"{', '.join(sorted(non_special_overlap))}\n"
-            f"Only geometry ({geometry_col}) and bbox ({bbox_col}) columns can appear in both."
+        raise InvalidParameterError(
+            "include_cols/exclude_cols",
+            f"Columns cannot be in both: {', '.join(sorted(non_special_overlap))}. "
+            f"Only geometry ({geometry_col}) and bbox ({bbox_col}) columns can appear in both.",
         )
 
 

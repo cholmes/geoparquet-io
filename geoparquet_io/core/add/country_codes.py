@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
-import click
 import duckdb
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    find_primary_geometry_column,
     get_bbox_advice,
     get_dataset_bounds,
     get_parquet_metadata,
-    safe_file_url,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
+from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
 
 
 def find_country_code_column(con, countries_source, is_subquery=False):
@@ -28,7 +29,7 @@ def find_country_code_column(con, countries_source, is_subquery=False):
         str: The name of the country code column
 
     Raises:
-        click.UsageError: If no suitable country code column is found
+        InvalidParameterError: If no suitable country code column is found
     """
     # Build appropriate query based on source type
     if is_subquery:
@@ -55,9 +56,10 @@ def find_country_code_column(con, countries_source, is_subquery=False):
             return col
 
     # If no column found, raise an error
-    raise click.UsageError(
+    raise InvalidParameterError(
+        "countries_parquet",
         f"Could not find country code column in countries file. "
-        f"Expected one of: {', '.join(country_code_options)}"
+        f"Expected one of: {', '.join(country_code_options)}",
     )
 
 
@@ -120,7 +122,7 @@ def _handle_bbox_optimization(file_path, bbox_info, add_bbox_flag, file_label, v
         success(f"✓ Added bbox column and metadata to {file_label.lower()}")
     elif not bbox_info["has_bbox_metadata"]:
         progress(f"Adding bbox metadata to {file_label.lower()}...")
-        from geoparquet_io.core.add_bbox_metadata import add_bbox_metadata
+        from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
 
         add_bbox_metadata(file_path, verbose)
 
@@ -223,7 +225,7 @@ def _get_bounds_for_filtering(input_parquet, input_geom_col, dry_run, verbose):
         if dry_run:
             warn("-- Note: Could not calculate actual bounds")
             return ("<xmin>", "<ymin>", "<xmax>", "<ymax>")
-        raise click.ClickException("Could not calculate dataset bounds")
+        raise GeoParquetError("Could not calculate dataset bounds")
 
     if dry_run:
         success(f"-- Bounds calculated: {bounds}")
@@ -267,9 +269,18 @@ def _print_dry_run_header(
 ):
     """Print dry-run mode header information."""
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    info(f"-- Input file: {input_url}")
-    info(f"-- Countries file: {countries_url}")
-    info(f"-- Output file: {output_parquet}")
+    display_input = _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+    display_countries = (
+        _sanitize_url_for_logging(countries_url) if is_remote_url(countries_url) else countries_url
+    )
+    display_output = (
+        _sanitize_url_for_logging(output_parquet)
+        if is_remote_url(output_parquet)
+        else output_parquet
+    )
+    info(f"-- Input file: {display_input}")
+    info(f"-- Countries file: {display_countries}")
+    info(f"-- Output file: {display_output}")
     info(f"-- Geometry columns: {input_geom_col} (input), {countries_geom_col} (countries)")
     info(
         f"-- Bbox columns: {input_bbox_col or 'none'} (input), {countries_bbox_col or 'none'} (countries)\n"

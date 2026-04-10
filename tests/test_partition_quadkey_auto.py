@@ -4,7 +4,7 @@
 
 import pytest
 
-from geoparquet_io.core.partition_by_quadkey import partition_by_quadkey
+from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
 
 
 class TestQuadkeyAutoResolutionIntegration:
@@ -57,7 +57,7 @@ class TestQuadkeyAutoResolutionIntegration:
         )
 
         # Manual resolution (using same resolution auto would calculate)
-        from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
+        from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
 
         calculated_res = calculate_auto_resolution(
             input_parquet=fields_5070_file,
@@ -133,7 +133,7 @@ class TestQuadkeyAutoResolutionIntegration:
         output_dir = tmp_path / "quadkey_error"
 
         with pytest.raises(
-            Exception, match="Cannot specify --resolution or --partition-resolution"
+            Exception, match="(?i)cannot specify --resolution or --partition-resolution"
         ):
             partition_by_quadkey(
                 input_parquet=fields_5070_file,

@@ -211,7 +211,7 @@ class TestV2CRSLocation:
         - GeoParquet 'geo' metadata: No CRS or default CRS
         - Parquet schema: No CRS or default CRS
         """
-        from geoparquet_io.core.common import is_default_crs
+        from geoparquet_io.core.crs_utils import is_default_crs
 
         convert_to_geoparquet(
             fields_geom_type_only_file,

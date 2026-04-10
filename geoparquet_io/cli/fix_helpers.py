@@ -5,7 +5,7 @@ import shutil
 
 import click
 
-from geoparquet_io.core.common import is_remote_url
+from geoparquet_io.core.remote import is_remote_url
 
 
 def validate_remote_file_modification(parquet_file, fix_output, overwrite):

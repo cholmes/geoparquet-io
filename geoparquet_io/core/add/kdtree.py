@@ -5,17 +5,13 @@ from __future__ import annotations
 import os
 import tempfile
 
-import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import (
-    find_primary_geometry_column,
-    get_duckdb_connection,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
-)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import InvalidParameterError
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -24,7 +20,12 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_reader import require_single_file
+from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
+    is_remote_url,
+    needs_httpfs,
+)
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_table,
@@ -360,7 +361,9 @@ def add_kdtree_column(
     # Auto-compute iterations if requested
     if iterations is None:
         if auto_target_rows is None:
-            raise click.BadParameter("Either iterations or auto_target_rows must be specified")
+            raise InvalidParameterError(
+                "iterations", "Either iterations or auto_target_rows must be specified"
+            )
 
         # Get file size for MB calculations
         import os
@@ -393,7 +396,7 @@ def add_kdtree_column(
 
     # Validate iterations
     if not 1 <= iterations <= 20:
-        raise click.BadParameter(f"Iterations must be between 1 and 20, got {iterations}")
+        raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
@@ -492,8 +495,16 @@ def add_kdtree_column(
 
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-        info(f"-- Input: {input_url}")
-        info(f"-- Output: {output_parquet}")
+        display_input = (
+            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+        )
+        display_output = (
+            _sanitize_url_for_logging(output_parquet)
+            if is_remote_url(output_parquet)
+            else output_parquet
+        )
+        info(f"-- Input: {display_input}")
+        info(f"-- Output: {display_output}")
         info(f"-- Column: {kdtree_column_name}")
         info(f"-- Partitions: {partition_count}")
         progress("")
@@ -569,7 +580,9 @@ def _add_kdtree_streaming(
 
             # Validate iterations
             if not 1 <= iterations <= 20:
-                raise click.BadParameter(f"Iterations must be between 1 and 20, got {iterations}")
+                raise InvalidParameterError(
+                    "iterations", f"must be between 1 and 20, got {iterations}"
+                )
 
             if verbose:
                 debug(f"Computing KD-tree partitions ({iterations} iterations)...")

@@ -49,7 +49,7 @@ def _check_geometry_type(
     verbose: bool,
 ) -> tuple[bool, str]:
     """Check if geometry column needs WKB conversion. Returns (needs_conversion, final_sql)."""
-    from geoparquet_io.core.common import _wrap_query_with_wkb_conversion
+    from geoparquet_io.core.duckdb_utils import _wrap_query_with_wkb_conversion
 
     quoted_geom = geometry_column.replace('"', '""')
     type_result = con.execute(f'SELECT TYPEOF("{quoted_geom}") FROM ({query}) LIMIT 1').fetchone()
@@ -96,10 +96,8 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using streaming RecordBatch approach."""
-        from geoparquet_io.core.common import (
-            GEOPARQUET_VERSIONS,
-            validate_compression_settings,
-        )
+        from geoparquet_io.core.common import validate_compression_settings
+        from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)
@@ -214,7 +212,8 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> dict | None:
         """Build geo metadata for query results."""
-        from geoparquet_io.core.common import create_geo_metadata, is_default_crs
+        from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.geo_metadata import create_geo_metadata
 
         if not should_add_geo_metadata:
             return None
@@ -407,13 +406,12 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
     ) -> None:
         """Write Arrow table to GeoParquet using batch streaming."""
         from geoparquet_io.core.common import (
-            GEOPARQUET_VERSIONS,
             _compute_geometry_types,
             _detect_version_from_table,
-            create_geo_metadata,
-            is_default_crs,
             validate_compression_settings,
         )
+        from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS, create_geo_metadata
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)
@@ -499,7 +497,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         verbose: bool,
     ) -> list[float] | None:
         """Pre-compute bbox via DuckDB aggregation for v2.0."""
-        from geoparquet_io.core.common import compute_bbox_via_sql
+        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
 
         if verbose:
             debug("Pre-computing bbox via DuckDB aggregation...")
@@ -517,7 +515,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         verbose: bool,
     ) -> pa.Schema:
         """Build the output schema for streaming write."""
-        from geoparquet_io.core.common import is_default_crs
+        from geoparquet_io.core.crs_utils import is_default_crs
 
         schema_metadata = dict(schema.metadata or {})
 

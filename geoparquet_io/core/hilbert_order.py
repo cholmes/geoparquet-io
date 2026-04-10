@@ -4,31 +4,34 @@ from __future__ import annotations
 
 import os
 
-import click
 import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    DEFAULT_GEOPARQUET_VERSION,
-    STANDARD_GEOMETRY_NAMES,
     add_bbox,
-    find_primary_geometry_column,
     get_bbox_advice,
     get_dataset_bounds,
-    get_duckdb_connection,
     get_parquet_metadata,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
+from geoparquet_io.core.logging_config import debug, info, success, warn
+from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import (
     get_remote_error_hint,
-    handle_output_overwrite,
     is_remote_url,
     needs_httpfs,
-    safe_file_url,
     setup_aws_profile_if_needed,
     show_remote_read_message,
     validate_profile_for_urls,
-    write_parquet_with_metadata,
 )
-from geoparquet_io.core.logging_config import debug, info, success, warn
-from geoparquet_io.core.partition_reader import require_single_file
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_table,
@@ -298,7 +301,7 @@ def _hilbert_order_streaming(
         """).fetchone()
 
         if not bounds_result or any(v is None for v in bounds_result):
-            raise click.ClickException("Could not calculate dataset bounds")
+            raise GeoParquetError("Could not calculate dataset bounds")
 
         xmin, ymin, xmax, ymax = bounds_result
         if verbose:
@@ -379,7 +382,7 @@ def _hilbert_order_file_based(
 
     bounds = get_dataset_bounds(working_parquet, geometry_column, verbose=verbose)
     if not bounds:
-        raise click.ClickException("Could not calculate dataset bounds")
+        raise GeoParquetError("Could not calculate dataset bounds")
 
     xmin, ymin, xmax, ymax = bounds
     if verbose:
@@ -416,9 +419,7 @@ def _hilbert_order_file_based(
         con.close()
         if is_remote_url(input_parquet):
             hints = get_remote_error_hint(str(e), input_parquet)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {str(e)}"
-            ) from e
+            raise RemoteAccessError(input_parquet, f"{hints}\n\nOriginal error: {str(e)}") from e
         raise
     finally:
         _cleanup_temp_file(temp_file, verbose)

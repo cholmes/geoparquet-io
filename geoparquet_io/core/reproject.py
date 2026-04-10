@@ -12,22 +12,26 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    _extract_crs_identifier,
     check_bbox_structure,
-    extract_crs_from_parquet,
-    find_primary_geometry_column,
-    get_duckdb_connection,
-    needs_httpfs,
-    parse_crs_string_to_projjson,
-    remote_write_context,
-    safe_file_url,
-    setup_aws_profile_if_needed,
-    upload_if_remote,
     validate_compression_settings,
-    validate_profile_for_urls,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.crs_utils import (
+    _extract_crs_identifier,
+    extract_crs_from_parquet,
+    parse_crs_string_to_projjson,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, success
+from geoparquet_io.core.remote import (
+    needs_httpfs,
+    remote_write_context,
+    setup_aws_profile_if_needed,
+    upload_if_remote,
+    validate_profile_for_urls,
+)
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
 

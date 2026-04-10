@@ -13,12 +13,10 @@ import os
 import duckdb
 import pyarrow as pa
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    handle_output_overwrite,
-    write_geoparquet_table,
-)
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.extract import parse_bbox
+from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,

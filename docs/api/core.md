@@ -6,15 +6,15 @@ Auto-generated API reference for core functions.
 
 ### add_bbox_column
 
-::: geoparquet_io.core.add_bbox_column.add_bbox_column
+::: geoparquet_io.core.add.bbox.add_bbox_column
 
 ### add_h3_column
 
-::: geoparquet_io.core.add_h3_column.add_h3_column
+::: geoparquet_io.core.add.h3.add_h3_column
 
 ### add_kdtree_column
 
-::: geoparquet_io.core.add_kdtree_column.add_kdtree_column
+::: geoparquet_io.core.add.kdtree.add_kdtree_column
 
 ## Spatial Operations
 
@@ -24,21 +24,21 @@ Auto-generated API reference for core functions.
 
 ### add_bbox_metadata
 
-::: geoparquet_io.core.add_bbox_metadata.add_bbox_metadata
+::: geoparquet_io.core.add.bbox_metadata.add_bbox_metadata
 
 ## Partitioning
 
 ### partition_by_string
 
-::: geoparquet_io.core.partition_by_string.partition_by_string
+::: geoparquet_io.core.partition.by_string.partition_by_string
 
 ### partition_by_h3
 
-::: geoparquet_io.core.partition_by_h3.partition_by_h3
+::: geoparquet_io.core.partition.by_h3.partition_by_h3
 
 ### partition_by_kdtree
 
-::: geoparquet_io.core.partition_by_kdtree.partition_by_kdtree
+::: geoparquet_io.core.partition.by_kdtree.partition_by_kdtree
 
 ### find_large_files
 

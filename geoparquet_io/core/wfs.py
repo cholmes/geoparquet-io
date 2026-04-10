@@ -35,11 +35,9 @@ __all__ = [
     "wfs_to_table",
 ]
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    parse_crs_string_to_projjson,
-    write_geoparquet_table,
-)
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -767,8 +765,7 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
     con.execute("SET http_timeout=600000")
 
     # Escape single quotes in URL to prevent SQL injection
-    # DuckDB uses standard SQL escaping (double single quotes)
-    safe_url = url.replace("'", "''")
+    safe_url = _escape_sql_string(url)
 
     # Use DuckDB to fetch and parse the WFS GeoJSON in one query
     # This streams the HTTP response and parses JSON directly
@@ -1173,7 +1170,7 @@ def convert_wfs_to_geoparquet(
     # Add bbox column (unless skipped)
     if not skip_bbox and table.num_rows > 0:
         progress("Adding bbox column...")
-        from geoparquet_io.core.add_bbox_column import add_bbox_table
+        from geoparquet_io.core.add.bbox import add_bbox_table
 
         table = add_bbox_table(table, geometry_column="geometry")
         debug("Bbox column added")

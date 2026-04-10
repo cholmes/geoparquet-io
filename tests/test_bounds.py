@@ -72,7 +72,7 @@ class TestGetDatasetBounds:
 
     def test_get_bounds_with_created_bbox_column(self, buildings_test_file, temp_output_file):
         """Test getting bounds after adding bbox column."""
-        from geoparquet_io.core.add_bbox_column import add_bbox_column
+        from geoparquet_io.core.add.bbox import add_bbox_column
 
         # First add bbox column
         add_bbox_column(buildings_test_file, temp_output_file, verbose=False)
@@ -96,15 +96,15 @@ class TestGetDatasetBounds:
 
     def test_get_bounds_nonexistent_file(self):
         """Test getting bounds from nonexistent file."""
-        import click
+        from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError
 
         # Should raise an exception for nonexistent file
-        with pytest.raises(click.BadParameter):
+        with pytest.raises(FileNotFoundGeoParquetError):
             get_dataset_bounds("nonexistent.parquet", verbose=False)
 
     def test_get_bounds_performance_difference(self, buildings_test_file, temp_output_file, caplog):
         """Test that bbox column actually helps performance (via warnings)."""
-        from geoparquet_io.core.add_bbox_column import add_bbox_column
+        from geoparquet_io.core.add.bbox import add_bbox_column
 
         # Get bounds without bbox column - should show warning
         with caplog.at_level(logging.WARNING, logger="geoparquet_io"):

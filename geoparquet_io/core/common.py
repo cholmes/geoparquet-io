@@ -1,17 +1,45 @@
 import json
 import os
 import re
-import shutil
-import tempfile
-import urllib.parse
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
-import click
 import duckdb
 import pyarrow.parquet as pq
 
+# Internal imports - used by functions in this module
+from geoparquet_io.core.crs_utils import (
+    _format_crs_display,
+    _wrap_query_with_crs,
+    is_default_crs,
+)
+from geoparquet_io.core.duckdb_utils import (
+    _DuckDBSchemaWrapper,
+    _escape_sql_string,
+    _get_query_columns,
+    _wrap_query_with_wkb_conversion,
+    get_duckdb_connection,
+)
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    GeoParquetError,
+    InvalidParameterError,
+)
+from geoparquet_io.core.file_utils import (
+    _get_file_cache_key,
+    get_first_parquet_file,
+    is_partition_path,
+    safe_file_url,
+)
+from geoparquet_io.core.geo_metadata import (
+    DEFAULT_GEOPARQUET_VERSION,
+    GEOPARQUET_VERSIONS,
+    create_geo_metadata,
+)
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    _detect_geometry_from_query,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -21,112 +49,16 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
+from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
+    is_remote_url,
+    needs_httpfs,
+    remote_write_context,
+    setup_aws_profile_if_needed,
+    upload_if_remote,
+)
 from geoparquet_io.core.streaming import extract_version_from_metadata
-
-# Per-bucket cache for S3 buckets that require authentication
-# Buckets not in this set are accessed without credentials (works for public buckets)
-_s3_buckets_needing_auth: set[str] = set()
-
-
-def _extract_bucket_name(path: str) -> str:
-    """Extract bucket name from S3 URL."""
-    # s3://bucket-name/path -> bucket-name
-    path_without_protocol = path.split("://", 1)[1]
-    return path_without_protocol.split("/")[0]
-
-
-def _needs_s3_auth(exception: Exception) -> bool:
-    """Detect if exception indicates S3 bucket requires authentication."""
-    error_str = str(exception).lower()
-    # 403 without credentials means we need to authenticate
-    auth_indicators = ["403", "forbidden", "access denied", "unauthorized"]
-    return any(ind in error_str for ind in auth_indicators)
-
-
-def quote_identifier(name: str) -> str:
-    """
-    Quote a SQL identifier for safe use in DuckDB queries.
-
-    Escapes embedded double quotes by doubling them, then wraps in double quotes.
-    This handles column/table names with spaces, special characters, reserved words,
-    or uppercase letters that need to be preserved.
-
-    Args:
-        name: The identifier (column name, table name, etc.) to quote
-
-    Returns:
-        A safely quoted identifier string
-
-    Examples:
-        >>> quote_identifier("geometry")
-        '"geometry"'
-        >>> quote_identifier("My Geometry")
-        '"My Geometry"'
-        >>> quote_identifier('col"name')
-        '"col""name"'
-    """
-    escaped = name.replace('"', '""')
-    return f'"{escaped}"'
-
-
-# GeoParquet version configuration
-# Maps CLI version options to DuckDB parameters and metadata settings
-# Note: For v2, we skip pyarrow rewrite to preserve native Parquet Geometry types
-# that DuckDB writes. DuckDB already produces correct GeoParquet 2.0 metadata.
-GEOPARQUET_VERSIONS = {
-    "1.0": {"duckdb_param": "V1", "metadata_version": "1.0.0", "rewrite_metadata": True},
-    "1.1": {"duckdb_param": "V1", "metadata_version": "1.1.0", "rewrite_metadata": True},
-    "2.0": {"duckdb_param": "V2", "metadata_version": "2.0.0", "rewrite_metadata": False},
-    "parquet-geo-only": {
-        "duckdb_param": "NONE",
-        "metadata_version": None,
-        "rewrite_metadata": False,
-    },
-}
-DEFAULT_GEOPARQUET_VERSION = "1.1"
-
-
-@dataclass
-class ParquetWriteSettings:
-    """
-    Central configuration for Parquet write best practices.
-    Single source of truth for compression, row groups, and other settings.
-    """
-
-    compression: str = "ZSTD"
-    compression_level: int = 15
-    row_group_rows: int | None = None
-    row_group_size_mb: int | None = None
-
-    # Best practice constants
-    DEFAULT_COMPRESSION = "ZSTD"
-    DEFAULT_COMPRESSION_LEVEL = 15
-    DEFAULT_ROW_GROUP_ROWS = 100_000
-    DEFAULT_PARQUET_VERSION = "2.6"
-
-    def get_pyarrow_kwargs(self, calculated_row_group_size: int | None = None) -> dict:
-        """Get kwargs dict for PyArrow write_table()."""
-        pa_compression = self.compression if self.compression != "UNCOMPRESSED" else None
-        pa_compression_level = (
-            self.compression_level if self.compression in ["GZIP", "ZSTD", "BROTLI"] else None
-        )
-
-        row_group_size = (
-            calculated_row_group_size or self.row_group_rows or self.DEFAULT_ROW_GROUP_ROWS
-        )
-
-        kwargs = {
-            "row_group_size": row_group_size,
-            "compression": pa_compression,
-            "write_statistics": True,
-            "use_dictionary": True,
-            "version": self.DEFAULT_PARQUET_VERSION,
-        }
-
-        if pa_compression_level is not None:
-            kwargs["compression_level"] = pa_compression_level
-
-        return kwargs
 
 
 def should_skip_bbox(geoparquet_version):
@@ -142,25 +74,6 @@ def should_skip_bbox(geoparquet_version):
         bool: True if bbox should be skipped, False if bbox should be added
     """
     return geoparquet_version in ("2.0", "parquet-geo-only")
-
-
-def _get_file_cache_key(parquet_file: str) -> tuple[str, float]:
-    """Get cache key based on file path and modification time.
-
-    Returns (resolved_path, mtime) tuple for cache invalidation.
-    For remote files, returns (path, 0) since we can't check mtime.
-    """
-    from pathlib import Path
-
-    # Resolve the path
-    if is_remote_url(parquet_file):
-        return (parquet_file, 0)
-
-    # For local files, use real path and mtime
-    path = Path(parquet_file)
-    if path.exists():
-        return (str(path.resolve()), path.stat().st_mtime)
-    return (str(path), 0)
 
 
 # LRU cache for detect_geoparquet_file_type results
@@ -293,799 +206,6 @@ def detect_geoparquet_file_type_cache_clear():
 detect_geoparquet_file_type.cache_clear = detect_geoparquet_file_type_cache_clear
 
 
-def is_remote_url(path):
-    """
-    Check if path is a remote URL that DuckDB can read.
-
-    Supports:
-    - HTTP/HTTPS: http://, https://
-    - AWS S3: s3://, s3a://
-    - Azure: az://, azure://, abfs://, abfss://
-    - Google Cloud Storage: gs://, gcs://
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is a remote URL, False otherwise
-    """
-    if path is None:
-        return False
-    remote_schemes = [
-        "http://",
-        "https://",
-        "s3://",
-        "s3a://",
-        "gs://",
-        "gcs://",
-        "az://",
-        "azure://",
-        "abfs://",
-        "abfss://",
-    ]
-    return any(path.startswith(scheme) for scheme in remote_schemes)
-
-
-def has_glob_pattern(path: str) -> bool:
-    """
-    Check if path contains glob wildcards.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path contains glob characters (*, ?, [), False otherwise
-    """
-    return any(c in path for c in ("*", "?", "["))
-
-
-def is_partition_path(path: str) -> bool:
-    """
-    Check if path represents a partitioned dataset.
-
-    Detects:
-    - Local directories containing parquet files
-    - Paths with glob patterns (*, ?, [)
-    - Hive-style paths (key=value in path) for remote URLs
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path appears to be a partitioned dataset
-    """
-    # Check for glob patterns
-    if has_glob_pattern(path):
-        return True
-
-    # Check if local path is a directory
-    if not is_remote_url(path) and os.path.isdir(path):
-        return True
-
-    # Check for hive-style partitioning in remote URLs (key=value in path components)
-    if is_remote_url(path):
-        # Extract path portion after scheme and host
-        # e.g., s3://bucket/prefix/country=US/data.parquet -> prefix/country=US/data.parquet
-        path_parts = path.split("/")
-        # Check if any path component contains = (hive-style partition)
-        for part in path_parts[3:]:  # Skip scheme://host/bucket parts
-            if "=" in part and not part.endswith(".parquet"):
-                return True
-
-    return False
-
-
-def resolve_partition_path(path: str, hive_partitioning: bool | None = None) -> tuple[str, dict]:
-    """
-    Resolve a partition path to a format DuckDB can read.
-
-    For directories, converts to glob pattern. Returns the resolved path
-    and read_parquet options dict.
-
-    Args:
-        path: File path or URL (may be directory or glob pattern)
-        hive_partitioning: Explicitly enable/disable hive partitioning.
-                          If None, auto-detect from path structure.
-
-    Returns:
-        tuple: (resolved_path, read_options_dict)
-            - resolved_path: Path/glob pattern for DuckDB
-            - read_options_dict: Options for read_parquet (hive_partitioning, etc.)
-    """
-    options = {}
-    resolved = path
-
-    # Handle local directories
-    if not is_remote_url(path) and os.path.isdir(path):
-        try:
-            items = os.listdir(path)
-            subdirs = [d for d in items if os.path.isdir(os.path.join(path, d))]
-            has_parquet_files = any(
-                f.endswith(".parquet") for f in items if not os.path.isdir(os.path.join(path, f))
-            )
-            has_hive_subdirs = any("=" in d for d in subdirs)
-
-            if has_hive_subdirs:
-                # Hive-style partitioning with key=value directories
-                resolved = os.path.join(path, "**", "*.parquet")
-                options["hive_partitioning"] = True
-            elif subdirs and not has_parquet_files:
-                # Directory has subdirectories but no parquet files at top level
-                # Use recursive glob to find parquet files in subdirectories
-                resolved = os.path.join(path, "**", "*.parquet")
-            elif has_parquet_files:
-                # Flat directory with parquet files at top level
-                resolved = os.path.join(path, "*.parquet")
-            else:
-                # Fallback - try recursive
-                resolved = os.path.join(path, "**", "*.parquet")
-        except OSError:
-            # If we can't read the directory, use recursive glob
-            resolved = os.path.join(path, "**", "*.parquet")
-
-    # If path contains hive-style markers and hive_partitioning not explicitly set
-    # Check path components (directories) for hive-style key=value patterns
-    # Exclude glob patterns and the final filename from the check
-    if hive_partitioning is None:
-        path_parts = resolved.replace("\\", "/").split("/")
-        # Check directory components (not filename or glob patterns like ** or *.parquet)
-        dir_parts = [p for p in path_parts[:-1] if p and p not in ("**", "*")]
-        has_hive_dirs = any("=" in part for part in dir_parts)
-        if has_hive_dirs:
-            options["hive_partitioning"] = True
-    elif hive_partitioning is not None:
-        options["hive_partitioning"] = hive_partitioning
-
-    return resolved, options
-
-
-def get_first_parquet_file(partition_path: str) -> str | None:
-    """
-    Get the first parquet file from a partitioned dataset.
-
-    Used for metadata inspection when only need to check one file.
-
-    Args:
-        partition_path: Directory path or glob pattern
-
-    Returns:
-        str: Path to first parquet file, or None if none found
-    """
-    import glob as glob_module
-
-    if is_remote_url(partition_path):
-        # For remote, can't easily enumerate - return original path
-        # Caller should handle this case
-        return partition_path
-
-    if os.path.isdir(partition_path):
-        # Walk directory to find first parquet file
-        for root, _dirs, files in os.walk(partition_path):
-            for f in sorted(files):  # Sort for consistent ordering
-                if f.endswith(".parquet"):
-                    return os.path.join(root, f)
-        return None
-
-    if has_glob_pattern(partition_path):
-        # Use glob to find first match
-        matches = glob_module.glob(partition_path, recursive=True)
-        parquet_matches = [m for m in sorted(matches) if m.endswith(".parquet")]
-        return parquet_matches[0] if parquet_matches else None
-
-    # Single file
-    return partition_path
-
-
-def get_all_parquet_files(partition_path: str) -> list[str]:
-    """
-    Get all parquet files from a partitioned dataset.
-
-    Args:
-        partition_path: Directory path or glob pattern
-
-    Returns:
-        list: List of paths to all parquet files, sorted for consistent ordering
-    """
-    import glob as glob_module
-
-    if is_remote_url(partition_path):
-        # For remote, can't easily enumerate - return as single item
-        return [partition_path]
-
-    if os.path.isdir(partition_path):
-        # Walk directory to find all parquet files
-        parquet_files = []
-        for root, _dirs, files in os.walk(partition_path):
-            for f in files:
-                if f.endswith(".parquet"):
-                    parquet_files.append(os.path.join(root, f))
-        return sorted(parquet_files)
-
-    if has_glob_pattern(partition_path):
-        # Use glob to find all matches
-        matches = glob_module.glob(partition_path, recursive=True)
-        return sorted([m for m in matches if m.endswith(".parquet")])
-
-    # Single file
-    return [partition_path] if os.path.exists(partition_path) else []
-
-
-def upload_if_remote(local_path, remote_path, profile=None, is_directory=False, verbose=False):
-    """
-    Upload local file/dir to remote path if remote_path is a remote URL.
-
-    Args:
-        local_path: Local file or directory path to upload
-        remote_path: Remote URL or local path
-        profile: AWS profile name (S3 only, optional)
-        is_directory: Whether local_path is a directory
-        verbose: Whether to print verbose output
-
-    Returns:
-        bool: True if upload was performed, False if not remote
-    """
-    if not is_remote_url(remote_path):
-        return False
-
-    from geoparquet_io.core.upload import upload
-
-    if verbose:
-        # Calculate size for progress indication
-        if is_directory:
-            total_size = sum(
-                os.path.getsize(os.path.join(dirpath, filename))
-                for dirpath, _, filenames in os.walk(local_path)
-                for filename in filenames
-            )
-        else:
-            total_size = os.path.getsize(local_path)
-
-        size_mb = total_size / (1024 * 1024)
-        progress(f"Uploading {size_mb:.1f} MB to {remote_path}...")
-
-    pattern = "*.parquet" if is_directory else None
-    upload(
-        source=Path(local_path),
-        destination=remote_path,
-        profile=profile,
-        pattern=pattern,
-        dry_run=False,
-    )
-
-    if verbose:
-        success(f"✓ Successfully uploaded to {remote_path}")
-
-    return True
-
-
-@contextmanager
-def remote_write_context(output_path, is_directory=False, verbose=False):
-    """
-    Context manager for remote writes with automatic temp file/dir cleanup.
-
-    Yields actual write path (temp for remote, original for local).
-    Handles cleanup automatically on exit.
-
-    Args:
-        output_path: Output path (local or remote URL)
-        is_directory: Whether output is a directory (for partitioning)
-        verbose: Whether to print verbose output
-
-    Yields:
-        tuple: (actual_write_path, is_remote)
-            - actual_write_path: Path to write to (temp for remote, original for local)
-            - is_remote: Boolean indicating if output is remote
-
-    Example:
-        with remote_write_context('s3://bucket/file.parquet', verbose=True) as (path, is_remote):
-            # Write to path
-            write_file(path)
-            # Cleanup and upload handled automatically
-    """
-    is_remote = is_remote_url(output_path)
-
-    if is_remote:
-        if is_directory:
-            temp_path = tempfile.mkdtemp(prefix="gpio_")
-        else:
-            temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-
-        if verbose:
-            debug(f"Remote output detected: {output_path}")
-            debug(f"Writing to temporary {'directory' if is_directory else 'file'}: {temp_path}")
-    else:
-        temp_path = output_path
-
-    try:
-        yield temp_path, is_remote
-    finally:
-        if is_remote and os.path.exists(temp_path):
-            try:
-                if is_directory:
-                    shutil.rmtree(temp_path)
-                else:
-                    os.unlink(temp_path)
-                if verbose:
-                    debug(
-                        f"Cleaned up temporary {'directory' if is_directory else 'file'}: {temp_path}"
-                    )
-            except Exception as e:
-                if verbose:
-                    warn(
-                        f"Could not clean up temp {'directory' if is_directory else 'file'} {temp_path}: {e}"
-                    )
-
-
-def is_s3_url(path):
-    """
-    Check if path is an S3 URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is S3
-    """
-    return isinstance(path, str) and path.startswith(("s3://", "s3a://"))
-
-
-def is_azure_url(path):
-    """
-    Check if path is an Azure Blob Storage URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is Azure
-    """
-    return isinstance(path, str) and path.startswith(("az://", "azure://", "abfs://", "abfss://"))
-
-
-def is_gcs_url(path):
-    """
-    Check if path is a Google Cloud Storage URL.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if path is GCS
-    """
-    return isinstance(path, str) and path.startswith(("gs://", "gcs://"))
-
-
-def needs_httpfs(path):
-    """
-    Check if path requires httpfs extension (S3, Azure, GCS).
-
-    HTTP/HTTPS work without httpfs, but cloud storage protocols need it.
-
-    Args:
-        path: File path or URL to check
-
-    Returns:
-        bool: True if httpfs extension is needed
-    """
-    httpfs_schemes = [
-        "s3://",
-        "s3a://",
-        "gs://",
-        "gcs://",
-        "az://",
-        "azure://",
-        "abfs://",
-        "abfss://",
-    ]
-    return any(path.startswith(scheme) for scheme in httpfs_schemes)
-
-
-def setup_aws_profile_if_needed(profile, *paths):
-    """
-    Set AWS_PROFILE environment variable if profile specified and S3 URLs detected.
-
-    This allows both DuckDB (via credential_chain) and obstore to use the specified
-    AWS profile for authentication. The profile is resolved using standard AWS SDK
-    mechanisms (reads from ~/.aws/credentials, ~/.aws/config, etc.).
-
-    Note: This is a convenience wrapper. Setting AWS_PROFILE env var directly
-    has the same effect.
-
-    Args:
-        profile: AWS profile name or None
-        *paths: Variable number of file paths to check for S3 URLs
-
-    Example:
-        setup_aws_profile_if_needed(profile, input_file, output_file)
-        # Equivalent to: os.environ['AWS_PROFILE'] = profile
-    """
-    if not profile:
-        return
-
-    # Check if any path is S3
-    has_s3 = any(p and is_s3_url(p) for p in paths)
-    if has_s3:
-        os.environ["AWS_PROFILE"] = profile
-
-
-def validate_profile_for_urls(profile, *urls):
-    """
-    Validate that profile parameter is only used with S3 URLs.
-
-    The --profile flag sets AWS credentials for S3 operations. Using it with
-    other cloud providers (GCS, Azure) would be confusing since they use
-    different authentication mechanisms.
-
-    Args:
-        profile: AWS profile name or None
-        *urls: Variable number of file paths to validate
-
-    Raises:
-        click.BadParameter: If profile is used with non-S3 remote URLs
-
-    Example:
-        validate_profile_for_urls(profile, input_file, output_file)
-    """
-    if not profile:
-        return
-
-    for url in urls:
-        if url and is_remote_url(url) and not is_s3_url(url):
-            protocol = url.split("://")[0].upper() if "://" in url else "unknown"
-            raise click.BadParameter(
-                f"--profile flag is only valid for S3 URLs, but got {protocol} URL: {url}\n"
-                f"For {protocol} authentication, use environment variables or default credentials."
-            )
-
-
-def show_remote_read_message(file_path, verbose=False):
-    """
-    Show consistent message when reading from remote files.
-
-    Args:
-        file_path: Path to check (local or remote)
-        verbose: If True, show detailed message
-    """
-    if not is_remote_url(file_path):
-        return
-
-    protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-    if verbose:
-        info(f"📡 Reading from {protocol}: {file_path}")
-    else:
-        info(f"📡 Reading from {protocol} (network operations may take time)...")
-
-
-def validate_output_path(output_path, verbose=False):
-    """
-    Validate output path for local files (remote URLs pass through).
-
-    For local paths:
-    - Check parent directory exists
-    - Check parent directory is writable
-
-    For remote URLs:
-    - No validation needed (handled by remote_write_context)
-
-    Args:
-        output_path: Local file path or remote URL
-        verbose: Whether to print verbose output
-
-    Raises:
-        click.ClickException: If local directory doesn't exist or isn't writable
-    """
-    if is_remote_url(output_path):
-        # Remote outputs handled by remote_write_context
-        return
-
-    output_dir = os.path.dirname(output_path) or "."
-    if not os.path.exists(output_dir):
-        raise click.ClickException(f"Output directory not found: {output_dir}")
-    if not os.access(output_dir, os.W_OK):
-        raise click.ClickException(f"No write permission for: {output_dir}")
-
-
-def validate_parquet_extension(output_file: str, any_extension: bool = False) -> None:
-    """
-    Validate that output file has .parquet extension.
-
-    By default, gpio commands that write parquet files require the output
-    to have a .parquet extension to prevent accidental misuse (e.g., writing
-    a parquet file with .geojson extension).
-
-    Args:
-        output_file: Output file path (local or remote)
-        any_extension: If True, skip validation and allow any extension
-
-    Raises:
-        click.ClickException: If extension is not .parquet and any_extension=False
-    """
-    # Skip for streaming output or no output specified
-    if output_file is None or output_file == "-":
-        return
-
-    # User explicitly allowed any extension
-    if any_extension:
-        return
-
-    # Extract the filename from the path (handles both local and remote URLs)
-    if "://" in output_file:
-        # Remote URL: extract path portion after protocol://bucket/
-        path_part = output_file.split("://", 1)[1]
-        filename = path_part.split("/")[-1] if "/" in path_part else path_part
-    else:
-        filename = os.path.basename(output_file)
-
-    # Check extension (case-insensitive)
-    _, ext = os.path.splitext(filename)
-    if ext.lower() != ".parquet":
-        raise click.ClickException(
-            f"Output file '{output_file}' does not have .parquet extension. "
-            f"Use --any-extension to allow non-standard extensions."
-        )
-
-
-def handle_output_overwrite(
-    output_path: str | None, overwrite: bool, input_path: str | None = None
-) -> None:
-    """
-    Check if output file exists and handle overwrite logic.
-
-    If overwrite=False and file exists, raises an error.
-    If overwrite=True and file exists, deletes the file.
-
-    This is needed because DuckDB's COPY TO command refuses to write to
-    existing files, so we must explicitly delete them when overwrite=True.
-
-    Args:
-        output_path: Path to output file (can be None for in-memory operations)
-        overwrite: Whether to overwrite existing files
-        input_path: Optional input path to check for same-file operations
-
-    Raises:
-        click.ClickException: If file exists and overwrite=False, or if attempting
-            to overwrite input file (would cause data loss)
-    """
-    if not output_path:
-        return
-
-    from pathlib import Path
-
-    output_file = Path(output_path)
-
-    if not output_file.exists():
-        return
-
-    # Check if output is same as input (would cause data loss)
-    if input_path:
-        input_file = Path(input_path)
-        try:
-            # Use resolve() to handle symlinks and relative paths correctly
-            if output_file.resolve() == input_file.resolve():
-                raise click.ClickException(
-                    f"Cannot overwrite input file: {output_path}\n"
-                    f"Input and output paths resolve to the same file.\n"
-                    f"Use a different output path or use in-place operations (e.g., 'gpio check --fix')."
-                )
-        except (OSError, ValueError):
-            # If files don't exist or paths are invalid, continue
-            # (error will be caught elsewhere)
-            pass
-
-    if not overwrite:
-        raise click.ClickException(
-            f"Output file already exists: {output_path}\nUse --overwrite to replace it."
-        )
-
-    # overwrite=True: Delete existing file to allow DuckDB COPY TO to succeed
-    output_file.unlink()
-
-
-def get_duckdb_connection(load_spatial=True, load_httpfs=None, use_s3_auth=False, threads=None):
-    """
-    Create a DuckDB connection with necessary extensions loaded.
-
-    By default, S3 access uses no credentials, which works for public buckets.
-    DuckDB automatically handles region detection for public S3 buckets.
-
-    When use_s3_auth=True, loads the aws extension and configures credential
-    discovery for private S3 buckets.
-
-    Args:
-        load_spatial: Whether to load spatial extension (default: True)
-        load_httpfs: Whether to load httpfs extension for S3/Azure/GCS.
-                    If None (default), auto-detects based on usage.
-        use_s3_auth: Whether to configure AWS credential chain for S3 (default: False).
-                    Only needed for private buckets.
-        threads: Number of threads for DuckDB to use (default: None = all cores).
-                Limiting threads is useful for parallel test execution to prevent
-                CPU saturation when multiple pytest workers create connections.
-
-    Returns:
-        duckdb.DuckDBPyConnection: Configured connection with extensions loaded
-    """
-    config = {}
-    if threads is not None:
-        config["threads"] = threads
-    con = duckdb.connect(config=config) if config else duckdb.connect()
-
-    # Enable large buffer size for Arrow export to handle datasets with >2GB of
-    # string/binary data (e.g., large WKB geometry columns). Without this,
-    # DuckDB fails with "Arrow Appender: The maximum total string size for
-    # regular string buffers is 2147483647" errors.
-    con.execute("SET arrow_large_buffer_size = true;")
-
-    # Always load spatial extension by default (core use case)
-    if load_spatial:
-        try:
-            con.execute("INSTALL spatial;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
-            # See: https://github.com/duckdb/duckdb/issues/12589
-            pass
-        con.execute("LOAD spatial;")
-        # DuckDB 1.5+: ensure lon/lat = x/y axis order globally.
-        # Replaces per-call always_xy := true in ST_Transform.
-        con.execute("SET geometry_always_xy = true;")
-
-    # Load httpfs for cloud storage support
-    if load_httpfs:
-        try:
-            con.execute("INSTALL httpfs;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
-            pass
-        con.execute("LOAD httpfs;")
-
-        # Only configure AWS credentials if explicitly requested (for private buckets)
-        # Public buckets work without any secret - DuckDB handles them automatically
-        if use_s3_auth:
-            try:
-                con.execute("INSTALL aws;")
-            except Exception:
-                # Ignore race conditions during parallel extension installation
-                pass
-            con.execute("LOAD aws;")
-            con.execute("""
-                CREATE OR REPLACE SECRET (
-                    TYPE s3,
-                    PROVIDER credential_chain,
-                    VALIDATION 'none'
-                );
-            """)
-
-    return con
-
-
-def get_duckdb_connection_for_s3(
-    path: str,
-    load_spatial: bool = True,
-) -> duckdb.DuckDBPyConnection:
-    """
-    Get DuckDB connection configured for S3 access.
-
-    For S3 paths, uses no credentials by default (works for public buckets).
-    If a bucket is known to require auth (from previous attempts), uses
-    credential chain. Results are cached per bucket.
-
-    Args:
-        path: S3 path to access (used to determine bucket and access mode)
-        load_spatial: Whether to load spatial extension (default: True)
-
-    Returns:
-        duckdb.DuckDBPyConnection: Configured connection with appropriate S3 access
-    """
-    # Non-S3 paths: use standard connection
-    if not path.startswith(("s3://", "s3a://")):
-        return get_duckdb_connection(load_spatial=load_spatial, load_httpfs=needs_httpfs(path))
-
-    bucket = _extract_bucket_name(path)
-
-    # If we know this bucket needs auth, use credential chain
-    if bucket in _s3_buckets_needing_auth:
-        return get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True)
-
-    # Try without credentials first (works for public buckets)
-    con = get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=False)
-    try:
-        # Lightweight test query - DuckDB handles glob patterns natively
-        con.execute(f"SELECT 1 FROM read_parquet('{path}') LIMIT 1").fetchone()
-        return con
-    except Exception as e:
-        con.close()
-        if _needs_s3_auth(e):
-            # This bucket requires authentication - cache and retry
-            _s3_buckets_needing_auth.add(bucket)
-            return get_duckdb_connection(
-                load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True
-            )
-        raise
-
-
-def safe_file_url(file_path, verbose=False):
-    """
-    Handle both local and remote files, returning safe URL.
-
-    For remote URLs, performs URL encoding if needed.
-    For local files, validates existence (unless it's a glob pattern).
-
-    Args:
-        file_path: Local file path or remote URL (may contain glob patterns)
-        verbose: Whether to print verbose output
-
-    Returns:
-        str: Safe URL or file path
-
-    Raises:
-        click.BadParameter: If local file doesn't exist (non-glob paths only)
-    """
-    if is_remote_url(file_path):
-        # Remote URL - URL encode if HTTP/HTTPS
-        if file_path.startswith(("http://", "https://")):
-            parsed = urllib.parse.urlparse(file_path)
-            # Preserve glob wildcards and hive-style partition markers for DuckDB
-            # These characters must not be encoded: * ? [ ] = , /
-            duckdb_safe_chars = "/*?[]=,"
-            encoded_path = urllib.parse.quote(parsed.path, safe=duckdb_safe_chars)
-            safe_url = parsed._replace(path=encoded_path).geturl()
-        else:
-            safe_url = file_path
-
-        if verbose:
-            protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-            debug(f"Reading from {protocol}: {safe_url}")
-        return safe_url
-    else:
-        # Local file - check existence (skip for glob patterns, DuckDB will handle)
-        if not has_glob_pattern(file_path) and not os.path.exists(file_path):
-            raise click.BadParameter(f"Local file not found: {file_path}")
-        return file_path
-
-
-def get_remote_error_hint(error_msg, file_path=""):
-    """
-    Generate helpful error messages for remote file access failures.
-
-    Args:
-        error_msg: Original error message from DuckDB or other library
-        file_path: The remote file path/URL that failed
-
-    Returns:
-        str: User-friendly error message with troubleshooting hints
-    """
-    # Simple pattern matching - check error type and return appropriate hint
-    error_lower = error_msg.lower()
-    path_lower = file_path.lower()
-
-    # Check for 403/auth errors
-    auth_error = "403" in error_msg or "forbidden" in error_lower or "access denied" in error_lower
-    if auth_error:
-        if "s3://" in path_lower:
-            return "Authentication required or access denied:\n  • S3: Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n  • Or configure ~/.aws/credentials file"
-        if "az://" in path_lower or "azure" in path_lower or "blob.core" in path_lower:
-            return "Authentication required or access denied:\n  • Azure: Check AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY\n  • Or set AZURE_STORAGE_SAS_TOKEN for SAS token auth"
-        if "gs://" in path_lower or "gcs://" in path_lower:
-            return "Authentication required or access denied:\n  • GCS: Check GOOGLE_APPLICATION_CREDENTIALS points to service account JSON"
-        return "Authentication required or access denied:\n  • File may be private or require authentication"
-
-    # Check for 404 errors
-    if "404" in error_msg or "not found" in error_lower or "does not exist" in error_lower:
-        base = "File not found at remote location:\n  • Verify the URL is correct\n  • Check the file exists at the specified path"
-        return f"{base}\n  • URL: {file_path}" if file_path else base
-
-    # Check for timeout
-    if "timeout" in error_lower or "timed out" in error_lower:
-        return "Connection timed out:\n  • Check network connectivity\n  • File may be very large - try a smaller file first\n  • Remote server may be slow or overloaded"
-
-    # Check for connection issues
-    if "unable to connect" in error_lower or "connection" in error_lower:
-        return "Cannot connect to remote server:\n  • Check network connectivity\n  • Verify the hostname/URL is correct\n  • Server may be down or unreachable"
-
-    # Generic
-    return "Remote file access failed:\n  • Check network connectivity\n  • Verify file URL and access permissions"
-
-
 def get_parquet_metadata(parquet_file, verbose=False):
     """
     Get Parquet file metadata using DuckDB for kv_metadata and PyArrow for schema.
@@ -1137,703 +257,53 @@ def get_parquet_metadata(parquet_file, verbose=False):
     return kv_metadata, schema
 
 
-class _DuckDBSchemaWrapper:
-    """Wrapper to provide PyArrow-like interface for DuckDB schema info."""
+def calculate_file_bounds(file_path, geom_column=None, verbose=False):
+    """
+    Calculate the bounding box of all geometries in a parquet file.
 
-    def __init__(self, schema_info):
-        self._columns = [c for c in schema_info if c.get("name") and "." not in c.get("name", "")]
+    Uses DuckDB's spatial extension to compute the extent of all geometries.
 
-    def __len__(self):
-        return len(self._columns)
+    Args:
+        file_path: Path to the parquet file (local or remote URL)
+        geom_column: Name of geometry column (auto-detected if None)
+        verbose: Print verbose output
 
-    def field(self, i):
-        return _DuckDBFieldWrapper(self._columns[i])
+    Returns:
+        tuple: (xmin, ymin, xmax, ymax) or None if calculation fails
+    """
+    if geom_column is None:
+        geom_column = find_primary_geometry_column(file_path, verbose=False)
 
-
-class _DuckDBFieldWrapper:
-    """Wrapper to provide PyArrow-like interface for a DuckDB column."""
-
-    def __init__(self, col_info):
-        self.name = col_info.get("name", "")
-
-
-def parse_geo_metadata(metadata, verbose=False):
-    """Parse GeoParquet metadata from Parquet metadata."""
-    if not metadata or b"geo" not in metadata:
-        return None
+    safe_url = safe_file_url(file_path, verbose=False)
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(file_path))
 
     try:
-        geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-        if verbose:
-            debug("\nParsed geo metadata:")
-            debug(json.dumps(geo_meta, indent=2))
-        return geo_meta
-    except json.JSONDecodeError:
-        if verbose:
-            warn("Failed to parse geo metadata as JSON")
-        return None
+        # Quote column name to handle special characters, uppercase, etc.
+        quoted_geom = geom_column.replace('"', '""')
+        bounds_query = f"""
+            SELECT
+                MIN(ST_XMin("{quoted_geom}")) as xmin,
+                MIN(ST_YMin("{quoted_geom}")) as ymin,
+                MAX(ST_XMax("{quoted_geom}")) as xmax,
+                MAX(ST_YMax("{quoted_geom}")) as ymax
+            FROM read_parquet('{safe_url}')
+        """
+        result = con.execute(bounds_query).fetchone()
 
-
-def find_primary_geometry_column(parquet_file, verbose=False):
-    """
-    Find the primary geometry column from GeoParquet metadata.
-
-    Looks up the geometry column name from GeoParquet metadata. Falls back
-    to detect_parquet_geometry_column() (which checks standard geometry column
-    names in the schema) if no metadata is present or if the primary column
-    is not specified. Final fallback is 'geometry'.
-
-    Args:
-        parquet_file: Path to the parquet file (local or remote URL)
-        verbose: Print verbose output
-
-    Returns:
-        str: Name of the primary geometry column (defaults to 'geometry')
-    """
-    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
-
-    if verbose and geo_meta:
-        debug(f"\nGeo metadata: {json.dumps(geo_meta, indent=2)}")
-
-    if geo_meta:
-        if isinstance(geo_meta, dict):
-            primary = geo_meta.get("primary_column")
-            if primary:
-                return primary
-        elif isinstance(geo_meta, list):
-            for col in geo_meta:
-                if isinstance(col, dict) and col.get("primary", False):
-                    name = col.get("name")
-                    if name:
-                        return name
-
-    # No geo metadata or no primary_column specified - use schema-based detection
-    detected = detect_parquet_geometry_column(parquet_file, verbose=verbose)
-    return detected if detected else "geometry"
-
-
-# Standard geometry column names for fallback detection
-STANDARD_GEOMETRY_NAMES = ["geometry", "geom", "wkb_geometry", "shape", "the_geom"]
-
-
-def detect_parquet_geometry_column(parquet_file, verbose=False):
-    """
-    Detect the geometry column in a Parquet file.
-
-    Checks GeoParquet metadata first (primary_column), then falls back to
-    matching column names against standard geometry column names.
-
-    Args:
-        parquet_file: Path to the parquet file (local or remote URL)
-        verbose: Print verbose output
-
-    Returns:
-        str or None: Name of the geometry column, or None if not found
-    """
-    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-
-    # Normalize path for consistent handling of URLs and local files
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
-    # 1. Check GeoParquet metadata first
-    geo_meta = get_geo_metadata(safe_url)
-    if geo_meta and isinstance(geo_meta, dict):
-        primary = geo_meta.get("primary_column")
-        if primary:
+        if result and all(v is not None for v in result):
             if verbose:
-                debug(f"Detected geometry column from metadata: {primary}")
-            return primary
-
-    # 2. Fall back to name-based detection from schema using DuckDB
-    # (DuckDB handles local files, S3, GCS, and HTTP URLs natively)
-    con = None
-    try:
-        con = get_duckdb_connection(load_httpfs=needs_httpfs(safe_url))
-        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_url}')").fetchall()
-        column_names = [row[0] for row in result]
-        for std_name in STANDARD_GEOMETRY_NAMES:
-            for col in column_names:
-                if col.lower() == std_name.lower():
-                    if verbose:
-                        debug(f"Detected geometry column from schema: {col}")
-                    return col
-    except OSError as e:
-        if verbose:
-            debug(f"Failed to read schema: {e}")
-    finally:
-        if con:
-            con.close()
-
-    if verbose:
-        debug("No geometry column found in parquet file")
-    return None
-
-
-# CRS handling functions for GeoParquet 2.0 and parquet-geo-only
-
-
-def _extract_crs_identifier(crs_info):
-    """
-    Extract normalized CRS identifier (authority, code) from various formats.
-
-    Handles PROJJSON dicts, "EPSG:CODE" strings, and URN formats.
-    Returns tuple of (authority, code) like ("EPSG", 31287) or ("OGC", "CRS84"), or None.
-    Code is int for numeric codes, str for non-numeric (e.g., CRS84).
-    """
-    if isinstance(crs_info, dict):
-        if "id" in crs_info:
-            crs_id = crs_info["id"]
-            if isinstance(crs_id, dict):
-                authority = crs_id.get("authority", "").upper()
-                code = crs_id.get("code")
-                if authority and code:
-                    try:
-                        return (authority, int(code))
-                    except (ValueError, TypeError):
-                        # Non-numeric code like "CRS84"
-                        return (authority, str(code).upper())
+                debug(
+                    f"Calculated bounds: ({result[0]:.6f}, {result[1]:.6f}, "
+                    f"{result[2]:.6f}, {result[3]:.6f})"
+                )
+            return result
         return None
-
-    if isinstance(crs_info, str):
-        crs_str = crs_info.strip().upper()
-        if ":" in crs_str and not crs_str.startswith("URN:"):
-            parts = crs_str.split(":")
-            if len(parts) == 2:
-                try:
-                    return (parts[0], int(parts[1]))
-                except ValueError:
-                    # Non-numeric code (e.g., OGC:CRS84)
-                    return (parts[0], parts[1])
-        if crs_str.startswith("URN:OGC:DEF:CRS:"):
-            parts = crs_str.split(":")
-            if len(parts) >= 7:
-                try:
-                    return (parts[4], int(parts[-1]))
-                except ValueError:
-                    return (parts[4], parts[-1])
-
-    return None
-
-
-def is_default_crs(crs):
-    """
-    Check if CRS is the default (OGC:CRS84 or EPSG:4326).
-
-    Returns True if CRS is None, empty, or represents WGS84.
-    Used to skip CRS rewriting when output would be default anyway.
-    """
-    if not crs:
-        return True
-
-    identifier = _extract_crs_identifier(crs)
-    if identifier:
-        authority, code = identifier
-        if authority == "EPSG" and code == 4326:
-            return True
-        if authority == "OGC" and str(code).upper() == "CRS84":
-            return True
-
-    return False
-
-
-def _validate_projjson(crs: dict) -> bool:
-    """Validate that a CRS dict has the expected PROJJSON structure.
-
-    Checks for required keys and rejects dicts with suspicious string values
-    that could indicate injection attempts. This is defense-in-depth — the CRS
-    originates from source file GeoParquet metadata, not user input.
-    """
-    if not isinstance(crs, dict):
-        return False
-    # PROJJSON must have a $schema or type key
-    if "$schema" not in crs and "type" not in crs and "id" not in crs:
-        return False
-    return True
-
-
-def _wrap_query_with_crs(
-    query: str,
-    geometry_column: str | None,
-    input_crs: dict | None,
-) -> str:
-    """Wrap query with ST_SetCRS() so DuckDB writes CRS into the Parquet schema natively.
-
-    DuckDB 1.5+ writes CRS from the GEOMETRY type directly into the Parquet
-    schema during COPY TO — no post-processing needed.
-
-    Args:
-        query: SQL query to wrap.
-        geometry_column: Name of the geometry column.
-        input_crs: PROJJSON dict with CRS information.
-
-    Returns:
-        Original query if no CRS wrapping needed, or wrapped query with ST_SetCRS.
-    """
-    if not input_crs or is_default_crs(input_crs):
-        return query
-
-    if not geometry_column:
-        raise ValueError(
-            "geometry_column is required when input_crs is specified — "
-            "cannot apply CRS without a geometry column"
-        )
-
-    if not _validate_projjson(input_crs):
-        warn("input_crs does not look like valid PROJJSON — skipping CRS application")
-        return query
-
-    escaped_geom = geometry_column.replace('"', '""')
-    crs_json = json.dumps(input_crs).replace("'", "''")
-    return f"""
-        SELECT * REPLACE (ST_SetCRS("{escaped_geom}", '{crs_json}') AS "{escaped_geom}")
-        FROM ({query})
-    """
-
-
-def extract_crs_from_parquet(parquet_file, verbose=False):
-    """
-    Extract CRS (as PROJJSON dict) from a Parquet file.
-
-    Checks in order:
-    1. GeoParquet metadata (columns.<geom_col>.crs)
-    2. Parquet native geo type (from schema logical_type)
-
-    Args:
-        parquet_file: Path to the parquet file
-        verbose: Whether to print verbose output
-
-    Returns:
-        dict: PROJJSON CRS dict, or None if no CRS found or CRS is default
-    """
-    from geoparquet_io.core.duckdb_metadata import (
-        get_geo_metadata,
-        get_schema_info,
-        parse_geometry_logical_type,
-        resolve_crs_reference,
-    )
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
-    # First, try GeoParquet metadata
-    geo_meta = get_geo_metadata(safe_url)
-    if geo_meta:
-        primary_col = geo_meta.get("primary_column", "geometry")
-        columns = geo_meta.get("columns", {})
-        if primary_col in columns:
-            crs = columns[primary_col].get("crs")
-            if crs and not is_default_crs(crs):
-                if verbose:
-                    debug(f"Found CRS in GeoParquet metadata: {_format_crs_display(crs)}")
-                return crs
-
-    # Second, try Parquet native geo type from schema logical_type
-    # DuckDB returns GeometryType(...) and GeographyType(...) from parquet_schema()
-    schema_info = get_schema_info(safe_url)
-    for col in schema_info:
-        logical_type = col.get("logical_type", "")
-        if logical_type and (
-            logical_type.startswith("GeometryType(") or logical_type.startswith("GeographyType(")
-        ):
-            parsed = parse_geometry_logical_type(logical_type)
-            if parsed and "crs" in parsed:
-                raw_crs = parsed["crs"]
-                # Resolve CRS references (projjson:key_name, srid:XXXX) to PROJJSON
-                crs = resolve_crs_reference(parquet_file, raw_crs)
-                if crs and not is_default_crs(crs):
-                    if verbose:
-                        debug(f"Found CRS in Parquet geo type: {_format_crs_display(crs)}")
-                    return crs
-
-    return None
-
-
-def _detect_crs_from_filegdb(gdb_path, con, verbose=False):
-    """
-    Detect CRS from a FileGDB directory by iterating internal .gdbtable files.
-
-    DuckDB's ST_Read_Meta returns empty for FileGDB directories (a known limitation),
-    but works when pointed at individual .gdbtable files inside the directory.
-    This workaround iterates through those files to find CRS metadata.
-
-    Args:
-        gdb_path: Path to the .gdb directory
-        con: DuckDB connection (with spatial extension loaded)
-        verbose: Whether to print verbose output
-
-    Returns:
-        dict: PROJJSON CRS dict, or None if no CRS found.
-    """
-    # Normalize path (remove trailing slash - handle both Unix and Windows separators)
-    gdb_path = gdb_path.rstrip("/\\")
-
-    if not os.path.isdir(gdb_path):
-        return None
-
-    # Iterate through .gdbtable files in reverse order (user tables have higher numbers)
-    try:
-        gdbtable_files = sorted(
-            [f for f in os.listdir(gdb_path) if f.endswith(".gdbtable")],
-            reverse=True,
-        )
-    except OSError:
-        return None
-
-    for gdbtable_file in gdbtable_files:
-        gdbtable_path = os.path.join(gdb_path, gdbtable_file)
-        # Escape single quotes in path for SQL safety
-        escaped_path = gdbtable_path.replace("'", "''")
-        try:
-            result = con.execute(f"""
-                SELECT * FROM ST_Read_Meta('{escaped_path}')
-            """).fetchone()
-
-            if not result or not result[3]:
-                continue
-
-            # Result structure: (path, driver, driver_long, layers_list)
-            for layer in result[3]:
-                layer_name = layer.get("name", "")
-
-                # Skip system tables (GDB_*)
-                if layer_name.startswith("GDB_"):
-                    continue
-
-                geometry_fields = layer.get("geometry_fields", [])
-                if not geometry_fields:
-                    continue
-
-                crs_info = geometry_fields[0].get("crs", {})
-
-                # Try PROJJSON first (most complete)
-                projjson_str = crs_info.get("projjson")
-                if projjson_str:
-                    crs = json.loads(projjson_str)
-                    if verbose:
-                        debug(
-                            f"Found CRS in FileGDB layer '{layer_name}': {_format_crs_display(crs)}"
-                        )
-                    return crs
-
-                # Fallback to auth_name/auth_code
-                auth_name = crs_info.get("auth_name")
-                auth_code = crs_info.get("auth_code")
-                if auth_name and auth_code:
-                    crs = {"id": {"authority": auth_name, "code": int(auth_code)}}
-                    if verbose:
-                        debug(f"Found CRS in FileGDB layer '{layer_name}': {auth_name}:{auth_code}")
-                    return crs
-
-        except Exception:
-            # Skip files that can't be read
-            continue
-
-    return None
-
-
-def detect_crs_from_spatial_file(input_file, con, verbose=False):
-    """
-    Detect CRS from a spatial file (GeoJSON, GPKG, Shapefile, FileGDB).
-
-    Uses DuckDB's ST_Read_Meta which returns metadata including full PROJJSON CRS.
-    For FileGDB directories, uses a workaround since ST_Read_Meta returns empty.
-
-    Args:
-        input_file: Path to the spatial file
-        con: DuckDB connection (with spatial extension loaded)
-        verbose: Whether to print verbose output
-
-    Returns:
-        dict: PROJJSON CRS dict, or None if no CRS found in file metadata.
-              Note: Returns CRS even if it's default (EPSG:4326). Caller should
-              use is_default_crs() to decide whether to write it.
-    """
-    # Escape single quotes in path for SQL safety
-    escaped_input_file = input_file.replace("'", "''")
-    try:
-        result = con.execute(f"""
-            SELECT * FROM ST_Read_Meta('{escaped_input_file}')
-        """).fetchone()
-
-        if result:
-            # Result structure: (path, driver, driver_long, layers_list)
-            layers = result[3]  # List of layer dicts
-            if layers and len(layers) > 0:
-                layer = layers[0]
-                geometry_fields = layer.get("geometry_fields", [])
-                if geometry_fields:
-                    crs_info = geometry_fields[0].get("crs", {})
-                    # Extract PROJJSON if available
-                    projjson_str = crs_info.get("projjson")
-                    if projjson_str:
-                        crs = json.loads(projjson_str)
-                        if verbose:
-                            debug(f"Found CRS in spatial file: {_format_crs_display(crs)}")
-                        return crs
-                    # Fallback to auth_name/auth_code
-                    auth_name = crs_info.get("auth_name")
-                    auth_code = crs_info.get("auth_code")
-                    if auth_name and auth_code:
-                        crs = {"id": {"authority": auth_name, "code": int(auth_code)}}
-                        if verbose:
-                            debug(f"Found CRS: {auth_name}:{auth_code}")
-                        return crs
     except Exception as e:
         if verbose:
-            warn(f"Could not detect CRS from spatial file: {e}")
-
-    # Fallback for FileGDB directories (ST_Read_Meta returns empty for .gdb directories)
-    # Handle both Unix and Windows path separators
-    if input_file.rstrip("/\\").lower().endswith(".gdb"):
-        if verbose:
-            debug("ST_Read_Meta returned empty for FileGDB, trying workaround...")
-        return _detect_crs_from_filegdb(input_file, con, verbose)
-
-    return None
-
-
-def _format_crs_display(crs):
-    """Format CRS for display (extract EPSG code if possible)."""
-    if not crs:
-        return "None"
-    identifier = _extract_crs_identifier(crs)
-    if identifier:
-        return f"{identifier[0]}:{identifier[1]}"
-    return str(crs)[:50] + "..." if len(str(crs)) > 50 else str(crs)
-
-
-def get_crs_display_name(crs_info: dict | str | None) -> str:
-    """
-    Get human-readable CRS name with authority code.
-
-    Handles PROJJSON dicts, string CRS identifiers, and None.
-
-    Returns:
-        Human-readable string like "WGS 84 (EPSG:4326)" or "EPSG:4326" or "unknown"
-    """
-    if crs_info is None:
-        return "None (OGC:CRS84)"
-
-    if isinstance(crs_info, str):
-        return crs_info
-
-    if isinstance(crs_info, dict):
-        name = crs_info.get("name", "")
-        crs_id = crs_info.get("id", {})
-        if isinstance(crs_id, dict):
-            authority = crs_id.get("authority", "EPSG")
-            code = crs_id.get("code")
-            if code:
-                return f"{name} ({authority}:{code})" if name else f"{authority}:{code}"
-        if name:
-            return name
-        # Fallback for PROJJSON without id or name
-        return "PROJJSON object"
-
-    return "unknown"
-
-
-def is_geographic_crs(crs: dict | str | None) -> bool:
-    """
-    Check if CRS is geographic (lat/lon) vs projected.
-
-    Handles PROJJSON dicts, string identifiers, and None.
-    None is treated as OGC:CRS84 (geographic).
-
-    Returns:
-        True if CRS is geographic, False if projected
-    """
-    if crs is None:
-        return True  # Default is OGC:CRS84
-
-    if isinstance(crs, dict):
-        # Check PROJJSON type field first - most reliable
-        crs_type = crs.get("type", "").lower()
-        if crs_type == "geographiccrs":
-            return True
-        if crs_type == "projectedcrs":
-            return False
-
-        # Check for EPSG:4326 or OGC:CRS84
-        crs_id = crs.get("id", {})
-        if isinstance(crs_id, dict):
-            authority = crs_id.get("authority", "").upper()
-            code = crs_id.get("code")
-            if authority == "EPSG" and code == 4326:
-                return True
-            if authority == "OGC" and str(code).upper() == "CRS84":
-                return True
-
-        # Check name for common patterns
-        name = crs.get("name", "").upper()
-        projected_indicators = ["UTM", "ZONE", "MERCATOR", "ALBERS", "LAMBERT", "STATE PLANE"]
-        if any(indicator in name for indicator in projected_indicators):
-            return False
-        if any(x in name for x in ["WGS 84", "WGS84", "CRS84", "4326"]):
-            return True
-
-    if isinstance(crs, str):
-        crs_upper = crs.upper()
-        # Check for projected indicators in string CRS
-        projected_indicators = ["UTM", "ZONE", "MERCATOR", "ALBERS", "LAMBERT"]
-        if any(indicator in crs_upper for indicator in projected_indicators):
-            return False
-        return any(x in crs_upper for x in ["4326", "CRS84", "WGS84"])
-
-    return False
-
-
-def parse_crs_string_to_projjson(crs_string, con=None):
-    """
-    Convert a CRS string (like "EPSG:5070") to full PROJJSON dict.
-
-    Uses pyproj to generate the complete PROJJSON definition including
-    all CRS parameters, not just the authority/code.
-
-    Args:
-        crs_string: CRS string like "EPSG:5070" or "EPSG:4326"
-        con: DuckDB connection (optional, unused but kept for API compatibility)
-
-    Returns:
-        dict: Full PROJJSON dict, or simple id dict if lookup fails
-    """
-    identifier = _extract_crs_identifier(crs_string)
-    if not identifier:
+            debug(f"Failed to calculate bounds: {e}")
         return None
-
-    authority, code = identifier
-
-    try:
-        from pyproj import CRS
-
-        # Create CRS from authority:code and get full PROJJSON
-        crs = CRS.from_authority(authority, code)
-        return crs.to_json_dict()
-    except Exception:
-        # Fallback to simple id dict if pyproj fails
-        return {"id": {"authority": authority, "code": code}}
-
-
-def _parse_existing_geo_metadata(original_metadata):
-    """Parse existing geo metadata from original parquet metadata."""
-    if not original_metadata or b"geo" not in original_metadata:
-        return None
-    try:
-        return json.loads(original_metadata[b"geo"].decode("utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
-def _initialize_geo_metadata(geo_meta, geom_col, version="1.1.0"):
-    """Initialize or upgrade geo metadata structure.
-
-    Args:
-        geo_meta: Existing geo metadata dict or None
-        geom_col: Name of the geometry column
-        version: GeoParquet version string (e.g., "1.0.0", "1.1.0", "2.0.0")
-
-    Returns:
-        dict: Initialized geo metadata structure
-    """
-    if not geo_meta:
-        return {"version": version, "primary_column": geom_col, "columns": {geom_col: {}}}
-
-    # Set the specified version
-    geo_meta["version"] = version
-    if "columns" not in geo_meta:
-        geo_meta["columns"] = {}
-    if geom_col not in geo_meta["columns"]:
-        geo_meta["columns"][geom_col] = {}
-
-    return geo_meta
-
-
-def _add_bbox_covering(geo_meta, geom_col, bbox_info, verbose):
-    """Add bbox covering metadata to geometry column."""
-    if not bbox_info or not bbox_info.get("has_bbox_column"):
-        return
-
-    if "covering" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["covering"] = {}
-
-    geo_meta["columns"][geom_col]["covering"]["bbox"] = {
-        "xmin": [bbox_info["bbox_column_name"], "xmin"],
-        "ymin": [bbox_info["bbox_column_name"], "ymin"],
-        "xmax": [bbox_info["bbox_column_name"], "xmax"],
-        "ymax": [bbox_info["bbox_column_name"], "ymax"],
-    }
-    if verbose:
-        debug(f"Added bbox covering metadata for column '{bbox_info['bbox_column_name']}'")
-
-
-def _add_custom_covering(geo_meta, geom_col, custom_metadata, verbose):
-    """Add custom covering metadata (e.g., H3, S2)."""
-    if not custom_metadata or "covering" not in custom_metadata:
-        return
-
-    if "covering" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["covering"] = {}
-
-    geo_meta["columns"][geom_col]["covering"].update(custom_metadata["covering"])
-    if verbose:
-        for key in custom_metadata["covering"]:
-            debug(f"Added {key} covering metadata")
-
-
-def create_geo_metadata(
-    original_metadata,
-    geom_col,
-    bbox_info,
-    custom_metadata=None,
-    verbose=False,
-    version="1.1.0",
-    edges=None,
-):
-    """
-    Create or update GeoParquet metadata with spatial index covering information.
-
-    Args:
-        original_metadata: Original parquet metadata dict
-        geom_col: Name of the geometry column
-        bbox_info: Result from check_bbox_structure
-        custom_metadata: Optional dict with custom metadata (e.g., H3 info)
-        verbose: Whether to print verbose output
-        version: GeoParquet version string (e.g., "1.0.0", "1.1.0", "2.0.0")
-        edges: Edge interpretation, "spherical" or "planar" (default None = planar).
-               Use "spherical" for data from BigQuery or other S2-based sources.
-
-    Returns:
-        dict: Updated geo metadata
-    """
-    geo_meta = _parse_existing_geo_metadata(original_metadata)
-    geo_meta = _initialize_geo_metadata(geo_meta, geom_col, version=version)
-
-    # Add encoding if not present (required by GeoParquet spec)
-    if "encoding" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["encoding"] = "WKB"
-
-    # Add edges if specified (for spherical geometry from BigQuery, etc.)
-    if edges:
-        geo_meta["columns"][geom_col]["edges"] = edges
-        # When spherical, orientation should be counterclockwise per GeoParquet spec
-        if edges == "spherical":
-            geo_meta["columns"][geom_col]["orientation"] = "counterclockwise"
-
-    # Add bbox covering if needed
-    _add_bbox_covering(geo_meta, geom_col, bbox_info, verbose)
-
-    # Add custom covering if needed
-    _add_custom_covering(geo_meta, geom_col, custom_metadata, verbose)
-
-    # Add any top-level custom metadata
-    if custom_metadata:
-        for key, value in custom_metadata.items():
-            if key != "covering":
-                geo_meta[key] = value
-
-    return geo_meta
+    finally:
+        con.close()
 
 
 def parse_size_string(size_str):
@@ -1934,8 +404,9 @@ def validate_compression_settings(compression, compression_level, verbose=False)
     valid_compressions = ["ZSTD", "GZIP", "BROTLI", "LZ4", "SNAPPY", "UNCOMPRESSED"]
 
     if compression not in valid_compressions:
-        raise click.BadParameter(
-            f"Invalid compression '{compression}'. Must be one of: {', '.join(valid_compressions)}"
+        raise InvalidParameterError(
+            "compression",
+            f"Invalid compression '{compression}'. Must be one of: {', '.join(valid_compressions)}",
         )
 
     # Handle compression level based on format
@@ -1953,8 +424,9 @@ def validate_compression_settings(compression, compression_level, verbose=False)
             compression_level = default_level
 
         if compression_level < min_level or compression_level > max_level:
-            raise click.BadParameter(
-                f"{compression} compression level must be between {min_level} and {max_level}, got {compression_level}"
+            raise InvalidParameterError(
+                "compression_level",
+                f"{compression} compression level must be between {min_level} and {max_level}, got {compression_level}",
             )
         compression_desc = f"{compression}:{compression_level}"
     elif compression in ["LZ4", "SNAPPY"]:
@@ -1969,199 +441,6 @@ def validate_compression_settings(compression, compression_level, verbose=False)
         compression_desc = compression
 
     return compression, compression_level, compression_desc
-
-
-# =============================================================================
-# Arrow-based write helpers
-# =============================================================================
-
-
-def _get_query_columns(con, query: str) -> list[str]:
-    """
-    Get column names from a query without executing it fully.
-
-    Uses LIMIT 0 to get schema information efficiently.
-
-    Args:
-        con: DuckDB connection
-        query: SQL SELECT query
-
-    Returns:
-        list[str]: Column names from the query result
-    """
-    describe_query = f"SELECT * FROM ({query}) AS __subq LIMIT 0"
-    result = con.execute(describe_query)
-    return [col[0] for col in result.description]
-
-
-def _detect_geometry_from_query(
-    con,
-    query: str,
-    original_metadata: dict | None,
-    verbose: bool = False,
-) -> str:
-    """
-    Detect geometry column from metadata or query schema.
-
-    Priority:
-    1. GeoParquet metadata primary_column
-    2. Common geometry column names in query schema
-    3. Default to 'geometry'
-
-    Args:
-        con: DuckDB connection
-        query: SQL SELECT query
-        original_metadata: Original metadata dict (may contain geo metadata)
-        verbose: Whether to print verbose output
-
-    Returns:
-        str: Name of the geometry column
-    """
-    # Try from original metadata first
-    if original_metadata and b"geo" in original_metadata:
-        try:
-            geo_meta = json.loads(original_metadata[b"geo"].decode("utf-8"))
-            if isinstance(geo_meta, dict) and "primary_column" in geo_meta:
-                if verbose:
-                    debug(f"Detected geometry column from metadata: {geo_meta['primary_column']}")
-                return geo_meta["primary_column"]
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
-
-    # Detect from query schema
-    try:
-        columns = _get_query_columns(con, query)
-        for name in STANDARD_GEOMETRY_NAMES:
-            # Case-insensitive match
-            for col in columns:
-                if col.lower() == name.lower():
-                    if verbose:
-                        debug(f"Detected geometry column from schema: {col}")
-                    return col
-    except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
-        if verbose:
-            debug(f"Could not detect geometry column from query schema: {e}")
-
-    # Default
-    return "geometry"
-
-
-def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) -> str:
-    """
-    Wrap query to convert geometry column to WKB for Arrow export.
-
-    DuckDB's GEOMETRY type doesn't translate directly to Arrow in a portable way.
-    This wraps the query to use ST_AsWKB for geometry output, ensuring the geometry
-    is in standard WKB format that geoarrow-pyarrow can handle.
-
-    Args:
-        query: Original SQL SELECT query
-        geometry_column: Name of the geometry column to convert
-        con: Optional DuckDB connection to verify column exists
-
-    Returns:
-        str: Wrapped query with WKB conversion, or original query if column doesn't exist
-    """
-    # If connection provided, check if geometry column exists in query output
-    if con is not None:
-        try:
-            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-            if geometry_column not in schema_result.schema.names:
-                # Geometry column was excluded, return original query
-                return query
-        except Exception:
-            # If check fails, try the conversion anyway
-            pass
-
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
-    return f"""
-        WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}") AS "{quoted_geom}")
-        FROM __arrow_source
-    """
-
-
-def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None) -> str:
-    """
-    Wrap query to convert geometry column to plain binary BLOB.
-
-    Unlike _wrap_query_with_wkb_conversion which produces WKB that DuckDB still
-    recognizes as spatial, this casts to BLOB to produce truly plain binary data.
-    Used for GeoParquet v1.x where we need plain binary WKB without geoarrow
-    extension types in the Parquet schema.
-
-    Args:
-        query: Original SQL SELECT query
-        geometry_column: Name of the geometry column to convert
-        con: Optional DuckDB connection to verify column exists
-
-    Returns:
-        str: Wrapped query with BLOB conversion, or original query if column doesn't exist
-    """
-    # If connection provided, check if geometry column exists in query output
-    if con is not None:
-        try:
-            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-            if geometry_column not in schema_result.schema.names:
-                # Geometry column was excluded, return original query
-                return query
-        except Exception:
-            # If check fails, try the conversion anyway
-            pass
-
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
-    # Cast to BLOB to produce plain binary without geoarrow extension type
-    return f"""
-        WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}")::BLOB AS "{quoted_geom}")
-        FROM __arrow_source
-    """
-
-
-def compute_bbox_via_sql(
-    con,
-    query: str,
-    geometry_column: str,
-) -> list[float] | None:
-    """
-    Compute bounding box from query using DuckDB spatial functions.
-
-    Args:
-        con: DuckDB connection with spatial extension loaded
-        query: SQL query containing geometry column
-        geometry_column: Name of geometry column
-
-    Returns:
-        [xmin, ymin, xmax, ymax] or None if query returns no rows or geometry column not in query
-    """
-    # Check if geometry column exists in query result
-    try:
-        columns = _get_query_columns(con, query)
-        if geometry_column not in columns:
-            return None
-    except (duckdb.Error, RuntimeError, ValueError, AttributeError):
-        # If we can't determine schema, return None rather than failing
-        return None
-
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    bbox_query = f"""
-        SELECT
-            MIN(ST_XMin("{escaped_col}")) as xmin,
-            MIN(ST_YMin("{escaped_col}")) as ymin,
-            MAX(ST_XMax("{escaped_col}")) as xmax,
-            MAX(ST_YMax("{escaped_col}")) as ymax
-        FROM ({query})
-    """
-    result = con.execute(bbox_query).fetchone()
-
-    if result and all(v is not None for v in result):
-        return list(result)
-    return None
 
 
 def compute_geometry_types_via_sql(
@@ -3142,7 +1421,7 @@ def _plain_copy_to(
     # Parquet schema during COPY TO — no post-processing file rewrite needed.
     final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
-    escaped_path = output_path.replace("'", "''")
+    escaped_path = _escape_sql_string(output_path)
 
     # Build options list
     options = [
@@ -3852,8 +2131,16 @@ def add_computed_column(
     # Dry-run mode header
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-        info(f"-- Input file: {input_url}")
-        info(f"-- Output file: {output_parquet}")
+        display_input = (
+            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+        )
+        display_output = (
+            _sanitize_url_for_logging(output_parquet)
+            if is_remote_url(output_parquet)
+            else output_parquet
+        )
+        info(f"-- Input file: {display_input}")
+        info(f"-- Output file: {display_output}")
         info(f"-- Geometry column: {geom_col}")
         info(f"-- New column: {column_name}")
         if dry_run_description:
@@ -3868,9 +2155,10 @@ def add_computed_column(
         if not replace_column:
             column_names = get_column_names(input_url)
             if column_name in column_names:
-                raise click.ClickException(
+                raise InvalidParameterError(
+                    "column_name",
                     f"Column '{column_name}' already exists in the file. "
-                    f"Please choose a different name."
+                    f"Please choose a different name.",
                 )
 
         # Get metadata before processing
@@ -3984,9 +2272,10 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
     column_names = get_column_names(safe_url)
 
     if bbox_column_name in column_names:
-        raise click.ClickException(
+        raise InvalidParameterError(
+            "bbox_column_name",
             f"Column '{bbox_column_name}' already exists in the file. "
-            f"Please choose a different name."
+            f"Please choose a different name.",
         )
 
     # Get geometry column for SQL expression
@@ -4035,7 +2324,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         # Clean up temporary file if something goes wrong
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add bbox: {str(e)}") from e
+        raise GeoParquetError(f"Failed to add bbox: {str(e)}") from e
 
 
 def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> Path:
@@ -4061,7 +2350,7 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     shapefile_path = Path(shapefile_path)
 
     if not shapefile_path.exists():
-        raise click.ClickException(f"Shapefile not found: {shapefile_path}")
+        raise FileNotFoundGeoParquetError(str(shapefile_path))
 
     # Shapefile extensions: .shp (main), .shx (index), .dbf (attributes) are required
     # Optional: .prj (projection), .cpg (encoding), .sbn/.sbx (spatial index)
@@ -4076,7 +2365,7 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     sidecar_files = [f for f in sidecar_files if f.suffix.lower() in shapefile_extensions]
 
     if not sidecar_files:
-        raise click.ClickException(f"No shapefile components found for: {shapefile_path}")
+        raise FileNotFoundGeoParquetError(str(shapefile_path), "no shapefile components found")
 
     # Verify required files exist
     required_extensions = {".shp", ".shx", ".dbf"}
@@ -4084,7 +2373,9 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     missing = required_extensions - found_extensions
 
     if missing:
-        raise click.ClickException(f"Missing required shapefile components: {', '.join(missing)}")
+        raise FileNotFoundGeoParquetError(
+            str(shapefile_path), f"missing required shapefile components: {', '.join(missing)}"
+        )
 
     # Create zip file
     zip_path = parent / f"{stem}.shp.zip"

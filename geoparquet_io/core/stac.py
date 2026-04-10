@@ -8,17 +8,18 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import click
 import pystac
 
-from geoparquet_io.core.common import (
-    find_primary_geometry_column,
-    get_dataset_bounds,
-    get_parquet_metadata,
-    is_remote_url,
-    parse_geo_metadata,
+from geoparquet_io.core.common import get_dataset_bounds, get_parquet_metadata
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    GeoParquetError,
+    InvalidParameterError,
 )
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, warn
+from geoparquet_io.core.remote import is_remote_url
 
 
 def _detect_stac_file(file_path: Path) -> str | None:
@@ -129,10 +130,11 @@ def detect_pmtiles(base_path: str, verbose: bool = False) -> str | None:
     else:
         # Multiple found - error
         files_list = "\n  - ".join([f.name for f in pmtiles_files])
-        raise click.ClickException(
+        raise InvalidParameterError(
+            "pmtiles",
             f"Multiple PMTiles files found in {search_dir}:\n  - {files_list}\n\n"
             "Keep only one PMTiles overview file.\n"
-            "Recommended: Use 'overview.pmtiles' as the standard name."
+            "Recommended: Use 'overview.pmtiles' as the standard name.",
         )
 
 
@@ -151,7 +153,7 @@ def generate_stac_geometry(parquet_file: str, verbose: bool = False) -> dict:
     """
     bounds = get_dataset_bounds(parquet_file, verbose=verbose)
     if not bounds:
-        raise click.ClickException("Could not calculate dataset bounds")
+        raise GeoParquetError("Could not calculate dataset bounds")
 
     xmin, ymin, xmax, ymax = bounds
 
@@ -331,18 +333,17 @@ def generate_stac_item(
     Returns:
         STAC Item as dict (pystac.Item.to_dict())
     """
-    # TODO: Consider supporting remote files in the future if there's demand.
-    # This would require careful consideration of:
-    # - Asset hrefs pointing to files user may not control
-    # - Mixed local/remote semantics in STAC catalogs
-    # - Use cases: cataloging public datasets vs. self-owned data
-    # For now, blocking to avoid confusing semantics and edge cases.
+    # Design decision: Remote files are intentionally unsupported.
+    # STAC generation requires local files because asset hrefs would reference
+    # files the user may not control, creating confusing catalog semantics.
+    # See: https://github.com/geoparquet/geoparquet-io/issues/TBD for discussion.
     if is_remote_url(parquet_file):
-        raise click.ClickException(
-            "STAC generation requires local parquet files.\n"
+        raise InvalidParameterError(
+            "parquet_file",
+            "STAC generation requires local parquet files. "
             "Remote files cannot be cataloged because STAC asset hrefs would reference "
-            "files you may not control.\n"
-            "Download the file first or use 'gpio convert' to create a local copy."
+            "files you may not control. "
+            "Download the file first or use 'gpio convert' to create a local copy.",
         )
 
     if verbose:
@@ -363,7 +364,7 @@ def generate_stac_item(
     # Get bounds and geometry
     bounds = get_dataset_bounds(parquet_file, verbose=False)
     if not bounds:
-        raise click.ClickException(f"Could not calculate bounds for {parquet_file}")
+        raise GeoParquetError(f"Could not calculate bounds for {parquet_file}")
 
     geometry = generate_stac_geometry(parquet_file, verbose=False)
 
@@ -435,7 +436,7 @@ def _generate_stac_item_no_warning(
     # Get bounds and geometry
     bounds = get_dataset_bounds(parquet_file, verbose=False)
     if not bounds:
-        raise click.ClickException(f"Could not calculate bounds for {parquet_file}")
+        raise GeoParquetError(f"Could not calculate bounds for {parquet_file}")
 
     geometry = generate_stac_geometry(parquet_file, verbose=False)
     datetime_obj = get_file_datetime(parquet_file)
@@ -499,10 +500,11 @@ def generate_stac_collection(
     # Collections require local directory structure
     # Remote directories don't make sense for STAC generation
     if is_remote_url(partition_dir):
-        raise click.ClickException(
-            "STAC collection generation requires a local directory.\n"
-            "Remote directories cannot be cataloged.\n"
-            "Download the files first or partition a local dataset."
+        raise InvalidParameterError(
+            "partition_dir",
+            "STAC collection generation requires a local directory. "
+            "Remote directories cannot be cataloged. "
+            "Download the files first or partition a local dataset.",
         )
 
     if verbose:
@@ -519,7 +521,7 @@ def generate_stac_collection(
     # Find all .parquet files in partition_dir
     all_files = _find_partition_files(partition_dir)
     if not all_files:
-        raise click.ClickException(f"No parquet files found in {partition_dir}")
+        raise FileNotFoundGeoParquetError(partition_dir, "no parquet files found")
 
     if verbose:
         debug(f"Found {len(all_files)} partition files")

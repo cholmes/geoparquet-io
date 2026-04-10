@@ -19,12 +19,12 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.geojson_stream import (
     WGS84_CRS,
     _build_feature_query,
     _get_property_columns,
     _needs_reprojection,
-    _quote_identifier,
     convert_to_geojson,
     convert_to_geojson_stream,
 )
@@ -40,15 +40,15 @@ class TestQuoteIdentifier:
 
     def test_simple_name(self):
         """Test quoting a simple identifier."""
-        assert _quote_identifier("name") == '"name"'
+        assert quote_identifier("name") == '"name"'
 
     def test_name_with_spaces(self):
         """Test quoting identifier with spaces."""
-        assert _quote_identifier("my column") == '"my column"'
+        assert quote_identifier("my column") == '"my column"'
 
     def test_name_with_quotes(self):
         """Test quoting identifier with embedded quotes."""
-        assert _quote_identifier('foo"bar') == '"foo""bar"'
+        assert quote_identifier('foo"bar') == '"foo""bar"'
 
 
 class TestBuildFeatureQuery:

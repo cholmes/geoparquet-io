@@ -13,10 +13,13 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-import click
 import duckdb
 
-from geoparquet_io.core.common import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    InvalidParameterError,
+)
 from geoparquet_io.core.logging_config import debug, info, warn
 
 # =============================================================================
@@ -348,14 +351,15 @@ class AdminDataset(ABC):
             levels: List of level names to validate
 
         Raises:
-            click.UsageError: If any level is not available
+            InvalidParameterError: If any level is not available
         """
         available = self.get_available_levels()
         invalid = [level for level in levels if level not in available]
         if invalid:
-            raise click.UsageError(
+            raise InvalidParameterError(
+                "levels",
                 f"Invalid levels for {self.get_dataset_name()}: {', '.join(invalid)}. "
-                f"Available levels: {', '.join(available)}"
+                f"Available levels: {', '.join(available)}",
             )
 
     def get_partition_columns(self, levels: list[str]) -> list[str]:
@@ -369,7 +373,7 @@ class AdminDataset(ABC):
             List of column names in the dataset
 
         Raises:
-            click.UsageError: If any level is invalid
+            InvalidParameterError: If any level is invalid
         """
         self.validate_levels(levels)
         mapping = self.get_level_column_mapping()
@@ -500,7 +504,7 @@ class AdminDataset(ABC):
         else:
             # For local sources, verify the file exists
             if not os.path.exists(source):
-                raise click.ClickException(f"Data source file not found: {source}")
+                raise FileNotFoundGeoParquetError(source, "admin dataset")
             if self.verbose:
                 debug(f"Using local data source: {source}")
             return f"'{source}'"
@@ -723,12 +727,13 @@ class AdminDatasetFactory:
             AdminDataset instance
 
         Raises:
-            click.UsageError: If dataset_name is invalid
+            InvalidParameterError: If dataset_name is invalid
         """
         if dataset_name not in cls._datasets:
-            raise click.UsageError(
+            raise InvalidParameterError(
+                "dataset_name",
                 f"Unknown admin dataset: {dataset_name}. "
-                f"Available: {', '.join(cls.get_available_datasets())}"
+                f"Available: {', '.join(cls.get_available_datasets())}",
             )
 
         dataset_class = cls._datasets[dataset_name]

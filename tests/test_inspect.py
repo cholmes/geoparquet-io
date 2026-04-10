@@ -272,7 +272,7 @@ def test_extract_columns_info(test_file):
     import fsspec
     import pyarrow.parquet as pq
 
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(test_file, verbose=False)
     with fsspec.open(safe_url, "rb") as f:

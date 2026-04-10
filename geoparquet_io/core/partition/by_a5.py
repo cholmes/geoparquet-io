@@ -6,11 +6,10 @@ import os
 import tempfile
 import uuid
 
-import click
-
-from geoparquet_io.core.add_a5_column import add_a5_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.a5 import add_a5_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
+from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -19,8 +18,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -70,12 +69,12 @@ def _ensure_a5_column(input_parquet, a5_column_name, resolution, verbose):
     except Exception as e:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add A5 column: {str(e)}") from e
+        raise PartitionError(f"Failed to add A5 column: {str(e)}") from e
 
 
 def _run_preview(input_parquet, a5_column_name, preview_limit, verbose):
     """Run partition preview and analysis."""
-    from geoparquet_io.core.partition_common import (
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )
@@ -175,10 +174,10 @@ def partition_by_a5(
 
     # Validate resolution parameter
     if auto and resolution is not None:
-        raise click.UsageError("Cannot specify both --auto and --resolution")
+        raise InvalidParameterError("auto", "cannot specify both --auto and --resolution")
 
     if not auto and resolution is None:
-        raise click.UsageError("Must specify either --resolution or --auto")
+        raise InvalidParameterError("resolution", "must specify either --resolution or --auto")
 
     # Calculate auto resolution if requested
     if auto:
@@ -197,13 +196,13 @@ def partition_by_a5(
         except Exception as e:
             if stdin_temp_file and os.path.exists(stdin_temp_file):
                 os.remove(stdin_temp_file)
-            raise click.ClickException(f"Auto-resolution calculation failed: {str(e)}") from e
+            raise PartitionError(f"Auto-resolution calculation failed: {str(e)}") from e
 
     # Validate resolved resolution
     if not 0 <= resolution <= 30:
         if stdin_temp_file and os.path.exists(stdin_temp_file):
             os.remove(stdin_temp_file)
-        raise click.UsageError(f"A5 resolution must be between 0 and 30, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 30, got {resolution}")
 
     if keep_a5_column is None:
         keep_a5_column = hive

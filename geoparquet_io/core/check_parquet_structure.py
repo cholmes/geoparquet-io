@@ -3,12 +3,8 @@
 
 from enum import Enum
 
-from geoparquet_io.core.common import (
-    check_bbox_structure,
-    detect_geoparquet_file_type,
-    find_primary_geometry_column,
-    format_size,
-)
+from geoparquet_io.core.common import check_bbox_structure, detect_geoparquet_file_type, format_size
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import error, info, progress, success, warn
 from geoparquet_io.core.metadata_utils import has_parquet_geo_row_group_stats
 

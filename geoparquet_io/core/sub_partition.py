@@ -92,9 +92,9 @@ def sub_partition_directory(
         success,
         warn,
     )
-    from geoparquet_io.core.partition_by_h3 import partition_by_h3
-    from geoparquet_io.core.partition_by_quadkey import partition_by_quadkey
-    from geoparquet_io.core.partition_by_s2 import partition_by_s2
+    from geoparquet_io.core.partition.by_h3 import partition_by_h3
+    from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
+    from geoparquet_io.core.partition.by_s2 import partition_by_s2
 
     configure_verbose(verbose)
 

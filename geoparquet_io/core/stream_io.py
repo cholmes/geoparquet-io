@@ -21,13 +21,10 @@ from typing import TYPE_CHECKING
 import duckdb
 import pyarrow as pa
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    get_parquet_metadata,
-    needs_httpfs,
-    safe_file_url,
-    write_parquet_with_metadata,
-)
+from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.streaming import (
     apply_geoarrow_extension_type,
     apply_metadata_to_table,
@@ -43,23 +40,6 @@ from geoparquet_io.core.streaming import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-
-def _quote_identifier(name: str) -> str:
-    """
-    Quote a SQL identifier for safe use in DuckDB queries.
-
-    Escapes embedded double quotes by doubling them, then wraps in double quotes.
-    This handles column/table names with spaces, special characters, or reserved words.
-
-    Args:
-        name: The identifier to quote
-
-    Returns:
-        The quoted identifier safe for SQL use
-    """
-    escaped = name.replace('"', '""')
-    return f'"{escaped}"'
 
 
 def _create_view_with_geometry(
@@ -84,14 +64,14 @@ def _create_view_with_geometry(
     if not geometry_column:
         return table_name
 
-    quoted_table = _quote_identifier(table_name)
+    quoted_table = quote_identifier(table_name)
 
     # Get column info to check types
     columns = con.execute(f"DESCRIBE {quoted_table}").fetchall()
     column_defs = []
 
     for col_name, col_type, *_ in columns:
-        quoted_col = _quote_identifier(col_name)
+        quoted_col = quote_identifier(col_name)
         if col_name == geometry_column and "BLOB" in col_type.upper():
             # Convert BLOB to GEOMETRY using ST_GeomFromWKB
             column_defs.append(f"ST_GeomFromWKB({quoted_col}) AS {quoted_col}")
@@ -100,7 +80,7 @@ def _create_view_with_geometry(
 
     # Create view with proper geometry type
     view_name = f"{table_name}_geom"
-    quoted_view = _quote_identifier(view_name)
+    quoted_view = quote_identifier(view_name)
     select_cols = ", ".join(column_defs)
     con.execute(f"CREATE OR REPLACE VIEW {quoted_view} AS SELECT {select_cols} FROM {quoted_table}")
 

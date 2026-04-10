@@ -17,10 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
-from geoparquet_io.core.common import (
-    DEFAULT_GEOPARQUET_VERSION,
-    GEOPARQUET_VERSIONS,
-)
+from geoparquet_io.core.common import DEFAULT_GEOPARQUET_VERSION, GEOPARQUET_VERSIONS
 from geoparquet_io.core.convert import convert_to_geoparquet
 from tests.conftest import (
     get_geo_metadata,
@@ -1037,7 +1034,7 @@ class TestComprehensiveRoundTrips:
         assert parquet_crs is not None
         assert geo_crs is not None
 
-        from geoparquet_io.core.common import _extract_crs_identifier
+        from geoparquet_io.core.crs_utils import _extract_crs_identifier
 
         assert _extract_crs_identifier(parquet_crs) == ("EPSG", 5070)
         assert _extract_crs_identifier(geo_crs) == ("EPSG", 5070)

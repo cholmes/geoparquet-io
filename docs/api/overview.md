@@ -119,7 +119,7 @@ The Python API provides the best performance:
 For power users who need direct access to file-based functions:
 
 ```python
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.hilbert_order import hilbert_order
 
 add_bbox_column(

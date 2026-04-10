@@ -6,9 +6,9 @@ STAC validation utilities.
 import json
 from pathlib import Path
 
-import click
 import pystac.validation
 
+from geoparquet_io.core.exceptions import ValidationError
 from geoparquet_io.core.logging_config import debug, error, progress, success, warn
 
 
@@ -218,4 +218,4 @@ def check_stac(stac_path: str, verbose: bool = False):
     _print_validation_results(results, verbose)
 
     if _should_raise_error(results):
-        raise click.ClickException("STAC validation failed")
+        raise ValidationError("STAC validation failed")

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 
@@ -115,9 +116,7 @@ def _wrap_query_with_crs(
     input_crs: dict | None,
 ) -> str:
     """Wrap query with ST_SetCRS() — delegates to shared helper in common.py."""
-    from geoparquet_io.core.common import (
-        _wrap_query_with_crs as _common_wrap_query_with_crs,
-    )
+    from geoparquet_io.core.crs_utils import _wrap_query_with_crs as _common_wrap_query_with_crs
 
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
@@ -181,7 +180,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA."""
-        from geoparquet_io.core.common import is_remote_url, upload_if_remote
+        from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)
@@ -278,7 +277,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         # geometry encoding directly. No WKB conversion needed.
         # Apply CRS via ST_SetCRS so DuckDB writes it into the schema natively.
         final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
-        escaped_path = local_path.replace("'", "''")
+        escaped_path = _escape_sql_string(local_path)
 
         copy_options = _build_copy_options(compression, row_group_rows)
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
@@ -306,9 +305,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write with geo metadata (v1.0, v1.1, v2.0)."""
-        from geoparquet_io.core.common import (
-            _wrap_query_with_blob_conversion,
-        )
+        from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
 
         geo_meta = build_geo_metadata(
             geometry_column=geometry_column,
@@ -331,8 +328,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         else:
             final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
-        escaped_path = local_path.replace("'", "''")
-        geo_meta_escaped = json.dumps(geo_meta).replace("'", "''")
+        escaped_path = _escape_sql_string(local_path)
+        geo_meta_escaped = _escape_sql_string(json.dumps(geo_meta))
 
         copy_options = _build_copy_options(compression, row_group_rows, geo_meta_escaped)
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
@@ -354,7 +351,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         verbose: bool,
     ) -> None:
         """Compute missing bbox and geometry_types metadata."""
-        from geoparquet_io.core.common import compute_bbox_via_sql, compute_geometry_types_via_sql
+        from geoparquet_io.core.common import compute_geometry_types_via_sql
+        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
 
         if "bbox" not in col_meta:
             if verbose:
@@ -406,7 +404,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using DuckDB COPY TO with KV_METADATA."""
-        from geoparquet_io.core.common import _detect_version_from_table, get_duckdb_connection
+        from geoparquet_io.core.common import _detect_version_from_table
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)

@@ -14,7 +14,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import click
 import pytest
 from click.testing import CliRunner
 
@@ -501,12 +500,12 @@ class TestNoGeometryConversions:
 
     def test_geojson_no_geometry_raises_error(self, plain_parquet, tmp_path):
         """Test GeoJSON export errors when no geometry is present."""
+        from geoparquet_io.core.exceptions import GeoParquetError
+
         output_file = tmp_path / "output.json"
 
         # Should raise error about missing geometry
-        with pytest.raises(
-            click.ClickException, match="Cannot export to GeoJSON.*no geometry column"
-        ):
+        with pytest.raises(GeoParquetError, match="(?i)cannot export to geojson.*no geometry"):
             write_geojson(
                 input_path=plain_parquet,
                 output_path=str(output_file),
@@ -838,7 +837,7 @@ class TestCRSPreservation:
         )
 
         # Read back with DuckDB and verify CRS
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=True)
         try:
@@ -875,7 +874,7 @@ class TestCRSPreservation:
         )
 
         # Read back with DuckDB and verify CRS
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
         con = get_duckdb_connection(load_spatial=True)
         try:

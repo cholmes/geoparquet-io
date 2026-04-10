@@ -13,14 +13,13 @@ import os
 import tempfile
 import uuid
 
-import click
-
-from geoparquet_io.core.add_s2_column import add_s2_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.s2 import add_s2_column
 from geoparquet_io.core.constants import (
     DEFAULT_S2_COLUMN_NAME,
     DEFAULT_S2_COMPRESSION_LEVEL,
 )
+from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -29,8 +28,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -78,12 +77,12 @@ def _ensure_s2_column(input_parquet, s2_column_name, level, verbose):
     except Exception as e:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add S2 column: {str(e)}") from e
+        raise PartitionError(f"Failed to add S2 column: {str(e)}") from e
 
 
 def _run_preview(input_parquet, s2_column_name, preview_limit, verbose):
     """Run partition preview and analysis."""
-    from geoparquet_io.core.partition_common import (
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )
@@ -236,10 +235,10 @@ def partition_by_s2(
 
     # Validate level parameter
     if auto and level is not None:
-        raise click.UsageError("Cannot specify both --auto and --level")
+        raise InvalidParameterError("auto", "cannot specify both --auto and --level")
 
     if not auto and level is None:
-        raise click.UsageError("Must specify either --level or --auto")
+        raise InvalidParameterError("level", "must specify either --level or --auto")
 
     # Wrap all operations in try/finally to ensure stdin temp file cleanup
     try:
@@ -260,7 +259,7 @@ def partition_by_s2(
         # Validate user-provided level (auto mode always returns valid range)
         # This check is defensive for auto mode but necessary for user-provided levels
         if not 0 <= level <= 30:
-            raise click.UsageError(f"S2 level must be between 0 and 30, got {level}")
+            raise InvalidParameterError("level", f"must be between 0 and 30, got {level}")
 
         if keep_s2_column is None:
             keep_s2_column = hive

@@ -4,7 +4,7 @@
 
 import pytest
 
-from geoparquet_io.core.partition_by_h3 import partition_by_h3
+from geoparquet_io.core.partition.by_h3 import partition_by_h3
 
 
 class TestH3AutoResolutionIntegration:
@@ -55,7 +55,7 @@ class TestH3AutoResolutionIntegration:
         )
 
         # Manual resolution (using same resolution auto would calculate)
-        from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
+        from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
 
         calculated_res = calculate_auto_resolution(
             input_parquet=fields_5070_file,
@@ -127,7 +127,7 @@ class TestH3AutoResolutionIntegration:
         """Test that specifying both --auto and --resolution raises error."""
         output_dir = tmp_path / "h3_error"
 
-        with pytest.raises(Exception, match="Cannot specify both"):
+        with pytest.raises(Exception, match="(?i)cannot specify both"):
             partition_by_h3(
                 input_parquet=fields_5070_file,
                 output_folder=str(output_dir),

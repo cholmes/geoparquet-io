@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.add_quadkey_column import (
+from geoparquet_io.core.add.quadkey import (
     _is_geographic_crs,
     _lat_lon_to_quadkey,
 )
-from geoparquet_io.core.common import get_crs_display_name
+from geoparquet_io.core.crs_utils import get_crs_display_name
 from tests.conftest import safe_unlink
 
 

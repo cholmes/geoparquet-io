@@ -11,7 +11,7 @@ import tempfile
 import pyarrow.parquet as pq
 
 # Import geoparquet-io functions
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.check_parquet_structure import check_all
 from geoparquet_io.core.common import get_dataset_bounds
 from geoparquet_io.core.hilbert_order import hilbert_order

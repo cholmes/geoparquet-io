@@ -4,26 +4,24 @@ from __future__ import annotations
 
 import json
 
-import click
 import mercantile
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    STANDARD_GEOMETRY_NAMES,
-    find_primary_geometry_column,
     get_bbox_advice,
-    get_crs_display_name,
-    get_duckdb_connection,
     get_parquet_metadata,
-    handle_output_overwrite,
-    needs_httpfs,
-    safe_file_url,
-    setup_aws_profile_if_needed,
-    validate_profile_for_urls,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
+from geoparquet_io.core.crs_utils import get_crs_display_name
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_geo_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
+from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
+    find_primary_geometry_column,
+)
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -31,6 +29,13 @@ from geoparquet_io.core.logging_config import (
     progress,
     success,
     warn,
+)
+from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
+    is_remote_url,
+    needs_httpfs,
+    setup_aws_profile_if_needed,
+    validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
@@ -95,7 +100,7 @@ def _validate_crs_from_geo_metadata(
         source_description: Description for error messages (e.g., "file", "stream", "table")
 
     Raises:
-        click.ClickException: If CRS is detected as projected
+        GeoParquetError: If CRS is detected as projected
     """
     if not geo_meta:
         if verbose:
@@ -120,7 +125,7 @@ def _validate_crs_from_geo_metadata(
 
     if is_geographic is False:
         crs_name = get_crs_display_name(crs_info)
-        raise click.ClickException(
+        raise GeoParquetError(
             f"Quadkeys require geographic coordinates (lat/lon), but this {source_description} "
             f"uses a projected CRS: {crs_name}\n\n"
             f"Reproject to WGS84 first using:\n"
@@ -200,7 +205,7 @@ def add_quadkey_table(
 
     Raises:
         ValueError: If resolution is not an integer between 0 and 23
-        click.ClickException: If CRS is detected as projected (quadkeys require lat/lon)
+        GeoParquetError: If CRS is detected as projected (quadkeys require lat/lon)
     """
     # Validate resolution before any DuckDB operations
     resolution = int(resolution)
@@ -390,7 +395,7 @@ def _add_quadkey_streaming(
 
     # Validate resolution
     if not 0 <= resolution <= 23:
-        raise click.BadParameter(f"Resolution must be between 0 and 23, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
     with open_input(input_path, verbose=verbose) as (source, metadata, is_stream, con):
         # Register Python UDF for quadkey generation
@@ -490,7 +495,7 @@ def _add_quadkey_file_based(
 
     # Validate resolution
     if not 0 <= resolution <= 23:
-        raise click.BadParameter(f"Resolution must be between 0 and 23, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
     # Validate profile is only used with S3
     validate_profile_for_urls(profile, input_parquet, output_parquet)
@@ -511,7 +516,7 @@ def _add_quadkey_file_based(
     if not dry_run:
         column_names = get_column_names(input_url)
         if quadkey_column_name in column_names:
-            raise click.ClickException(
+            raise GeoParquetError(
                 f"Column '{quadkey_column_name}' already exists in the file. "
                 f"Please choose a different name."
             )
@@ -534,8 +539,16 @@ def _add_quadkey_file_based(
     # Dry-run mode header
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-        info(f"-- Input file: {input_url}")
-        info(f"-- Output file: {output_parquet}")
+        display_input = (
+            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+        )
+        display_output = (
+            _sanitize_url_for_logging(output_parquet)
+            if is_remote_url(output_parquet)
+            else output_parquet
+        )
+        info(f"-- Input file: {display_input}")
+        info(f"-- Output file: {display_output}")
         info(f"-- Geometry column: {geom_col}")
         info(f"-- New column: {quadkey_column_name}")
         info(f"-- Resolution (zoom level): {resolution}")

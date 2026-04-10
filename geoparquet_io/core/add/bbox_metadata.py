@@ -3,17 +3,14 @@
 import json
 import os
 
-import click
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.check_parquet_structure import get_compression_info, get_row_group_stats
-from geoparquet_io.core.common import (
-    check_bbox_structure,
-    find_primary_geometry_column,
-    get_parquet_metadata,
-    parse_geo_metadata,
-    safe_file_url,
-)
+from geoparquet_io.core.common import check_bbox_structure, get_parquet_metadata
+from geoparquet_io.core.exceptions import GeoParquetError
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, error, success
 
 
@@ -122,4 +119,4 @@ def add_bbox_metadata(parquet_file, verbose=False):
         # Clean up temporary file if something goes wrong
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to update metadata: {str(e)}") from e
+        raise GeoParquetError(f"Failed to update metadata: {str(e)}") from e

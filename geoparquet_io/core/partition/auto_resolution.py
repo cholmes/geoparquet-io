@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import math
 
-from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs, safe_file_url
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import debug, info, warn
+from geoparquet_io.core.remote import needs_httpfs
 
 
 def _get_total_row_count(
@@ -29,7 +31,7 @@ def _get_total_row_count(
     Returns:
         Total number of rows
     """
-    from geoparquet_io.core.common import setup_aws_profile_if_needed
+    from geoparquet_io.core.remote import setup_aws_profile_if_needed
 
     input_url = safe_file_url(input_parquet, verbose)
 

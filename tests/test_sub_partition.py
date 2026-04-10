@@ -184,7 +184,7 @@ class TestSubPartitionExecution:
 
         # Patch the h3 partition function to fail - patch where it's imported
         monkeypatch.setattr(
-            "geoparquet_io.core.partition_by_h3.partition_by_h3", mock_partition_fail
+            "geoparquet_io.core.partition.by_h3.partition_by_h3", mock_partition_fail
         )
 
         result = sub_partition_directory(

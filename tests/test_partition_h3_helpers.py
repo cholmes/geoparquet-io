@@ -1,6 +1,6 @@
 """Tests for partition_by_h3 helper functions."""
 
-from geoparquet_io.core.partition_common import calculate_partition_stats
+from geoparquet_io.core.partition.common import calculate_partition_stats
 
 
 class TestCalculatePartitionStats:

@@ -348,12 +348,11 @@ class TestAddCommands:
 
     def test_add_h3_core_function_invalid_resolution(self, buildings_test_file, temp_output_file):
         """Test core add_h3_column function with invalid resolution (covers line 51)."""
-        import click
-
-        from geoparquet_io.core.add_h3_column import add_h3_column
+        from geoparquet_io.core.add.h3 import add_h3_column
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
         # Test resolution too high (bypassing CLI validation)
-        with pytest.raises(click.BadParameter) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             add_h3_column(
                 input_parquet=buildings_test_file,
                 output_parquet=temp_output_file,
@@ -361,10 +360,10 @@ class TestAddCommands:
                 h3_column_name="h3_cell",
                 verbose=False,
             )
-        assert "H3 resolution must be between 0 and 15" in str(exc_info.value)
+        assert "must be between 0 and 15" in str(exc_info.value)
 
         # Test resolution too low
-        with pytest.raises(click.BadParameter) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             add_h3_column(
                 input_parquet=buildings_test_file,
                 output_parquet=temp_output_file,
@@ -372,7 +371,7 @@ class TestAddCommands:
                 h3_column_name="h3_cell",
                 verbose=False,
             )
-        assert "H3 resolution must be between 0 and 15" in str(exc_info.value)
+        assert "must be between 0 and 15" in str(exc_info.value)
 
     # Note: add admin-divisions tests are skipped because they require a countries file
     # and network access. These should be tested separately with appropriate test data.
@@ -387,7 +386,7 @@ class TestRemoteWriteSupport:
 
     def test_remote_url_detection(self):
         """Test that remote URLs are correctly detected."""
-        from geoparquet_io.core.common import is_remote_url
+        from geoparquet_io.core.remote import is_remote_url
 
         # Test S3 URLs
         assert is_remote_url("s3://bucket/file.parquet")
@@ -425,7 +424,7 @@ class TestRemoteWriteSupport:
             con.execute("INSTALL spatial; LOAD spatial;")
 
             # Simple query to read the test file
-            from geoparquet_io.core.common import safe_file_url
+            from geoparquet_io.core.file_utils import safe_file_url
 
             input_url = safe_file_url(buildings_test_file, False)
             query = f"SELECT * FROM '{input_url}' LIMIT 10"

@@ -6,13 +6,12 @@ import os
 import tempfile
 import uuid
 
-import click
-
-from geoparquet_io.core.add_quadkey_column import add_quadkey_column
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.add.quadkey import add_quadkey_column
 from geoparquet_io.core.constants import (
     DEFAULT_QUADKEY_COLUMN_NAME,
 )
+from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -21,8 +20,8 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition_auto_resolution import calculate_auto_resolution
-from geoparquet_io.core.partition_common import (
+from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
@@ -33,15 +32,16 @@ from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 def _validate_resolutions(resolution, partition_resolution):
     """Validate resolution parameters."""
     if not 0 <= resolution <= 23:
-        raise click.UsageError(f"Resolution must be between 0 and 23, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
     if not 0 <= partition_resolution <= 23:
-        raise click.UsageError(
-            f"Partition resolution must be between 0 and 23, got {partition_resolution}"
+        raise InvalidParameterError(
+            "partition_resolution",
+            f"must be between 0 and 23, got {partition_resolution}",
         )
     if partition_resolution > resolution:
-        raise click.UsageError(
-            f"Partition resolution ({partition_resolution}) cannot exceed "
-            f"column resolution ({resolution})"
+        raise InvalidParameterError(
+            "partition_resolution",
+            f"cannot exceed column resolution ({resolution}), got {partition_resolution}",
         )
 
 
@@ -92,14 +92,14 @@ def _ensure_quadkey_column(
     except Exception as e:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add quadkey column: {str(e)}") from e
+        raise PartitionError(f"Failed to add quadkey column: {str(e)}") from e
 
 
 def _run_quadkey_preview(
     input_parquet, quadkey_column_name, partition_resolution, preview_limit, verbose
 ):
     """Run partition preview and analysis for quadkey."""
-    from geoparquet_io.core.partition_common import (
+    from geoparquet_io.core.partition.common import (
         PartitionAnalysisError,
         analyze_partition_strategy,
     )
@@ -186,8 +186,9 @@ def partition_by_quadkey(
         if resolution is not None or partition_resolution is not None:
             if stdin_temp_file and os.path.exists(stdin_temp_file):
                 os.remove(stdin_temp_file)
-            raise click.UsageError(
-                "Cannot specify --resolution or --partition-resolution with --auto"
+            raise InvalidParameterError(
+                "auto",
+                "cannot specify --resolution or --partition-resolution with --auto",
             )
 
         try:
@@ -207,14 +208,15 @@ def partition_by_quadkey(
         except Exception as e:
             if stdin_temp_file and os.path.exists(stdin_temp_file):
                 os.remove(stdin_temp_file)
-            raise click.ClickException(f"Auto-resolution calculation failed: {str(e)}") from e
+            raise PartitionError(f"Auto-resolution calculation failed: {str(e)}") from e
     else:
         # Require explicit resolution values (consistent with H3/A5)
         if resolution is None or partition_resolution is None:
             if stdin_temp_file and os.path.exists(stdin_temp_file):
                 os.remove(stdin_temp_file)
-            raise click.UsageError(
-                "Must specify either --auto or both --resolution and --partition-resolution"
+            raise InvalidParameterError(
+                "resolution",
+                "must specify either --auto or both --resolution and --partition-resolution",
             )
 
     _validate_resolutions(resolution, partition_resolution)

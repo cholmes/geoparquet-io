@@ -245,7 +245,7 @@ For file-based operations without loading into memory:
 
 ```python
 from pathlib import Path
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.hilbert_order import hilbert_order
 
 def batch_process_core_api(input_dir: str, output_dir: str):

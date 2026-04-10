@@ -8,7 +8,7 @@ This script demonstrates how to process multiple files in a directory.
 import os
 from pathlib import Path
 
-from geoparquet_io.core.add_bbox_column import add_bbox_column
+from geoparquet_io.core.add.bbox import add_bbox_column
 from geoparquet_io.core.hilbert_order import hilbert_order
 
 

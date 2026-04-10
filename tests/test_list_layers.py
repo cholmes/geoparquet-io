@@ -12,8 +12,8 @@ import sys
 import pytest
 from click.testing import CliRunner
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.layers import (
-    _escape_sql_path,
     _is_filegdb,
     _is_geopackage,
 )
@@ -83,18 +83,18 @@ class TestHelperFunctions:
         assert _is_filegdb("data.gpkg") is False
         assert _is_filegdb("data.sqlite") is False
 
-    def test_escape_sql_path_no_quotes(self):
-        """Paths without quotes should pass through unchanged."""
-        assert _escape_sql_path("/path/to/file.gpkg") == "/path/to/file.gpkg"
+    def test_escape_sql_string_no_quotes(self):
+        """Strings without quotes should pass through unchanged."""
+        assert _escape_sql_string("/path/to/file.gpkg") == "/path/to/file.gpkg"
 
-    def test_escape_sql_path_with_single_quote(self):
+    def test_escape_sql_string_with_single_quote(self):
         """Single quotes should be doubled for SQL escaping."""
-        assert _escape_sql_path("O'Brien.gpkg") == "O''Brien.gpkg"
-        assert _escape_sql_path("it's data.gpkg") == "it''s data.gpkg"
+        assert _escape_sql_string("O'Brien.gpkg") == "O''Brien.gpkg"
+        assert _escape_sql_string("it's data.gpkg") == "it''s data.gpkg"
 
-    def test_escape_sql_path_multiple_quotes(self):
+    def test_escape_sql_string_multiple_quotes(self):
         """Multiple quotes should all be escaped."""
-        assert _escape_sql_path("a'b'c.gpkg") == "a''b''c.gpkg"
+        assert _escape_sql_string("a'b'c.gpkg") == "a''b''c.gpkg"
 
 
 class TestListLayersGeoPackage:

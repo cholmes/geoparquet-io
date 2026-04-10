@@ -36,20 +36,6 @@
       "reviewed_by": "Claude"
     },
     {
-      "code_file": "geoparquet_io/api/table.py",
-      "doc_target": "docs/api/python-api.md#Table Class",
-      "reviewed_at": "2026-04-02T15:00:51.133038+00:00",
-      "code_commit_at_review": "b1f6644",
-      "reviewed_by": "Claude"
-    },
-    {
-      "code_file": "geoparquet_io/api/ops.py",
-      "doc_target": "docs/api/python-api.md#Standalone Functions",
-      "reviewed_at": "2026-04-02T15:00:51.241972+00:00",
-      "code_commit_at_review": "440eb46",
-      "reviewed_by": "Claude"
-    },
-    {
       "code_file": "geoparquet_io/cli/decorators.py",
       "doc_target": "CLAUDE.md#Key Patterns",
       "reviewed_at": "2026-04-02T15:00:51.351185+00:00",
@@ -85,30 +71,9 @@
       "reviewed_by": "Claude"
     },
     {
-      "code_file": "geoparquet_io/core/convert.py",
-      "doc_target": "docs/guide/convert.md",
-      "reviewed_at": "2026-04-08T12:06:29.681564+00:00",
-      "code_commit_at_review": "009a2b7",
-      "reviewed_by": "claude"
-    },
-    {
       "code_file": "geoparquet_io/core/add_bbox_column.py",
       "doc_target": "docs/guide/add.md",
       "reviewed_at": "2026-04-08T12:41:02.742059+00:00",
-      "code_commit_at_review": "cc1d454",
-      "reviewed_by": "user"
-    },
-    {
-      "code_file": "geoparquet_io/core/benchmark.py",
-      "doc_target": "docs/cli/benchmark.md",
-      "reviewed_at": "2026-04-08T12:41:02.844987+00:00",
-      "code_commit_at_review": "9dbebbf",
-      "reviewed_by": "user"
-    },
-    {
-      "code_file": "geoparquet_io/core/extract.py",
-      "doc_target": "docs/guide/extract.md",
-      "reviewed_at": "2026-04-08T12:41:02.953575+00:00",
       "code_commit_at_review": "cc1d454",
       "reviewed_by": "user"
     },
@@ -120,25 +85,74 @@
       "reviewed_by": "user"
     },
     {
+      "code_file": "geoparquet_io/api/ops.py",
+      "doc_target": "docs/api/python-api.md#Standalone Functions",
+      "reviewed_at": "2026-04-09T17:04:29.013106+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/api/table.py",
+      "doc_target": "docs/api/python-api.md#Table Class",
+      "reviewed_at": "2026-04-09T17:04:29.112612+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
       "code_file": "geoparquet_io/cli/main.py",
       "doc_target": "docs/contributing.md",
-      "reviewed_at": "2026-04-09T12:10:35.738062+00:00",
-      "code_commit_at_review": "2ac6257",
-      "reviewed_by": "claude"
+      "reviewed_at": "2026-04-09T17:04:29.208315+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
     },
     {
       "code_file": "geoparquet_io/cli/main.py",
       "doc_target": "CLAUDE.md#CLI Command Groups",
-      "reviewed_at": "2026-04-09T12:10:35.837629+00:00",
-      "code_commit_at_review": "2ac6257",
-      "reviewed_by": "claude"
+      "reviewed_at": "2026-04-09T17:04:29.306241+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
     },
     {
       "code_file": "geoparquet_io/cli/main.py",
       "doc_target": "geoparquet_io/skills/geoparquet.md#Command Reference",
-      "reviewed_at": "2026-04-09T12:10:35.934069+00:00",
-      "code_commit_at_review": "2ac6257",
-      "reviewed_by": "claude"
+      "reviewed_at": "2026-04-09T17:04:29.402105+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/benchmark.py",
+      "doc_target": "docs/cli/benchmark.md",
+      "reviewed_at": "2026-04-09T17:04:35.317566+00:00",
+      "code_commit_at_review": "c731280",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/convert.py",
+      "doc_target": "docs/guide/convert.md",
+      "reviewed_at": "2026-04-09T17:04:35.421147+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/extract.py",
+      "doc_target": "docs/guide/extract.md",
+      "reviewed_at": "2026-04-09T17:04:35.520997+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/inspect.py",
+      "doc_target": "docs/guide/inspect.md",
+      "reviewed_at": "2026-04-09T17:04:35.619122+00:00",
+      "code_commit_at_review": "b947445",
+      "reviewed_by": "Claude"
+    },
+    {
+      "code_file": "geoparquet_io/core/validate.py",
+      "doc_target": "docs/guide/check.md",
+      "reviewed_at": "2026-04-09T17:04:35.724313+00:00",
+      "code_commit_at_review": "bd892e0",
+      "reviewed_by": "Claude"
     }
   ]
 }

@@ -13,7 +13,7 @@ from typing import Any
 
 from rich.console import Console
 
-from geoparquet_io.core.common import get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.crs_utils import get_crs_display_name, is_geographic_crs
 
 
 class CheckStatus(Enum):
@@ -508,7 +508,7 @@ def _check_encoding_matches_data(
     parquet_file: str, geom_col: str, encoding: str, con, sample_size: int
 ) -> ValidationCheck:
     """Check 17: all geometry values match the 'encoding' metadata."""
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
 
@@ -585,7 +585,7 @@ def _check_geometry_types_match_data(
     parquet_file: str, geom_col: str, declared_types: list, con, sample_size: int
 ) -> ValidationCheck:
     """Check 18: all geometry types must be included in 'geometry_types' metadata."""
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
@@ -787,7 +787,7 @@ def _check_bbox_contains_data(
             category="data_validation",
         )
 
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
@@ -1265,7 +1265,7 @@ def _check_geography_coordinate_bounds(
             category="parquet_geo_types",
         )
 
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
@@ -1341,11 +1341,11 @@ def _execute_bounds_query(con, safe_url: str, geom_col: str, limit_clause: str):
 
 def _check_row_group_bbox_statistics(parquet_file: str, geom_col: str) -> ValidationCheck:
     """Check that file has bbox column with row group statistics for spatial filtering."""
-    from geoparquet_io.core.common import is_remote_url
     from geoparquet_io.core.duckdb_metadata import (
         get_bbox_from_row_group_stats,
         has_bbox_column,
     )
+    from geoparquet_io.core.remote import is_remote_url
 
     try:
         # For remote files, skip (DuckDB can handle but may be slow)
@@ -1429,7 +1429,9 @@ def _is_bbox_valid(geo_bbox: dict) -> bool:
 
 def _check_native_geo_statistics(parquet_file: str, geom_col: str) -> ValidationCheck:
     """Check that geometry column has native Parquet GeospatialStatistics (geo_bbox)."""
-    from geoparquet_io.core.common import get_duckdb_connection, is_remote_url, safe_file_url
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.remote import is_remote_url
 
     try:
         # For remote files, skip (may be slow)
@@ -1507,7 +1509,8 @@ def _check_native_geo_stats_contains_data(
     parquet_file: str, geom_col: str, con, sample_size: int
 ) -> ValidationCheck:
     """Check that sampled geometries fall within declared geospatial statistics (geo_bbox)."""
-    from geoparquet_io.core.common import is_remote_url, safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.remote import is_remote_url
 
     try:
         # For remote files, skip (may be slow)
@@ -1618,7 +1621,7 @@ def _check_native_geo_types_match(
     parquet_file: str, geom_col: str, sample_size: int, con
 ) -> ValidationCheck:
     """Check that declared geo_types match actual geometry types in the data."""
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     try:
         safe_url = safe_file_url(parquet_file, verbose=False)
@@ -2211,7 +2214,7 @@ def _check_coordinates_valid_for_crs(
     sample_size: int,
 ) -> ValidationCheck:
     """Check that geometry coordinates are within valid bounds for the declared CRS."""
-    from geoparquet_io.core.common import safe_file_url
+    from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
@@ -2346,19 +2349,17 @@ def validate_geoparquet(
     Returns:
         ValidationResult with all check results
     """
-    from geoparquet_io.core.common import (
-        detect_geoparquet_file_type,
-        get_duckdb_connection,
-        needs_httpfs,
-        safe_file_url,
-    )
+    from geoparquet_io.core.common import detect_geoparquet_file_type
     from geoparquet_io.core.duckdb_metadata import (
         detect_geometry_columns,
         get_geo_metadata,
         get_kv_metadata,
         get_schema_info,
     )
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.logging_config import configure_verbose
+    from geoparquet_io.core.remote import needs_httpfs
 
     configure_verbose(verbose)
 

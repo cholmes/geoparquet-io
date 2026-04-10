@@ -16,17 +16,19 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 
-import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import (
-    get_duckdb_connection,
-    parse_crs_string_to_projjson,
-    setup_aws_profile_if_needed,
-    write_geoparquet_table,
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import (
+    GeoParquetError,
+    InvalidParameterError,
+    RemoteAccessError,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
+from geoparquet_io.core.remote import setup_aws_profile_if_needed
 
 # ArcGIS Online token endpoint
 ARCGIS_ONLINE_TOKEN_URL = "https://www.arcgis.com/sharing/rest/generateToken"
@@ -104,7 +106,7 @@ def _get_shared_http_client():
                 ),
             )
         except ImportError as e:
-            raise click.ClickException(
+            raise GeoParquetError(
                 "httpx is required for ArcGIS conversion. Install with: pip install httpx"
             ) from e
 
@@ -195,20 +197,18 @@ def _make_request(
                     time.sleep(delay)
                     continue
             elif status == 401:
-                raise click.ClickException(
-                    "Authentication required. Use --token or --username/--password."
+                raise RemoteAccessError(
+                    url, "Authentication required. Use --token or --username/--password."
                 ) from None
             elif status == 403:
-                raise click.ClickException(
-                    "Access denied. Check your credentials and service permissions."
+                raise RemoteAccessError(
+                    url, "Access denied. Check your credentials and service permissions."
                 ) from None
             elif status == 404:
-                raise click.ClickException(
-                    f"Service not found (404). Check the URL: {url}"
-                ) from None
-            raise click.ClickException(f"HTTP error {status}: {e}") from e
+                raise RemoteAccessError(url, "Service not found (404). Check the URL.") from None
+            raise RemoteAccessError(url, f"HTTP error {status}: {e}") from e
 
-    raise click.ClickException(f"Request failed after {max_retries} attempts: {last_exception}")
+    raise RemoteAccessError(url, f"Request failed after {max_retries} attempts: {last_exception}")
 
 
 def _handle_arcgis_response(data: dict, context: str) -> dict:
@@ -220,12 +220,10 @@ def _handle_arcgis_response(data: dict, context: str) -> dict:
         details = error.get("details", [])
 
         if code in (498, 499):
-            raise click.ClickException(
-                f"{context}: Invalid or expired token. Please re-authenticate."
-            )
+            raise GeoParquetError(f"{context}: Invalid or expired token. Please re-authenticate.")
         else:
             detail_str = "; ".join(details) if details else ""
-            raise click.ClickException(f"{context}: Error {code} - {message}. {detail_str}")
+            raise GeoParquetError(f"{context}: Error {code} - {message}. {detail_str}")
 
     return data
 
@@ -249,7 +247,7 @@ def generate_token(
         Authentication token string
 
     Raises:
-        click.ClickException: If token generation fails
+        GeoParquetError: If token generation fails
     """
     token_url = portal_url or ARCGIS_ONLINE_TOKEN_URL
 
@@ -268,7 +266,7 @@ def generate_token(
     result = _handle_arcgis_response(result, "Token generation")
 
     if "token" not in result:
-        raise click.ClickException("Token generation failed: no token in response")
+        raise GeoParquetError("Token generation failed: no token in response")
 
     if verbose:
         debug("Token generated successfully")
@@ -313,7 +311,7 @@ def resolve_token(
             with fsspec.open(auth.token_file, mode="rt") as f:
                 return f.read().strip()
         except OSError as e:
-            raise click.ClickException(f"Failed to read token file: {e}") from e
+            raise GeoParquetError(f"Failed to read token file: {e}") from e
 
     # Priority 3: Username/password
     if auth.username and auth.password:
@@ -357,7 +355,7 @@ def validate_arcgis_url(url: str) -> tuple[str, int | None]:
         Tuple of (base_url, layer_id) where layer_id may be None
 
     Raises:
-        click.ClickException: If URL is invalid
+        InvalidParameterError: If URL is invalid
     """
     import re
 
@@ -365,21 +363,20 @@ def validate_arcgis_url(url: str) -> tuple[str, int | None]:
 
     # Check for ImageServer (raster - not supported)
     if "/ImageServer" in url:
-        raise click.ClickException(
-            f"ImageServer (raster) services are not supported: {url}\n"
-            "This command only supports vector services (FeatureServer or MapServer).\n"
-            "ImageServer provides raster/imagery data which cannot be converted to GeoParquet."
+        raise InvalidParameterError(
+            "url",
+            "ImageServer (raster) services are not supported. "
+            "This command only supports vector services (FeatureServer or MapServer). "
+            "ImageServer provides raster/imagery data which cannot be converted to GeoParquet.",
         )
 
     # Check for FeatureServer or MapServer
     if "/FeatureServer" not in url and "/MapServer" not in url:
-        raise click.ClickException(
-            f"Invalid ArcGIS URL: {url}\n\n"
-            "Expected format: https://services.arcgis.com/.../FeatureServer/0\n\n"
-            "The URL must point to a vector layer in a FeatureServer or MapServer.\n"
-            "Make sure the URL includes:\n"
-            "  - /FeatureServer/ or /MapServer/ in the path\n"
-            "  - A layer ID at the end (e.g., /0, /1, /2)"
+        raise InvalidParameterError(
+            "url",
+            "Invalid ArcGIS URL. Expected format: https://services.arcgis.com/.../FeatureServer/0. "
+            "The URL must point to a vector layer in a FeatureServer or MapServer. "
+            "Make sure the URL includes /FeatureServer/ or /MapServer/ and a layer ID (e.g., /0).",
         )
 
     # Extract layer ID
@@ -388,12 +385,10 @@ def validate_arcgis_url(url: str) -> tuple[str, int | None]:
         return url, int(match.group(2))
 
     # URL ends with FeatureServer or MapServer without layer ID
-    raise click.ClickException(
-        f"Missing layer ID in URL: {url}\n\n"
-        f"You must specify which layer to download by adding the layer ID.\n"
-        f"For example: {url}/0\n\n"
-        f"To see available layers, open this URL in a browser:\n"
-        f"  {url}?f=json"
+    raise InvalidParameterError(
+        "url",
+        f"Missing layer ID. You must specify which layer to download by adding the layer ID "
+        f"(e.g., {url}/0). To see available layers, open {url}?f=json in a browser.",
     )
 
 
@@ -683,8 +678,8 @@ def fetch_all_features(
                     except Exception as e:
                         # If one request fails, propagate the error (fail-fast)
                         # Retries can be added later if needed
-                        raise click.ClickException(
-                            f"Failed to fetch features at offset {offset}: {e}"
+                        raise RemoteAccessError(
+                            service_url, f"Failed to fetch features at offset {offset}: {e}"
                         ) from e
 
                 # Sort by offset to maintain order
@@ -972,7 +967,7 @@ def _stream_features_to_parquet(
                 page_table = page_table.cast(target_schema, safe=True)
             except pa.ArrowInvalid as e:
                 # If safe casting fails, try to provide helpful error message
-                raise click.ClickException(
+                raise GeoParquetError(
                     f"Failed to cast batch {page_count} to target schema. "
                     f"This may indicate data corruption or unexpected types from the service. "
                     f"Error: {e}"
@@ -1096,7 +1091,7 @@ def arcgis_to_table(
         )
 
         if total_rows == 0:
-            raise click.ClickException("No features returned from service")
+            raise GeoParquetError("No features returned from service")
 
         # Pass 2: Read temp parquet file back as Arrow table
         progress("Reading temp file...")
@@ -1209,8 +1204,8 @@ def convert_arcgis_to_geoparquet(
 
     # Check if output file exists and overwrite is False
     if not overwrite and Path(output_file).exists():
-        raise click.ClickException(
-            f"Output file already exists: {output_file}\nUse --overwrite to replace it."
+        raise GeoParquetError(
+            f"Output file already exists: {output_file}. Use --overwrite to replace it."
         )
 
     # Build auth config
@@ -1247,7 +1242,7 @@ def convert_arcgis_to_geoparquet(
     # Add bbox column for spatial query optimization
     if not skip_bbox and table.num_rows > 0:
         progress("Adding bbox column for spatial query optimization...")
-        from geoparquet_io.core.add_bbox_column import add_bbox_table
+        from geoparquet_io.core.add.bbox import add_bbox_table
 
         table = add_bbox_table(table, bbox_column_name="bbox", geometry_column="geometry")
 

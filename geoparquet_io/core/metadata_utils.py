@@ -12,10 +12,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from geoparquet_io.core.common import (
-    format_size,
-    safe_file_url,
-)
+from geoparquet_io.core.common import format_size
+from geoparquet_io.core.file_utils import safe_file_url
 
 
 def _check_parquet_schema_string(field_name, parquet_schema_str):

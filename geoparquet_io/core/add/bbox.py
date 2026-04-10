@@ -5,16 +5,18 @@ from __future__ import annotations
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    STANDARD_GEOMETRY_NAMES,
     add_computed_column,
     check_bbox_structure,
     detect_geoparquet_file_type,
+)
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.file_utils import handle_output_overwrite
+from geoparquet_io.core.geometry_detection import (
+    STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
-    get_duckdb_connection,
-    handle_output_overwrite,
 )
 from geoparquet_io.core.logging_config import progress, success, warn
-from geoparquet_io.core.partition_reader import require_single_file
+from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.stream_io import execute_transform
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_table,

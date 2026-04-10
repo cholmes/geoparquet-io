@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.core.partition_by_a5 import partition_by_a5
+from geoparquet_io.core.partition.by_a5 import partition_by_a5
 from tests.conftest import safe_unlink
 
 # Mark all tests as network-dependent (requires DuckDB community extension)
@@ -44,7 +44,7 @@ class TestPartitionByA5:
     def test_partition_with_existing_column(self, places_file, output_folder):
         """Test partitioning when A5 column already exists."""
         # First add A5 column
-        from geoparquet_io.core.add_a5_column import add_a5_column
+        from geoparquet_io.core.add.a5 import add_a5_column
 
         temp_file = str(Path(tempfile.gettempdir()) / f"with_a5_{uuid.uuid4()}.parquet")
         try:

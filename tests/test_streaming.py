@@ -401,7 +401,7 @@ class TestStreamIO:
         """Test write_output to a file."""
         import pyarrow.parquet as pq
 
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
         from geoparquet_io.core.stream_io import write_output
 
         # Write input file first (so DuckDB sees geometry as proper type)
@@ -432,7 +432,7 @@ class TestStreamIO:
         """Test write_output to stdout stream."""
         import pyarrow.parquet as pq
 
-        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
         from geoparquet_io.core.stream_io import write_output
 
         # Write input file first (so DuckDB sees geometry as proper type)

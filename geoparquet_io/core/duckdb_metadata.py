@@ -18,10 +18,7 @@ from typing import Any
 import duckdb
 import pyarrow.parquet as pq
 
-
-class GeoParquetError(Exception):
-    """Raised when there are issues reading or processing GeoParquet files."""
-
+from geoparquet_io.core.exceptions import GeoParquetError
 
 # =============================================================================
 # PyArrow Fast Path for Local Files (Issue #232 Performance Fix)
@@ -30,7 +27,7 @@ class GeoParquetError(Exception):
 
 def _is_local_file(path: str) -> bool:
     """Check if path is a local file (not remote URL)."""
-    from geoparquet_io.core.common import is_remote_url
+    from geoparquet_io.core.remote import is_remote_url
 
     return not is_remote_url(path)
 
@@ -40,7 +37,7 @@ def _resolve_local_path(parquet_file: str) -> str:
 
     For partitioned datasets, returns the first parquet file.
     """
-    from geoparquet_io.core.common import get_first_parquet_file, is_partition_path
+    from geoparquet_io.core.file_utils import get_first_parquet_file, is_partition_path
 
     if is_partition_path(parquet_file):
         first_file = get_first_parquet_file(parquet_file)
@@ -318,12 +315,11 @@ def _get_connection_for_file(parquet_file: str, existing_con=None, load_spatial=
     Returns:
         Tuple of (connection, should_close)
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.duckdb_utils import (
         get_duckdb_connection,
         get_duckdb_connection_for_s3,
-        is_s3_url,
-        needs_httpfs,
     )
+    from geoparquet_io.core.remote import is_s3_url, needs_httpfs
 
     if existing_con:
         return existing_con, False  # False = don't close
@@ -342,7 +338,7 @@ def _safe_url(parquet_file: str) -> str:
     For partitioned datasets (directories or glob patterns), returns
     path to the first file for metadata operations that require a single file.
     """
-    from geoparquet_io.core.common import (
+    from geoparquet_io.core.file_utils import (
         get_first_parquet_file,
         is_partition_path,
         safe_file_url,

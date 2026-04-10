@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import click
-
-from geoparquet_io.core.common import safe_file_url
+from geoparquet_io.core.exceptions import InvalidParameterError
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
-from geoparquet_io.core.partition_common import partition_by_column, preview_partition
+from geoparquet_io.core.partition.common import partition_by_column, preview_partition
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
@@ -20,7 +19,7 @@ def validate_column_exists(parquet_file: str, column_name: str, verbose: bool = 
         verbose: Whether to print verbose output
 
     Raises:
-        click.UsageError: If the column doesn't exist
+        InvalidParameterError: If the column doesn't exist
     """
     from geoparquet_io.core.duckdb_metadata import get_column_names, get_schema_info
 
@@ -29,9 +28,9 @@ def validate_column_exists(parquet_file: str, column_name: str, verbose: bool = 
 
     if column_name not in column_names:
         available_columns = ", ".join(column_names)
-        raise click.UsageError(
-            f"Column '{column_name}' not found in the Parquet file.\n"
-            f"Available columns: {available_columns}"
+        raise InvalidParameterError(
+            "column",
+            f"'{column_name}' not found in the Parquet file. Available columns: {available_columns}",
         )
 
     if verbose:
@@ -110,13 +109,13 @@ def partition_by_string(
 
         # Validate chars parameter if provided
         if chars is not None and chars < 1:
-            raise click.UsageError("--chars must be a positive integer")
+            raise InvalidParameterError("chars", "must be a positive integer")
 
         # If preview mode, show preview and analysis, then exit
         if preview:
             # Run analysis first to show recommendations
             try:
-                from geoparquet_io.core.partition_common import (
+                from geoparquet_io.core.partition.common import (
                     PartitionAnalysisError,
                     analyze_partition_strategy,
                 )
