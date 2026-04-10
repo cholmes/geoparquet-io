@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 import tempfile
 
-import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import (
@@ -357,7 +357,9 @@ def add_kdtree_column(
     # Auto-compute iterations if requested
     if iterations is None:
         if auto_target_rows is None:
-            raise click.BadParameter("Either iterations or auto_target_rows must be specified")
+            raise InvalidParameterError(
+                "iterations", "Either iterations or auto_target_rows must be specified"
+            )
 
         # Get file size for MB calculations
         import os
@@ -390,7 +392,7 @@ def add_kdtree_column(
 
     # Validate iterations
     if not 1 <= iterations <= 20:
-        raise click.BadParameter(f"Iterations must be between 1 and 20, got {iterations}")
+        raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
@@ -566,7 +568,9 @@ def _add_kdtree_streaming(
 
             # Validate iterations
             if not 1 <= iterations <= 20:
-                raise click.BadParameter(f"Iterations must be between 1 and 20, got {iterations}")
+                raise InvalidParameterError(
+                    "iterations", f"must be between 1 and 20, got {iterations}"
+                )
 
             if verbose:
                 debug(f"Computing KD-tree partitions ({iterations} iterations)...")

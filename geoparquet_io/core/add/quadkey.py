@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-import click
 import mercantile
 import pyarrow as pa
 
@@ -17,6 +16,7 @@ from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QU
 from geoparquet_io.core.crs_utils import get_crs_display_name
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_geo_metadata
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -98,7 +98,7 @@ def _validate_crs_from_geo_metadata(
         source_description: Description for error messages (e.g., "file", "stream", "table")
 
     Raises:
-        click.ClickException: If CRS is detected as projected
+        GeoParquetError: If CRS is detected as projected
     """
     if not geo_meta:
         if verbose:
@@ -123,7 +123,7 @@ def _validate_crs_from_geo_metadata(
 
     if is_geographic is False:
         crs_name = get_crs_display_name(crs_info)
-        raise click.ClickException(
+        raise GeoParquetError(
             f"Quadkeys require geographic coordinates (lat/lon), but this {source_description} "
             f"uses a projected CRS: {crs_name}\n\n"
             f"Reproject to WGS84 first using:\n"
@@ -203,7 +203,7 @@ def add_quadkey_table(
 
     Raises:
         ValueError: If resolution is not an integer between 0 and 23
-        click.ClickException: If CRS is detected as projected (quadkeys require lat/lon)
+        GeoParquetError: If CRS is detected as projected (quadkeys require lat/lon)
     """
     # Validate resolution before any DuckDB operations
     resolution = int(resolution)
@@ -393,7 +393,7 @@ def _add_quadkey_streaming(
 
     # Validate resolution
     if not 0 <= resolution <= 23:
-        raise click.BadParameter(f"Resolution must be between 0 and 23, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
     with open_input(input_path, verbose=verbose) as (source, metadata, is_stream, con):
         # Register Python UDF for quadkey generation
@@ -493,7 +493,7 @@ def _add_quadkey_file_based(
 
     # Validate resolution
     if not 0 <= resolution <= 23:
-        raise click.BadParameter(f"Resolution must be between 0 and 23, got {resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
     # Validate profile is only used with S3
     validate_profile_for_urls(profile, input_parquet, output_parquet)
@@ -514,7 +514,7 @@ def _add_quadkey_file_based(
     if not dry_run:
         column_names = get_column_names(input_url)
         if quadkey_column_name in column_names:
-            raise click.ClickException(
+            raise GeoParquetError(
                 f"Column '{quadkey_column_name}' already exists in the file. "
                 f"Please choose a different name."
             )

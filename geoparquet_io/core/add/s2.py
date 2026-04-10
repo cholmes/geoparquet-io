@@ -10,7 +10,6 @@ that divides Earth's surface into cells at various levels (0-30).
 
 from __future__ import annotations
 
-import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
@@ -19,6 +18,7 @@ from geoparquet_io.core.constants import (
     DEFAULT_S2_LEVEL,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -212,7 +212,7 @@ def add_s2_column(
 
     # Validate level
     if not 0 <= s2_level <= 30:
-        raise click.BadParameter(f"S2 level must be between 0 and 30, got {s2_level}")
+        raise InvalidParameterError("level", f"must be between 0 and 30, got {s2_level}")
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)

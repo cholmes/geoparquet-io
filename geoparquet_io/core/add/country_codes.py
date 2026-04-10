@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import click
 import duckdb
 
 from geoparquet_io.core.common import (
@@ -10,6 +9,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -28,7 +28,7 @@ def find_country_code_column(con, countries_source, is_subquery=False):
         str: The name of the country code column
 
     Raises:
-        click.UsageError: If no suitable country code column is found
+        InvalidParameterError: If no suitable country code column is found
     """
     # Build appropriate query based on source type
     if is_subquery:
@@ -55,9 +55,10 @@ def find_country_code_column(con, countries_source, is_subquery=False):
             return col
 
     # If no column found, raise an error
-    raise click.UsageError(
+    raise InvalidParameterError(
+        "countries_parquet",
         f"Could not find country code column in countries file. "
-        f"Expected one of: {', '.join(country_code_options)}"
+        f"Expected one of: {', '.join(country_code_options)}",
     )
 
 
@@ -223,7 +224,7 @@ def _get_bounds_for_filtering(input_parquet, input_geom_col, dry_run, verbose):
         if dry_run:
             warn("-- Note: Could not calculate actual bounds")
             return ("<xmin>", "<ymin>", "<xmax>", "<ymax>")
-        raise click.ClickException("Could not calculate dataset bounds")
+        raise GeoParquetError("Could not calculate dataset bounds")
 
     if dry_run:
         success(f"-- Bounds calculated: {bounds}")

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import click
 import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -177,7 +177,7 @@ def add_a5_column(
 
     # Validate resolution
     if not 0 <= a5_resolution <= 30:
-        raise click.BadParameter(f"A5 resolution must be between 0 and 30, got {a5_resolution}")
+        raise InvalidParameterError("resolution", f"must be between 0 and 30, got {a5_resolution}")
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
