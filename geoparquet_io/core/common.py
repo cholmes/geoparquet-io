@@ -13,10 +13,11 @@ from geoparquet_io.core.crs_utils import (
     is_default_crs,
 )
 
-# Re-exports from duckdb_utils (Phase 2 extraction)
-# These functions were moved to dedicated modules but are re-exported here
-# to maintain compatibility with existing code that imports from common.py
+# Imports from duckdb_utils (used in this module)
 from geoparquet_io.core.duckdb_utils import (
+    _DuckDBSchemaWrapper,
+    _get_query_columns,
+    _wrap_query_with_wkb_conversion,
     get_duckdb_connection,
 )
 from geoparquet_io.core.exceptions import (
@@ -31,10 +32,11 @@ from geoparquet_io.core.file_utils import (
     safe_file_url,
 )
 
-# Re-exports from geo_metadata (Phase 2 extraction)
+# Imports from geo_metadata (used in this module)
 from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
+    create_geo_metadata,
 )
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -263,43 +265,6 @@ def get_parquet_metadata(parquet_file, verbose=False):
     return kv_metadata, schema
 
 
-class _DuckDBSchemaWrapper:
-    """Wrapper to provide PyArrow-like interface for DuckDB schema info."""
-
-    def __init__(self, schema_info):
-        self._columns = [c for c in schema_info if c.get("name") and "." not in c.get("name", "")]
-
-    def __len__(self):
-        return len(self._columns)
-
-    def field(self, i):
-        return _DuckDBFieldWrapper(self._columns[i])
-
-
-class _DuckDBFieldWrapper:
-    """Wrapper to provide PyArrow-like interface for a DuckDB column."""
-
-    def __init__(self, col_info):
-        self.name = col_info.get("name", "")
-
-
-def parse_geo_metadata(metadata, verbose=False):
-    """Parse GeoParquet metadata from Parquet metadata."""
-    if not metadata or b"geo" not in metadata:
-        return None
-
-    try:
-        geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-        if verbose:
-            debug("\nParsed geo metadata:")
-            debug(json.dumps(geo_meta, indent=2))
-        return geo_meta
-    except json.JSONDecodeError:
-        if verbose:
-            warn("Failed to parse geo metadata as JSON")
-        return None
-
-
 def calculate_file_bounds(file_path, geom_column=None, verbose=False):
     """
     Calculate the bounding box of all geometries in a parquet file.
@@ -347,126 +312,6 @@ def calculate_file_bounds(file_path, geom_column=None, verbose=False):
         return None
     finally:
         con.close()
-
-
-def _parse_existing_geo_metadata(original_metadata):
-    """Parse existing geo metadata from original parquet metadata."""
-    if not original_metadata or b"geo" not in original_metadata:
-        return None
-    try:
-        return json.loads(original_metadata[b"geo"].decode("utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
-def _initialize_geo_metadata(geo_meta, geom_col, version="1.1.0"):
-    """Initialize or upgrade geo metadata structure.
-
-    Args:
-        geo_meta: Existing geo metadata dict or None
-        geom_col: Name of the geometry column
-        version: GeoParquet version string (e.g., "1.0.0", "1.1.0", "2.0.0")
-
-    Returns:
-        dict: Initialized geo metadata structure
-    """
-    if not geo_meta:
-        return {"version": version, "primary_column": geom_col, "columns": {geom_col: {}}}
-
-    # Set the specified version
-    geo_meta["version"] = version
-    if "columns" not in geo_meta:
-        geo_meta["columns"] = {}
-    if geom_col not in geo_meta["columns"]:
-        geo_meta["columns"][geom_col] = {}
-
-    return geo_meta
-
-
-def _add_bbox_covering(geo_meta, geom_col, bbox_info, verbose):
-    """Add bbox covering metadata to geometry column."""
-    if not bbox_info or not bbox_info.get("has_bbox_column"):
-        return
-
-    if "covering" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["covering"] = {}
-
-    geo_meta["columns"][geom_col]["covering"]["bbox"] = {
-        "xmin": [bbox_info["bbox_column_name"], "xmin"],
-        "ymin": [bbox_info["bbox_column_name"], "ymin"],
-        "xmax": [bbox_info["bbox_column_name"], "xmax"],
-        "ymax": [bbox_info["bbox_column_name"], "ymax"],
-    }
-    if verbose:
-        debug(f"Added bbox covering metadata for column '{bbox_info['bbox_column_name']}'")
-
-
-def _add_custom_covering(geo_meta, geom_col, custom_metadata, verbose):
-    """Add custom covering metadata (e.g., H3, S2)."""
-    if not custom_metadata or "covering" not in custom_metadata:
-        return
-
-    if "covering" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["covering"] = {}
-
-    geo_meta["columns"][geom_col]["covering"].update(custom_metadata["covering"])
-    if verbose:
-        for key in custom_metadata["covering"]:
-            debug(f"Added {key} covering metadata")
-
-
-def create_geo_metadata(
-    original_metadata,
-    geom_col,
-    bbox_info,
-    custom_metadata=None,
-    verbose=False,
-    version="1.1.0",
-    edges=None,
-):
-    """
-    Create or update GeoParquet metadata with spatial index covering information.
-
-    Args:
-        original_metadata: Original parquet metadata dict
-        geom_col: Name of the geometry column
-        bbox_info: Result from check_bbox_structure
-        custom_metadata: Optional dict with custom metadata (e.g., H3 info)
-        verbose: Whether to print verbose output
-        version: GeoParquet version string (e.g., "1.0.0", "1.1.0", "2.0.0")
-        edges: Edge interpretation, "spherical" or "planar" (default None = planar).
-               Use "spherical" for data from BigQuery or other S2-based sources.
-
-    Returns:
-        dict: Updated geo metadata
-    """
-    geo_meta = _parse_existing_geo_metadata(original_metadata)
-    geo_meta = _initialize_geo_metadata(geo_meta, geom_col, version=version)
-
-    # Add encoding if not present (required by GeoParquet spec)
-    if "encoding" not in geo_meta["columns"][geom_col]:
-        geo_meta["columns"][geom_col]["encoding"] = "WKB"
-
-    # Add edges if specified (for spherical geometry from BigQuery, etc.)
-    if edges:
-        geo_meta["columns"][geom_col]["edges"] = edges
-        # When spherical, orientation should be counterclockwise per GeoParquet spec
-        if edges == "spherical":
-            geo_meta["columns"][geom_col]["orientation"] = "counterclockwise"
-
-    # Add bbox covering if needed
-    _add_bbox_covering(geo_meta, geom_col, bbox_info, verbose)
-
-    # Add custom covering if needed
-    _add_custom_covering(geo_meta, geom_col, custom_metadata, verbose)
-
-    # Add any top-level custom metadata
-    if custom_metadata:
-        for key, value in custom_metadata.items():
-            if key != "covering":
-                geo_meta[key] = value
-
-    return geo_meta
 
 
 def parse_size_string(size_str):
@@ -604,147 +449,6 @@ def validate_compression_settings(compression, compression_level, verbose=False)
         compression_desc = compression
 
     return compression, compression_level, compression_desc
-
-
-# =============================================================================
-# Arrow-based write helpers
-# =============================================================================
-
-
-def _get_query_columns(con, query: str) -> list[str]:
-    """
-    Get column names from a query without executing it fully.
-
-    Uses LIMIT 0 to get schema information efficiently.
-
-    Args:
-        con: DuckDB connection
-        query: SQL SELECT query
-
-    Returns:
-        list[str]: Column names from the query result
-    """
-    describe_query = f"SELECT * FROM ({query}) AS __subq LIMIT 0"
-    result = con.execute(describe_query)
-    return [col[0] for col in result.description]
-
-
-def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) -> str:
-    """
-    Wrap query to convert geometry column to WKB for Arrow export.
-
-    DuckDB's GEOMETRY type doesn't translate directly to Arrow in a portable way.
-    This wraps the query to use ST_AsWKB for geometry output, ensuring the geometry
-    is in standard WKB format that geoarrow-pyarrow can handle.
-
-    Args:
-        query: Original SQL SELECT query
-        geometry_column: Name of the geometry column to convert
-        con: Optional DuckDB connection to verify column exists
-
-    Returns:
-        str: Wrapped query with WKB conversion, or original query if column doesn't exist
-    """
-    # If connection provided, check if geometry column exists in query output
-    if con is not None:
-        try:
-            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-            if geometry_column not in schema_result.schema.names:
-                # Geometry column was excluded, return original query
-                return query
-        except Exception:
-            # If check fails, try the conversion anyway
-            pass
-
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
-    return f"""
-        WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}") AS "{quoted_geom}")
-        FROM __arrow_source
-    """
-
-
-def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None) -> str:
-    """
-    Wrap query to convert geometry column to plain binary BLOB.
-
-    Unlike _wrap_query_with_wkb_conversion which produces WKB that DuckDB still
-    recognizes as spatial, this casts to BLOB to produce truly plain binary data.
-    Used for GeoParquet v1.x where we need plain binary WKB without geoarrow
-    extension types in the Parquet schema.
-
-    Args:
-        query: Original SQL SELECT query
-        geometry_column: Name of the geometry column to convert
-        con: Optional DuckDB connection to verify column exists
-
-    Returns:
-        str: Wrapped query with BLOB conversion, or original query if column doesn't exist
-    """
-    # If connection provided, check if geometry column exists in query output
-    if con is not None:
-        try:
-            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-            if geometry_column not in schema_result.schema.names:
-                # Geometry column was excluded, return original query
-                return query
-        except Exception:
-            # If check fails, try the conversion anyway
-            pass
-
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
-    # Cast to BLOB to produce plain binary without geoarrow extension type
-    return f"""
-        WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}")::BLOB AS "{quoted_geom}")
-        FROM __arrow_source
-    """
-
-
-def compute_bbox_via_sql(
-    con,
-    query: str,
-    geometry_column: str,
-) -> list[float] | None:
-    """
-    Compute bounding box from query using DuckDB spatial functions.
-
-    Args:
-        con: DuckDB connection with spatial extension loaded
-        query: SQL query containing geometry column
-        geometry_column: Name of geometry column
-
-    Returns:
-        [xmin, ymin, xmax, ymax] or None if query returns no rows or geometry column not in query
-    """
-    # Check if geometry column exists in query result
-    try:
-        columns = _get_query_columns(con, query)
-        if geometry_column not in columns:
-            return None
-    except (duckdb.Error, RuntimeError, ValueError, AttributeError):
-        # If we can't determine schema, return None rather than failing
-        return None
-
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    bbox_query = f"""
-        SELECT
-            MIN(ST_XMin("{escaped_col}")) as xmin,
-            MIN(ST_YMin("{escaped_col}")) as ymin,
-            MAX(ST_XMax("{escaped_col}")) as xmax,
-            MAX(ST_YMax("{escaped_col}")) as ymax
-        FROM ({query})
-    """
-    result = con.execute(bbox_query).fetchone()
-
-    if result and all(v is not None for v in result):
-        return list(result)
-    return None
 
 
 def compute_geometry_types_via_sql(

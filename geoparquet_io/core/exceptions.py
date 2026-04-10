@@ -30,11 +30,25 @@ class FileNotFoundGeoParquetError(GeoParquetError):
     """Raised when a required file or path is not found."""
 
     def __init__(self, path: str, detail: str | None = None) -> None:
-        self.path = path
-        msg = f"File not found: {path}"
+        self.path = path  # Original path for programmatic access
+        sanitized = self._sanitize_path(path)
+        msg = f"File not found: {sanitized}"
         if detail:
             msg = f"{msg} - {detail}"
         super().__init__(msg)
+
+    @staticmethod
+    def _sanitize_path(path: str) -> str:
+        """Remove credentials and query params from path for safe logging.
+
+        Presigned URLs contain sensitive credentials in query parameters
+        (e.g., AWSAccessKeyId, Signature, X-Amz-Security-Token). These must
+        be stripped before including the path in error messages.
+        """
+        # Remove query string (may contain presigned credentials)
+        if "?" in path:
+            path = path.split("?")[0]
+        return path
 
 
 class InvalidParameterError(GeoParquetError):

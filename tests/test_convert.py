@@ -26,8 +26,9 @@ from geoparquet_io.core.check_parquet_structure import (
     get_compression_info,
     get_row_group_stats,
 )
-from geoparquet_io.core.common import get_parquet_metadata, parse_geo_metadata
+from geoparquet_io.core.common import get_parquet_metadata
 from geoparquet_io.core.convert import convert_to_geoparquet
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
 from geoparquet_io.core.geometry_detection import (
     detect_parquet_geometry_column,
     find_primary_geometry_column,

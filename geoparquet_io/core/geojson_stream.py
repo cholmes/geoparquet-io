@@ -45,7 +45,8 @@ def _get_source_crs(input_path: str) -> str | None:
     Returns:
         CRS string (e.g., "EPSG:4326") or None if not found
     """
-    from geoparquet_io.core.common import get_parquet_metadata, parse_geo_metadata
+    from geoparquet_io.core.common import get_parquet_metadata
+    from geoparquet_io.core.geo_metadata import parse_geo_metadata
 
     try:
         metadata, _ = get_parquet_metadata(input_path, verbose=False)

@@ -350,7 +350,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         verbose: bool,
     ) -> None:
         """Compute missing bbox and geometry_types metadata."""
-        from geoparquet_io.core.common import compute_bbox_via_sql, compute_geometry_types_via_sql
+        from geoparquet_io.core.common import compute_geometry_types_via_sql
+        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
 
         if "bbox" not in col_meta:
             if verbose:

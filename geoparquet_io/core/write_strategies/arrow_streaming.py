@@ -497,7 +497,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         verbose: bool,
     ) -> list[float] | None:
         """Pre-compute bbox via DuckDB aggregation for v2.0."""
-        from geoparquet_io.core.common import compute_bbox_via_sql
+        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
 
         if verbose:
             debug("Pre-computing bbox via DuckDB aggregation...")

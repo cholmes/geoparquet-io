@@ -5,6 +5,8 @@ This module provides functions to detect geometry columns in Parquet files
 by examining GeoParquet metadata and column names.
 """
 
+import duckdb
+
 from geoparquet_io.core.logging_config import debug
 
 # Standard geometry column names for fallback detection
@@ -54,7 +56,9 @@ def detect_parquet_geometry_column(parquet_file: str, verbose: bool = False) -> 
                     if verbose:
                         debug(f"Detected geometry column from schema: {col}")
                     return col
-    except OSError as e:
+    except (OSError, duckdb.InvalidInputException) as e:
+        # OSError for file access issues
+        # InvalidInputException for DuckDB rejecting invalid GeoParquet metadata
         if verbose:
             debug(f"Failed to read schema: {e}")
     finally:

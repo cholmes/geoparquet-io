@@ -35,6 +35,57 @@ class TestCoreExceptions:
         assert "test.parquet" in str(exc_info.value)
         assert "no read permission" in str(exc_info.value)
 
+    def test_file_not_found_error_sanitizes_presigned_s3_url(self):
+        """Presigned S3 URLs with credentials should be sanitized in error message."""
+        presigned_url = (
+            "s3://bucket/data/file.parquet"
+            "?AWSAccessKeyId=AKIAIOSFODNN7EXAMPLE"
+            "&Signature=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+            "&Expires=1234567890"
+        )
+        exc = FileNotFoundGeoParquetError(presigned_url)
+
+        # Original path preserved for programmatic access
+        assert "AWSAccessKeyId" in exc.path
+        assert "Signature" in exc.path
+
+        # Error message should NOT contain credentials
+        error_msg = str(exc)
+        assert "AWSAccessKeyId" not in error_msg
+        assert "AKIAIOSFODNN7EXAMPLE" not in error_msg
+        assert "Signature" not in error_msg
+        assert "wJalrXUtnFEMI" not in error_msg
+
+        # But should still identify the file
+        assert "s3://bucket/data/file.parquet" in error_msg
+
+    def test_file_not_found_error_sanitizes_gcs_signed_url(self):
+        """GCS signed URLs with credentials should be sanitized."""
+        signed_url = (
+            "gs://bucket/path/file.parquet"
+            "?X-Goog-Algorithm=GOOG4-RSA-SHA256"
+            "&X-Goog-Credential=service-account%40project.iam.gserviceaccount.com"
+            "&X-Goog-Signature=abc123secret"
+        )
+        exc = FileNotFoundGeoParquetError(signed_url, "bucket not found")
+
+        # Credentials NOT in error message
+        assert "X-Goog-Credential" not in str(exc)
+        assert "X-Goog-Signature" not in str(exc)
+        assert "abc123secret" not in str(exc)
+
+        # File path and detail still present
+        assert "gs://bucket/path/file.parquet" in str(exc)
+        assert "bucket not found" in str(exc)
+
+    def test_file_not_found_error_preserves_local_paths(self):
+        """Local file paths without query strings should pass through unchanged."""
+        local_path = "/home/user/data/file.parquet"
+        exc = FileNotFoundGeoParquetError(local_path)
+
+        assert exc.path == local_path
+        assert local_path in str(exc)
+
     def test_invalid_parameter_error(self):
         with pytest.raises(InvalidParameterError) as exc_info:
             raise InvalidParameterError("resolution", "must be between 1-15")

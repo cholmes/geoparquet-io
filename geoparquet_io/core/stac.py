@@ -10,12 +10,13 @@ from pathlib import Path
 
 import pystac
 
-from geoparquet_io.core.common import get_dataset_bounds, get_parquet_metadata, parse_geo_metadata
+from geoparquet_io.core.common import get_dataset_bounds, get_parquet_metadata
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     GeoParquetError,
     InvalidParameterError,
 )
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, warn
 from geoparquet_io.core.remote import is_remote_url

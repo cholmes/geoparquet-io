@@ -4,9 +4,10 @@ This module contains the business logic for inspecting GeoParquet files,
 including summary, preview (head/tail), statistics, and metadata operations.
 """
 
-from geoparquet_io.core.common import get_parquet_metadata, parse_geo_metadata
+from geoparquet_io.core.common import get_parquet_metadata
 from geoparquet_io.core.duckdb_metadata import get_compression_stats, get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
 from geoparquet_io.core.inspect_utils import (
     extract_file_info,
     extract_geo_info,
