@@ -90,9 +90,9 @@ class TestPartitionByS2:
 
     def test_partition_invalid_level(self, places_file, output_folder):
         """Test error with invalid level."""
-        import click
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
-        with pytest.raises(click.UsageError, match="level must be between"):
+        with pytest.raises(InvalidParameterError, match="must be between 0 and 30"):
             partition_by_s2(places_file, output_folder, level=31)
 
 
