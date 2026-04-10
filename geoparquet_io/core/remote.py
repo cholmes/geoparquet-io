@@ -15,6 +15,25 @@ from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 
 
+def _sanitize_url_for_logging(url: str) -> str:
+    """Remove credentials and query params from URL for safe logging.
+
+    Presigned URLs contain credentials in query parameters that should
+    not be logged. This function strips the query string and truncates
+    long paths for readability.
+    """
+    if not url:
+        return url
+    # Remove query string (may contain presigned credentials)
+    if "?" in url:
+        url = url.split("?")[0]
+    # Truncate very long paths
+    parts = url.split("/")
+    if len(parts) > 5:
+        return "/".join(parts[:4]) + "/..." + "/" + parts[-1]
+    return url
+
+
 def is_remote_url(path):
     """
     Check if path is a remote URL that DuckDB can read.
@@ -166,7 +185,7 @@ def validate_profile_for_urls(profile, *urls):
             protocol = url.split("://")[0].upper() if "://" in url else "unknown"
             raise InvalidParameterError(
                 "profile",
-                f"only valid for S3 URLs, but got {protocol} URL: {url}. "
+                f"only valid for S3 URLs, but got {protocol} URL: {_sanitize_url_for_logging(url)}. "
                 f"For {protocol} authentication, use environment variables or default credentials.",
             )
 
@@ -184,7 +203,7 @@ def show_remote_read_message(file_path, verbose=False):
 
     protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
     if verbose:
-        info(f"Reading from {protocol}: {file_path}")
+        info(f"Reading from {protocol}: {_sanitize_url_for_logging(file_path)}")
     else:
         info(f"Reading from {protocol} (network operations may take time)...")
 
@@ -218,7 +237,7 @@ def get_remote_error_hint(error_msg, file_path=""):
     # Check for 404 errors
     if "404" in error_msg or "not found" in error_lower or "does not exist" in error_lower:
         base = "File not found at remote location:\n  - Verify the URL is correct\n  - Check the file exists at the specified path"
-        return f"{base}\n  - URL: {file_path}" if file_path else base
+        return f"{base}\n  - URL: {_sanitize_url_for_logging(file_path)}" if file_path else base
 
     # Check for timeout
     if "timeout" in error_lower or "timed out" in error_lower:
@@ -263,7 +282,7 @@ def upload_if_remote(local_path, remote_path, profile=None, is_directory=False, 
             total_size = os.path.getsize(local_path)
 
         size_mb = total_size / (1024 * 1024)
-        progress(f"Uploading {size_mb:.1f} MB to {remote_path}...")
+        progress(f"Uploading {size_mb:.1f} MB to {_sanitize_url_for_logging(remote_path)}...")
 
     pattern = "*.parquet" if is_directory else None
     upload(
@@ -275,7 +294,7 @@ def upload_if_remote(local_path, remote_path, profile=None, is_directory=False, 
     )
 
     if verbose:
-        success(f"Successfully uploaded to {remote_path}")
+        success(f"Successfully uploaded to {_sanitize_url_for_logging(remote_path)}")
 
     return True
 
