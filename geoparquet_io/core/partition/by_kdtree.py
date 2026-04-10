@@ -6,9 +6,8 @@ import os
 import tempfile
 import uuid
 
-import click
-
 from geoparquet_io.core.add.kdtree import add_kdtree_column
+from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -42,7 +41,7 @@ def _add_kdtree_column_to_temp(
     """Add KD-tree column to input and return path to temp file.
 
     Raises:
-        click.ClickException: If column addition fails
+        PartitionError: If column addition fails
     """
     partition_count = 2**iterations
     if verbose:
@@ -72,7 +71,7 @@ def _add_kdtree_column_to_temp(
         return temp_file
     except Exception as e:
         _cleanup_temp_file(temp_file)
-        raise click.ClickException(f"Failed to add KD-tree column: {str(e)}") from e
+        raise PartitionError(f"Failed to add KD-tree column: {str(e)}") from e
 
 
 def _show_partition_preview(
@@ -172,7 +171,7 @@ def partition_by_kdtree(
 
     # Validate iterations
     if iterations is not None and not 1 <= iterations <= 20:
-        raise click.UsageError(f"Iterations must be between 1 and 20, got {iterations}")
+        raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
     # Determine default for keep_kdtree_column
     if keep_kdtree_column is None:

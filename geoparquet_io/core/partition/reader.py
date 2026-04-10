@@ -153,12 +153,12 @@ def require_single_file(path: str, command_name: str) -> None:
         command_name: Name of the command for error message
 
     Raises:
-        click.ClickException: If path is a partition
+        GeoParquetError: If path is a partition
     """
-    import click
+    from geoparquet_io.core.exceptions import GeoParquetError
 
     if is_partition_path(path):
-        raise click.ClickException(
+        raise GeoParquetError(
             f"Partitioned input detected: {path}\n\n"
             f"The '{command_name}' command requires a single parquet file as input.\n"
             "To work with partitioned data, first consolidate using:\n\n"

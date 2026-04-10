@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 
-import click
 import duckdb
 
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
@@ -21,6 +20,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress, success, warn
@@ -257,7 +257,7 @@ def _verify_enrichment_results(con, enriched_table, output_column_names):
     success(f"  ✓ Matched {with_admin_count:,} of {total_count:,} features to admin boundaries")
 
     if with_admin_count == 0:
-        raise click.ClickException(
+        raise PartitionError(
             "No features matched to admin boundaries. Check that input data and boundaries "
             "are in compatible CRS and overlap geographically."
         )

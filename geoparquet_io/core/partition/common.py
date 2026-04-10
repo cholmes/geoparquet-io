@@ -3,13 +3,12 @@
 import os
 import re
 
-import click
-
 from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import debug, error, info, progress, warn
 from geoparquet_io.core.remote import (
@@ -530,7 +529,7 @@ def preview_partition(
     con.close()
 
     if len(all_partitions) == 0:
-        raise click.ClickException(f"No non-NULL values found in column '{column_name}'")
+        raise PartitionError(f"No non-NULL values found in column '{column_name}'")
 
     # Calculate total records
     total_records = sum(row[1] for row in all_partitions)
@@ -584,7 +583,7 @@ def _run_partition_analysis(
         )
     except PartitionAnalysisError as e:
         if not force:
-            raise click.ClickException(str(e)) from e
+            raise PartitionError(str(e)) from e
         if verbose:
             warn("\n⚠️  Forcing partition creation despite analysis warnings/errors...")
 
@@ -612,7 +611,7 @@ def _get_unique_partition_values(con, input_url, column_expr, column_name, verbo
     partition_values = result.fetchall()
 
     if len(partition_values) == 0:
-        raise click.ClickException(f"No non-NULL values found in column '{column_name}'")
+        raise PartitionError(f"No non-NULL values found in column '{column_name}'")
 
     if verbose:
         debug(f"Found {len(partition_values)} unique partition values")
