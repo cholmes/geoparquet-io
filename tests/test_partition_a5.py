@@ -92,9 +92,9 @@ class TestPartitionByA5:
 
     def test_partition_invalid_resolution(self, places_file, output_folder):
         """Test error with invalid resolution."""
-        import click
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
-        with pytest.raises(click.UsageError, match="resolution must be between"):
+        with pytest.raises(InvalidParameterError, match="must be between 0 and 30"):
             partition_by_a5(places_file, output_folder, resolution=31)
 
 
