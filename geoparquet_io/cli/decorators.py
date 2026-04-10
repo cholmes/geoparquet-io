@@ -9,7 +9,7 @@ import functools
 
 import click
 
-from geoparquet_io.core.common import ParquetWriteSettings
+from geoparquet_io.core.parquet_writer import ParquetWriteSettings
 
 
 def handle_geoparquet_errors(func):

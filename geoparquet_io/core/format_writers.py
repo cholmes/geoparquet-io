@@ -16,7 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.crs_utils import extract_crs_from_parquet, is_default_crs
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
 from geoparquet_io.core.exceptions import (
     GeoParquetError,
     InvalidParameterError,
@@ -179,7 +179,7 @@ def write_gdal_format(
         srs_param = _get_srs_parameter(input_path, verbose)
         if srs_param:
             # SQL-escape the SRS parameter
-            safe_srs = srs_param.replace("'", "''")
+            safe_srs = _escape_sql_string(srs_param)
             srs_clause = f", SRS '{safe_srs}'"
             debug(f"Setting SRS: {srs_param}")
         else:
@@ -189,12 +189,10 @@ def write_gdal_format(
         # Build layer creation options
         lco_parts = []
         if config.get("layer_option"):
-            # Escape single quotes in layer name to prevent SQL injection
-            safe_layer_name = layer_name.replace("'", "''")
+            safe_layer_name = _escape_sql_string(layer_name)
             lco_parts.append(f"{config['layer_option']}={safe_layer_name}")
         if config.get("encoding_option"):
-            # Escape single quotes in encoding to prevent SQL injection
-            safe_encoding = encoding.replace("'", "''")
+            safe_encoding = _escape_sql_string(encoding)
             lco_parts.append(f"{config['encoding_option']}={safe_encoding}")
 
         lco_clause = f", LAYER_CREATION_OPTIONS '{' '.join(lco_parts)}'" if lco_parts else ""
@@ -202,8 +200,8 @@ def write_gdal_format(
         # Execute write with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
         # so we use SQL standard escaping (double single quotes)
-        safe_input_url = input_url.replace("'", "''")
-        safe_output_path = output_path.replace("'", "''")
+        safe_input_url = _escape_sql_string(input_url)
+        safe_output_path = _escape_sql_string(output_path)
 
         # GDAL formats don't support complex types (STRUCT, LIST, MAP), so select only compatible columns
         # Read schema to filter out incompatible columns
@@ -367,8 +365,8 @@ def write_csv(
         # Write to CSV with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
         # so we use SQL standard escaping (double single quotes)
-        safe_input_url = input_url.replace("'", "''")
-        safe_output_path = output_path.replace("'", "''")
+        safe_input_url = _escape_sql_string(input_url)
+        safe_output_path = _escape_sql_string(output_path)
 
         query = f"""
             COPY (

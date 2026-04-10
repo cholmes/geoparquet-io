@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 
@@ -115,7 +116,7 @@ def _wrap_query_with_crs(
     input_crs: dict | None,
 ) -> str:
     """Wrap query with ST_SetCRS() — delegates to shared helper in common.py."""
-    from geoparquet_io.core.common import _wrap_query_with_crs as _common_wrap_query_with_crs
+    from geoparquet_io.core.crs_utils import _wrap_query_with_crs as _common_wrap_query_with_crs
 
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
@@ -276,7 +277,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         # geometry encoding directly. No WKB conversion needed.
         # Apply CRS via ST_SetCRS so DuckDB writes it into the schema natively.
         final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
-        escaped_path = local_path.replace("'", "''")
+        escaped_path = _escape_sql_string(local_path)
 
         copy_options = _build_copy_options(compression, row_group_rows)
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
@@ -327,8 +328,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         else:
             final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
-        escaped_path = local_path.replace("'", "''")
-        geo_meta_escaped = json.dumps(geo_meta).replace("'", "''")
+        escaped_path = _escape_sql_string(local_path)
+        geo_meta_escaped = _escape_sql_string(json.dumps(geo_meta))
 
         copy_options = _build_copy_options(compression, row_group_rows, geo_meta_escaped)
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"

@@ -333,12 +333,10 @@ def generate_stac_item(
     Returns:
         STAC Item as dict (pystac.Item.to_dict())
     """
-    # TODO: Consider supporting remote files in the future if there's demand.
-    # This would require careful consideration of:
-    # - Asset hrefs pointing to files user may not control
-    # - Mixed local/remote semantics in STAC catalogs
-    # - Use cases: cataloging public datasets vs. self-owned data
-    # For now, blocking to avoid confusing semantics and edge cases.
+    # Design decision: Remote files are intentionally unsupported.
+    # STAC generation requires local files because asset hrefs would reference
+    # files the user may not control, creating confusing catalog semantics.
+    # See: https://github.com/geoparquet/geoparquet-io/issues/TBD for discussion.
     if is_remote_url(parquet_file):
         raise InvalidParameterError(
             "parquet_file",

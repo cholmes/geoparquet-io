@@ -8,6 +8,7 @@ CRS information from GeoParquet files and other spatial formats.
 import json
 import os
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import debug, warn
 
 
@@ -102,7 +103,7 @@ def _wrap_query_with_crs(
         return query
 
     escaped_geom = geometry_column.replace('"', '""')
-    crs_json = json.dumps(input_crs).replace("'", "''")
+    crs_json = _escape_sql_string(json.dumps(input_crs))
     return f"""
         SELECT * REPLACE (ST_SetCRS("{escaped_geom}", '{crs_json}') AS "{escaped_geom}")
         FROM ({query})
@@ -173,7 +174,7 @@ def _detect_crs_from_filegdb(gdb_path, con, verbose=False):
 
     for gdbtable_file in gdbtable_files:
         gdbtable_path = os.path.join(gdb_path, gdbtable_file)
-        escaped_path = gdbtable_path.replace("'", "''")
+        escaped_path = _escape_sql_string(gdbtable_path)
         try:
             result = con.execute(f"""
                 SELECT * FROM ST_Read_Meta('{escaped_path}')
@@ -218,7 +219,7 @@ def _detect_crs_from_filegdb(gdb_path, con, verbose=False):
 
 def detect_crs_from_spatial_file(input_file, con, verbose=False):
     """Detect CRS from a spatial file (GeoJSON, GPKG, Shapefile, FileGDB)."""
-    escaped_input_file = input_file.replace("'", "''")
+    escaped_input_file = _escape_sql_string(input_file)
     try:
         result = con.execute(f"""
             SELECT * FROM ST_Read_Meta('{escaped_input_file}')

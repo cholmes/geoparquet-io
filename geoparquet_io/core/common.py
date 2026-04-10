@@ -6,16 +6,15 @@ from pathlib import Path
 import duckdb
 import pyarrow.parquet as pq
 
-# Re-exports from crs_utils (Phase 2 extraction)
+# Internal imports - used by functions in this module
 from geoparquet_io.core.crs_utils import (
     _format_crs_display,
     _wrap_query_with_crs,
     is_default_crs,
 )
-
-# Imports from duckdb_utils (used in this module)
 from geoparquet_io.core.duckdb_utils import (
     _DuckDBSchemaWrapper,
+    _escape_sql_string,
     _get_query_columns,
     _wrap_query_with_wkb_conversion,
     get_duckdb_connection,
@@ -31,8 +30,6 @@ from geoparquet_io.core.file_utils import (
     is_partition_path,
     safe_file_url,
 )
-
-# Imports from geo_metadata (used in this module)
 from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
@@ -52,14 +49,9 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-
-# Re-exports from parquet_writer (Phase 2 extraction)
 from geoparquet_io.core.parquet_writer import ParquetWriteSettings
-
-# Backwards-compatible re-exports from extracted modules
-# These functions were moved to dedicated modules but are re-exported here
-# to maintain compatibility with existing code that imports from common.py
 from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
     is_remote_url,
     needs_httpfs,
     remote_write_context,
@@ -1429,7 +1421,7 @@ def _plain_copy_to(
     # Parquet schema during COPY TO — no post-processing file rewrite needed.
     final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
-    escaped_path = output_path.replace("'", "''")
+    escaped_path = _escape_sql_string(output_path)
 
     # Build options list
     options = [
@@ -2139,8 +2131,16 @@ def add_computed_column(
     # Dry-run mode header
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-        info(f"-- Input file: {input_url}")
-        info(f"-- Output file: {output_parquet}")
+        display_input = (
+            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+        )
+        display_output = (
+            _sanitize_url_for_logging(output_parquet)
+            if is_remote_url(output_parquet)
+            else output_parquet
+        )
+        info(f"-- Input file: {display_input}")
+        info(f"-- Output file: {display_output}")
         info(f"-- Geometry column: {geom_col}")
         info(f"-- New column: {column_name}")
         if dry_run_description:

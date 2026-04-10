@@ -8,7 +8,6 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
-    DEFAULT_GEOPARQUET_VERSION,
     add_bbox,
     get_bbox_advice,
     get_dataset_bounds,
@@ -18,6 +17,7 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,

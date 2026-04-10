@@ -96,7 +96,8 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> None:
         """Write query results to GeoParquet using streaming RecordBatch approach."""
-        from geoparquet_io.core.common import GEOPARQUET_VERSIONS, validate_compression_settings
+        from geoparquet_io.core.common import validate_compression_settings
+        from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)
@@ -211,8 +212,8 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> dict | None:
         """Build geo metadata for query results."""
-        from geoparquet_io.core.common import create_geo_metadata
         from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.geo_metadata import create_geo_metadata
 
         if not should_add_geo_metadata:
             return None
@@ -405,13 +406,12 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
     ) -> None:
         """Write Arrow table to GeoParquet using batch streaming."""
         from geoparquet_io.core.common import (
-            GEOPARQUET_VERSIONS,
             _compute_geometry_types,
             _detect_version_from_table,
-            create_geo_metadata,
             validate_compression_settings,
         )
         from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS, create_geo_metadata
 
         configure_verbose(verbose)
         self._validate_output_path(output_path)

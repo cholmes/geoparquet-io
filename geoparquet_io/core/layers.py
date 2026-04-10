@@ -35,6 +35,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import quote as url_quote
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.remote import is_remote_url
 
@@ -51,23 +52,6 @@ def _is_filegdb(path: str) -> bool:
     """Check if path is a FileGDB directory based on extension."""
     normalized = os.path.normpath(path).lower()
     return normalized.endswith(".gdb")
-
-
-def _escape_sql_path(path: str) -> str:
-    """
-    Escape a file path for safe use in DuckDB SQL queries.
-
-    DuckDB's ST_Read and ST_Read_Meta functions require file paths as string
-    literals. This escapes single quotes to prevent SQL injection.
-
-    Args:
-        path: File path to escape
-
-    Returns:
-        Escaped path safe for SQL string literal
-    """
-    # DuckDB uses standard SQL single-quote escaping ('' for literal ')
-    return path.replace("'", "''")
 
 
 def _list_geopackage_layers(path: str) -> list[str] | None:
@@ -207,7 +191,7 @@ def _list_filegdb_via_catalog(path: str, con) -> list[str]:
         raise FileNotFoundError(f"FileGDB catalog table not found: {gdb_items_path}")
 
     # Escape path for SQL
-    safe_path = _escape_sql_path(gdb_items_path)
+    safe_path = _escape_sql_string(gdb_items_path)
 
     try:
         result = con.execute(
@@ -261,7 +245,7 @@ def _list_filegdb_layers_fallback(path: str, con) -> list[str]:
 
     for table_file in gdbtable_files:
         table_path = os.path.join(path, table_file)
-        safe_path = _escape_sql_path(table_path)
+        safe_path = _escape_sql_string(table_path)
 
         try:
             result = con.execute(f"SELECT * FROM ST_Read_Meta('{safe_path}')").fetchone()

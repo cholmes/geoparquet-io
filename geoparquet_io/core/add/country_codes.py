@@ -13,6 +13,7 @@ from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
+from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
 
 
 def find_country_code_column(con, countries_source, is_subquery=False):
@@ -268,9 +269,18 @@ def _print_dry_run_header(
 ):
     """Print dry-run mode header information."""
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    info(f"-- Input file: {input_url}")
-    info(f"-- Countries file: {countries_url}")
-    info(f"-- Output file: {output_parquet}")
+    display_input = _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+    display_countries = (
+        _sanitize_url_for_logging(countries_url) if is_remote_url(countries_url) else countries_url
+    )
+    display_output = (
+        _sanitize_url_for_logging(output_parquet)
+        if is_remote_url(output_parquet)
+        else output_parquet
+    )
+    info(f"-- Input file: {display_input}")
+    info(f"-- Countries file: {display_countries}")
+    info(f"-- Output file: {display_output}")
     info(f"-- Geometry columns: {input_geom_col} (input), {countries_geom_col} (countries)")
     info(
         f"-- Bbox columns: {input_bbox_col or 'none'} (input), {countries_bbox_col or 'none'} (countries)\n"

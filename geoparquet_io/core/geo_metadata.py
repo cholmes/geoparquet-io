@@ -715,7 +715,7 @@ def _assemble_and_apply_geo_metadata(
         Table with geo metadata applied
     """
     # Lazy import to avoid circular dependency
-    from geoparquet_io.core.common import _format_crs_display, is_default_crs
+    from geoparquet_io.core.crs_utils import _format_crs_display, is_default_crs
 
     # Add CRS to geo metadata if provided (for v1.x and v2.0)
     if input_crs and not is_default_crs(input_crs):

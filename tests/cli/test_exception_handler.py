@@ -9,6 +9,7 @@ from geoparquet_io.cli.exception_handler import (
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
+    GeometryError,
     GeoParquetError,
     InvalidParameterError,
     PartitionError,
@@ -36,6 +37,12 @@ class TestExceptionHandler:
         exc = RemoteAccessError("s3://bucket/file", "Access denied")
         click_exc = handle_core_exception(exc)
         assert isinstance(click_exc, click.ClickException)
+
+    def test_converts_geometry_error_to_click_exception(self):
+        exc = GeometryError("No geometry column found")
+        click_exc = handle_core_exception(exc)
+        assert isinstance(click_exc, click.ClickException)
+        assert "No geometry column" in click_exc.message
 
     def test_converts_partition_error_to_click_exception(self):
         exc = PartitionError("Failed to partition")

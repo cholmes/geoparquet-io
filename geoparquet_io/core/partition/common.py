@@ -20,8 +20,12 @@ from geoparquet_io.core.remote import (
 )
 
 
-class PartitionAnalysisError(Exception):
-    """Raised when partition analysis detects a problematic strategy."""
+class PartitionAnalysisError(PartitionError):
+    """Raised when partition analysis detects a problematic strategy.
+
+    Inherits from PartitionError to participate in the unified exception hierarchy,
+    enabling consistent CLI error handling via handle_core_exception().
+    """
 
     pass
 

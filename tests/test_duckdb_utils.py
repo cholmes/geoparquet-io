@@ -1,6 +1,9 @@
 """Tests for core/duckdb_utils.py module."""
 
 from geoparquet_io.core.duckdb_utils import (
+    _add_bucket_needing_auth,
+    _bucket_needs_auth,
+    _clear_s3_cache,
     _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
@@ -83,3 +86,45 @@ class TestGetDuckdbConnection:
         con = get_duckdb_connection(load_spatial=False, load_httpfs=False, threads=1)
         assert con is not None
         con.close()
+
+
+class TestS3CacheThreadSafety:
+    """Tests for thread-safe S3 bucket authentication cache."""
+
+    def test_clear_s3_cache_removes_buckets(self):
+        """_clear_s3_cache removes all cached buckets."""
+        # Add a test bucket
+        _add_bucket_needing_auth("test-bucket-1")
+        _add_bucket_needing_auth("test-bucket-2")
+        assert _bucket_needs_auth("test-bucket-1")
+        assert _bucket_needs_auth("test-bucket-2")
+
+        # Clear should remove all
+        _clear_s3_cache()
+        assert not _bucket_needs_auth("test-bucket-1")
+        assert not _bucket_needs_auth("test-bucket-2")
+
+    def test_add_and_check_bucket(self):
+        """_add_bucket_needing_auth and _bucket_needs_auth work correctly."""
+        _clear_s3_cache()  # Start fresh
+
+        # Initially empty
+        assert not _bucket_needs_auth("new-bucket")
+
+        # Add and verify
+        _add_bucket_needing_auth("new-bucket")
+        assert _bucket_needs_auth("new-bucket")
+
+        # Cleanup
+        _clear_s3_cache()
+
+    def test_idempotent_add(self):
+        """Adding same bucket multiple times is safe."""
+        _clear_s3_cache()
+
+        _add_bucket_needing_auth("idempotent-bucket")
+        _add_bucket_needing_auth("idempotent-bucket")
+        _add_bucket_needing_auth("idempotent-bucket")
+
+        assert _bucket_needs_auth("idempotent-bucket")
+        _clear_s3_cache()

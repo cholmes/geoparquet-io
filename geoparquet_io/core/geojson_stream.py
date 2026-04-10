@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import duckdb
 
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 
 # RFC 8142 record separator character
@@ -105,12 +106,6 @@ def _needs_reprojection(source_crs: str | None) -> bool:
     return crs_upper not in wgs84_variants
 
 
-def _quote_identifier(name: str) -> str:
-    """Quote a SQL identifier for safe use in DuckDB queries."""
-    escaped = name.replace('"', '""')
-    return f'"{escaped}"'
-
-
 def _get_property_columns(
     con: duckdb.DuckDBPyConnection,
     source_ref: str,
@@ -160,7 +155,7 @@ def _build_feature_query(
     Returns:
         SQL query string
     """
-    quoted_geom = _quote_identifier(geometry_column)
+    quoted_geom = quote_identifier(geometry_column)
 
     # Apply reprojection if needed
     if source_crs:
@@ -178,7 +173,7 @@ def _build_feature_query(
     # Build properties expression
     if property_columns:
         prop_pairs = ", ".join(
-            f"{_quote_identifier(col)} := {_quote_identifier(col)}" for col in property_columns
+            f"{quote_identifier(col)} := {quote_identifier(col)}" for col in property_columns
         )
         props_expr = f"to_json(struct_pack({prop_pairs}))"
     else:
@@ -187,7 +182,7 @@ def _build_feature_query(
     # Build id expression if specified
     id_expr = ""
     if id_field:
-        quoted_id = _quote_identifier(id_field)
+        quoted_id = quote_identifier(id_field)
         id_expr = f"'\"id\":' || to_json({quoted_id}) || ',',"
 
     # Build bbox expression if requested (use reprojected geometry)
@@ -361,7 +356,7 @@ def _find_geometry_column(
     # Check column types for GEOMETRY type
     for col in columns:
         try:
-            type_query = f"SELECT typeof({_quote_identifier(col)}) FROM {source_ref} LIMIT 1"
+            type_query = f"SELECT typeof({quote_identifier(col)}) FROM {source_ref} LIMIT 1"
             type_result = con.execute(type_query).fetchone()
             if type_result and "GEOMETRY" in str(type_result[0]).upper():
                 return col

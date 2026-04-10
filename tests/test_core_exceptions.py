@@ -11,6 +11,7 @@ from geoparquet_io.core.exceptions import (
     RemoteAccessError,
     ValidationError,
 )
+from geoparquet_io.core.partition.common import PartitionAnalysisError
 
 
 class TestCoreExceptions:
@@ -104,9 +105,10 @@ class TestCoreExceptions:
         # Query string should be stripped
         assert "AWSAccessKeyId" not in exc.url
         assert "SECRET" not in exc.url
-        # URL is truncated after 4 parts: s3://bucket/path/...
-        assert exc.url.endswith("...")
+        # URL is truncated but filename preserved: s3://bucket/path/.../file.parquet
+        assert "..." in exc.url
         assert "bucket" in exc.url
+        assert exc.url.endswith("file.parquet")
 
     def test_geometry_error(self):
         with pytest.raises(GeometryError):
@@ -128,6 +130,14 @@ class TestCoreExceptions:
         assert issubclass(GeometryError, GeoParquetError)
         assert issubclass(PartitionError, GeoParquetError)
         assert issubclass(ValidationError, GeoParquetError)
+
+    def test_partition_analysis_error_in_hierarchy(self):
+        """PartitionAnalysisError should inherit from PartitionError."""
+        assert issubclass(PartitionAnalysisError, PartitionError)
+        assert issubclass(PartitionAnalysisError, GeoParquetError)
+        # Should work with handle_core_exception via PartitionError handling
+        exc = PartitionAnalysisError("Bad partition strategy")
+        assert exc.message == "Bad partition strategy"
 
     def test_exception_message_attribute(self):
         """All exceptions should have a message attribute."""

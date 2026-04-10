@@ -20,6 +20,7 @@ from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
+from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
 
 
 def _build_admin_subquery(
@@ -181,9 +182,18 @@ def _print_dry_run_header(
 ):
     """Print dry-run mode header."""
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    info(f"-- Input file: {input_url}")
-    info(f"-- Admin dataset: {admin_source}")
-    info(f"-- Output file: {output_parquet}")
+    display_input = _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+    display_admin = (
+        _sanitize_url_for_logging(admin_source) if is_remote_url(admin_source) else admin_source
+    )
+    display_output = (
+        _sanitize_url_for_logging(output_parquet)
+        if is_remote_url(output_parquet)
+        else output_parquet
+    )
+    info(f"-- Input file: {display_input}")
+    info(f"-- Admin dataset: {display_admin}")
+    info(f"-- Output file: {display_output}")
     info(f"-- Geometry columns: {input_geom_col} (input), {admin_geom_col} (admin)")
     info(
         f"-- Bbox columns: {input_bbox_col or 'none'} (input), {admin_bbox_col or 'none'} (admin)\n"

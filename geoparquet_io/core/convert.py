@@ -15,7 +15,11 @@ from geoparquet_io.core.crs_utils import (
     is_default_crs,
     parse_crs_string_to_projjson,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import (
     GeometryError,
     GeoParquetError,
@@ -63,7 +67,7 @@ def _validate_layer_name(layer: str) -> str:
             )
 
     # Escape single quotes (SQL standard: double them)
-    return layer.replace("'", "''")
+    return _escape_sql_string(layer)
 
 
 def _build_st_read_expr(input_url: str, layer: str | None = None) -> str:

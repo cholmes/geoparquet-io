@@ -5,7 +5,6 @@ This module provides functions and classes for writing Parquet files
 with GeoParquet metadata and optimal settings.
 """
 
-import re
 from dataclasses import dataclass
 
 from geoparquet_io.core.logging_config import warn
@@ -52,48 +51,6 @@ class ParquetWriteSettings:
             kwargs["compression_level"] = pa_compression_level
 
         return kwargs
-
-
-def parse_size_string(size_str):
-    """
-    Parse a human-readable size string into bytes.
-
-    Args:
-        size_str: String like '256MB', '1GB', '128' (assumed MB if no unit)
-
-    Returns:
-        int: Size in bytes
-    """
-    if not size_str:
-        return None
-
-    try:
-        return int(size_str) * 1024 * 1024
-    except ValueError:
-        pass
-
-    size_str = size_str.strip().upper()
-    match = re.match(r"^(\d+(?:\.\d+)?)\s*([KMGT]?B?)$", size_str)
-    if not match:
-        raise ValueError(f"Invalid size format: {size_str}")
-
-    value = float(match.group(1))
-    unit = match.group(2)
-
-    multipliers = {
-        "B": 1,
-        "KB": 1024,
-        "MB": 1024 * 1024,
-        "GB": 1024 * 1024 * 1024,
-        "TB": 1024 * 1024 * 1024 * 1024,
-        "K": 1024,
-        "M": 1024 * 1024,
-        "G": 1024 * 1024 * 1024,
-        "T": 1024 * 1024 * 1024 * 1024,
-    }
-
-    multiplier = multipliers.get(unit, 1024 * 1024)
-    return int(value * multiplier)
 
 
 def calculate_row_group_size(
@@ -187,12 +144,3 @@ def _normalize_arrow_large_types(table):
 
     new_schema = pa.schema(new_schema_fields, metadata=table.schema.metadata)
     return table.cast(new_schema)
-
-
-def format_size(size_bytes):
-    """Format byte size as human-readable string."""
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if abs(size_bytes) < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} PB"

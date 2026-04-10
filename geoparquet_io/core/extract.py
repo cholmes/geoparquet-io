@@ -23,7 +23,11 @@ from geoparquet_io.core.common import (
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.crs_utils import get_crs_display_name
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, get_duckdb_connection_for_s3
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    get_duckdb_connection_for_s3,
+)
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     GeoParquetError,
@@ -36,7 +40,11 @@ from geoparquet_io.core.geometry_detection import (
     find_primary_geometry_column,
 )
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
-from geoparquet_io.core.remote import needs_httpfs
+from geoparquet_io.core.remote import (
+    _sanitize_url_for_logging,
+    is_remote_url,
+    needs_httpfs,
+)
 from geoparquet_io.core.stream_io import open_input, write_output
 from geoparquet_io.core.streaming import (
     find_geometry_column_from_metadata,
@@ -303,7 +311,7 @@ def convert_geojson_to_wkt(geojson: dict) -> str:
     """
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        geojson_str = json.dumps(geojson).replace("'", "''")
+        geojson_str = _escape_sql_string(json.dumps(geojson))
         result = con.execute(f"""
             SELECT ST_AsText(ST_GeomFromGeoJSON('{geojson_str}'))
         """).fetchone()
@@ -592,7 +600,7 @@ def build_spatial_filter(
             )
 
     if geometry_wkt:
-        escaped_wkt = geometry_wkt.replace("'", "''")
+        escaped_wkt = _escape_sql_string(geometry_wkt)
         conditions.append(f"ST_Intersects(\"{geometry_col}\", ST_GeomFromText('{escaped_wkt}'))")
 
     return " AND ".join(conditions) if conditions else None
@@ -896,8 +904,16 @@ def _print_dry_run_output(
 ) -> None:
     """Print dry run output."""
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    info(f"-- Input: {input_parquet}")
-    info(f"-- Output: {output_parquet}")
+    display_input = (
+        _sanitize_url_for_logging(input_parquet) if is_remote_url(input_parquet) else input_parquet
+    )
+    display_output = (
+        _sanitize_url_for_logging(output_parquet)
+        if is_remote_url(output_parquet)
+        else output_parquet
+    )
+    info(f"-- Input: {display_input}")
+    info(f"-- Output: {display_output}")
     info(f"-- Geometry column: {geometry_col}")
     if bbox_col:
         info(f"-- Bbox column: {bbox_col}")

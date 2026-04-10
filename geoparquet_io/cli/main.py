@@ -1301,30 +1301,27 @@ def _reproject_impl_cli(
     # Validate profile is only used with S3
     validate_profile_for_urls(None, input_file, output_file)
 
-    try:
-        result = reproject_core(
-            input_parquet=input_file,
-            output_parquet=output_file,
-            target_crs=dst_crs,
-            source_crs=src_crs,
-            overwrite=overwrite,
-            compression=compression,
-            compression_level=compression_level,
-            verbose=verbose,
-            geoparquet_version=geoparquet_version,
-            row_group_size_mb=row_group_size_mb,
-            row_group_rows=row_group_rows,
-            memory_limit=memory_limit,
-        )
+    result = reproject_core(
+        input_parquet=input_file,
+        output_parquet=output_file,
+        target_crs=dst_crs,
+        source_crs=src_crs,
+        overwrite=overwrite,
+        compression=compression,
+        compression_level=compression_level,
+        verbose=verbose,
+        geoparquet_version=geoparquet_version,
+        row_group_size_mb=row_group_size_mb,
+        row_group_rows=row_group_rows,
+        memory_limit=memory_limit,
+    )
 
-        # result is None for streaming mode (stdout)
-        if result:
-            click.echo(f"\nReprojected {result.feature_count:,} features")
-            click.echo(f"  Source CRS: {result.source_crs}")
-            click.echo(f"  Destination CRS: {result.target_crs}")
-            click.echo(f"  Output: {result.output_path}")
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    # result is None for streaming mode (stdout)
+    if result:
+        click.echo(f"\nReprojected {result.feature_count:,} features")
+        click.echo(f"  Source CRS: {result.source_crs}")
+        click.echo(f"  Destination CRS: {result.target_crs}")
+        click.echo(f"  Output: {result.output_path}")
 
 
 @convert.command(name="reproject", cls=SingleFileCommand)
@@ -1516,40 +1513,37 @@ def convert_geojson(
     # Validate aws_profile is only used with S3
     validate_profile_for_urls(aws_profile, input_file, output_file)
 
-    try:
-        if output_file:
-            # File mode - use write_geojson which handles no-geometry case
-            write_geojson(
-                input_path=input_file,
-                output_path=output_file,
-                precision=precision,
-                write_bbox=write_bbox,
-                id_field=id_field,
-                description=description,
-                pretty=pretty,
-                keep_crs=keep_crs,
-                overwrite=overwrite,
-                verbose=verbose,
-                profile=aws_profile,
-            )
-        else:
-            # Streaming mode - use convert_to_geojson directly
-            convert_to_geojson(
-                input_path=input_file,
-                output_path=output_file,
-                rs=not no_rs,
-                precision=precision,
-                write_bbox=write_bbox,
-                id_field=id_field,
-                description=description,
-                seq=not no_seq,
-                pretty=pretty,
-                verbose=verbose,
-                profile=aws_profile,
-                keep_crs=keep_crs,
-            )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    if output_file:
+        # File mode - use write_geojson which handles no-geometry case
+        write_geojson(
+            input_path=input_file,
+            output_path=output_file,
+            precision=precision,
+            write_bbox=write_bbox,
+            id_field=id_field,
+            description=description,
+            pretty=pretty,
+            keep_crs=keep_crs,
+            overwrite=overwrite,
+            verbose=verbose,
+            profile=aws_profile,
+        )
+    else:
+        # Streaming mode - use convert_to_geojson directly
+        convert_to_geojson(
+            input_path=input_file,
+            output_path=output_file,
+            rs=not no_rs,
+            precision=precision,
+            write_bbox=write_bbox,
+            id_field=id_field,
+            description=description,
+            seq=not no_seq,
+            pretty=pretty,
+            verbose=verbose,
+            profile=aws_profile,
+            keep_crs=keep_crs,
+        )
 
 
 @convert.command(name="geopackage", cls=SingleFileCommand)
@@ -1602,17 +1596,14 @@ def convert_geopackage(
         # Generate output filename
         output_file = Path(input_file).stem + ".gpkg"
 
-    try:
-        write_geopackage(
-            input_path=input_file,
-            output_path=output_file,
-            overwrite=overwrite,
-            layer_name=layer_name,
-            verbose=verbose,
-            profile=aws_profile,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    write_geopackage(
+        input_path=input_file,
+        output_path=output_file,
+        overwrite=overwrite,
+        layer_name=layer_name,
+        verbose=verbose,
+        profile=aws_profile,
+    )
 
 
 @convert.command(name="flatgeobuf", cls=SingleFileCommand)
@@ -1653,16 +1644,13 @@ def convert_flatgeobuf(
         # Generate output filename
         output_file = Path(input_file).stem + ".fgb"
 
-    try:
-        write_flatgeobuf(
-            input_path=input_file,
-            output_path=output_file,
-            overwrite=overwrite,
-            verbose=verbose,
-            profile=aws_profile,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    write_flatgeobuf(
+        input_path=input_file,
+        output_path=output_file,
+        overwrite=overwrite,
+        verbose=verbose,
+        profile=aws_profile,
+    )
 
 
 @convert.command(name="csv", cls=SingleFileCommand)
@@ -1720,18 +1708,15 @@ def convert_csv(
         # Generate output filename
         output_file = Path(input_file).stem + ".csv"
 
-    try:
-        write_csv(
-            input_path=input_file,
-            output_path=output_file,
-            include_wkt=not no_wkt,
-            include_bbox=not no_bbox,
-            overwrite=overwrite,
-            verbose=verbose,
-            profile=aws_profile,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    write_csv(
+        input_path=input_file,
+        output_path=output_file,
+        include_wkt=not no_wkt,
+        include_bbox=not no_bbox,
+        overwrite=overwrite,
+        verbose=verbose,
+        profile=aws_profile,
+    )
 
 
 @convert.command(name="shapefile", cls=SingleFileCommand)
@@ -1789,17 +1774,14 @@ def convert_shapefile(
         # Generate output filename
         output_file = Path(input_file).stem + ".shp"
 
-    try:
-        write_shapefile(
-            input_path=input_file,
-            output_path=output_file,
-            overwrite=overwrite,
-            encoding=encoding,
-            verbose=verbose,
-            profile=aws_profile,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    write_shapefile(
+        input_path=input_file,
+        output_path=output_file,
+        overwrite=overwrite,
+        encoding=encoding,
+        verbose=verbose,
+        profile=aws_profile,
+    )
 
 
 # Inspect command group
@@ -2335,34 +2317,31 @@ def extract_geoparquet(
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        extract_impl(
-            input_parquet=input_file,
-            output_parquet=output_file,
-            include_cols=include_cols,
-            exclude_cols=exclude_cols,
-            bbox=bbox,
-            geometry=geometry,
-            where=where,
-            limit=limit,
-            skip_count=skip_count,
-            use_first_geometry=use_first_geometry,
-            dry_run=dry_run,
-            show_sql=show_sql,
-            verbose=verbose,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            allow_schema_diff=allow_schema_diff,
-            hive_input=hive_input,
-            write_strategy=write_strategy,
-            memory_limit=write_memory,
-            overwrite=overwrite,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    extract_impl(
+        input_parquet=input_file,
+        output_parquet=output_file,
+        include_cols=include_cols,
+        exclude_cols=exclude_cols,
+        bbox=bbox,
+        geometry=geometry,
+        where=where,
+        limit=limit,
+        skip_count=skip_count,
+        use_first_geometry=use_first_geometry,
+        dry_run=dry_run,
+        show_sql=show_sql,
+        verbose=verbose,
+        compression=compression.upper(),
+        compression_level=compression_level,
+        row_group_size_mb=row_group_mb,
+        row_group_rows=row_group_size,
+        geoparquet_version=geoparquet_version,
+        allow_schema_diff=allow_schema_diff,
+        hive_input=hive_input,
+        write_strategy=write_strategy,
+        memory_limit=write_memory,
+        overwrite=overwrite,
+    )
 
 
 @extract.command(name="arcgis", cls=SingleFileCommand)
@@ -2540,34 +2519,31 @@ def extract_arcgis(
         except ValueError as e:
             raise click.BadParameter(f"Invalid bbox format: {e}. Use xmin,ymin,xmax,ymax") from e
 
-    try:
-        convert_arcgis_to_geoparquet(
-            service_url=service_url,
-            output_file=output_file,
-            token=token,
-            token_file=token_file,
-            username=username,
-            password=password,
-            portal_url=portal_url,
-            where=where,
-            bbox=bbox_tuple,
-            include_cols=include_cols,
-            exclude_cols=exclude_cols,
-            limit=limit,
-            skip_hilbert=skip_hilbert,
-            skip_bbox=skip_bbox,
-            max_workers=workers,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            verbose=verbose,
-            geoparquet_version=geoparquet_version,
-            profile=aws_profile,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            overwrite=overwrite,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    convert_arcgis_to_geoparquet(
+        service_url=service_url,
+        output_file=output_file,
+        token=token,
+        token_file=token_file,
+        username=username,
+        password=password,
+        portal_url=portal_url,
+        where=where,
+        bbox=bbox_tuple,
+        include_cols=include_cols,
+        exclude_cols=exclude_cols,
+        limit=limit,
+        skip_hilbert=skip_hilbert,
+        skip_bbox=skip_bbox,
+        max_workers=workers,
+        compression=compression.upper(),
+        compression_level=compression_level,
+        verbose=verbose,
+        geoparquet_version=geoparquet_version,
+        profile=aws_profile,
+        row_group_size_mb=row_group_mb,
+        row_group_rows=row_group_size,
+        overwrite=overwrite,
+    )
 
 
 @extract.command(name="bigquery")
@@ -2748,34 +2724,31 @@ def extract_bigquery_cmd(
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        extract_bigquery(
-            table_id=table_id,
-            output_parquet=output_file,
-            project=project,
-            credentials_file=credentials_file,
-            where=where,
-            bbox=bbox,
-            bbox_mode=bbox_mode,
-            bbox_threshold=bbox_threshold,
-            limit=limit,
-            include_cols=include_cols,
-            exclude_cols=exclude_cols,
-            geography_column=geography_column,
-            geometry_format=geometry_format,
-            edges=edges,
-            dry_run=dry_run,
-            show_sql=show_sql,
-            verbose=verbose,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    extract_bigquery(
+        table_id=table_id,
+        output_parquet=output_file,
+        project=project,
+        credentials_file=credentials_file,
+        where=where,
+        bbox=bbox,
+        bbox_mode=bbox_mode,
+        bbox_threshold=bbox_threshold,
+        limit=limit,
+        include_cols=include_cols,
+        exclude_cols=exclude_cols,
+        geography_column=geography_column,
+        geometry_format=geometry_format,
+        edges=edges,
+        dry_run=dry_run,
+        show_sql=show_sql,
+        verbose=verbose,
+        compression=compression.upper(),
+        compression_level=compression_level,
+        row_group_size_mb=row_group_mb,
+        row_group_rows=row_group_size,
+        geoparquet_version=geoparquet_version,
+        overwrite=overwrite,
+    )
 
 
 @extract.command(name="wfs")
@@ -3070,23 +3043,20 @@ def hilbert_order(
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        hilbert_impl(
-            input_parquet,
-            output_parquet,
-            geometry_column,
-            add_bbox,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            geoparquet_version,
-            overwrite,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from None
+    hilbert_impl(
+        input_parquet,
+        output_parquet,
+        geometry_column,
+        add_bbox,
+        verbose,
+        compression.upper(),
+        compression_level,
+        row_group_mb,
+        row_group_size,
+        None,
+        geoparquet_version,
+        overwrite,
+    )
 
 
 @sort.command(name="column", cls=SingleFileCommand)
@@ -3139,22 +3109,19 @@ def sort_column(
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        sort_by_column_impl(
-            input_parquet,
-            output_parquet,
-            columns=columns,
-            descending=descending,
-            verbose=verbose,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    sort_by_column_impl(
+        input_parquet,
+        output_parquet,
+        columns=columns,
+        descending=descending,
+        verbose=verbose,
+        compression=compression.upper(),
+        compression_level=compression_level,
+        row_group_size_mb=row_group_mb,
+        row_group_rows=row_group_size,
+        geoparquet_version=geoparquet_version,
+        overwrite=overwrite,
+    )
 
 
 @sort.command(name="quadkey", cls=SingleFileCommand)
@@ -5310,12 +5277,7 @@ def publish_stac(input, output, bucket, public_url, collection_id, item_id, over
         --bucket s3://my-bucket/roads/ \\
         --public-url https://data.example.com/roads/
     """
-    try:
-        _stac_impl(input, output, bucket, public_url, collection_id, item_id, overwrite, verbose)
-    except click.exceptions.Exit:
-        raise
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    _stac_impl(input, output, bucket, public_url, collection_id, item_id, overwrite, verbose)
 
 
 @publish.command(name="upload")
@@ -5392,25 +5354,20 @@ def publish_upload(
     if not creds_ok:
         raise click.ClickException(f"Authentication failed:\n\n{hint}")
 
-    try:
-        upload_impl(
-            source=source,
-            destination=destination,
-            profile=aws_profile,
-            pattern=pattern,
-            max_files=max_files,
-            chunk_concurrency=chunk_concurrency,
-            chunk_size=chunk_size,
-            fail_fast=fail_fast,
-            dry_run=dry_run,
-            s3_endpoint=s3_endpoint,
-            s3_region=s3_region,
-            s3_use_ssl=not s3_no_ssl,
-        )
-    except click.exceptions.Exit:
-        raise
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    upload_impl(
+        source=source,
+        destination=destination,
+        profile=aws_profile,
+        pattern=pattern,
+        max_files=max_files,
+        chunk_concurrency=chunk_concurrency,
+        chunk_size=chunk_size,
+        fail_fast=fail_fast,
+        dry_run=dry_run,
+        s3_endpoint=s3_endpoint,
+        s3_region=s3_region,
+        s3_use_ssl=not s3_no_ssl,
+    )
 
 
 @check.command(name="stac")
@@ -5535,30 +5492,25 @@ def check_spec(
     validate_profile_for_urls(None, parquet_file)
     setup_aws_profile_if_needed(None, parquet_file)
 
-    try:
-        result = validate_geoparquet(
-            parquet_file,
-            target_version=geoparquet_version,
-            validate_data=not skip_data_validation,
-            sample_size=sample_size,
-            verbose=verbose,
-        )
+    result = validate_geoparquet(
+        parquet_file,
+        target_version=geoparquet_version,
+        validate_data=not skip_data_validation,
+        sample_size=sample_size,
+        verbose=verbose,
+    )
 
-        if json_output:
-            click.echo(format_json(result))
-        else:
-            format_terminal(result)
+    if json_output:
+        click.echo(format_json(result))
+    else:
+        format_terminal(result)
 
-        # Exit codes: 0=passed, 1=failed, 2=warnings only
-        if result.failed_count > 0:
-            raise click.exceptions.Exit(1)
-        elif result.warning_count > 0:
-            raise click.exceptions.Exit(2)
-        # Exit 0 is implicit when no exception is raised
-    except click.exceptions.Exit:
-        raise
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
+    # Exit codes: 0=passed, 1=failed, 2=warnings only
+    if result.failed_count > 0:
+        raise click.exceptions.Exit(1)
+    elif result.warning_count > 0:
+        raise click.exceptions.Exit(2)
+    # Exit 0 is implicit when no exception is raised
 
 
 @check.command(name="optimization", cls=GlobAwareCommand)

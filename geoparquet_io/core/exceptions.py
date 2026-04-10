@@ -18,6 +18,32 @@ Exception Hierarchy:
 from __future__ import annotations
 
 
+def sanitize_url_for_logging(url: str) -> str:
+    """Remove credentials and query params from URL for safe logging.
+
+    Presigned URLs contain credentials in query parameters that should
+    not be logged. This function strips the query string and truncates
+    long paths for readability while preserving the filename.
+
+    Args:
+        url: URL that may contain sensitive query parameters
+
+    Returns:
+        Sanitized URL safe for logging, with long paths truncated but
+        filename preserved (e.g., "s3://bucket/prefix/.../file.parquet")
+    """
+    if not url:
+        return url
+    # Remove query string (may contain presigned credentials)
+    if "?" in url:
+        url = url.split("?")[0]
+    # Truncate very long paths but keep filename for debugging
+    parts = url.split("/")
+    if len(parts) > 5:
+        return "/".join(parts[:4]) + "/..." + "/" + parts[-1]
+    return url
+
+
 class GeoParquetError(Exception):
     """Base exception for all geoparquet-io errors."""
 
@@ -65,21 +91,9 @@ class RemoteAccessError(GeoParquetError):
 
     def __init__(self, url: str, reason: str) -> None:
         # Sanitize URL to avoid logging credentials
-        self.url = self._sanitize_url(url)
+        self.url = sanitize_url_for_logging(url)
         self.reason = reason
         super().__init__(f"Remote access error for {self.url}: {reason}")
-
-    @staticmethod
-    def _sanitize_url(url: str) -> str:
-        """Remove credentials and query params from URL for safe logging."""
-        # Remove query string (may contain presigned credentials)
-        if "?" in url:
-            url = url.split("?")[0]
-        # Truncate path for readability
-        parts = url.split("/")
-        if len(parts) > 4:
-            return "/".join(parts[:4]) + "/..."
-        return url
 
 
 class GeometryError(GeoParquetError):

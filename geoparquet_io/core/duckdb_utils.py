@@ -5,10 +5,13 @@ This module provides functions for creating and managing DuckDB connections
 with appropriate extensions loaded for GeoParquet operations.
 """
 
+import threading
+
 import duckdb
 
 # Per-bucket cache for S3 buckets that require authentication
 # Buckets not in this set are accessed without credentials (works for public buckets)
+_s3_cache_lock = threading.Lock()
 _s3_buckets_needing_auth: set[str] = set()
 
 
@@ -27,10 +30,22 @@ def _needs_s3_auth(exception: Exception) -> bool:
     return any(ind in error_str for ind in auth_indicators)
 
 
-def _clear_s3_cache():
+def _add_bucket_needing_auth(bucket: str) -> None:
+    """Thread-safe add to S3 auth cache."""
+    with _s3_cache_lock:
+        _s3_buckets_needing_auth.add(bucket)
+
+
+def _bucket_needs_auth(bucket: str) -> bool:
+    """Thread-safe check if bucket requires authentication."""
+    with _s3_cache_lock:
+        return bucket in _s3_buckets_needing_auth
+
+
+def _clear_s3_cache() -> None:
     """Clear S3 access cache (useful for testing)."""
-    global _s3_buckets_needing_auth
-    _s3_buckets_needing_auth = set()
+    with _s3_cache_lock:
+        _s3_buckets_needing_auth.clear()
 
 
 def _escape_sql_string(value: str) -> str:
@@ -171,7 +186,7 @@ def get_duckdb_connection_for_s3(
     bucket = _extract_bucket_name(path)
 
     # If we know this bucket needs auth, use credential chain
-    if bucket in _s3_buckets_needing_auth:
+    if _bucket_needs_auth(bucket):
         return get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True)
 
     # Try without credentials first (works for public buckets)
@@ -186,7 +201,7 @@ def get_duckdb_connection_for_s3(
         con.close()
         if _needs_s3_auth(e):
             # This bucket requires authentication - cache and retry
-            _s3_buckets_needing_auth.add(bucket)
+            _add_bucket_needing_auth(bucket)
             return get_duckdb_connection(
                 load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True
             )

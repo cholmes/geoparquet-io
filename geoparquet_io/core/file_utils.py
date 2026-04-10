@@ -7,6 +7,7 @@ import os
 import urllib.parse
 from pathlib import Path
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     GeoParquetError,
@@ -208,13 +209,11 @@ def safe_file_url(file_path, verbose=False):
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
             debug(f"Reading from {protocol}: {safe_url}")
-        # Escape single quotes to prevent SQL injection
-        return safe_url.replace("'", "''")
+        return _escape_sql_string(safe_url)
     else:
         if not has_glob_pattern(file_path) and not os.path.exists(file_path):
             raise FileNotFoundGeoParquetError(file_path)
-        # Escape single quotes to prevent SQL injection
-        return file_path.replace("'", "''")
+        return _escape_sql_string(file_path)
 
 
 def _get_file_cache_key(parquet_file: str) -> tuple[str, float]:

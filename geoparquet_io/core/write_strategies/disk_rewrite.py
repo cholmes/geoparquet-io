@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 
@@ -101,7 +102,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
 
             final_query = _wrap_query_with_wkb_conversion(query, geometry_column, con)
 
-            escaped_temp = temp_path.replace("'", "''")
+            escaped_temp = _escape_sql_string(temp_path)
             copy_query = f"""
                 COPY ({final_query})
                 TO '{escaped_temp}'

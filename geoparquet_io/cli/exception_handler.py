@@ -15,6 +15,7 @@ import click
 
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
+    GeometryError,
     GeoParquetError,
     InvalidParameterError,
     PartitionError,
@@ -33,6 +34,8 @@ def handle_core_exception(exc: GeoParquetError) -> click.ClickException:
         return click.ClickException(exc.message)
     elif isinstance(exc, RemoteAccessError):
         return click.ClickException(exc.message)
+    elif isinstance(exc, GeometryError):
+        return click.ClickException(exc.message)
     elif isinstance(exc, PartitionError):
         return click.ClickException(exc.message)
     elif isinstance(exc, ValidationError):
@@ -48,6 +51,12 @@ def core_exception_handler(func: F) -> F:
 
     Use this decorator on CLI command functions to automatically convert
     framework-agnostic core exceptions to click exceptions.
+
+    Note:
+        This decorator is provided for external integrations and custom Click
+        commands that use geoparquet-io core functions. The main CLI commands
+        handle exceptions through Click's built-in error handling, but this
+        decorator enables consistent error display for third-party extensions.
 
     Example:
         @click.command()
