@@ -15,6 +15,7 @@ from geoparquet_io.cli.decorators import (
     dry_run_option,
     geoparquet_version_option,
     handle_directory_sub_partition,
+    handle_geoparquet_errors,
     output_format_options,
     overwrite_option,
     parse_row_group_options,
@@ -2570,6 +2571,7 @@ def extract_arcgis(
 
 
 @extract.command(name="bigquery")
+@handle_geoparquet_errors
 @click.argument("table_id", metavar="TABLE_ID")
 @click.argument("output_file", type=click.Path(), required=False, default=None)
 @click.option(
@@ -2777,6 +2779,7 @@ def extract_bigquery_cmd(
 
 
 @extract.command(name="wfs")
+@handle_geoparquet_errors
 @click.argument("service_url")
 @click.argument("typename", required=False)
 @click.argument("output_file", required=False, type=click.Path())
@@ -5258,6 +5261,7 @@ def publish(ctx):
 
 
 @publish.command(name="stac")
+@handle_geoparquet_errors
 @click.argument("input")
 @click.argument("output", type=click.Path())
 @click.option(
@@ -5315,6 +5319,7 @@ def publish_stac(input, output, bucket, public_url, collection_id, item_id, over
 
 
 @publish.command(name="upload")
+@handle_geoparquet_errors
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.argument("destination", type=str)
 @aws_profile_option
@@ -5409,6 +5414,7 @@ def publish_upload(
 
 
 @check.command(name="stac")
+@handle_geoparquet_errors
 @click.argument("stac_file")
 @verbose_option
 def check_stac_cmd(stac_file, verbose):
@@ -5622,6 +5628,7 @@ def check_optimization_cmd(
 
 # Skills command (for LLM integration)
 @cli.command()
+@handle_geoparquet_errors
 @click.option("--show", is_flag=True, help="Print skill content to stdout")
 @click.option("--copy", "copy_to", type=click.Path(), help="Copy skill to directory")
 @click.option("--name", default="geoparquet", help="Skill name (default: geoparquet)")
@@ -5698,6 +5705,7 @@ def benchmark(ctx):
 
 
 @benchmark.command("compare")
+@handle_geoparquet_errors
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option(
     "--iterations",
@@ -5790,6 +5798,7 @@ def benchmark_compare(
 
 
 @benchmark.command("suite")
+@handle_geoparquet_errors
 @click.option(
     "--operations",
     type=click.Choice(["core", "full"]),
@@ -5916,6 +5925,7 @@ def benchmark_suite(
 
 
 @benchmark.command("explain")
+@handle_geoparquet_errors
 @click.argument("input_file", type=click.Path(exists=True))
 @click.option(
     "--query",
@@ -5983,6 +5993,7 @@ def benchmark_explain(
 
 
 @benchmark.command("report")
+@handle_geoparquet_errors
 @click.argument("result_files", nargs=-1, type=click.Path(exists=True))
 @click.option(
     "--format",

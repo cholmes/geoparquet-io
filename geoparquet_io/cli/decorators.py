@@ -17,18 +17,20 @@ def handle_geoparquet_errors(func):
     Decorator to convert GeoParquetError exceptions to user-friendly Click errors.
 
     Catches GeoParquetError from core functions and converts them to
-    click.ClickException for clean error display without stack traces.
+    appropriate click exceptions (BadParameter for invalid params, ClickException
+    for general errors) for clean error display without stack traces.
     """
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         # Import here to avoid circular imports
+        from geoparquet_io.cli.exception_handler import handle_core_exception
         from geoparquet_io.core.exceptions import GeoParquetError
 
         try:
             return func(*args, **kwargs)
         except GeoParquetError as e:
-            raise click.ClickException(str(e)) from None
+            raise handle_core_exception(e) from None
 
     return wrapper
 
@@ -444,12 +446,13 @@ class GlobAwareCommand(click.Command):
     def invoke(self, ctx):
         """Invoke the command with user-friendly error handling."""
         # Import here to avoid circular imports
+        from geoparquet_io.cli.exception_handler import handle_core_exception
         from geoparquet_io.core.exceptions import GeoParquetError
 
         try:
             return super().invoke(ctx)
         except GeoParquetError as e:
-            raise click.ClickException(str(e)) from None
+            raise handle_core_exception(e) from None
 
     def make_context(self, info_name, args, parent=None, **extra):
         """Detect shell-expanded glob patterns and provide helpful errors."""
