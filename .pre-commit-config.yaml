@@ -119,14 +119,6 @@ repos:
         files: ^(geoparquet_io/cli/main\.py|geoparquet_io/cli/decorators\.py|pyproject\.toml|geoparquet_io/core/.*\.py|scripts/doc_sync\.py|docs/contributing\.md)$
         pass_filenames: false
 
-      - id: menard-check
-        name: menard-check
-        description: Check if documentation is stale relative to code changes
-        entry: uv run menard check
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: sync-dependencies
         name: sync-dependencies
         description: Auto-sync dependencies when pyproject.toml changes
@@ -179,6 +171,14 @@ repos:
         name: import-linter
         description: Enforce architecture (core must not import click, api must not import cli)
         entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: menard-check
+        name: menard-check
+        description: Check if documentation is stale relative to code changes
+        entry: uv run menard check
         language: system
         pass_filenames: false
         stages: [pre-push]
