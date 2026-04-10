@@ -59,11 +59,11 @@ class DiskRewriteStrategy(BaseWriteStrategy):
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY then PyArrow rewrite."""
         from geoparquet_io.core.common import (
-            compute_bbox_via_sql,
             compute_geometry_types_via_sql,
             validate_compression_settings,
         )
         from geoparquet_io.core.duckdb_utils import _wrap_query_with_wkb_conversion
+        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
         from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         configure_verbose(verbose)
