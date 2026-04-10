@@ -33,6 +33,23 @@ def _clear_s3_cache():
     _s3_buckets_needing_auth = set()
 
 
+def _escape_sql_string(value: str) -> str:
+    """
+    Escape single quotes for SQL string literals.
+
+    SQL standard escaping: single quotes are doubled ('→'').
+    This prevents SQL injection when interpolating user-provided
+    strings (like file paths) into SQL queries.
+
+    Args:
+        value: The string value to escape
+
+    Returns:
+        String with single quotes escaped for safe SQL interpolation
+    """
+    return value.replace("'", "''")
+
+
 def quote_identifier(name: str) -> str:
     """
     Quote a SQL identifier for safe use in DuckDB queries.
@@ -161,7 +178,9 @@ def get_duckdb_connection_for_s3(
     con = get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=False)
     try:
         # Lightweight test query - DuckDB handles glob patterns natively
-        con.execute(f"SELECT 1 FROM read_parquet('{path}') LIMIT 1").fetchone()
+        # Escape single quotes in path to prevent SQL injection
+        safe_path = _escape_sql_string(path)
+        con.execute(f"SELECT 1 FROM read_parquet('{safe_path}') LIMIT 1").fetchone()
         return con
     except Exception as e:
         con.close()

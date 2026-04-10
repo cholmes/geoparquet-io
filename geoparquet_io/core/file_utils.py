@@ -177,6 +177,19 @@ def handle_output_overwrite(
 
 
 def safe_file_url(file_path, verbose=False):
+    """
+    Prepare a file path for safe use in SQL queries.
+
+    Handles URL encoding for HTTP(S) URLs and escapes single quotes
+    to prevent SQL injection when paths are interpolated into queries.
+
+    Args:
+        file_path: Local path or remote URL
+        verbose: Whether to log debug info
+
+    Returns:
+        str: Safe file path/URL with single quotes escaped for SQL
+    """
     from geoparquet_io.core.remote import is_remote_url
 
     if is_remote_url(file_path):
@@ -191,11 +204,13 @@ def safe_file_url(file_path, verbose=False):
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
             debug(f"Reading from {protocol}: {safe_url}")
-        return safe_url
+        # Escape single quotes to prevent SQL injection
+        return safe_url.replace("'", "''")
     else:
         if not has_glob_pattern(file_path) and not os.path.exists(file_path):
             raise click.BadParameter(f"Local file not found: {file_path}")
-        return file_path
+        # Escape single quotes to prevent SQL injection
+        return file_path.replace("'", "''")
 
 
 def _get_file_cache_key(parquet_file: str) -> tuple[str, float]:
