@@ -306,6 +306,8 @@ forbidden_modules = ["click"]
 # is also excluded since benchmark_suite lazily imports __version__ from the root package.
 ignore_imports = [
     "geoparquet_io.core.* -> click",
+    "geoparquet_io.core.partition.* -> click",
+    "geoparquet_io.core.add.* -> click",
     "geoparquet_io.core.benchmark_suite -> geoparquet_io",
 ]
 # Alert when ignored patterns no longer match any actual imports (stale ignores)
