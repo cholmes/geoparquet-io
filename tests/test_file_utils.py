@@ -127,7 +127,8 @@ class TestResolvePartitionPath:
 
         resolved, options = resolve_partition_path(str(tmp_path))
 
-        assert "**/*.parquet" in resolved
+        # Handle both Unix (/) and Windows (\) path separators
+        assert "**" in resolved and "*.parquet" in resolved
         assert options.get("hive_partitioning") is True
 
     def test_explicit_hive_partitioning(self, tmp_path):
