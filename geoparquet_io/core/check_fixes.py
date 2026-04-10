@@ -4,7 +4,6 @@ import os
 import shutil
 import tempfile
 
-import click
 import duckdb
 
 from geoparquet_io.core.add.bbox import add_bbox_column
@@ -15,6 +14,7 @@ from geoparquet_io.core.common import (
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.hilbert_order import hilbert_order
 from geoparquet_io.core.logging_config import debug, info, progress
@@ -119,9 +119,7 @@ def fix_compression(
         con.close()
         if is_remote_url(parquet_file):
             hints = get_remote_error_hint(str(e), parquet_file)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {str(e)}"
-            ) from e
+            raise RemoteAccessError(parquet_file, f"{hints}\n\nOriginal error: {str(e)}") from e
         raise
     finally:
         con.close()
@@ -242,9 +240,7 @@ def fix_bbox_removal(parquet_file, output_file, bbox_column_name, verbose=False,
         con.close()
         if is_remote_url(parquet_file):
             hints = get_remote_error_hint(str(e), parquet_file)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {str(e)}"
-            ) from e
+            raise RemoteAccessError(parquet_file, f"{hints}\n\nOriginal error: {str(e)}") from e
         raise
     finally:
         con.close()
@@ -364,9 +360,7 @@ def fix_row_groups(parquet_file, output_file, verbose=False, profile=None, geopa
         con.close()
         if is_remote_url(parquet_file):
             hints = get_remote_error_hint(str(e), parquet_file)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {str(e)}"
-            ) from e
+            raise RemoteAccessError(parquet_file, f"{hints}\n\nOriginal error: {str(e)}") from e
         raise
     finally:
         con.close()
@@ -607,4 +601,4 @@ def apply_all_fixes(parquet_file, output_file, check_results, verbose=False, pro
 
     except Exception as e:
         _cleanup_temp_files(temp_files, output_file=None)
-        raise click.ClickException(f"Failed to apply fixes: {str(e)}") from e
+        raise GeoParquetError(f"Failed to apply fixes: {str(e)}") from e

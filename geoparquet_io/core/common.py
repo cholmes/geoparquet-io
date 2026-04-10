@@ -3,7 +3,6 @@ import os
 import re
 from pathlib import Path
 
-import click
 import duckdb
 import pyarrow.parquet as pq
 
@@ -19,6 +18,11 @@ from geoparquet_io.core.crs_utils import (
 # to maintain compatibility with existing code that imports from common.py
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
+)
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    GeoParquetError,
+    InvalidParameterError,
 )
 from geoparquet_io.core.file_utils import (
     _get_file_cache_key,
@@ -563,8 +567,9 @@ def validate_compression_settings(compression, compression_level, verbose=False)
     valid_compressions = ["ZSTD", "GZIP", "BROTLI", "LZ4", "SNAPPY", "UNCOMPRESSED"]
 
     if compression not in valid_compressions:
-        raise click.BadParameter(
-            f"Invalid compression '{compression}'. Must be one of: {', '.join(valid_compressions)}"
+        raise InvalidParameterError(
+            "compression",
+            f"Invalid compression '{compression}'. Must be one of: {', '.join(valid_compressions)}",
         )
 
     # Handle compression level based on format
@@ -582,8 +587,9 @@ def validate_compression_settings(compression, compression_level, verbose=False)
             compression_level = default_level
 
         if compression_level < min_level or compression_level > max_level:
-            raise click.BadParameter(
-                f"{compression} compression level must be between {min_level} and {max_level}, got {compression_level}"
+            raise InvalidParameterError(
+                "compression_level",
+                f"{compression} compression level must be between {min_level} and {max_level}, got {compression_level}",
             )
         compression_desc = f"{compression}:{compression_level}"
     elif compression in ["LZ4", "SNAPPY"]:
@@ -2445,9 +2451,10 @@ def add_computed_column(
         if not replace_column:
             column_names = get_column_names(input_url)
             if column_name in column_names:
-                raise click.ClickException(
+                raise InvalidParameterError(
+                    "column_name",
                     f"Column '{column_name}' already exists in the file. "
-                    f"Please choose a different name."
+                    f"Please choose a different name.",
                 )
 
         # Get metadata before processing
@@ -2561,9 +2568,10 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
     column_names = get_column_names(safe_url)
 
     if bbox_column_name in column_names:
-        raise click.ClickException(
+        raise InvalidParameterError(
+            "bbox_column_name",
             f"Column '{bbox_column_name}' already exists in the file. "
-            f"Please choose a different name."
+            f"Please choose a different name.",
         )
 
     # Get geometry column for SQL expression
@@ -2612,7 +2620,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         # Clean up temporary file if something goes wrong
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        raise click.ClickException(f"Failed to add bbox: {str(e)}") from e
+        raise GeoParquetError(f"Failed to add bbox: {str(e)}") from e
 
 
 def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> Path:
@@ -2638,7 +2646,7 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     shapefile_path = Path(shapefile_path)
 
     if not shapefile_path.exists():
-        raise click.ClickException(f"Shapefile not found: {shapefile_path}")
+        raise FileNotFoundGeoParquetError(str(shapefile_path))
 
     # Shapefile extensions: .shp (main), .shx (index), .dbf (attributes) are required
     # Optional: .prj (projection), .cpg (encoding), .sbn/.sbx (spatial index)
@@ -2653,7 +2661,7 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     sidecar_files = [f for f in sidecar_files if f.suffix.lower() in shapefile_extensions]
 
     if not sidecar_files:
-        raise click.ClickException(f"No shapefile components found for: {shapefile_path}")
+        raise FileNotFoundGeoParquetError(str(shapefile_path), "no shapefile components found")
 
     # Verify required files exist
     required_extensions = {".shp", ".shx", ".dbf"}
@@ -2661,7 +2669,9 @@ def create_shapefile_zip(shapefile_path: str | Path, verbose: bool = False) -> P
     missing = required_extensions - found_extensions
 
     if missing:
-        raise click.ClickException(f"Missing required shapefile components: {', '.join(missing)}")
+        raise FileNotFoundGeoParquetError(
+            str(shapefile_path), f"missing required shapefile components: {', '.join(missing)}"
+        )
 
     # Create zip file
     zip_path = parent / f"{stem}.shp.zip"

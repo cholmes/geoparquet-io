@@ -11,8 +11,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-import click
-
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 
 
@@ -154,7 +153,7 @@ def validate_profile_for_urls(profile, *urls):
         *urls: Variable number of file paths to validate
 
     Raises:
-        click.BadParameter: If profile is used with non-S3 remote URLs
+        InvalidParameterError: If profile is used with non-S3 remote URLs
 
     Example:
         validate_profile_for_urls(profile, input_file, output_file)
@@ -165,9 +164,10 @@ def validate_profile_for_urls(profile, *urls):
     for url in urls:
         if url and is_remote_url(url) and not is_s3_url(url):
             protocol = url.split("://")[0].upper() if "://" in url else "unknown"
-            raise click.BadParameter(
-                f"--profile flag is only valid for S3 URLs, but got {protocol} URL: {url}\n"
-                f"For {protocol} authentication, use environment variables or default credentials."
+            raise InvalidParameterError(
+                "profile",
+                f"only valid for S3 URLs, but got {protocol} URL: {url}. "
+                f"For {protocol} authentication, use environment variables or default credentials.",
             )
 
 

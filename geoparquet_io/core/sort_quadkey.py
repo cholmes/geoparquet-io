@@ -6,7 +6,6 @@ import os
 import tempfile
 import uuid
 
-import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -15,6 +14,7 @@ from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_m
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.remote import (
@@ -170,9 +170,10 @@ def sort_by_quadkey(
     if not column_exists:
         if not using_default_name:
             # Custom name specified but column doesn't exist - error
-            raise click.ClickException(
-                f"Quadkey column '{quadkey_column_name}' not found in input file.\n"
-                f"Run 'gpio add quadkey --quadkey-name {quadkey_column_name}' to add it first."
+            raise InvalidParameterError(
+                "quadkey_column_name",
+                f"column '{quadkey_column_name}' not found in input file. "
+                f"Run 'gpio add quadkey --quadkey-name {quadkey_column_name}' to add it first.",
             )
 
         # Auto-add quadkey column using default name
@@ -209,7 +210,7 @@ def sort_by_quadkey(
         except Exception as e:
             if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
-            raise click.ClickException(f"Failed to add quadkey column: {str(e)}") from e
+            raise GeoParquetError(f"Failed to add quadkey column: {str(e)}") from e
 
     elif verbose:
         debug(f"Using existing quadkey column '{quadkey_column_name}'")
@@ -319,9 +320,10 @@ def _sort_by_quadkey_streaming(
 
         if not column_exists:
             if not using_default_name:
-                raise click.ClickException(
-                    f"Quadkey column '{quadkey_column_name}' not found in input. "
-                    f"Use default name 'quadkey' for auto-addition."
+                raise InvalidParameterError(
+                    "quadkey_column_name",
+                    f"column '{quadkey_column_name}' not found in input. "
+                    f"Use default name 'quadkey' for auto-addition.",
                 )
 
             if verbose:

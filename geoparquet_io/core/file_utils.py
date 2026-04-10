@@ -7,8 +7,11 @@ import os
 import urllib.parse
 from pathlib import Path
 
-import click
-
+from geoparquet_io.core.exceptions import (
+    FileNotFoundGeoParquetError,
+    GeoParquetError,
+    InvalidParameterError,
+)
 from geoparquet_io.core.logging_config import debug
 
 
@@ -123,9 +126,9 @@ def validate_output_path(output_path, verbose=False):
 
     output_dir = os.path.dirname(output_path) or "."
     if not os.path.exists(output_dir):
-        raise click.ClickException(f"Output directory not found: {output_dir}")
+        raise FileNotFoundGeoParquetError(output_dir, "output directory")
     if not os.access(output_dir, os.W_OK):
-        raise click.ClickException(f"No write permission for: {output_dir}")
+        raise GeoParquetError(f"No write permission for: {output_dir}")
 
 
 def validate_parquet_extension(output_file: str, any_extension: bool = False) -> None:
@@ -143,9 +146,10 @@ def validate_parquet_extension(output_file: str, any_extension: bool = False) ->
 
     _, ext = os.path.splitext(filename)
     if ext.lower() != ".parquet":
-        raise click.ClickException(
-            f"Output file '{output_file}' does not have .parquet extension. "
-            f"Use --any-extension to allow non-standard extensions."
+        raise InvalidParameterError(
+            "output_file",
+            f"'{output_file}' does not have .parquet extension. "
+            f"Use --any-extension to allow non-standard extensions.",
         )
 
 
@@ -164,14 +168,14 @@ def handle_output_overwrite(
         input_file = Path(input_path)
         try:
             if output_file.resolve() == input_file.resolve():
-                raise click.ClickException(f"Cannot overwrite input file: {output_path}")
-        except (OSError, click.ClickException) as e:
-            if isinstance(e, click.ClickException):
+                raise GeoParquetError(f"Cannot overwrite input file: {output_path}")
+        except (OSError, GeoParquetError) as e:
+            if isinstance(e, GeoParquetError):
                 raise
             pass
 
     if not overwrite:
-        raise click.ClickException(f"Output file already exists: {output_path}")
+        raise GeoParquetError(f"Output file already exists: {output_path}")
 
     output_file.unlink()
 
@@ -208,7 +212,7 @@ def safe_file_url(file_path, verbose=False):
         return safe_url.replace("'", "''")
     else:
         if not has_glob_pattern(file_path) and not os.path.exists(file_path):
-            raise click.BadParameter(f"Local file not found: {file_path}")
+            raise FileNotFoundGeoParquetError(file_path)
         # Escape single quotes to prevent SQL injection
         return file_path.replace("'", "''")
 

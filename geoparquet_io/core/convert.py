@@ -5,7 +5,6 @@ import os
 import platform
 import time
 
-import click
 import duckdb
 
 from geoparquet_io.core.common import format_size, write_parquet_with_metadata
@@ -17,6 +16,12 @@ from geoparquet_io.core.crs_utils import (
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.exceptions import (
+    GeometryError,
+    GeoParquetError,
+    InvalidParameterError,
+    RemoteAccessError,
+)
 from geoparquet_io.core.file_utils import (
     is_partition_path,
     safe_file_url,
@@ -215,7 +220,7 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     bounds_result = con.execute(bounds_query).fetchone()
 
     if not bounds_result or any(v is None for v in bounds_result):
-        raise click.ClickException("Could not calculate dataset bounds")
+        raise GeoParquetError("Could not calculate dataset bounds")
 
     if verbose:
         xmin, ymin, xmax, ymax = bounds_result
@@ -305,27 +310,27 @@ def _validate_explicit_wkt_column(wkt_column, columns):
     """Validate explicitly specified WKT column exists."""
     actual_cols = [col[0] for col in columns]
     if wkt_column not in actual_cols:
-        raise click.ClickException(
-            f"Specified WKT column '{wkt_column}' not found in CSV. "
-            f"Available columns: {', '.join(actual_cols)}"
+        raise InvalidParameterError(
+            "wkt_column",
+            f"column '{wkt_column}' not found in CSV. Available columns: {', '.join(actual_cols)}",
         )
 
 
 def _validate_explicit_latlon_columns(lat_column, lon_column, columns):
     """Validate explicitly specified lat/lon columns exist."""
     if not (lat_column and lon_column):
-        raise click.ClickException("Both --lat-column and --lon-column must be specified together")
+        raise InvalidParameterError("lat_column/lon_column", "both must be specified together")
 
     actual_cols = [col[0] for col in columns]
     if lat_column not in actual_cols:
-        raise click.ClickException(
-            f"Specified latitude column '{lat_column}' not found in CSV. "
-            f"Available columns: {', '.join(actual_cols)}"
+        raise InvalidParameterError(
+            "lat_column",
+            f"column '{lat_column}' not found in CSV. Available columns: {', '.join(actual_cols)}",
         )
     if lon_column not in actual_cols:
-        raise click.ClickException(
-            f"Specified longitude column '{lon_column}' not found in CSV. "
-            f"Available columns: {', '.join(actual_cols)}"
+        raise InvalidParameterError(
+            "lon_column",
+            f"column '{lon_column}' not found in CSV. Available columns: {', '.join(actual_cols)}",
         )
 
 
@@ -458,15 +463,17 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
             warn(f"⚠️  Warning: {null_count} rows have NULL lat/lon values and will be skipped")
 
         if min_lat < -90 or max_lat > 90:
-            raise click.ClickException(
-                f"Invalid latitude values (range: {min_lat:.6f} to {max_lat:.6f}). "
-                f"Latitude must be between -90 and 90."
+            raise InvalidParameterError(
+                "lat_column",
+                f"invalid latitude values (range: {min_lat:.6f} to {max_lat:.6f}). "
+                f"Latitude must be between -90 and 90.",
             )
 
         if min_lon < -180 or max_lon > 180:
-            raise click.ClickException(
-                f"Invalid longitude values (range: {min_lon:.6f} to {max_lon:.6f}). "
-                f"Longitude must be between -180 and 180."
+            raise InvalidParameterError(
+                "lon_column",
+                f"invalid longitude values (range: {min_lon:.6f} to {max_lon:.6f}). "
+                f"Longitude must be between -180 and 180.",
             )
 
         if verbose:
@@ -476,9 +483,9 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
             )
 
     except duckdb.ConversionException as e:
-        raise click.ClickException(
-            f"Lat/lon columns contain non-numeric values: {str(e)}\n"
-            "Ensure lat/lon columns contain only numbers."
+        raise InvalidParameterError(
+            "lat_column/lon_column",
+            f"contains non-numeric values: {str(e)}. Ensure lat/lon columns contain only numbers.",
         ) from e
 
 
@@ -522,7 +529,7 @@ def _validate_wkt_strict(con, csv_read, wkt_col):
     """Strictly validate WKT column when skip_invalid is False.
 
     Attempts to parse one non-NULL WKT value to verify the column contains
-    valid geometry. Raises ClickException with helpful message on failure.
+    valid geometry. Raises GeometryError with helpful message on failure.
 
     Uses ::VARCHAR cast on the result to avoid DuckDB 1.5+ GEOMETRY type
     serialization errors when fetching results to Python.
@@ -533,7 +540,7 @@ def _validate_wkt_strict(con, csv_read, wkt_col):
         wkt_col: Name of the WKT column to validate.
 
     Raises:
-        click.ClickException: If WKT parsing fails, with suggestion to use --skip-invalid.
+        GeometryError: If WKT parsing fails, with suggestion to use --skip-invalid.
     """
     try:
         # Use ::VARCHAR cast to avoid DuckDB 1.5+ GEOMETRY serialization error
@@ -541,8 +548,8 @@ def _validate_wkt_strict(con, csv_read, wkt_col):
             f"SELECT ST_GeomFromText({wkt_col})::VARCHAR FROM {csv_read} WHERE {wkt_col} IS NOT NULL LIMIT 1"
         ).fetchone()
     except Exception as e:
-        raise click.ClickException(
-            f"Invalid WKT in column '{wkt_col}': {str(e)}\n"
+        raise GeometryError(
+            f"Invalid WKT in column '{wkt_col}': {str(e)}. "
             f"Use --skip-invalid to skip rows with invalid geometries."
         ) from e
 
@@ -643,7 +650,7 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         where_clause = f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL"
 
     else:
-        raise click.ClickException("Unknown geometry type in CSV detection")
+        raise GeoParquetError("Unknown geometry type in CSV detection")
 
     # Build base query (for non-skip_invalid or lat/lon)
     if skip_hilbert:
@@ -717,10 +724,10 @@ def _calculate_csv_bounds(con, geom_info, skip_invalid, verbose):
             if skip_invalid
             else str(e)
         )
-        raise click.ClickException(msg) from e
+        raise GeoParquetError(msg) from e
 
     if not bounds_result or any(v is None for v in bounds_result):
-        raise click.ClickException("Could not calculate dataset bounds from CSV")
+        raise GeoParquetError("Could not calculate dataset bounds from CSV")
 
     if verbose:
         xmin, ymin, xmax, ymax = bounds_result
@@ -1062,7 +1069,7 @@ def read_spatial_to_arrow(
         tuple: (arrow_table, detected_crs_projjson, geometry_column_name)
 
     Raises:
-        click.ClickException: If input file not found or reading fails
+        GeoParquetError: If input file not found or reading fails
     """
 
     configure_verbose(verbose)
@@ -1096,9 +1103,10 @@ def read_spatial_to_arrow(
     try:
         if user_specified_crs:
             if not is_csv:
-                raise click.ClickException(
-                    f"The crs option is only valid for CSV/TSV files.\n"
-                    f"For {os.path.splitext(input_file)[1]} files, CRS is read from the file metadata."
+                raise InvalidParameterError(
+                    "crs",
+                    f"only valid for CSV/TSV files. "
+                    f"For {os.path.splitext(input_file)[1]} files, CRS is read from the file metadata.",
                 )
             detected_crs = parse_crs_string_to_projjson(crs, con)
             if verbose:
@@ -1121,8 +1129,8 @@ def read_spatial_to_arrow(
                     if verbose:
                         debug("GeoJSON file with no detected CRS, assuming WGS84 per RFC 7946")
                 else:
-                    raise click.ClickException(
-                        f"No CRS found in input file: {input_file}\n"
+                    raise GeoParquetError(
+                        f"No CRS found in input file: {input_file}. "
                         f"Spatial files (GeoPackage, Shapefile, GeoJSON, etc.) must have a defined CRS."
                     )
             if crs_from_file is not None and not is_default_crs(crs_from_file):
@@ -1158,16 +1166,16 @@ def read_spatial_to_arrow(
         error_msg = str(e)
         if is_remote_url(input_file):
             hints = get_remote_error_hint(error_msg, input_file)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {error_msg}"
+            raise RemoteAccessError(
+                input_file, f"Failed to read remote file. {hints}. Original error: {error_msg}"
             ) from e
-        raise click.ClickException(f"Failed to read input file: {error_msg}") from e
+        raise GeoParquetError(f"Failed to read input file: {error_msg}") from e
 
     except duckdb.BinderException as e:
-        raise click.ClickException(f"Invalid geometry data: {str(e)}") from e
+        raise GeometryError(f"Invalid geometry data: {str(e)}") from e
 
     except Exception as e:
-        raise click.ClickException(f"Reading failed: {str(e)}") from e
+        raise GeoParquetError(f"Reading failed: {str(e)}") from e
 
     finally:
         con.close()
@@ -1284,9 +1292,10 @@ def _determine_effective_crs(
 
     if user_specified_crs:
         if not is_csv:
-            raise click.ClickException(
-                f"The --crs option is only valid for CSV/TSV files.\n"
-                f"For {os.path.splitext(input_file)[1]} files, CRS is read from the file metadata."
+            raise InvalidParameterError(
+                "crs",
+                f"only valid for CSV/TSV files. "
+                f"For {os.path.splitext(input_file)[1]} files, CRS is read from the file metadata.",
             )
         if verbose:
             debug(f"Using user-specified CRS: {crs}")
@@ -1311,8 +1320,8 @@ def _determine_effective_crs(
             if verbose:
                 debug("GeoJSON file with no detected CRS, assuming WGS84 per RFC 7946")
             return None
-        raise click.ClickException(
-            f"No CRS found in input file: {input_file}\n"
+        raise GeoParquetError(
+            f"No CRS found in input file: {input_file}. "
             f"Spatial files (GeoPackage, Shapefile, GeoJSON, etc.) must have a defined CRS."
         )
     if is_default_crs(detected):
@@ -1395,7 +1404,7 @@ def convert_to_geoparquet(
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
 
     Raises:
-        click.ClickException: If input file not found or conversion fails
+        GeoParquetError: If input file not found or conversion fails
     """
     configure_verbose(verbose)
     start_time = time.time()
@@ -1450,7 +1459,7 @@ def convert_to_geoparquet(
         has_geometry = query is not None
         if not has_geometry:
             if not allow_no_geometry:
-                raise click.ClickException(
+                raise GeoParquetError(
                     "No geometry column detected in input file. "
                     "Expected column named 'geom', 'geometry', 'wkb_geometry', or 'shape'. "
                     "Use --allow-no-geometry to convert as plain Parquet without GeoParquet metadata."
@@ -1458,7 +1467,7 @@ def convert_to_geoparquet(
 
             # Error if Hilbert sorting was requested but no geometry found
             if not skip_hilbert:
-                raise click.ClickException(
+                raise GeoParquetError(
                     "Cannot apply Hilbert sorting - no geometry column found. "
                     "Use --skip-hilbert if you want to convert without spatial indexing."
                 )
@@ -1495,24 +1504,24 @@ def convert_to_geoparquet(
         error_msg = str(e)
         if is_remote_url(input_file):
             hints = get_remote_error_hint(error_msg, input_file)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {error_msg}"
+            raise RemoteAccessError(
+                input_file, f"Failed to read remote file. {hints}. Original error: {error_msg}"
             ) from e
-        raise click.ClickException(f"Failed to read input file: {error_msg}") from e
+        raise GeoParquetError(f"Failed to read input file: {error_msg}") from e
 
     except duckdb.BinderException as e:
         con.close()
-        raise click.ClickException(f"Invalid geometry data: {str(e)}") from e
+        raise GeometryError(f"Invalid geometry data: {str(e)}") from e
 
     except OSError as e:
         con.close()
         if e.errno == 28:  # ENOSPC
-            raise click.ClickException("Not enough disk space for output file") from e
-        raise click.ClickException(f"File system error: {str(e)}") from e
+            raise GeoParquetError("Not enough disk space for output file") from e
+        raise GeoParquetError(f"File system error: {str(e)}") from e
 
     except Exception as e:
         con.close()
-        raise click.ClickException(f"Conversion failed: {str(e)}") from e
+        raise GeoParquetError(f"Conversion failed: {str(e)}") from e
 
     finally:
         con.close()

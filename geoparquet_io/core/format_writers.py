@@ -12,12 +12,15 @@ Writers handle local file output only; remote uploads are handled by the upload 
 
 import json
 
-import click
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.crs_utils import extract_crs_from_parquet, is_default_crs
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import (
+    GeoParquetError,
+    InvalidParameterError,
+)
 from geoparquet_io.core.file_utils import safe_file_url, validate_output_path
 from geoparquet_io.core.geometry_detection import detect_parquet_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
@@ -132,21 +135,24 @@ def write_gdal_format(
         Path to output file
 
     Raises:
-        click.ClickException: If validation or conversion fails
+        GeoParquetError: If validation or conversion fails
     """
     configure_verbose(verbose)
 
     # Get format configuration
     if format_name not in GDAL_FORMATS:
-        raise click.ClickException(
-            f"Unsupported GDAL format: {format_name}\nSupported: {', '.join(GDAL_FORMATS.keys())}"
+        raise InvalidParameterError(
+            "format_name",
+            f"Unsupported GDAL format: {format_name}. Supported: {', '.join(GDAL_FORMATS.keys())}",
         )
 
     config = GDAL_FORMATS[format_name]
 
     # Validate inputs
     if is_remote_url(output_path):
-        raise click.ClickException(ERROR_REMOTE_OUTPUT.format(format=config["description"]))
+        raise InvalidParameterError(
+            "output_path", ERROR_REMOTE_OUTPUT.format(format=config["description"])
+        )
 
     validate_profile_for_urls(profile, input_path)
     setup_aws_profile_if_needed(profile, input_path)
@@ -156,7 +162,7 @@ def write_gdal_format(
 
     output_file = Path(output_path)
     if config["check_overwrite"] and output_file.exists() and not overwrite:
-        raise click.ClickException(
+        raise GeoParquetError(
             ERROR_FILE_EXISTS.format(format=config["description"], path=output_path)
         )
 
@@ -213,7 +219,7 @@ def write_gdal_format(
 
         # FlatGeobuf requires geometry - fail early with a clear message
         if not has_geometry and format_name == "flatgeobuf":
-            raise click.ClickException(
+            raise GeoParquetError(
                 "FlatGeobuf requires geometry data but no geometry column was found. "
                 "FlatGeobuf is a geospatial format that cannot store non-spatial data. "
                 "Use 'gpio convert csv' for non-spatial data."
@@ -237,9 +243,7 @@ def write_gdal_format(
                 compatible_cols.append(f'"{field.name}"')
 
         if not compatible_cols:
-            raise click.ClickException(
-                ERROR_NO_COMPATIBLE_COLUMNS.format(format=config["description"])
-            )
+            raise GeoParquetError(ERROR_NO_COMPATIBLE_COLUMNS.format(format=config["description"]))
 
         select_clause = ", ".join(compatible_cols)
 
@@ -258,10 +262,10 @@ def write_gdal_format(
     except Exception as e:
         error_msg = str(e)
         if "already exists" in error_msg.lower():
-            raise click.ClickException(
+            raise GeoParquetError(
                 ERROR_FILE_EXISTS.format(format=config["description"], path=output_path)
             ) from e
-        raise click.ClickException(
+        raise GeoParquetError(
             ERROR_CONVERSION_FAILED.format(format=config["description"], error=error_msg)
         ) from e
     finally:
@@ -296,19 +300,19 @@ def write_csv(
         Path to output file
 
     Raises:
-        click.ClickException: If conversion fails
+        GeoParquetError: If conversion fails
     """
     from pathlib import Path
 
     configure_verbose(verbose)
 
     if is_remote_url(output_path):
-        raise click.ClickException(ERROR_REMOTE_OUTPUT.format(format="CSV"))
+        raise InvalidParameterError("output_path", ERROR_REMOTE_OUTPUT.format(format="CSV"))
 
     # Check if output exists
     output_file = Path(output_path)
     if output_file.exists() and not overwrite:
-        raise click.ClickException(ERROR_FILE_EXISTS.format(format="CSV", path=output_path))
+        raise GeoParquetError(ERROR_FILE_EXISTS.format(format="CSV", path=output_path))
 
     validate_profile_for_urls(profile, input_path)
     setup_aws_profile_if_needed(profile, input_path)
@@ -358,7 +362,7 @@ def write_csv(
                     select_cols.append(f'"{col}"')
 
         if not select_cols:
-            raise click.ClickException("No columns to export after filtering geometry.")
+            raise GeoParquetError("No columns to export after filtering geometry.")
 
         # Write to CSV with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
@@ -382,9 +386,7 @@ def write_csv(
         return output_path
 
     except Exception as e:
-        raise click.ClickException(
-            ERROR_CONVERSION_FAILED.format(format="CSV", error=str(e))
-        ) from e
+        raise GeoParquetError(ERROR_CONVERSION_FAILED.format(format="CSV", error=str(e))) from e
     finally:
         con.close()
 
@@ -425,7 +427,7 @@ def write_geojson(
         Path to output file
 
     Raises:
-        click.ClickException: If conversion fails
+        GeoParquetError: If conversion fails
     """
     from pathlib import Path
 
@@ -434,14 +436,14 @@ def write_geojson(
     configure_verbose(verbose)
 
     if is_remote_url(output_path):
-        raise click.ClickException(
-            "GeoJSON output path must be local. Use upload() for cloud destinations."
+        raise InvalidParameterError(
+            "output_path", "GeoJSON output path must be local. Use upload() for cloud destinations."
         )
 
     # Check if output exists
     output_file = Path(output_path)
     if output_file.exists() and not overwrite:
-        raise click.ClickException(ERROR_FILE_EXISTS.format(format="GeoJSON", path=output_path))
+        raise GeoParquetError(ERROR_FILE_EXISTS.format(format="GeoJSON", path=output_path))
 
     validate_profile_for_urls(profile, input_path)
     setup_aws_profile_if_needed(profile, input_path)
@@ -452,7 +454,7 @@ def write_geojson(
 
     if not has_geometry:
         # Reject GeoJSON export without geometry data
-        raise click.ClickException(
+        raise GeoParquetError(
             "Cannot export to GeoJSON: no geometry column found. "
             "GeoJSON requires geometry data. Expected column named 'geom', 'geometry', 'wkb_geometry', or 'shape'. "
             "To export data without geometry, use CSV format instead: gpio convert input.parquet output.csv"
@@ -478,7 +480,7 @@ def write_geojson(
         return output_path
 
     except Exception as e:
-        raise click.ClickException(f"Failed to create GeoJSON: {str(e)}") from e
+        raise GeoParquetError(f"Failed to create GeoJSON: {str(e)}") from e
 
 
 # Convenience wrappers for specific formats
@@ -520,7 +522,7 @@ def write_format(
         Path to output file
 
     Raises:
-        click.ClickException: If format is unsupported or conversion fails
+        GeoParquetError: If format is unsupported or conversion fails
     """
     format_lower = format.lower()
 
@@ -558,6 +560,7 @@ def write_format(
         )
     else:
         supported = list(GDAL_FORMATS.keys()) + ["csv", "geojson"]
-        raise click.ClickException(
-            f"Unsupported format: {format}\nSupported formats: {', '.join(supported)}"
+        raise InvalidParameterError(
+            "format",
+            f"Unsupported format: {format}. Supported formats: {', '.join(supported)}",
         )

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import click
 import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.remote import (
@@ -125,7 +125,7 @@ def sort_by_column(
         column_list = list(columns)
 
     if not column_list:
-        raise click.ClickException("At least one column name must be specified")
+        raise InvalidParameterError("columns", "at least one column name must be specified")
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -169,9 +169,10 @@ def sort_by_column(
     existing_columns = [c["name"] for c in usable_cols]
     for col in column_list:
         if col not in existing_columns:
-            raise click.ClickException(
-                f"Column '{col}' not found in input file. "
-                f"Available columns: {', '.join(existing_columns)}"
+            raise InvalidParameterError(
+                "columns",
+                f"column '{col}' not found in input file. "
+                f"Available columns: {', '.join(existing_columns)}",
             )
 
     if verbose:
@@ -218,9 +219,7 @@ def sort_by_column(
     except duckdb.IOException as e:
         if is_remote_url(input_parquet):
             hints = get_remote_error_hint(str(e), input_parquet)
-            raise click.ClickException(
-                f"Failed to read remote file.\n\n{hints}\n\nOriginal error: {str(e)}"
-            ) from e
+            raise RemoteAccessError(input_parquet, f"{hints}\n\nOriginal error: {str(e)}") from e
         raise
     finally:
         con.close()
@@ -253,8 +252,9 @@ def _sort_by_column_streaming(
         # Validate columns exist
         for col in column_list:
             if col not in col_names:
-                raise click.ClickException(
-                    f"Column '{col}' not found in input. Available columns: {', '.join(col_names)}"
+                raise InvalidParameterError(
+                    "columns",
+                    f"column '{col}' not found in input. Available columns: {', '.join(col_names)}",
                 )
 
         # Build ORDER BY clause
