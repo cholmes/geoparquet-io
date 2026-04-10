@@ -8,7 +8,6 @@ raising 'No CRS found'.
 
 from unittest.mock import patch
 
-import click
 import pytest
 
 from geoparquet_io.core.convert import _determine_effective_crs, _is_geojson_file
@@ -68,7 +67,9 @@ class TestGeojsonCrsDefault:
     @patch("geoparquet_io.core.convert.detect_crs_from_spatial_file", return_value=None)
     def test_non_geojson_still_raises_when_no_crs_detected(self, _mock_detect):
         """Non-GeoJSON spatial files should still raise when CRS is missing."""
-        with pytest.raises(click.ClickException, match="No CRS found"):
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="(?i)no crs found"):
             _determine_effective_crs(
                 input_file="gs://bucket/data.gpkg",
                 input_url="gs://bucket/data.gpkg",

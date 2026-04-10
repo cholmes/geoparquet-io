@@ -2,9 +2,9 @@
 
 from unittest.mock import patch
 
-import click
 import pytest
 
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.partition.by_string import (
     partition_by_string,
     validate_column_exists,
@@ -21,7 +21,7 @@ class TestValidateColumnExists:
 
     def test_invalid_column(self, places_test_file):
         """Test validation fails for non-existent column."""
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             validate_column_exists(places_test_file, "nonexistent_column", verbose=False)
         assert "not found" in str(exc_info.value)
         assert "nonexistent_column" in str(exc_info.value)
@@ -36,8 +36,8 @@ class TestPartitionByString:
     """Tests for partition_by_string function."""
 
     def test_chars_zero_raises_error(self, places_test_file, tmp_path):
-        """Test that chars=0 raises UsageError (line 86)."""
-        with pytest.raises(click.UsageError) as exc_info:
+        """Test that chars=0 raises InvalidParameterError (line 86)."""
+        with pytest.raises(InvalidParameterError) as exc_info:
             partition_by_string(
                 input_parquet=places_test_file,
                 output_folder=str(tmp_path),
@@ -45,11 +45,11 @@ class TestPartitionByString:
                 chars=0,
                 verbose=False,
             )
-        assert "--chars must be a positive integer" in str(exc_info.value)
+        assert "must be a positive integer" in str(exc_info.value)
 
     def test_chars_negative_raises_error(self, places_test_file, tmp_path):
-        """Test that negative chars raises UsageError (line 86)."""
-        with pytest.raises(click.UsageError) as exc_info:
+        """Test that negative chars raises InvalidParameterError (line 86)."""
+        with pytest.raises(InvalidParameterError) as exc_info:
             partition_by_string(
                 input_parquet=places_test_file,
                 output_folder=str(tmp_path),
@@ -57,7 +57,7 @@ class TestPartitionByString:
                 chars=-5,
                 verbose=False,
             )
-        assert "--chars must be a positive integer" in str(exc_info.value)
+        assert "must be a positive integer" in str(exc_info.value)
 
     def test_preview_with_partition_analysis_error(self, places_test_file, tmp_path):
         """Test preview mode when PartitionAnalysisError is raised (lines 103-105)."""
@@ -111,7 +111,7 @@ class TestPartitionByString:
 
     def test_invalid_column_raises_error(self, places_test_file, tmp_path):
         """Test that invalid column raises UsageError."""
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             partition_by_string(
                 input_parquet=places_test_file,
                 output_folder=str(tmp_path),

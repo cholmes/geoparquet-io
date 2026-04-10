@@ -236,7 +236,9 @@ def test_check_stac_valid_no_error(valid_stac_item):
 
 
 def test_check_stac_invalid_raises(temp_output_dir):
-    """Test check_stac raises ClickException for invalid STAC."""
+    """Test check_stac raises ValidationError for invalid STAC."""
+    from geoparquet_io.core.exceptions import ValidationError
+
     # Create invalid STAC (missing required field)
     invalid_item = {
         "type": "Feature",
@@ -249,7 +251,7 @@ def test_check_stac_invalid_raises(temp_output_dir):
     with open(output_path, "w") as f:
         json.dump(invalid_item, f)
 
-    with pytest.raises(click.ClickException) as exc_info:
+    with pytest.raises(ValidationError) as exc_info:
         check_stac(output_path, verbose=False)
 
     assert "validation failed" in str(exc_info.value).lower()

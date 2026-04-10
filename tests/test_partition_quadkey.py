@@ -10,9 +10,9 @@ from unittest import mock
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
 import pytest
-from click import UsageError
 from click.testing import CliRunner
 
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.partition.by_quadkey import _validate_resolutions, partition_by_quadkey
 from geoparquet_io.core.partition.common import calculate_partition_stats
 from tests.conftest import safe_rmtree
@@ -30,17 +30,17 @@ class TestValidateResolutions:
 
     def test_resolution_out_of_range(self):
         """Test with resolution out of range."""
-        with pytest.raises(UsageError):
+        with pytest.raises(InvalidParameterError):
             _validate_resolutions(25, 9)
 
     def test_partition_resolution_out_of_range(self):
         """Test with partition resolution out of range."""
-        with pytest.raises(UsageError):
+        with pytest.raises(InvalidParameterError):
             _validate_resolutions(13, 25)
 
     def test_partition_resolution_exceeds_resolution(self):
         """Test with partition resolution exceeding column resolution."""
-        with pytest.raises(UsageError):
+        with pytest.raises(InvalidParameterError):
             _validate_resolutions(5, 10)
 
 

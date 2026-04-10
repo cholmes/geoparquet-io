@@ -624,27 +624,27 @@ class TestValidateParquetExtension:
         validate_parquet_extension("output.Parquet")
 
     def test_invalid_extension_raises_error(self):
-        """Test that non-.parquet extension raises ClickException."""
-        import click
+        """Test that non-.parquet extension raises GeoParquetError."""
+        from geoparquet_io.core.exceptions import GeoParquetError
 
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_parquet_extension("output.geojson")
         assert ".parquet extension" in str(exc_info.value)
         assert "--any-extension" in str(exc_info.value)
 
     def test_no_extension_raises_error(self):
-        """Test that file without extension raises ClickException."""
-        import click
+        """Test that file without extension raises GeoParquetError."""
+        from geoparquet_io.core.exceptions import GeoParquetError
 
-        with pytest.raises(click.ClickException):
+        with pytest.raises(GeoParquetError):
             validate_parquet_extension("output_file")
 
     def test_wrong_extension_variations(self):
         """Test various wrong extensions raise errors."""
-        import click
+        from geoparquet_io.core.exceptions import GeoParquetError
 
         for ext in [".json", ".csv", ".txt", ".gpkg", ".shp"]:
-            with pytest.raises(click.ClickException):
+            with pytest.raises(GeoParquetError):
                 validate_parquet_extension(f"output{ext}")
 
     def test_any_extension_flag_allows_non_parquet(self):
@@ -668,13 +668,13 @@ class TestValidateParquetExtension:
 
     def test_remote_s3_url_validation(self):
         """Test that S3 URLs are validated for extension."""
-        import click
+        from geoparquet_io.core.exceptions import GeoParquetError
 
         # Valid
         validate_parquet_extension("s3://bucket/path/file.parquet")
 
         # Invalid
-        with pytest.raises(click.ClickException):
+        with pytest.raises(GeoParquetError):
             validate_parquet_extension("s3://bucket/path/file.geojson")
 
     def test_remote_url_with_any_extension(self):
@@ -712,10 +712,10 @@ class TestSafeFileUrl:
         assert result == s3_url
 
     def test_local_file_not_found_raises_error(self):
-        """Test that non-existent local file raises BadParameter."""
-        import click
+        """Test that non-existent local file raises FileNotFoundGeoParquetError."""
+        from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError
 
-        with pytest.raises(click.BadParameter) as exc_info:
+        with pytest.raises(FileNotFoundGeoParquetError) as exc_info:
             safe_file_url("/nonexistent/path/file.parquet")
         assert "not found" in str(exc_info.value).lower()
 

@@ -13,7 +13,6 @@ Tests verify that convert applies all best practices:
 import os
 import sys
 
-import click
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -1122,15 +1121,19 @@ class TestConvertNoGeometry:
 
     def test_convert_no_geometry_requires_skip_hilbert(self, plain_parquet_input, temp_output_file):
         """No-geometry file with skip_hilbert=False should error."""
+        from geoparquet_io.core.exceptions import GeoParquetError
+
         # When allow_no_geometry is True but skip_hilbert is False, should error
-        with pytest.raises(click.ClickException, match="Cannot apply Hilbert sorting"):
+        with pytest.raises(GeoParquetError, match="(?i)cannot apply hilbert sorting"):
             convert_to_geoparquet(
                 plain_parquet_input, temp_output_file, allow_no_geometry=True, skip_hilbert=False
             )
 
     def test_convert_no_geometry_errors_without_flag(self, plain_parquet_input, temp_output_file):
         """No-geometry file without --allow-no-geometry should error."""
-        with pytest.raises(click.ClickException, match="No geometry column detected"):
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="(?i)no geometry column"):
             convert_to_geoparquet(plain_parquet_input, temp_output_file)
 
     def test_convert_with_geometry_still_works(self, shapefile_input, temp_output_file):

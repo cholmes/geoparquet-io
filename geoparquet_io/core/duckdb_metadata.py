@@ -18,10 +18,7 @@ from typing import Any
 import duckdb
 import pyarrow.parquet as pq
 
-
-class GeoParquetError(Exception):
-    """Raised when there are issues reading or processing GeoParquet files."""
-
+from geoparquet_io.core.exceptions import GeoParquetError
 
 # =============================================================================
 # PyArrow Fast Path for Local Files (Issue #232 Performance Fix)

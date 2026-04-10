@@ -133,7 +133,7 @@ class TestQuadkeyAutoResolutionIntegration:
         output_dir = tmp_path / "quadkey_error"
 
         with pytest.raises(
-            Exception, match="Cannot specify --resolution or --partition-resolution"
+            Exception, match="(?i)cannot specify --resolution or --partition-resolution"
         ):
             partition_by_quadkey(
                 input_parquet=fields_5070_file,

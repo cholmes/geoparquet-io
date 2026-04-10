@@ -23,7 +23,7 @@ def handle_geoparquet_errors(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         # Import here to avoid circular imports
-        from geoparquet_io.core.duckdb_metadata import GeoParquetError
+        from geoparquet_io.core.exceptions import GeoParquetError
 
         try:
             return func(*args, **kwargs)
@@ -444,7 +444,7 @@ class GlobAwareCommand(click.Command):
     def invoke(self, ctx):
         """Invoke the command with user-friendly error handling."""
         # Import here to avoid circular imports
-        from geoparquet_io.core.duckdb_metadata import GeoParquetError
+        from geoparquet_io.core.exceptions import GeoParquetError
 
         try:
             return super().invoke(ctx)

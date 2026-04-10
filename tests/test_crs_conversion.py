@@ -399,7 +399,7 @@ class TestCRSOverride:
 
         # Should fail because --crs is not valid for parquet files
         assert result.exit_code != 0
-        assert "--crs option is only valid for CSV/TSV" in result.output
+        assert "only valid for CSV/TSV" in result.output
 
     def test_crs_flag_works_for_csv(self, runner, test_data_dir, temp_output_file):
         """

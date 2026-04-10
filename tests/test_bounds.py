@@ -96,10 +96,10 @@ class TestGetDatasetBounds:
 
     def test_get_bounds_nonexistent_file(self):
         """Test getting bounds from nonexistent file."""
-        import click
+        from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError
 
         # Should raise an exception for nonexistent file
-        with pytest.raises(click.BadParameter):
+        with pytest.raises(FileNotFoundGeoParquetError):
             get_dataset_bounds("nonexistent.parquet", verbose=False)
 
     def test_get_bounds_performance_difference(self, buildings_test_file, temp_output_file, caplog):

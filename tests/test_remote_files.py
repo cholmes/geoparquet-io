@@ -3,8 +3,8 @@
 import os
 
 import pytest
-from click import BadParameter
 
+from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.remote import is_remote_url, needs_httpfs
 
@@ -88,7 +88,7 @@ class TestSafeFileURL:
 
     def test_safe_file_url_local_nonexistent(self):
         """Test local file that doesn't exist."""
-        with pytest.raises(BadParameter, match="Local file not found"):
+        with pytest.raises(FileNotFoundGeoParquetError, match="(?i)file not found"):
             safe_file_url("/nonexistent/file.parquet")
 
 
@@ -315,11 +315,9 @@ class TestSTACRemoteBlocking:
 
     def test_stac_item_blocks_remote_https(self):
         """Test STAC item generation blocks HTTPS URLs."""
-        from click import ClickException
-
         from geoparquet_io.core.stac import generate_stac_item
 
-        with pytest.raises(ClickException, match="STAC generation requires local"):
+        with pytest.raises(InvalidParameterError, match="(?i)stac generation requires local"):
             generate_stac_item(
                 parquet_file="https://example.com/file.parquet",
                 bucket_prefix="s3://bucket/",
@@ -328,22 +326,18 @@ class TestSTACRemoteBlocking:
 
     def test_stac_item_blocks_remote_s3(self):
         """Test STAC item generation blocks S3 URLs."""
-        from click import ClickException
-
         from geoparquet_io.core.stac import generate_stac_item
 
-        with pytest.raises(ClickException, match="STAC generation requires local"):
+        with pytest.raises(InvalidParameterError, match="(?i)stac generation requires local"):
             generate_stac_item(
                 parquet_file="s3://bucket/file.parquet", bucket_prefix="s3://bucket/", verbose=False
             )
 
     def test_stac_collection_blocks_remote(self):
         """Test STAC collection generation blocks remote directories."""
-        from click import ClickException
-
         from geoparquet_io.core.stac import generate_stac_collection
 
-        with pytest.raises(ClickException, match="requires a local directory"):
+        with pytest.raises(InvalidParameterError, match="(?i)requires a local directory"):
             generate_stac_collection(
                 partition_dir="s3://bucket/partitions/",
                 bucket_prefix="s3://bucket/",

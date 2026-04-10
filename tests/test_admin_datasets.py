@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import click
 import pytest
 
 from geoparquet_io.core.admin_datasets import (
@@ -74,10 +73,12 @@ class TestCurrentAdminDataset:
         dataset.validate_levels(["country"])
 
     def test_validate_levels_invalid(self):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
         dataset = CurrentAdminDataset()
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             dataset.validate_levels(["continent"])
-        assert "Invalid levels" in str(exc_info.value)
+        assert "invalid" in str(exc_info.value).lower()
         assert "continent" in str(exc_info.value)
 
 
@@ -135,10 +136,12 @@ class TestGAULAdminDataset:
         dataset.validate_levels(["continent", "country"])
 
     def test_validate_levels_invalid(self):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
         dataset = GAULAdminDataset()
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             dataset.validate_levels(["region"])
-        assert "Invalid levels" in str(exc_info.value)
+        assert "invalid" in str(exc_info.value).lower()
 
 
 class TestOvertureAdminDataset:
@@ -310,9 +313,11 @@ class TestAdminDatasetFactory:
         assert dataset.verbose is True
 
     def test_create_invalid_dataset(self):
-        with pytest.raises(click.UsageError) as exc_info:
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError) as exc_info:
             AdminDatasetFactory.create("invalid_dataset")
-        assert "Unknown admin dataset" in str(exc_info.value)
+        assert "unknown" in str(exc_info.value).lower()
         assert "invalid_dataset" in str(exc_info.value)
 
 

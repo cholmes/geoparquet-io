@@ -127,7 +127,7 @@ class TestH3AutoResolutionIntegration:
         """Test that specifying both --auto and --resolution raises error."""
         output_dir = tmp_path / "h3_error"
 
-        with pytest.raises(Exception, match="Cannot specify both"):
+        with pytest.raises(Exception, match="(?i)cannot specify both"):
             partition_by_h3(
                 input_parquet=fields_5070_file,
                 output_folder=str(output_dir),

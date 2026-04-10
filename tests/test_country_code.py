@@ -145,12 +145,12 @@ class TestFindCountryCodeColumn:
                 con.execute("INSTALL spatial;")
                 con.execute("LOAD spatial;")
 
-                import click
+                from geoparquet_io.core.exceptions import GeoParquetError
 
-                with pytest.raises(click.UsageError) as exc_info:
+                with pytest.raises(GeoParquetError) as exc_info:
                     find_country_code_column(con, tmp_name, is_subquery=False)
 
-                assert "Could not find country code column" in str(exc_info.value)
+                assert "could not find country code column" in str(exc_info.value).lower()
             finally:
                 con.close()
         finally:

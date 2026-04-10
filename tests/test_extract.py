@@ -11,11 +11,11 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import click
 import duckdb
 import pyarrow as pa
 import pytest
 
+from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.extract import (
     build_column_selection,
     build_extract_query,
@@ -120,32 +120,32 @@ class TestParseBbox:
 
     def test_bbox_wrong_count(self):
         """Test bbox with wrong number of values."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_bbox("1,2,3")
-        assert "Expected 4 values" in str(exc_info.value)
+        assert "expected 4 values" in str(exc_info.value).lower()
 
     def test_bbox_too_many_values(self):
         """Test bbox with too many values."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_bbox("1,2,3,4,5")
-        assert "Expected 4 values" in str(exc_info.value)
+        assert "expected 4 values" in str(exc_info.value).lower()
 
     def test_bbox_non_numeric(self):
         """Test bbox with non-numeric values."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_bbox("a,b,c,d")
-        assert "Expected numeric values" in str(exc_info.value)
+        assert "numeric" in str(exc_info.value).lower()
 
     def test_bbox_reversed_x_coordinates(self):
         """Test bbox with reversed x coordinates (xmax < xmin)."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_bbox("10,0,5,10")  # xmin=10, xmax=5 is invalid
         assert "reversed" in str(exc_info.value).lower()
         assert "xmin" in str(exc_info.value).lower()
 
     def test_bbox_reversed_y_coordinates(self):
         """Test bbox with reversed y coordinates (ymax < ymin)."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_bbox("0,10,10,5")  # ymin=10, ymax=5 is invalid
         assert "reversed" in str(exc_info.value).lower()
         assert "ymin" in str(exc_info.value).lower()
@@ -169,32 +169,32 @@ class TestValidateWhereClause:
 
     def test_drop_keyword_blocked(self):
         """Test that DROP keyword is blocked."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("1=1; DROP TABLE users; --")
         assert "DROP" in str(exc_info.value)
         assert "dangerous" in str(exc_info.value).lower()
 
     def test_delete_keyword_blocked(self):
         """Test that DELETE keyword is blocked."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("DELETE FROM users WHERE 1=1")
         assert "DELETE" in str(exc_info.value)
 
     def test_insert_keyword_blocked(self):
         """Test that INSERT keyword is blocked."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("1=1; INSERT INTO users VALUES (1, 'hacker')")
         assert "INSERT" in str(exc_info.value)
 
     def test_update_keyword_blocked(self):
         """Test that UPDATE keyword is blocked."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("1=1; UPDATE users SET admin=true")
         assert "UPDATE" in str(exc_info.value)
 
     def test_create_keyword_blocked(self):
         """Test that CREATE keyword is blocked."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("1=1; CREATE TABLE evil ()")
         assert "CREATE" in str(exc_info.value)
 
@@ -208,7 +208,7 @@ class TestValidateWhereClause:
 
     def test_multiple_dangerous_keywords(self):
         """Test error message includes all found dangerous keywords."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_where_clause("DROP TABLE x; DELETE FROM y")
         error_msg = str(exc_info.value)
         assert "DROP" in error_msg
@@ -305,7 +305,7 @@ class TestParseGeometryInput:
                 ],
             }
         )
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_geometry_input(fc)
         assert "Multiple geometries" in str(exc_info.value)
 
@@ -358,13 +358,13 @@ class TestParseGeometryInput:
 
     def test_file_not_found(self):
         """Test error when file not found."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_geometry_input("@nonexistent_file.geojson")
         assert "not found" in str(exc_info.value)
 
     def test_invalid_geojson(self):
         """Test error on invalid GeoJSON."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_geometry_input('{"invalid": "json"}')
         # Error could be about parsing or type field
         error_msg = str(exc_info.value).lower()
@@ -373,7 +373,7 @@ class TestParseGeometryInput:
     def test_empty_feature_collection(self):
         """Test error on empty FeatureCollection."""
         fc = '{"type": "FeatureCollection", "features": []}'
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             parse_geometry_input(fc)
         assert "empty" in str(exc_info.value).lower()
 
@@ -449,7 +449,7 @@ class TestValidateColumns:
 
     def test_missing_columns(self):
         """Test with missing columns."""
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             validate_columns(["id", "nonexistent"], ["id", "name", "geometry"], "--include-cols")
         assert "nonexistent" in str(exc_info.value)
         assert "--include-cols" in str(exc_info.value)
@@ -665,7 +665,7 @@ class TestExtractIntegration:
         if not PLACES_PARQUET.exists():
             pytest.skip("Test data not available")
 
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             extract(
                 str(PLACES_PARQUET), output_file, include_cols="name,address", exclude_cols="name"
             )
@@ -803,7 +803,7 @@ class TestExtractIntegration:
         if not PLACES_PARQUET.exists():
             pytest.skip("Test data not available")
 
-        with pytest.raises(click.ClickException) as exc_info:
+        with pytest.raises(GeoParquetError) as exc_info:
             extract(str(PLACES_PARQUET), output_file, include_cols="nonexistent_column")
         assert "not found" in str(exc_info.value).lower()
 
