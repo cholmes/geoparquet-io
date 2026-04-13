@@ -1261,7 +1261,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "jsonschema", specifier = ">=4.0.0" },
-    { name = "menard", marker = "extra == 'dev'", git = "https://github.com/nlebovits/menard.git" },
+    { name = "menard", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "mercantile", specifier = ">=1.2.0" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.5.0" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.0" },
@@ -2075,11 +2075,15 @@ wheels = [
 
 [[package]]
 name = "menard"
-version = "0.3.0"
-source = { git = "https://github.com/nlebovits/menard.git#ea83d9f33e826491747af17346b6ff97aadd2403" }
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pathspec" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/71/8aad44096c0e25ab0e7762d909351d7478e474d557d24434a67173b12a37/menard-0.4.0.tar.gz", hash = "sha256:a556e615189c3fbd41abcd1fc3772fb3fc77ed82534a3f96d1644b7afcfec358", size = 428408, upload-time = "2026-04-03T09:41:52.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/d7/570ca032d366546160aa551ab372ee16436f71befa4c354f1541050ec543/menard-0.4.0-py3-none-any.whl", hash = "sha256:b4c4d23b6092870277762a390e2ea4fa1d0a0012076a872d09d321c36c462101", size = 62877, upload-time = "2026-04-03T09:41:50.849Z" },
 ]
 
 [[package]]
