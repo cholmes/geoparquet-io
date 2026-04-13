@@ -1068,7 +1068,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
 | `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
-| `ops.from_wfs(service_url, typename, version='1.1.0', bbox=None, limit=None, max_workers=1)` | Fetch from WFS service |
+| `ops.from_wfs(service_url, typename, version='1.1.0', bbox=None, limit=None, max_workers=1, page_size=10000)` | Fetch from WFS service |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |
