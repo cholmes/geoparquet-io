@@ -1,15 +1,11 @@
-# Contributing to geoparquet-io
+# Contributing
 
-Thank you for your interest in contributing!
-
-## Development Setup
-
-### Prerequisites
+## Prerequisites
 
 - Python 3.10+
-- [uv](https://docs.astral.sh/uv/) package manager
+- [uv](https://docs.astral.sh/uv/)
 
-### Getting Started
+## Setup
 
 ```bash
 git clone https://github.com/geoparquet/geoparquet-io.git
@@ -18,25 +14,15 @@ uv sync --all-extras
 uv run pre-commit install
 ```
 
-## Testing
-
-### Quick Test (Your Changes)
+## Tests
 
 ```bash
-uv run pytest tests/test_yourfile.py -v -m "not slow and not network"
-```
-
-### Full Test Suite
-
-```bash
-uv run pytest --cov=geoparquet_io --cov-report=term-missing
+uv run pytest                                          # Full suite
+uv run pytest tests/test_yourfile.py -v               # Single file
+uv run pytest -m "not slow and not network"           # Fast tests only
 ```
 
 Coverage minimum: 67% (enforced in CI).
-
-!!! tip "External Contributors"
-    Some tests check tooling availability (codespell, mypy, etc.). These may fail locally
-    but run in CI—focus on tests relevant to your changes.
 
 <!-- BEGIN GENERATED: test-markers -->
 ### Test Markers
@@ -50,89 +36,25 @@ Coverage minimum: 67% (enforced in CI).
 
 ## Code Quality
 
-**All handled by pre-commit.** See `.pre-commit-config.yaml` for the full list.
+All handled by pre-commit:
 
 ```bash
 uv run pre-commit run --all-files
 ```
 
-Style config in `pyproject.toml [tool.ruff]`. Key settings:
-- Line length: 100
-- Double quotes
-- Type hints encouraged
-
-### Pre-Push Hooks (Optional)
+## Documentation
 
 ```bash
-uv run pre-commit install --hook-type pre-push
-export ENABLE_PRE_PUSH_TESTS=1  # Enable fast tests before push
+uv run mkdocs serve
 ```
 
-## Making Changes
+## Commits
 
-### Branch Naming
+Use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): message`
 
-- `feature/description` - New features
-- `fix/description` - Bug fixes
-- `docs/description` - Documentation
+Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
-### Commit Messages
-
-**Enforced by commitizen hook.** Use [Conventional Commits](https://www.conventionalcommits.org/):
-
-```text
-<type>(scope): description
-```
-
-| Type | Use for |
-|------|---------|
-| `feat` | New features |
-| `fix` | Bug fixes |
-| `docs` | Documentation |
-| `refactor` | Code changes that don't add features or fix bugs |
-| `test` | Adding or updating tests |
-| `chore` | Maintenance tasks |
-
-**Examples:**
-```text
-feat(convert): Add streaming mode for large files
-fix(bbox): Correct metadata format for GeoParquet 1.1
-docs(readme): Update installation instructions
-```
-
-### Pull Request Process
-
-1. Create branch from `main`
-2. Make changes + add tests
-3. Run `uv run pre-commit run --all-files`
-4. Push and create PR
-5. Fill in PR template, link issues
-
-### PR Requirements
-
-- [ ] Tests pass for your changes
-- [ ] Code formatted (pre-commit handles this)
-- [ ] Documentation updated if needed
-- [ ] CHANGELOG.md updated for user-facing changes
-
-## Writing Tests
-
-```python
-def test_feature_description():
-    """Brief description of what this test verifies."""
-    # Arrange
-    input_data = create_test_data()
-
-    # Act
-    result = function_under_test(input_data)
-
-    # Assert
-    assert result == expected_value
-```
-
-Add fixtures to `tests/conftest.py`. Use markers for slow/network tests.
-
-## Architecture Note
+## Architecture
 
 New CLI commands need corresponding Python API:
 
@@ -142,19 +64,13 @@ New CLI commands need corresponding Python API:
 
 See `CLAUDE.md` for full architecture details.
 
-## Release Process
+## Publishing
 
-(For maintainers only)
+(Maintainers only)
 
 1. Update version in `pyproject.toml`
 2. Update `CHANGELOG.md`
-3. Create git tag: `git tag v0.x.0 && git push origin v0.x.0`
-4. GitHub Actions builds and publishes to PyPI
-
-## Questions?
-
-- Open an issue for bugs or feature requests
-- Check existing issues before creating new ones
+3. Create tag: `git tag v0.x.0 && git push origin v0.x.0`
 
 ## License
 

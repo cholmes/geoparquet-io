@@ -7,279 +7,132 @@ Get started with geoparquet-io in 5 minutes.
 === "CLI"
 
     ```bash
-    pipx install geoparquet-io
+    uv tool install geoparquet-io
     ```
 
 === "Python"
 
     ```bash
-    pip install geoparquet-io
+    uv add geoparquet-io
     ```
 
-See the [Installation Guide](installation.md) for more options including uv tool.
+See [Installation Guide](installation.md) for more options.
 
-## Basic Workflow
+## Reading and Writing
 
-### 1. Convert to GeoParquet (Optional)
+=== "CLI"
 
-If you're starting with Shapefile, GeoJSON, GeoPackage, or CSV/TSV, convert to optimized GeoParquet:
+    ```bash
+    # Convert Shapefile/GeoJSON/GeoPackage to optimized GeoParquet
+    gpio convert input.shp output.parquet
 
-```bash
-gpio convert input.shp output.parquet
-```
+    # Inspect file structure
+    gpio inspect myfile.parquet
+    # Rows: 1,523,847 | Size: 245.3 MB | CRS: EPSG:4326
 
-This automatically applies all best practices:
-- ZSTD compression
-- 100k row groups
-- Bbox column with metadata
-- Hilbert spatial ordering
-- GeoParquet 1.1.0 metadata
+    # Preview first 5 rows
+    gpio inspect myfile.parquet --head 5
+    ```
 
-Skip Hilbert ordering for faster conversion of large files:
+=== "Python"
 
-```bash
-gpio convert large.gpkg output.parquet --skip-hilbert
-```
+    ```python
+    import geoparquet_io as gpio
 
-### 2. Inspect Your File
+    # Read a file
+    table = gpio.read('data.parquet')
+    table.num_rows
+    # 1523847
 
-Take a look at what's in your GeoParquet file:
+    # Convert from other formats
+    table = gpio.convert('data.shp')
+    table.write('output.parquet')
+    ```
 
-```bash
-gpio inspect myfile.parquet
-```
+## Transforming Data
 
-This shows you:
+=== "CLI"
 
-- File size and row count
-- Coordinate reference system (CRS)
-- Bounding box
-- Column schema with types
+    ```bash
+    # Add bbox column for faster spatial queries
+    gpio add bbox input.parquet output.parquet
 
-Add `--head 10` to preview the first 10 rows, or `--stats` for column statistics.
+    # Sort using Hilbert curve for spatial locality
+    gpio sort hilbert input.parquet sorted.parquet
 
-### 3. Check Quality
+    # Chain with pipes—no intermediate files
+    gpio add bbox input.parquet | gpio sort hilbert - output.parquet
+    ```
 
-Validate your file against GeoParquet best practices:
+=== "Python"
 
-```bash
-gpio check all myfile.parquet
-```
+    ```python
+    import geoparquet_io as gpio
 
-This checks:
+    # Chain operations fluently
+    gpio.read('input.parquet') \
+        .add_bbox() \
+        .sort_hilbert() \
+        .write('output.parquet')
+    ```
 
-- Spatial ordering
-- Compression settings
-- Bbox metadata structure
-- Row group optimization
+## Adding Spatial Indices
 
-### 4. Optimize Existing Files
+=== "CLI"
 
-If you already have GeoParquet files, enhance them with spatial indices.
+    ```bash
+    # H3 hexagonal cells
+    gpio add h3 input.parquet output.parquet --resolution 9
 
-Add a bounding box column for faster spatial queries:
+    # S2 spherical cells
+    gpio add s2 input.parquet output.parquet --level 13
 
-```bash
-gpio add bbox input.parquet output.parquet
-```
+    # Chain multiple indices
+    gpio add bbox input.parquet | gpio add h3 -r 9 - | gpio sort hilbert - output.parquet
+    ```
 
-Sort data using a Hilbert curve for better spatial locality:
+=== "Python"
 
-```bash
-gpio sort hilbert input.parquet sorted.parquet
-```
+    ```python
+    gpio.read('input.parquet') \
+        .add_bbox() \
+        .add_h3(resolution=9) \
+        .sort_hilbert() \
+        .write('output.parquet')
+    ```
 
-### 5. Add Spatial Indices
+## Partitioning
 
-Enhance your data with additional spatial indexing:
+=== "CLI"
 
-```bash
-# Add H3 hexagonal cell IDs (resolution 9 ≈ 105m² cells)
-gpio add h3 input.parquet output_h3.parquet --resolution 9
+    ```bash
+    # Partition by H3 cells
+    gpio partition h3 input.parquet output_dir/ --resolution 6
 
-# Add A5 cell IDs
-gpio add a5 input.parquet output_a5.parquet --resolution 15
+    # Preview first
+    gpio partition h3 input.parquet --resolution 6 --preview
+    ```
 
-# Add S2 spherical cell IDs
-gpio add s2 input.parquet output_s2.parquet --level 13
+=== "Python"
 
-# Add KD-tree partition IDs (auto-selects optimal partition count)
-gpio add kdtree input.parquet output_kdtree.parquet
-
-# Add country codes via spatial join
-gpio add admin-divisions buildings.parquet buildings_with_countries.parquet
-```
-
-### 6. Partition Large Datasets
-
-Split large files into manageable partitions:
-
-```bash
-# Preview what partitions would be created
-gpio partition admin buildings.parquet --preview
-
-# Partition by country code
-gpio partition admin buildings.parquet output_dir/
-
-# Partition by H3 cells at resolution 7 (~5km² cells)
-gpio partition h3 points.parquet output_dir/ --resolution 7
-
-# Partition by KD-tree (auto-balanced spatial partitions)
-gpio partition kdtree large_file.parquet output_dir/
-```
-
-### 7. Chain Commands with Pipes
-
-gpio commands can be chained together using Unix pipes. This eliminates intermediate files and provides significant performance improvements:
-
-```bash
-# Extract, add bbox, and sort in one pipeline
-gpio extract --limit 10000 input.parquet | gpio add bbox - | gpio sort hilbert - output.parquet
-
-# Spatial filter, add indices, then partition
-gpio extract --bbox "-122.5,37.5,-122.0,38.0" input.parquet | \
-  gpio add quadkey - | \
-  gpio partition string --column quadkey --chars 4 - output_dir/
-
-# Add multiple indices in sequence
-gpio add bbox input.parquet | gpio add h3 --resolution 9 - | gpio add quadkey - output.parquet
-```
-
-Use `-` as input to read from stdin. Output is auto-detected when piped. See the [Piping Guide](../guide/piping.md) for details.
-
-## Common Patterns
-
-### Convert and Validate
-
-```bash
-# 1. Convert from Shapefile/GeoJSON/GeoPackage/CSV
-gpio convert input.shp output.parquet
-
-# 2. Verify it meets best practices
-gpio check all output.parquet
-
-# 3. Inspect the results
-gpio inspect output.parquet
-```
-
-### Convert, Fix, and Upload
-
-```bash
-# 1. Convert to GeoParquet
-gpio convert input.shp data.parquet
-
-# 2. Validate and fix issues
-gpio check all data.parquet --fix --fix-output data_fixed.parquet
-
-# 3. Upload to cloud storage
-gpio publish upload data_fixed.parquet s3://bucket/data.parquet --aws-profile prod
-```
-
-### Quality Check → Optimize → Validate
-
-For existing GeoParquet files:
-
-```bash
-# 1. Check current state
-gpio check all input.parquet
-
-# 2. Optimize (using pipes - no intermediate files)
-gpio add bbox input.parquet | gpio sort hilbert - optimized.parquet
-
-# 3. Verify improvements
-gpio check all optimized.parquet
-```
-
-### Inspect → Enhance → Partition
-
-```bash
-# 1. Understand your data
-gpio inspect buildings.parquet --stats
-
-# 2. Add country codes
-gpio add admin-divisions buildings.parquet buildings_enhanced.parquet
-
-# 3. Split by country
-gpio partition admin buildings_enhanced.parquet by_country/
-```
-
-### Preview Before Processing
-
-Always use `--preview` to understand what will happen:
-
-```bash
-# Preview partitioning strategy
-gpio partition string input.parquet --column region --preview
-
-# Preview with analysis
-gpio partition h3 input.parquet --resolution 8 --preview
-
-# If satisfied, run without --preview
-gpio partition h3 input.parquet output/ --resolution 8
-```
-
-## Using the Python API
-
-The Python API provides the best performance by keeping data in memory:
-
-```python
-import geoparquet_io as gpio
-
-# Read and inspect a file
-table = gpio.read('data.parquet')
-table.info()  # Print summary
-
-# Transform and write
-gpio.read('input.parquet') \
-    .add_bbox() \
-    .sort_hilbert() \
-    .write('optimized.parquet')
-
-# Chain multiple operations
-gpio.read('input.parquet') \
-    .extract(limit=10000) \
-    .add_bbox() \
-    .add_quadkey(resolution=12) \
-    .sort_hilbert() \
-    .write('output.parquet')
-
-# Convert from other formats
-gpio.convert('data.gpkg') \
-    .add_bbox() \
-    .sort_hilbert() \
-    .write('output.parquet')
-
-# Upload to cloud storage
-gpio.read('data.parquet') \
-    .add_bbox() \
-    .upload('s3://bucket/data.parquet')
-```
-
-The Python API is up to 5x faster than CLI operations because data stays in memory. See the [Python API documentation](../api/python-api.md) for the full reference.
-
-## Getting Help
-
-Every command has detailed help:
-
-```bash
-# General help
-gpio --help
-
-# Command group help
-gpio add --help
-gpio partition --help
-
-# Specific command help
-gpio add bbox --help
-gpio partition h3 --help
-```
+    ```python
+    gpio.read('input.parquet') \
+        .add_h3(resolution=9) \
+        .partition_by_h3('output/', resolution=6)
+    ```
+
+## Performance: CLI vs Python
+
+| Approach | Time (75MB file) | Notes |
+|----------|------------------|-------|
+| CLI (file-based) | 34s | Each command writes intermediate file |
+| CLI (piped) | 16s | Arrow IPC streaming between commands |
+| **Python API** | **7s** | In-memory, no I/O overhead |
+
+The Python API is fastest because data stays in memory. Use CLI for shell scripts and one-off commands; use Python for applications and maximum performance.
 
 ## Next Steps
 
-Now that you know the basics, explore:
-
-- [Python API Reference](../api/python-api.md) - Full Python API documentation
-- [User Guide](../guide/inspect.md) - Detailed documentation for all features
+- [User Guide](../guide/inspect.md) - Detailed feature documentation
+- [Python API Reference](../api/python-api.md) - Full API documentation
 - [CLI Reference](../cli/overview.md) - Complete command reference
-- [Examples](../examples/basic.md) - Real-world usage patterns
-- [Spatial Performance](../concepts/spatial-indices.md) - Understanding bbox, sorting, and partitioning

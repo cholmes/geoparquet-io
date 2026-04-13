@@ -219,7 +219,7 @@ See [Python API Reference](../api/python-api.md) for full documentation.
 
 - [Python API](../api/python-api.md) - For programmatic access with even better performance
 - [Extract Command](extract.md) - Filtering and column selection
-- [Add Command](../cli/add.md) - Add bbox, H3, A5, S2, quadkey, KD-tree, and admin division columns
+- [Adding Spatial Indices](add.md) - Add bbox, H3, A5, S2, quadkey, KD-tree, and admin division columns
 - [Sort Command](sort.md) - Hilbert, quadkey, and column sorting
 - [Reproject Guide](../cli/convert.md) - Reprojection options
 - [Partition Command](partition.md) - Partitioning strategies

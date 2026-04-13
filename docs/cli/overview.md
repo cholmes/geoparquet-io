@@ -17,8 +17,8 @@ gpio [OPTIONS] COMMAND [ARGS]...
 - **[extract](extract.md)** - Filter and subset GeoParquet files
 - **[check](check.md)** - Validate files and fix issues automatically
 - **[sort](sort.md)** - Spatially sort using Hilbert curves
-- **[add](add.md)** - Enhance files with spatial indices
-- **[partition](partition.md)** - Split files into optimized partitions
+- **[add](../guide/add.md)** - Enhance files with spatial indices
+- **[partition](../guide/partition.md)** - Split files into optimized partitions
 - **[benchmark](benchmark.md)** - Compare conversion performance
 
 ### publish

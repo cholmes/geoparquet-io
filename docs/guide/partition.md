@@ -659,5 +659,5 @@ See [Sub-Partitioning Large Files](sub-partitioning.md) for details.
 
 ## See Also
 
-- [CLI Reference: partition](../cli/partition.md)
+- [CLI Reference](../cli/overview.md) - Full command reference
 - [add command](add.md) - Add spatial indices before partitioning
