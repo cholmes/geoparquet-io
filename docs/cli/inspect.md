@@ -19,18 +19,20 @@ This will show all available options for the `inspect` command.
 - `inspect meta` - Parquet metadata, GeoParquet metadata, and bloom filter info
 - `inspect layers` - List layers in multi-layer formats (GeoPackage, FileGDB)
 
-## Options
+## Global Options
 
-- `--head [N]` - Show first N rows (defaults to 10 if N not specified)
-- `--tail [N]` - Show last N rows (defaults to 10 if N not specified)
-- `--stats` - Show column statistics (nulls, min/max, unique counts) and per-column compression ratios
 - `--json` - Output as JSON for scripting
-- `--geo-metadata` - Show GeoParquet metadata from 'geo' key
-- `--parquet-metadata` - Show Parquet file metadata (includes bloom filter info)
-- `--parquet-geo-metadata` - Show geospatial metadata from Parquet footer
+- `--verbose` - Show detailed output
+
+### inspect summary Options
+
+- `--check-all-files` - For partitioned datasets, check all files
 
 ### inspect meta Options
 
+- `--geo` - Show only GeoParquet 'geo' metadata
+- `--parquet` - Show only Parquet file metadata
+- `--parquet-geo` - Show only Parquet geospatial metadata
 - `--geo-stats` - Show per-row-group geo_bbox bounding box statistics
 - `--row-groups N` - Number of row groups to display (default: 1)
 - `--json` - Output as JSON
@@ -38,39 +40,38 @@ This will show all available options for the `inspect` command.
 ## Examples
 
 ```bash
-# Basic inspection
+# Basic inspection (runs summary by default)
 gpio inspect data.parquet
 
-# Preview first 10 rows (default when no value given)
-gpio inspect data.parquet --head
+# Preview first 10 rows (default)
+gpio inspect head data.parquet
 
 # Preview first 20 rows
-gpio inspect data.parquet --head 20
+gpio inspect head data.parquet 20
 
-# Preview last 10 rows (default when no value given)
-gpio inspect data.parquet --tail
+# Preview last 10 rows (default)
+gpio inspect tail data.parquet
 
 # Preview last 5 rows
-gpio inspect data.parquet --tail 5
+gpio inspect tail data.parquet 5
 
-# Preview with statistics
-gpio inspect data.parquet --head --stats
+# Show column statistics
+gpio inspect stats data.parquet
 
-# View GeoParquet metadata
-gpio inspect data.parquet --geo-metadata
+# Comprehensive metadata
+gpio inspect meta data.parquet
 
-# View GeoParquet metadata as JSON
-gpio inspect data.parquet --geo-metadata --json
+# GeoParquet 'geo' key metadata only
+gpio inspect meta data.parquet --geo
 
-# View Parquet file metadata
-gpio inspect data.parquet --parquet-metadata
-
-# View geospatial metadata from Parquet footer
-gpio inspect data.parquet --parquet-geo-metadata
+# JSON output for scripting
+gpio inspect meta data.parquet --json
 ```
 
 ## Metadata Flags Comparison
 
-- `--geo-metadata`: Shows GeoParquet metadata from the 'geo' key (application-level metadata)
-- `--parquet-metadata`: Shows complete Parquet file metadata (row groups, compression, schema)
-- `--parquet-geo-metadata`: Shows geospatial metadata from Parquet footer (GEOMETRY/GEOGRAPHY logical types, bounding boxes, geospatial statistics)
+Use these flags with `gpio inspect meta`:
+
+- `--geo`: Shows GeoParquet metadata from the 'geo' key (application-level metadata)
+- `--parquet`: Shows complete Parquet file metadata (row groups, compression, schema)
+- `--parquet-geo`: Shows geospatial metadata from Parquet footer (GEOMETRY/GEOGRAPHY logical types, bounding boxes, geospatial statistics)

@@ -353,5 +353,5 @@ This verifies:
 
 - [Best Practices](best-practices.md) - Optimization techniques
 - [Sort Command](../cli/sort.md) - Hilbert and quadkey sorting
-- [Add Command](../cli/add.md) - Adding bbox, H3, A5, S2, quadkey columns
-- [Partition Command](../cli/partition.md) - Partitioning strategies
+- [Adding Spatial Indices](../guide/add.md) - Adding bbox, H3, A5, S2, quadkey columns
+- [Partitioning Files](../guide/partition.md) - Partitioning strategies

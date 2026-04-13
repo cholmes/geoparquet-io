@@ -259,7 +259,7 @@ hilbert_order(
 )
 ```
 
-See the [Core API Reference](../api/core.md) for all available functions.
+See the [Python API Reference](../api/python-api.md) for all available functions.
 
 ## Next Steps
 

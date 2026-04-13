@@ -426,6 +426,6 @@ All `add` commands support:
 
 ## See Also
 
-- [CLI Reference: add](../cli/add.md)
+- [CLI Reference](../cli/overview.md) - Full command reference
 - [partition command](partition.md)
 - [sort command](sort.md)
