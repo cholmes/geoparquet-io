@@ -168,6 +168,7 @@ Complexity guidance: guard clauses, dictionary dispatch, max 30-40 lines/functio
 
 **Commits**: Enforced by commitizen hook. Format: `type(scope): message`
 **PRs**: Update `docs/guide/` and `docs/api/python-api.md` if API changed.
+**Releases**: Use `uv run cz bump` to update version in `pyproject.toml` + `cli/main.py`, changelog, and tag. CI enforces version consistency.
 
 ---
 

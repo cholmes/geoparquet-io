@@ -78,7 +78,7 @@ from geoparquet_io.core.upload import check_credentials
 from geoparquet_io.core.upload import upload as upload_impl
 
 # Version info
-__version__ = "1.1.0b1"
+__version__ = "1.0.0"
 
 
 class OptionalIntCommand(GlobAwareCommand):

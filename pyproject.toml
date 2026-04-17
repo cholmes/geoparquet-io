@@ -256,7 +256,10 @@ skips = [
 [tool.commitizen]
 name = "cz_conventional_commits"
 version = "1.0.0"
-version_files = ["pyproject.toml:^version"]
+version_files = [
+    "pyproject.toml:^version",
+    "geoparquet_io/cli/main.py:^__version__",
+]
 tag_format = "v$version"
 update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"

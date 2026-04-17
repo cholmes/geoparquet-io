@@ -62,6 +62,22 @@ jobs:
       - name: Validate CLAUDE.md
         run: uv run python scripts/validate_claude_md.py
 
+      - name: Check version consistency
+        run: |
+          python3 << 'PYEOF'
+          import tomllib, re, sys
+          with open("pyproject.toml", "rb") as f:
+              pyproject_ver = tomllib.load(f)["project"]["version"]
+          with open("geoparquet_io/cli/main.py") as f:
+              m = re.search(r'^__version__\s*=\s*["\x27](.*?)["\x27]', f.read(), re.MULTILINE)
+              cli_ver = m.group(1) if m else "NOT FOUND"
+          if pyproject_ver != cli_ver:
+              print(f"::error::Version mismatch: pyproject.toml={pyproject_ver}, cli/main.py={cli_ver}")
+              print("Run 'uv run cz bump' to update all version files, or manually sync them.")
+              sys.exit(1)
+          print(f"Versions match: {pyproject_ver}")
+          PYEOF
+
   security:
     runs-on: ubuntu-latest
     steps:
