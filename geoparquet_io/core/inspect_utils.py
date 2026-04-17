@@ -17,7 +17,7 @@ from rich.table import Table
 from rich.text import Text
 
 from geoparquet_io.core.common import format_size
-from geoparquet_io.core.crs_utils import _extract_crs_identifier
+from geoparquet_io.core.crs_utils import _extract_crs_identifier, is_default_crs
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
@@ -136,6 +136,7 @@ def _crs_are_equivalent(crs1: Any, crs2: Any) -> bool:
     Check if two CRS values are equivalent.
 
     Compares by extracting authority and code from both values.
+    Falls back to pyproj semantic comparison for PROJJSON without authority ids.
     Handles PROJJSON dicts, "EPSG:31287" strings, and URN formats.
 
     Returns:
@@ -144,10 +145,18 @@ def _crs_are_equivalent(crs1: Any, crs2: Any) -> bool:
     id1 = _extract_crs_identifier(crs1)
     id2 = _extract_crs_identifier(crs2)
 
-    if id1 is None or id2 is None:
-        return False
+    if id1 is not None and id2 is not None:
+        return id1 == id2
 
-    return id1 == id2
+    if isinstance(crs1, dict) and isinstance(crs2, dict):
+        try:
+            from pyproj import CRS
+
+            return CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2))
+        except Exception:
+            return False
+
+    return False
 
 
 def _detect_metadata_mismatches(
@@ -176,10 +185,11 @@ def _detect_metadata_mismatches(
                 f"but GeoParquet metadata has '{geoparquet_crs_display}'"
             )
     elif parquet_crs and not geoparquet_crs:
-        parquet_crs_display = _extract_crs_string(parquet_crs) or str(parquet_crs)
-        warnings.append(
-            f"CRS in Parquet geo type ('{parquet_crs_display}') but missing in GeoParquet metadata"
-        )
+        if not is_default_crs(parquet_crs):
+            parquet_crs_display = _extract_crs_string(parquet_crs) or str(parquet_crs)
+            warnings.append(
+                f"CRS in Parquet geo type ('{parquet_crs_display}') but missing in GeoParquet metadata"
+            )
     elif geoparquet_crs and not parquet_crs:
         # GeoParquet has CRS but Parquet type doesn't - might be expected
         pass
