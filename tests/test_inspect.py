@@ -790,6 +790,145 @@ class TestCRSComparison:
 
         assert _format_crs_for_display("EPSG:4326") == "EPSG:4326"
 
+    def test_no_warning_when_parquet_has_default_crs_and_geoparquet_omits(self):
+        """Missing CRS in GeoParquet metadata means OGC:CRS84 — no warning if Parquet agrees."""
+        from geoparquet_io.core.inspect_utils import _detect_metadata_mismatches
+
+        parquet_geo_info = {
+            "crs": {
+                "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+                "type": "GeographicCRS",
+                "name": "WGS 84 (CRS84)",
+                "id": {"authority": "OGC", "code": "CRS84"},
+            }
+        }
+        geoparquet_info = {}
+
+        warnings = _detect_metadata_mismatches(parquet_geo_info, geoparquet_info)
+        assert len(warnings) == 0
+
+    def test_no_warning_when_parquet_has_epsg4326_and_geoparquet_omits(self):
+        """EPSG:4326 is also a default CRS — no warning if GeoParquet metadata omits CRS."""
+        from geoparquet_io.core.inspect_utils import _detect_metadata_mismatches
+
+        parquet_geo_info = {
+            "crs": {
+                "type": "GeographicCRS",
+                "name": "WGS 84",
+                "id": {"authority": "EPSG", "code": 4326},
+            }
+        }
+        geoparquet_info = {}
+
+        warnings = _detect_metadata_mismatches(parquet_geo_info, geoparquet_info)
+        assert len(warnings) == 0
+
+    def test_warning_when_parquet_has_non_default_crs_and_geoparquet_omits(self):
+        """Non-default CRS in Parquet but missing in GeoParquet should still warn."""
+        from geoparquet_io.core.inspect_utils import _detect_metadata_mismatches
+
+        parquet_geo_info = {
+            "crs": {
+                "type": "ProjectedCRS",
+                "name": "NAD83 / Conus Albers",
+                "id": {"authority": "EPSG", "code": 5070},
+            }
+        }
+        geoparquet_info = {}
+
+        warnings = _detect_metadata_mismatches(parquet_geo_info, geoparquet_info)
+        assert len(warnings) == 1
+        assert "missing in GeoParquet metadata" in warnings[0]
+
+    def test_crs_are_equivalent_projjson_without_id(self):
+        """PROJJSON dicts without id fields should use pyproj semantic comparison."""
+        from geoparquet_io.core.inspect_utils import _crs_are_equivalent
+
+        crs1 = {
+            "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+            "type": "GeographicCRS",
+            "name": "WGS 84",
+            "datum": {
+                "type": "GeodeticReferenceFrame",
+                "name": "World Geodetic System 1984",
+                "ellipsoid": {
+                    "name": "WGS 84",
+                    "semi_major_axis": 6378137,
+                    "inverse_flattening": 298.257223563,
+                },
+            },
+            "coordinate_system": {
+                "subtype": "ellipsoidal",
+                "axis": [
+                    {
+                        "name": "Geodetic latitude",
+                        "abbreviation": "Lat",
+                        "direction": "north",
+                        "unit": "degree",
+                    },
+                    {
+                        "name": "Geodetic longitude",
+                        "abbreviation": "Lon",
+                        "direction": "east",
+                        "unit": "degree",
+                    },
+                ],
+            },
+        }
+        crs2 = dict(crs1)
+
+        assert _crs_are_equivalent(crs1, crs2) is True
+
+    def test_crs_are_equivalent_projjson_without_id_different(self):
+        """Different PROJJSON dicts without id fields should not be equivalent."""
+        from geoparquet_io.core.inspect_utils import _crs_are_equivalent
+
+        crs1 = {
+            "type": "GeographicCRS",
+            "name": "WGS 84",
+            "datum": {
+                "type": "GeodeticReferenceFrame",
+                "name": "World Geodetic System 1984",
+                "ellipsoid": {
+                    "name": "WGS 84",
+                    "semi_major_axis": 6378137,
+                    "inverse_flattening": 298.257223563,
+                },
+            },
+            "coordinate_system": {
+                "subtype": "ellipsoidal",
+                "axis": [
+                    {
+                        "name": "Geodetic latitude",
+                        "abbreviation": "Lat",
+                        "direction": "north",
+                        "unit": "degree",
+                    },
+                    {
+                        "name": "Geodetic longitude",
+                        "abbreviation": "Lon",
+                        "direction": "east",
+                        "unit": "degree",
+                    },
+                ],
+            },
+        }
+        crs2 = {
+            "type": "ProjectedCRS",
+            "name": "NAD83 / Conus Albers",
+            "datum": {
+                "type": "GeodeticReferenceFrame",
+                "name": "North American Datum 1983",
+                "ellipsoid": {
+                    "name": "GRS 1980",
+                    "semi_major_axis": 6378137,
+                    "inverse_flattening": 298.257222101,
+                },
+            },
+        }
+
+        assert _crs_are_equivalent(crs1, crs2) is False
+
 
 # Tests for new subcommand structure
 class TestInspectSubcommands:
