@@ -36,6 +36,7 @@ from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
 from geoparquet_io.core.reproject import (
     _detect_crs_from_table,
     _detect_geometry_column_from_table,
+    _detect_source_crs,
 )
 
 # Helper functions for CRS testing
@@ -768,3 +769,62 @@ class TestCRSDetectionHelpers:
 
         crs = _detect_crs_from_table(table, "geometry")
         assert crs == "EPSG:4326"
+
+    def test_detect_crs_from_table_projjson_without_id(self):
+        """PROJJSON without id field should use pyproj to resolve, not fall back to 4326."""
+        import pyarrow as pa
+        from pyproj import CRS as PyprojCRS
+
+        # Full PROJJSON for Vermont State Plane (EPSG:32145) but without the id field
+        full_projjson = PyprojCRS.from_authority("EPSG", 32145).to_json_dict()
+        del full_projjson["id"]
+
+        geo_meta = {
+            "version": "1.0.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {
+                    "encoding": "WKB",
+                    "crs": full_projjson,
+                }
+            },
+        }
+        schema = pa.schema([pa.field("geometry", pa.binary())]).with_metadata(
+            {b"geo": json.dumps(geo_meta).encode("utf-8")}
+        )
+        table = pa.table({"geometry": [b""]}, schema=schema)
+
+        crs = _detect_crs_from_table(table, "geometry")
+        assert crs != "EPSG:4326", "Should not fall back to 4326 when valid PROJJSON exists"
+        # Should resolve to EPSG:32145 via pyproj, or be a PROJJSON string DuckDB can use
+        assert "32145" in crs or crs.startswith("{")
+
+    def test_detect_source_crs_projjson_without_id(self, tmp_path):
+        """_detect_source_crs should not fall back to 4326 when PROJJSON lacks id field."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from pyproj import CRS as PyprojCRS
+
+        full_projjson = PyprojCRS.from_authority("EPSG", 32145).to_json_dict()
+        del full_projjson["id"]
+
+        geo_meta = {
+            "version": "1.0.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {
+                    "encoding": "WKB",
+                    "crs": full_projjson,
+                }
+            },
+        }
+        schema = pa.schema([pa.field("geometry", pa.binary())]).with_metadata(
+            {b"geo": json.dumps(geo_meta).encode("utf-8")}
+        )
+        table = pa.table({"geometry": [b"\x01\x01\x00\x00\x00" + b"\x00" * 16]}, schema=schema)
+        test_file = str(tmp_path / "test.parquet")
+        pq.write_table(table, test_file)
+
+        crs = _detect_source_crs(test_file, verbose=False)
+        assert crs != "EPSG:4326", "Should not fall back to 4326 when valid PROJJSON exists"
+        assert "32145" in crs or crs.startswith("{")

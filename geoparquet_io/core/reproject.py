@@ -68,6 +68,36 @@ def _detect_geometry_column_from_table(table: pa.Table) -> str:
     return "geometry"
 
 
+def _resolve_crs_to_string(crs_info) -> str | None:
+    """Resolve CRS info (PROJJSON dict or string) to a CRS string for ST_Transform.
+
+    Tries authority identifier first, then pyproj resolution, then raw PROJJSON.
+
+    Returns:
+        CRS string like "EPSG:4326" or PROJJSON string, or None if unresolvable
+    """
+    if not crs_info:
+        return None
+
+    identifier = _extract_crs_identifier(crs_info)
+    if identifier:
+        authority, code = identifier
+        return f"{authority}:{code}"
+
+    if isinstance(crs_info, dict):
+        try:
+            from pyproj import CRS
+
+            authority = CRS.from_json_dict(crs_info).to_authority()
+            if authority:
+                return f"{authority[0]}:{authority[1]}"
+        except Exception:
+            pass
+        return json.dumps(crs_info)
+
+    return None
+
+
 def _detect_crs_from_table(table: pa.Table, geom_col: str) -> str:
     """Detect CRS from table metadata.
 
@@ -76,7 +106,7 @@ def _detect_crs_from_table(table: pa.Table, geom_col: str) -> str:
         geom_col: Geometry column name
 
     Returns:
-        CRS string like "EPSG:4326"
+        CRS string like "EPSG:4326" or PROJJSON string for ST_Transform
     """
     if table.schema.metadata and b"geo" in table.schema.metadata:
         try:
@@ -84,11 +114,9 @@ def _detect_crs_from_table(table: pa.Table, geom_col: str) -> str:
             columns = geo_meta.get("columns", {})
             if geom_col in columns:
                 crs_info = columns[geom_col].get("crs")
-                if crs_info:
-                    identifier = _extract_crs_identifier(crs_info)
-                    if identifier:
-                        authority, code = identifier
-                        return f"{authority}:{code}"
+                resolved = _resolve_crs_to_string(crs_info)
+                if resolved:
+                    return resolved
         except (json.JSONDecodeError, KeyError):
             pass
     # Default to WGS84 per GeoParquet spec
@@ -191,16 +219,13 @@ def _detect_source_crs(input_url: str, verbose: bool) -> str:
         verbose: Whether to print verbose output
 
     Returns:
-        CRS string like "EPSG:4326"
+        CRS string like "EPSG:4326" or PROJJSON string for ST_Transform
     """
-    # Try to get CRS from GeoParquet metadata
     crs_info = extract_crs_from_parquet(input_url, verbose=verbose)
 
-    if crs_info:
-        identifier = _extract_crs_identifier(crs_info)
-        if identifier:
-            authority, code = identifier
-            return f"{authority}:{code}"
+    resolved = _resolve_crs_to_string(crs_info)
+    if resolved:
+        return resolved
 
     # Default to WGS84 per GeoParquet spec (missing CRS = WGS84)
     if verbose:
