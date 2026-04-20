@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import time
 import uuid
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -23,9 +22,13 @@ from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.exceptions import (
+    BatchTooLargeError,
     GeoParquetError,
     InvalidParameterError,
     RemoteAccessError,
+)
+from geoparquet_io.core.http_retry import (
+    make_request_with_retry,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.remote import setup_aws_profile_if_needed
@@ -75,65 +78,30 @@ class ArcGISLayerInfo:
     total_count: int
 
 
-# Module-level HTTP client for connection pooling
-_shared_http_client = None
+# Adaptive batch size fallback sequence
+BATCH_SIZE_FALLBACKS = [1000, 500, 100, 50, 10, 1]
 
 
-def _get_shared_http_client():
+def _get_reduced_batch_size(current_batch: int) -> int | None:
     """
-    Get or create a shared HTTP client for connection pooling.
+    Get the next smaller batch size from the fallback sequence.
 
-    This reuses TCP connections across requests, saving ~100-200ms per request
-    on TLS handshakes. HTTP/2 is DISABLED due to compatibility issues with
-    ArcGIS servers (they disconnect after sustained use).
+    Args:
+        current_batch: Current batch size that failed
 
     Returns:
-        httpx.Client: Shared client instance with connection pooling enabled
+        Next smaller batch size, or None if already at minimum (1)
     """
-    global _shared_http_client
+    if current_batch <= 1:
+        return None
 
-    if _shared_http_client is None:
-        try:
-            import httpx
+    # Find the first fallback smaller than current batch
+    for fallback in BATCH_SIZE_FALLBACKS:
+        if fallback < current_batch:
+            return fallback
 
-            _shared_http_client = httpx.Client(
-                timeout=60.0,
-                follow_redirects=True,
-                http2=False,  # Disabled - causes RemoteProtocolError with ArcGIS
-                limits=httpx.Limits(
-                    max_connections=20,  # Allow more connections for parallel workers
-                    max_keepalive_connections=20,
-                ),
-            )
-        except ImportError as e:
-            raise GeoParquetError(
-                "httpx is required for ArcGIS conversion. Install with: pip install httpx"
-            ) from e
-
-    return _shared_http_client
-
-
-def _reset_http_client():
-    """
-    Reset the shared HTTP client (for testing or cleanup).
-
-    This closes the existing client and allows a new one to be created.
-    """
-    global _shared_http_client
-
-    if _shared_http_client is not None:
-        _shared_http_client.close()
-        _shared_http_client = None
-
-
-def _get_http_client():
-    """
-    Get HTTP client for making requests.
-
-    Deprecated: Use _get_shared_http_client() for connection pooling.
-    Kept for backward compatibility.
-    """
-    return _get_shared_http_client()
+    # current_batch is very small but > 1, try 1
+    return 1
 
 
 def _make_request(
@@ -143,72 +111,39 @@ def _make_request(
     data: dict | None = None,
     max_retries: int = 3,
     retry_delay: float = 1.0,
+    batch_size: int | None = None,
 ) -> dict:
     """
     Make HTTP request with retry logic.
 
-    Uses shared HTTP client for connection pooling and enables gzip compression
-    to reduce bandwidth usage by 60-80%.
+    Delegates to shared http_retry module for connection pooling and error handling.
+
+    Args:
+        method: HTTP method ("GET" or "POST")
+        url: Request URL
+        params: Query parameters
+        data: POST data
+        max_retries: Number of retry attempts
+        retry_delay: Base delay between retries
+        batch_size: Current batch size (for BatchTooLargeError context)
+
+    Returns:
+        Parsed JSON response
+
+    Raises:
+        RemoteAccessError: For HTTP errors
+        BatchTooLargeError: When server returns non-JSON (batch too large)
     """
-    import httpx
-
-    last_exception = None
-
-    # Headers for compression support (60-80% bandwidth reduction)
-    headers = {
-        "Accept-Encoding": "gzip, deflate",
-    }
-
-    for attempt in range(max_retries):
-        try:
-            client = _get_shared_http_client()
-            if method == "GET":
-                response = client.get(url, params=params, headers=headers)
-            else:
-                response = client.post(url, data=data, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except httpx.RemoteProtocolError as e:
-            # Server disconnected - reset connection pool and retry
-            last_exception = e
-            if attempt < max_retries - 1:
-                _reset_http_client()  # Force fresh connection
-                time.sleep(retry_delay * (attempt + 1))
-        except httpx.TimeoutException as e:
-            last_exception = e
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
-        except httpx.NetworkError as e:
-            last_exception = e
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            # Retry on 429 (rate limited) or 5xx (server errors)
-            if status == 429 or (500 <= status < 600):
-                last_exception = e
-                if attempt < max_retries - 1:
-                    # Honor Retry-After header if present
-                    retry_after = e.response.headers.get("Retry-After")
-                    if retry_after and retry_after.isdigit():
-                        delay = float(retry_after)
-                    else:
-                        delay = retry_delay * (attempt + 1)
-                    time.sleep(delay)
-                    continue
-            elif status == 401:
-                raise RemoteAccessError(
-                    url, "Authentication required. Use --token or --username/--password."
-                ) from None
-            elif status == 403:
-                raise RemoteAccessError(
-                    url, "Access denied. Check your credentials and service permissions."
-                ) from None
-            elif status == 404:
-                raise RemoteAccessError(url, "Service not found (404). Check the URL.") from None
-            raise RemoteAccessError(url, f"HTTP error {status}: {e}") from e
-
-    raise RemoteAccessError(url, f"Request failed after {max_retries} attempts: {last_exception}")
+    return make_request_with_retry(
+        method=method,
+        url=url,
+        params=params,
+        data=data,
+        max_retries=max_retries,
+        retry_delay=retry_delay,
+        parse_json=True,
+        batch_size=batch_size,
+    )
 
 
 def _handle_arcgis_response(data: dict, context: str) -> dict:
@@ -525,7 +460,7 @@ def fetch_features_page(
 
     params = _add_token_to_params(params, token)
 
-    data = _make_request("GET", query_url, params=params)
+    data = _make_request("GET", query_url, params=params, batch_size=limit)
 
     # GeoJSON responses don't have the standard error format
     # Check if we got features or an error
@@ -576,9 +511,12 @@ def fetch_all_features(
             f"Recommended range: 1-10 (2-3 for best balance)"
         )
 
+    # Sanitize and validate batch_size
+    sanitized_batch = batch_size if batch_size and batch_size > 0 else DEFAULT_PAGE_SIZE
+
     # Determine batch size (respect server limit)
     max_batch = min(
-        batch_size or DEFAULT_PAGE_SIZE,
+        sanitized_batch,
         layer_info.max_record_count or DEFAULT_PAGE_SIZE,
     )
 
@@ -588,28 +526,48 @@ def fetch_all_features(
         total = min(total, max_features)
 
     if max_workers == 1:
-        # Sequential fetching (original behavior)
+        # Sequential fetching with adaptive batch size
         offset = 0
         fetched = 0
+        effective_batch = max_batch  # May be reduced on BatchTooLargeError
 
         while offset < total:
             # Adjust batch size for last page if limit applies
             remaining = total - offset
-            current_batch = min(max_batch, remaining)
+            current_batch = min(effective_batch, remaining)
 
             end = min(offset + current_batch, total)
             progress(f"Fetching features {offset + 1}-{end} of {total}...")
 
-            page = fetch_features_page(
-                service_url,
-                offset,
-                current_batch,
-                where,
-                bbox=bbox,
-                out_fields=out_fields,
-                token=token,
-                verbose=verbose,
-            )
+            try:
+                page = fetch_features_page(
+                    service_url,
+                    offset,
+                    current_batch,
+                    where,
+                    bbox=bbox,
+                    out_fields=out_fields,
+                    token=token,
+                    verbose=verbose,
+                )
+            except BatchTooLargeError as e:
+                # Server couldn't handle batch size - reduce and retry
+                new_batch = _get_reduced_batch_size(current_batch)
+                if new_batch is None:
+                    # Already at minimum batch size, can't reduce further
+                    raise GeoParquetError(
+                        f"Server cannot handle even batch_size=1. "
+                        f"This layer may have geometry too complex to download. "
+                        f"Original error: {e.reason}"
+                    ) from e
+
+                warn(
+                    f"Server returned error for batch_size={current_batch}. "
+                    f"Reducing to {new_batch} and retrying..."
+                )
+                effective_batch = new_batch
+                # Don't increment offset - retry same position with smaller batch
+                continue
 
             features = page.get("features", [])
             if not features:
@@ -637,6 +595,7 @@ def fetch_all_features(
 
         fetched = 0
         batch_start = 0
+        effective_batch = max_batch  # May be reduced on BatchTooLargeError
 
         # Reuse a single thread pool for all batches (more efficient)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -645,12 +604,12 @@ def fetch_all_features(
                 futures = []
 
                 for i in range(max_workers):
-                    offset = batch_start + (i * max_batch)
+                    offset = batch_start + (i * effective_batch)
                     if offset >= total:
                         break
 
                     remaining = total - offset
-                    current_batch = min(max_batch, remaining)
+                    current_batch = min(effective_batch, remaining)
                     end = min(offset + current_batch, total)
 
                     # Print progress message synchronously (avoid race condition)
@@ -667,20 +626,61 @@ def fetch_all_features(
                         token=token,
                         verbose=False,  # Disable per-request verbose to avoid race conditions
                     )
-                    futures.append((offset, future))
+                    futures.append((offset, current_batch, future))
 
                 # Collect results in order
                 results = []
-                for offset, future in futures:
+                batch_too_large = False
+                failed_batch_size = None
+                failed_at_index = None
+
+                for idx, (offset, req_batch_size, future) in enumerate(futures):
                     try:
                         page = future.result()
                         results.append((offset, page))
+                    except BatchTooLargeError:
+                        # Mark for retry with smaller batch
+                        batch_too_large = True
+                        failed_batch_size = req_batch_size
+                        failed_at_index = idx
+                        break
                     except Exception as e:
                         # If one request fails, propagate the error (fail-fast)
-                        # Retries can be added later if needed
                         raise RemoteAccessError(
                             service_url, f"Failed to fetch features at offset {offset}: {e}"
                         ) from e
+
+                if batch_too_large:
+                    # Cancel/drain remaining futures to avoid duplicate requests
+                    from concurrent.futures import CancelledError
+
+                    for remaining_idx in range(failed_at_index + 1, len(futures)):
+                        _, _, remaining_future = futures[remaining_idx]
+                        remaining_future.cancel()
+                        # Drain any that couldn't be cancelled
+                        try:
+                            remaining_future.result(timeout=0.1)
+                        except (CancelledError, BatchTooLargeError, Exception):
+                            pass  # Expected - just draining
+
+                    # Clear for retry
+                    futures.clear()
+                    results.clear()
+
+                    # Reduce batch size and restart from batch_start
+                    new_batch = _get_reduced_batch_size(failed_batch_size or effective_batch)
+                    if new_batch is None:
+                        raise GeoParquetError(
+                            "Server cannot handle even batch_size=1. "
+                            "This layer may have geometry too complex to download."
+                        )
+                    warn(
+                        f"Server returned error for batch_size={failed_batch_size}. "
+                        f"Reducing to {new_batch} and retrying..."
+                    )
+                    effective_batch = new_batch
+                    # Don't increment batch_start - retry from same position
+                    continue
 
                 # Sort by offset to maintain order
                 results.sort(key=lambda x: x[0])
@@ -699,7 +699,7 @@ def fetch_all_features(
                     fetched += len(features)
 
                 # Move to next batch
-                batch_start += max_workers * max_batch
+                batch_start += max_workers * effective_batch
 
                 # Stop if we've hit the user limit
                 if max_features is not None and fetched >= max_features:
@@ -1153,6 +1153,7 @@ def convert_arcgis_to_geoparquet(
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     max_workers: int = 1,
+    batch_size: int | None = None,
     compression: str = "ZSTD",
     compression_level: int = 15,
     verbose: bool = False,
@@ -1189,6 +1190,7 @@ def convert_arcgis_to_geoparquet(
         skip_hilbert: Skip Hilbert spatial ordering
         skip_bbox: Skip adding bbox column for spatial query optimization
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        batch_size: Features per request (default: server's maxRecordCount, auto-reduces on error)
         compression: Compression codec (ZSTD, GZIP, etc.)
         compression_level: Compression level
         verbose: Whether to print verbose output
@@ -1228,6 +1230,7 @@ def convert_arcgis_to_geoparquet(
         include_cols=include_cols,
         exclude_cols=exclude_cols,
         limit=limit,
+        batch_size=batch_size,
         max_workers=max_workers,
         verbose=verbose,
     )

@@ -2403,6 +2403,12 @@ def extract_geoparquet(
     default=1,
     help="Number of concurrent requests (1-10). Default: 1 (sequential). Values 2-3 recommended for speedup. Higher values may trigger rate limits.",
 )
+@click.option(
+    "--batch-size",
+    type=click.IntRange(min=1, max=5000),
+    default=None,
+    help="Features per request. Default: server's maxRecordCount. Auto-reduces on server errors. Use smaller values for layers with complex geometries.",
+)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -2427,6 +2433,7 @@ def extract_arcgis(
     skip_hilbert,
     skip_bbox,
     workers,
+    batch_size,
     geoparquet_version,
     overwrite,
     verbose,
@@ -2532,6 +2539,7 @@ def extract_arcgis(
         skip_hilbert=skip_hilbert,
         skip_bbox=skip_bbox,
         max_workers=workers,
+        batch_size=batch_size,
         compression=compression.upper(),
         compression_level=compression_level,
         verbose=verbose,
