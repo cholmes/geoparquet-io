@@ -77,9 +77,6 @@ from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_i
 from geoparquet_io.core.upload import check_credentials
 from geoparquet_io.core.upload import upload as upload_impl
 
-# Version info
-__version__ = "1.1.0b1"
-
 
 class OptionalIntCommand(GlobAwareCommand):
     """Custom Command that supports options with optional integer values.
@@ -117,7 +114,7 @@ class OptionalIntCommand(GlobAwareCommand):
 
 @with_plugins(entry_points(group="gpio.plugins"))
 @click.group()
-@click.version_option(version=__version__, prog_name="geoparquet-io")
+@click.version_option(prog_name="geoparquet-io")
 @click.option("--timestamps", is_flag=True, help="Show timestamps in output messages")
 @click.pass_context
 def cli(ctx, timestamps):

@@ -1,0 +1,106 @@
+# Tag-based release workflow using commitizen
+#
+# This workflow:
+# 1. Detects if the merged commit is a version bump (from `cz bump` in PR)
+# 2. If yes: extracts version, creates git tag, builds, publishes to PyPI
+# 3. If no: exits successfully (normal PR merge)
+#
+# Developer workflow:
+# 1. Accumulate changes via normal PR merges
+# 2. When ready to release, create a PR running: uv run cz bump --changelog
+# 3. Merge bump PR -> this workflow creates tag and publishes
+#
+# Recovery workflow (when release fails after bump merge):
+# 1. Delete orphan tag if exists: git push origin :refs/tags/vX.Y.Z
+# 2. Trigger manually: gh workflow run release.yml --ref main
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Manual trigger for recovery scenarios
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    # Run if: push with bump commit OR manual trigger (workflow_dispatch)
+    if: startsWith(github.event.head_commit.message, 'bump:') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write  # Required for creating tags and releases
+      id-token: write  # Required for trusted PyPI publishing
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for tag creation
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Extract version from pyproject.toml
+        id: version
+        run: |
+          # Use head -1 because pyproject.toml has two version lines:
+          # 1. [project].version (the package version - what we want)
+          # 2. [tool.commitizen].version (kept in sync by cz bump)
+          VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION (tag: v$VERSION)"
+
+      - name: Check release status
+        id: release_check
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+
+          # Check if GitHub Release exists (the real indicator of a completed release)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, nothing to do"
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+            # Check if tag exists (may need to skip tag creation but still publish)
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              echo "Tag $TAG exists but no release - recovery mode"
+              echo "tag_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "Tag $TAG does not exist, full release"
+              echo "tag_exists=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create git tag
+        if: steps.release_check.outputs.tag_exists == 'false'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Build package
+        if: steps.release_check.outputs.release_exists == 'false'
+        run: uv build
+
+      - name: Publish to PyPI
+        if: steps.release_check.outputs.release_exists == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+
+      - name: Create GitHub Release
+        if: steps.release_check.outputs.release_exists == 'false'
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes "See [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." \
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
