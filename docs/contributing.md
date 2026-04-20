@@ -64,13 +64,26 @@ New CLI commands need corresponding Python API:
 
 See `CLAUDE.md` for full architecture details.
 
-## Publishing
+## Releasing
 
 (Maintainers only)
 
-1. Update version in `pyproject.toml`
-2. Update `CHANGELOG.md`
-3. Create tag: `git tag v0.x.0 && git push origin v0.x.0`
+Uses commitizen + automated CI workflow:
+
+```bash
+# 1. Create bump PR (updates version + changelog)
+uv run cz bump --changelog
+git push origin HEAD
+
+# 2. Open PR, merge to main
+# 3. CI automatically: creates tag, publishes to PyPI, creates GitHub Release
+```
+
+**Recovery** (if release fails after merge):
+```bash
+git push origin :refs/tags/vX.Y.Z  # Delete orphan tag
+gh workflow run release.yml --ref main  # Retry
+```
 
 ## License
 
