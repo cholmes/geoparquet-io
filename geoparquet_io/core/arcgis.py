@@ -511,9 +511,12 @@ def fetch_all_features(
             f"Recommended range: 1-10 (2-3 for best balance)"
         )
 
+    # Sanitize and validate batch_size
+    sanitized_batch = batch_size if batch_size and batch_size > 0 else DEFAULT_PAGE_SIZE
+
     # Determine batch size (respect server limit)
     max_batch = min(
-        batch_size or DEFAULT_PAGE_SIZE,
+        sanitized_batch,
         layer_info.max_record_count or DEFAULT_PAGE_SIZE,
     )
 
@@ -629,8 +632,9 @@ def fetch_all_features(
                 results = []
                 batch_too_large = False
                 failed_batch_size = None
+                failed_at_index = None
 
-                for offset, req_batch_size, future in futures:
+                for idx, (offset, req_batch_size, future) in enumerate(futures):
                     try:
                         page = future.result()
                         results.append((offset, page))
@@ -638,6 +642,7 @@ def fetch_all_features(
                         # Mark for retry with smaller batch
                         batch_too_large = True
                         failed_batch_size = req_batch_size
+                        failed_at_index = idx
                         break
                     except Exception as e:
                         # If one request fails, propagate the error (fail-fast)
@@ -646,6 +651,22 @@ def fetch_all_features(
                         ) from e
 
                 if batch_too_large:
+                    # Cancel/drain remaining futures to avoid duplicate requests
+                    from concurrent.futures import CancelledError
+
+                    for remaining_idx in range(failed_at_index + 1, len(futures)):
+                        _, _, remaining_future = futures[remaining_idx]
+                        remaining_future.cancel()
+                        # Drain any that couldn't be cancelled
+                        try:
+                            remaining_future.result(timeout=0.1)
+                        except (CancelledError, BatchTooLargeError, Exception):
+                            pass  # Expected - just draining
+
+                    # Clear for retry
+                    futures.clear()
+                    results.clear()
+
                     # Reduce batch size and restart from batch_start
                     new_batch = _get_reduced_batch_size(failed_batch_size or effective_batch)
                     if new_batch is None:

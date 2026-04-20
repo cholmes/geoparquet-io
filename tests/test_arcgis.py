@@ -1439,6 +1439,8 @@ class TestAdaptiveBatchWithMock:
 
 
 @pytest.mark.network
+@pytest.mark.slow
+@pytest.mark.integration
 class TestAdaptiveBatchNetworkIntegration:
     """Network integration tests for adaptive batch size (issue #382)."""
 
@@ -1455,12 +1457,19 @@ class TestAdaptiveBatchNetworkIntegration:
         yield str(output)
         safe_unlink(output)
 
-    def test_mozambique_admin3_adaptive_batch_issue_382(self, output_file):
+    @pytest.fixture
+    def expected_feature_count(self):
+        """Fetch current feature count from the service dynamically."""
+        from geoparquet_io.core.arcgis import get_feature_count
+
+        return get_feature_count(self.MOZ_ADMIN3_SERVICE)
+
+    def test_mozambique_admin3_adaptive_batch_issue_382(self, output_file, expected_feature_count):
         """Test extraction from Mozambique Admin 3 that triggers issue #382.
 
-        This layer has 458 features with complex polygons. The server's
-        maxRecordCount is 2000, but it returns HTML errors for batches
-        larger than ~100 features due to payload size limits.
+        This layer has complex polygons. The server's maxRecordCount is 2000,
+        but it returns HTML errors for batches larger than ~100 features due
+        to payload size limits.
 
         The adaptive batch size should automatically reduce and succeed.
         """
@@ -1476,10 +1485,10 @@ class TestAdaptiveBatchNetworkIntegration:
 
         assert Path(output_file).exists()
         pf = pq.ParquetFile(output_file)
-        # Should have all 458 features
-        assert pf.metadata.num_rows == 458
+        # Should have all features (count fetched dynamically from service)
+        assert pf.metadata.num_rows == expected_feature_count
 
-    def test_cli_batch_size_option(self, output_file):
+    def test_cli_batch_size_option(self, output_file, expected_feature_count):
         """Test --batch-size CLI option works."""
         runner = CliRunner()
         result = runner.invoke(
@@ -1499,4 +1508,4 @@ class TestAdaptiveBatchNetworkIntegration:
         assert result.exit_code == 0, f"CLI failed: {result.output}"
         assert Path(output_file).exists()
         pf = pq.ParquetFile(output_file)
-        assert pf.metadata.num_rows == 458
+        assert pf.metadata.num_rows == expected_feature_count

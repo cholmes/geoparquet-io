@@ -13,6 +13,7 @@ Used by: arcgis.py, wfs.py
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -22,8 +23,9 @@ from geoparquet_io.core.logging_config import warn
 if TYPE_CHECKING:
     import httpx
 
-# Module-level HTTP client for connection pooling
+# Module-level HTTP client for connection pooling with thread safety
 _shared_http_client: httpx.Client | None = None
+_http_client_lock = threading.Lock()
 
 # Default timeout and retry settings
 DEFAULT_TIMEOUT = 60.0
@@ -39,6 +41,9 @@ def get_shared_http_client(
     """
     Get or create a shared HTTP client for connection pooling.
 
+    Thread-safe: uses a lock to prevent race conditions when multiple
+    threads try to create or access the client simultaneously.
+
     Reuses TCP connections across requests, saving ~100-200ms per request
     on TLS handshakes.
 
@@ -53,31 +58,34 @@ def get_shared_http_client(
     global _shared_http_client
     import httpx
 
-    if _shared_http_client is None:
-        _shared_http_client = httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            http2=http2,
-            limits=httpx.Limits(
-                max_connections=max_connections,
-                max_keepalive_connections=max_connections,
-            ),
-        )
-
-    return _shared_http_client
+    with _http_client_lock:
+        if _shared_http_client is None:
+            _shared_http_client = httpx.Client(
+                timeout=timeout,
+                follow_redirects=True,
+                http2=http2,
+                limits=httpx.Limits(
+                    max_connections=max_connections,
+                    max_keepalive_connections=max_connections,
+                ),
+            )
+        return _shared_http_client
 
 
 def reset_http_client() -> None:
     """
     Reset the shared HTTP client (for connection errors or cleanup).
 
+    Thread-safe: acquires lock before closing/clearing the client.
     Closes the existing client and allows a new one to be created.
     """
     global _shared_http_client
 
-    if _shared_http_client is not None:
-        _shared_http_client.close()
-        _shared_http_client = None
+    with _http_client_lock:
+        if _shared_http_client is not None:
+            client_to_close = _shared_http_client
+            _shared_http_client = None
+            client_to_close.close()
 
 
 def make_request_with_retry(
@@ -141,11 +149,11 @@ def make_request_with_retry(
                 except json.JSONDecodeError as e:
                     # Server returned non-JSON (likely HTML error page)
                     # This is NOT retryable with same params - batch is too large
-                    content_preview = response.text[:200] if response.text else "(empty)"
+                    # Don't include response content in error - may contain sensitive tokens
                     raise BatchTooLargeError(
                         url=url,
                         batch_size=batch_size or 0,
-                        reason=f"Server returned non-JSON response: {content_preview}...",
+                        reason="Server returned non-JSON response (likely HTML error page)",
                     ) from e
             else:
                 return bytes(response.content)
