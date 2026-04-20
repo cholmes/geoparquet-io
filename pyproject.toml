@@ -59,7 +59,7 @@ gpio = "geoparquet_io:cli"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",  # CVE-2025-71176 fix
     "pytest-cov>=4.0.0",
     "pytest-xdist>=3.5.0",
     "nbmake>=1.5.0",
@@ -319,7 +319,7 @@ forbidden_modules = ["geoparquet_io.cli"]
 dev = [
     "import-linter>=2.11",
     "pygments>=2.20.0",  # CVE-2026-4539 fix
-    "pytest>=9.0.1",
+    "pytest>=9.0.3",  # CVE-2025-71176 fix
     "pytest-cov>=7.0.0",
 ]
 
