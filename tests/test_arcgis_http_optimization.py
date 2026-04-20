@@ -17,10 +17,11 @@ class TestConnectionPooling:
         This is a performance optimization to avoid creating new TCP/TLS
         connections for every request.
         """
-        from geoparquet_io.core.arcgis import _make_request, _reset_http_client
+        from geoparquet_io.core.arcgis import _make_request
+        from geoparquet_io.core.http_retry import reset_http_client
 
         # Reset to ensure clean state
-        _reset_http_client()
+        reset_http_client()
 
         mock_client = MagicMock()
         mock_response = Mock()
@@ -28,7 +29,7 @@ class TestConnectionPooling:
         mock_response.raise_for_status = Mock()
         mock_client.get.return_value = mock_response
 
-        with patch("geoparquet_io.core.arcgis._get_shared_http_client") as mock_get_client:
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
             mock_get_client.return_value = mock_client
 
             # Make multiple requests
@@ -39,9 +40,6 @@ class TestConnectionPooling:
             # Client should be retrieved 3 times (function called 3 times)
             assert mock_get_client.call_count == 3
 
-            # Verify the mock returned the same client each time
-            assert all(call[1] == {} for call in mock_get_client.call_args_list)  # No args passed
-
     def test_http_client_has_connection_pooling_enabled(self):
         """
         Test that HTTP client has connection pooling properly configured.
@@ -49,12 +47,12 @@ class TestConnectionPooling:
         Connection pooling allows reusing TCP connections across requests,
         which saves ~100-200ms per request on TLS handshake.
         """
-        from geoparquet_io.core.arcgis import _get_shared_http_client, _reset_http_client
+        from geoparquet_io.core.http_retry import get_shared_http_client, reset_http_client
 
         # Reset to ensure clean state
-        _reset_http_client()
+        reset_http_client()
 
-        client = _get_shared_http_client()
+        client = get_shared_http_client()
 
         # Verify client is an httpx.Client instance with expected config
         import httpx
@@ -67,15 +65,15 @@ class TestConnectionPooling:
 
     def test_http_client_is_singleton(self):
         """
-        Test that _get_shared_http_client returns the same instance.
+        Test that get_shared_http_client returns the same instance.
 
         This ensures connection pooling works across the entire module,
         not just within a single function.
         """
-        from geoparquet_io.core.arcgis import _get_shared_http_client
+        from geoparquet_io.core.http_retry import get_shared_http_client
 
-        client1 = _get_shared_http_client()
-        client2 = _get_shared_http_client()
+        client1 = get_shared_http_client()
+        client2 = get_shared_http_client()
 
         # Should be the exact same object
         assert client1 is client2
@@ -86,11 +84,11 @@ class TestConnectionPooling:
 
         This is useful for tests that need to verify client creation logic.
         """
-        from geoparquet_io.core.arcgis import _get_shared_http_client, _reset_http_client
+        from geoparquet_io.core.http_retry import get_shared_http_client, reset_http_client
 
-        client1 = _get_shared_http_client()
-        _reset_http_client()
-        client2 = _get_shared_http_client()
+        client1 = get_shared_http_client()
+        reset_http_client()
+        client2 = get_shared_http_client()
 
         # After reset, should get a different instance
         assert client1 is not client2
@@ -102,12 +100,12 @@ class TestConnectionPooling:
         HTTP/2 causes RemoteProtocolError with ArcGIS servers after sustained use.
         Connection pooling and gzip compression still provide performance benefits.
         """
-        from geoparquet_io.core.arcgis import _get_shared_http_client, _reset_http_client
+        from geoparquet_io.core.http_retry import get_shared_http_client, reset_http_client
 
         # Reset to ensure clean state
-        _reset_http_client()
+        reset_http_client()
 
-        client = _get_shared_http_client()
+        client = get_shared_http_client()
 
         # Verify client exists and has transport
         assert hasattr(client, "_transport")
@@ -132,7 +130,7 @@ class TestGzipCompression:
         mock_response.raise_for_status = Mock()
         mock_client.get.return_value = mock_response
 
-        with patch("geoparquet_io.core.arcgis._get_shared_http_client") as mock_get_client:
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
             mock_get_client.return_value = mock_client
 
             _make_request("GET", "https://example.com/test", params={"f": "json"})

@@ -112,3 +112,17 @@ class ValidationError(GeoParquetError):
     """Raised when GeoParquet validation fails."""
 
     pass
+
+
+class BatchTooLargeError(GeoParquetError):
+    """Raised when server returns non-JSON response due to batch size limits.
+
+    This typically happens when a server's actual payload limit is lower than
+    its advertised maxRecordCount. The caller should retry with a smaller batch.
+    """
+
+    def __init__(self, url: str, batch_size: int, reason: str) -> None:
+        self.url = sanitize_url_for_logging(url)
+        self.batch_size = batch_size
+        self.reason = reason
+        super().__init__(f"Batch size {batch_size} too large for {self.url}: {reason}")

@@ -1282,3 +1282,221 @@ class TestRealWorldSchemaMismatch:
         # Verify the schema is consistent (no schema mismatch error occurred)
         # If we got here without error, the fix is working
         assert table.schema is not None
+
+
+class TestBatchSizeReduction:
+    """Unit tests for adaptive batch size functionality."""
+
+    def test_get_reduced_batch_size_from_large(self):
+        """Test batch size reduction from large value."""
+        from geoparquet_io.core.arcgis import _get_reduced_batch_size
+
+        # From 2000, should reduce to 1000
+        assert _get_reduced_batch_size(2000) == 1000
+        # From 1500, should reduce to 1000
+        assert _get_reduced_batch_size(1500) == 1000
+
+    def test_get_reduced_batch_size_from_medium(self):
+        """Test batch size reduction from medium values."""
+        from geoparquet_io.core.arcgis import _get_reduced_batch_size
+
+        # From 1000, should reduce to 500
+        assert _get_reduced_batch_size(1000) == 500
+        # From 500, should reduce to 100
+        assert _get_reduced_batch_size(500) == 100
+
+    def test_get_reduced_batch_size_from_small(self):
+        """Test batch size reduction from small values."""
+        from geoparquet_io.core.arcgis import _get_reduced_batch_size
+
+        # From 100, should reduce to 50
+        assert _get_reduced_batch_size(100) == 50
+        # From 50, should reduce to 10
+        assert _get_reduced_batch_size(50) == 10
+        # From 10, should reduce to 1
+        assert _get_reduced_batch_size(10) == 1
+
+    def test_get_reduced_batch_size_at_minimum(self):
+        """Test batch size reduction at minimum returns None."""
+        from geoparquet_io.core.arcgis import _get_reduced_batch_size
+
+        # At 1, can't reduce further
+        assert _get_reduced_batch_size(1) is None
+        # At 0 (edge case), can't reduce
+        assert _get_reduced_batch_size(0) is None
+
+    def test_get_reduced_batch_size_unusual_values(self):
+        """Test batch size reduction with unusual values."""
+        from geoparquet_io.core.arcgis import _get_reduced_batch_size
+
+        # Value between fallbacks should get next lower
+        assert _get_reduced_batch_size(750) == 500
+        assert _get_reduced_batch_size(5) == 1
+        assert _get_reduced_batch_size(2) == 1
+
+
+class TestBatchTooLargeError:
+    """Unit tests for BatchTooLargeError exception."""
+
+    def test_error_attributes(self):
+        """Test BatchTooLargeError stores correct attributes."""
+        from geoparquet_io.core.exceptions import BatchTooLargeError
+
+        error = BatchTooLargeError(
+            url="https://example.com/arcgis/rest/services/test/FeatureServer/0/query",
+            batch_size=500,
+            reason="Server returned HTML error page",
+        )
+
+        assert error.batch_size == 500
+        assert "500" in str(error)
+        assert "HTML error page" in str(error)
+
+    def test_error_sanitizes_url(self):
+        """Test BatchTooLargeError sanitizes sensitive URL params."""
+        from geoparquet_io.core.exceptions import BatchTooLargeError
+
+        # URL with query params that might contain credentials
+        error = BatchTooLargeError(
+            url="https://example.com/arcgis?token=secret123&other=param",
+            batch_size=100,
+            reason="test",
+        )
+
+        # Query params should be stripped
+        assert "secret123" not in error.url
+
+
+class TestAdaptiveBatchWithMock:
+    """Tests for adaptive batch size behavior using mocks."""
+
+    def test_batch_reduces_on_json_error(self):
+        """Test that batch size reduces when server returns non-JSON."""
+        from unittest.mock import patch
+
+        from geoparquet_io.core.arcgis import (
+            ArcGISLayerInfo,
+            fetch_all_features,
+        )
+        from geoparquet_io.core.exceptions import BatchTooLargeError
+
+        # Mock layer info
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[],
+            max_record_count=1000,
+            total_count=100,
+        )
+
+        call_count = 0
+        batch_sizes_used = []
+
+        def mock_fetch_page(service_url, offset, limit, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            batch_sizes_used.append(limit)
+
+            # First call with large batch fails
+            if limit > 50:
+                raise BatchTooLargeError(
+                    url=service_url,
+                    batch_size=limit,
+                    reason="Simulated server error",
+                )
+
+            # Smaller batches succeed
+            return {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [0, 0]},
+                        "properties": {"id": i},
+                    }
+                    for i in range(offset, min(offset + limit, 100))
+                ],
+            }
+
+        with patch(
+            "geoparquet_io.core.arcgis.fetch_features_page",
+            side_effect=mock_fetch_page,
+        ):
+            pages = list(
+                fetch_all_features(
+                    "https://example.com/FeatureServer/0",
+                    layer_info,
+                    batch_size=100,
+                )
+            )
+
+        # Should have reduced batch size and succeeded
+        assert len(pages) > 0
+        # First attempt was 100, then reduced to 50
+        assert 100 in batch_sizes_used
+        assert 50 in batch_sizes_used
+
+
+@pytest.mark.network
+class TestAdaptiveBatchNetworkIntegration:
+    """Network integration tests for adaptive batch size (issue #382)."""
+
+    # Mozambique Admin 3 layer that triggers batch-too-large errors
+    MOZ_ADMIN3_SERVICE = (
+        "https://www.mozgis.gov.mz/server/rest/services/Data/"
+        "UnidadesAdministrativasCenso2017/FeatureServer/3"
+    )
+
+    @pytest.fixture
+    def output_file(self, tmp_path):
+        """Create a temporary output file path."""
+        output = tmp_path / f"moz_admin3_{uuid.uuid4()}.parquet"
+        yield str(output)
+        safe_unlink(output)
+
+    def test_mozambique_admin3_adaptive_batch_issue_382(self, output_file):
+        """Test extraction from Mozambique Admin 3 that triggers issue #382.
+
+        This layer has 458 features with complex polygons. The server's
+        maxRecordCount is 2000, but it returns HTML errors for batches
+        larger than ~100 features due to payload size limits.
+
+        The adaptive batch size should automatically reduce and succeed.
+        """
+        from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
+
+        # This should succeed with adaptive batch reduction
+        convert_arcgis_to_geoparquet(
+            self.MOZ_ADMIN3_SERVICE,
+            output_file,
+            skip_hilbert=True,  # Skip for speed
+            verbose=True,
+        )
+
+        assert Path(output_file).exists()
+        pf = pq.ParquetFile(output_file)
+        # Should have all 458 features
+        assert pf.metadata.num_rows == 458
+
+    def test_cli_batch_size_option(self, output_file):
+        """Test --batch-size CLI option works."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                self.MOZ_ADMIN3_SERVICE,
+                output_file,
+                "--batch-size",
+                "50",  # Start with small batch to avoid errors
+                "--skip-hilbert",
+                "-v",
+            ],
+        )
+
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert Path(output_file).exists()
+        pf = pq.ParquetFile(output_file)
+        assert pf.metadata.num_rows == 458

@@ -13,10 +13,8 @@ Key features:
 
 from __future__ import annotations
 
-import atexit
 import json
 import re
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +36,12 @@ __all__ = [
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.http_retry import (
+    get_shared_http_client as _get_shared_http_client_base,
+)
+from geoparquet_io.core.http_retry import (
+    reset_http_client as _reset_http_client_base,
+)
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -88,66 +92,18 @@ class WFSLayerInfo:
     available_formats: list[str]
 
 
-# Module-level HTTP client for connection pooling with thread safety
-_shared_http_client = None
-_http_client_lock = threading.Lock()
-
 # Default timeout for HTTP requests (seconds)
 DEFAULT_TIMEOUT = 60.0
 
 
 def _get_shared_http_client(timeout: float = DEFAULT_TIMEOUT):
-    """
-    Get or create a shared HTTP client for connection pooling.
-
-    Thread-safe: uses a lock to prevent race conditions when
-    multiple threads try to create the client simultaneously.
-
-    Reuses TCP connections across requests, saving ~100-200ms per request
-    on TLS handshakes.
-
-    Args:
-        timeout: Request timeout in seconds (default: 60.0)
-
-    Returns:
-        httpx.Client: Shared client with connection pooling enabled
-    """
-    global _shared_http_client
-
-    with _http_client_lock:
-        if _shared_http_client is None:
-            try:
-                import httpx
-
-                _shared_http_client = httpx.Client(
-                    timeout=timeout,
-                    follow_redirects=True,
-                    http2=False,  # Disabled for compatibility with older WFS servers
-                    limits=httpx.Limits(
-                        max_connections=20,
-                        max_keepalive_connections=20,
-                    ),
-                )
-            except ImportError as e:
-                raise WFSError(
-                    "httpx is required for WFS extraction. Install with: pip install httpx"
-                ) from e
-
-    return _shared_http_client
+    """Get shared HTTP client from http_retry module."""
+    return _get_shared_http_client_base(timeout=timeout)
 
 
 def _reset_http_client():
-    """Reset the shared HTTP client (for testing or cleanup)."""
-    global _shared_http_client
-
-    with _http_client_lock:
-        if _shared_http_client is not None:
-            _shared_http_client.close()
-            _shared_http_client = None
-
-
-# Register cleanup on interpreter exit to prevent resource leak
-atexit.register(_reset_http_client)
+    """Reset shared HTTP client from http_retry module."""
+    _reset_http_client_base()
 
 
 def _make_request(
