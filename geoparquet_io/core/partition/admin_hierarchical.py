@@ -492,12 +492,11 @@ def partition_by_admin_hierarchical(
         admin_geom_col = dataset.get_geometry_column()
         admin_bbox_col = dataset.get_bbox_column()
 
-        # Use context manager for DuckDB connection to ensure cleanup
-        with duckdb.connect() as con:
-            _setup_duckdb_extensions(con)
+        # Use ambient S3 config from dataset, applied via get_duckdb_connection
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection, s3_config_scope
 
-            # Configure S3 settings based on dataset requirements
-            dataset.configure_s3(con)
+        with s3_config_scope(dataset.get_s3_config()):
+            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
 
             # STEP 1: Spatial join to create enriched data with admin columns
             progress("\n📍 Step 1/2: Performing spatial join with admin boundaries...")
