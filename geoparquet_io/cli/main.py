@@ -5445,15 +5445,18 @@ def publish_stac(input, output, bucket, public_url, collection_id, item_id, over
 @click.option(
     "--s3-endpoint",
     help="Custom S3-compatible endpoint (e.g., 'minio.example.com:9000')",
+    hidden=True,
 )
 @click.option(
     "--s3-region",
     help="S3 region (default: us-east-1 when using custom endpoint)",
+    hidden=True,
 )
 @click.option(
     "--s3-no-ssl",
     is_flag=True,
     help="Disable SSL for S3 endpoint (use HTTP instead of HTTPS)",
+    hidden=True,
 )
 @verbose_option
 @dry_run_option

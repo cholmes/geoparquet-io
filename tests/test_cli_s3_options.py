@@ -43,3 +43,25 @@ class TestGlobalS3Options:
         assert "--s3-region" in result.output
         assert "--s3-no-ssl" in result.output
         assert "--aws-profile" in result.output
+
+
+class TestHiddenAliases:
+    """Test that per-command S3 flags still work when hidden."""
+
+    def test_upload_hidden_s3_endpoint_still_works(self):
+        """Per-command --s3-endpoint on publish upload still accepted."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["publish", "upload", "--s3-endpoint", "minio.local:9000", "nonexistent", "s3://b/f"],
+        )
+        assert "No such option" not in result.output
+
+    def test_hidden_aws_profile_on_convert_still_works(self):
+        """Per-command --aws-profile on convert reproject still accepted."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["convert", "reproject", "--aws-profile", "prod", "nonexistent.parquet"],
+        )
+        assert "No such option" not in result.output
