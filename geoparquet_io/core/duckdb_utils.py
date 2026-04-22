@@ -6,6 +6,7 @@ with appropriate extensions loaded for GeoParquet operations.
 """
 
 import threading
+from contextlib import contextmanager
 
 import duckdb
 
@@ -13,6 +14,25 @@ import duckdb
 # Buckets not in this set are accessed without credentials (works for public buckets)
 _s3_cache_lock = threading.Lock()
 _s3_buckets_needing_auth: set[str] = set()
+
+# Ambient S3 config — set once at CLI/API boundary via s3_config_scope(),
+# automatically picked up by get_duckdb_connection().
+_active_s3_config: dict = {}
+_s3_config_lock = threading.Lock()
+
+
+@contextmanager
+def s3_config_scope(s3_config: dict):
+    """Set ambient S3 config for all get_duckdb_connection() calls within this scope."""
+    global _active_s3_config
+    with _s3_config_lock:
+        previous = _active_s3_config.copy()
+        _active_s3_config.update(s3_config)
+    try:
+        yield
+    finally:
+        with _s3_config_lock:
+            _active_s3_config = previous
 
 
 def _extract_bucket_name(path: str) -> str:
@@ -83,7 +103,15 @@ def quote_identifier(name: str) -> str:
     return f'"{escaped}"'
 
 
-def get_duckdb_connection(load_spatial=True, load_httpfs=None, use_s3_auth=False, threads=None):
+def get_duckdb_connection(
+    load_spatial=True,
+    load_httpfs=None,
+    use_s3_auth=False,
+    threads=None,
+    s3_endpoint=None,
+    s3_region=None,
+    s3_use_ssl=None,
+):
     """
     Create a DuckDB connection with necessary extensions loaded.
 
@@ -156,12 +184,31 @@ def get_duckdb_connection(load_spatial=True, load_httpfs=None, use_s3_auth=False
                 );
             """)
 
+    # Apply S3 config: explicit kwargs override ambient config
+    eff_endpoint = s3_endpoint if s3_endpoint is not None else _active_s3_config.get("s3_endpoint")
+    eff_region = s3_region if s3_region is not None else _active_s3_config.get("s3_region")
+    eff_use_ssl = s3_use_ssl if s3_use_ssl is not None else _active_s3_config.get("s3_use_ssl")
+
+    if eff_endpoint:
+        safe_endpoint = _escape_sql_string(eff_endpoint)
+        con.execute(f"SET s3_endpoint='{safe_endpoint}';")
+        con.execute("SET s3_url_style='path';")
+        ssl_value = "true" if eff_use_ssl is not False else "false"
+        con.execute(f"SET s3_use_ssl={ssl_value};")
+
+    if eff_region:
+        safe_region = _escape_sql_string(eff_region)
+        con.execute(f"SET s3_region='{safe_region}';")
+
     return con
 
 
 def get_duckdb_connection_for_s3(
     path: str,
     load_spatial: bool = True,
+    s3_endpoint: str | None = None,
+    s3_region: str | None = None,
+    s3_use_ssl: bool | None = None,
 ) -> "duckdb.DuckDBPyConnection":
     """
     Get DuckDB connection configured for S3 access.
@@ -173,24 +220,35 @@ def get_duckdb_connection_for_s3(
     Args:
         path: S3 path to access (used to determine bucket and access mode)
         load_spatial: Whether to load spatial extension (default: True)
+        s3_endpoint: Custom S3 endpoint (e.g., 'minio.local:9000')
+        s3_region: S3 region for custom endpoints
+        s3_use_ssl: Whether to use SSL for the S3 endpoint
 
     Returns:
         duckdb.DuckDBPyConnection: Configured connection with appropriate S3 access
     """
     from geoparquet_io.core.remote import needs_httpfs
 
+    s3_kwargs = {"s3_endpoint": s3_endpoint, "s3_region": s3_region, "s3_use_ssl": s3_use_ssl}
+
     # Non-S3 paths: use standard connection
     if not path.startswith(("s3://", "s3a://")):
-        return get_duckdb_connection(load_spatial=load_spatial, load_httpfs=needs_httpfs(path))
+        return get_duckdb_connection(
+            load_spatial=load_spatial, load_httpfs=needs_httpfs(path), **s3_kwargs
+        )
 
     bucket = _extract_bucket_name(path)
 
     # If we know this bucket needs auth, use credential chain
     if _bucket_needs_auth(bucket):
-        return get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True)
+        return get_duckdb_connection(
+            load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True, **s3_kwargs
+        )
 
     # Try without credentials first (works for public buckets)
-    con = get_duckdb_connection(load_spatial=load_spatial, load_httpfs=True, use_s3_auth=False)
+    con = get_duckdb_connection(
+        load_spatial=load_spatial, load_httpfs=True, use_s3_auth=False, **s3_kwargs
+    )
     try:
         # Lightweight test query - DuckDB handles glob patterns natively
         # Escape single quotes in path to prevent SQL injection
@@ -203,7 +261,7 @@ def get_duckdb_connection_for_s3(
             # This bucket requires authentication - cache and retry
             _add_bucket_needing_auth(bucket)
             return get_duckdb_connection(
-                load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True
+                load_spatial=load_spatial, load_httpfs=True, use_s3_auth=True, **s3_kwargs
             )
         raise
 
