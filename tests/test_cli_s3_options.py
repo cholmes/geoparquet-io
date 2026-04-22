@@ -65,3 +65,16 @@ class TestHiddenAliases:
             ["convert", "reproject", "--aws-profile", "prod", "nonexistent.parquet"],
         )
         assert "No such option" not in result.output
+
+
+class TestGlobalToCommandWiring:
+    """Test that global flags feed into commands via ambient config."""
+
+    def test_global_s3_endpoint_does_not_error(self):
+        """Global --s3-endpoint is accepted without 'unknown option' on subcommands."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["--s3-endpoint", "data.source.coop", "inspect", "summary", "nonexistent.parquet"],
+        )
+        assert "No such option" not in result.output
