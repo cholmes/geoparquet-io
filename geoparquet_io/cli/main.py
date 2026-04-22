@@ -116,11 +116,36 @@ class OptionalIntCommand(GlobAwareCommand):
 @click.group()
 @click.version_option(prog_name="geoparquet-io")
 @click.option("--timestamps", is_flag=True, help="Show timestamps in output messages")
+@click.option(
+    "--s3-endpoint",
+    default=None,
+    help="Custom S3-compatible endpoint (e.g., 'minio.example.com:9000')",
+)
+@click.option(
+    "--s3-region",
+    default=None,
+    help="S3 region for custom endpoints",
+)
+@click.option(
+    "--s3-no-ssl",
+    is_flag=True,
+    default=False,
+    help="Disable SSL for S3 endpoint (use HTTP instead of HTTPS)",
+)
+@click.option(
+    "--aws-profile",
+    default=None,
+    help="AWS profile name for S3 operations",
+)
 @click.pass_context
-def cli(ctx, timestamps):
+def cli(ctx, timestamps, s3_endpoint, s3_region, s3_no_ssl, aws_profile):
     """Fast I/O and transformation tools for GeoParquet files."""
     ctx.ensure_object(dict)
     ctx.obj["timestamps"] = timestamps
+    ctx.obj["s3_endpoint"] = s3_endpoint
+    ctx.obj["s3_region"] = s3_region
+    ctx.obj["s3_no_ssl"] = s3_no_ssl
+    ctx.obj["aws_profile"] = aws_profile
     # Setup logging for CLI output (default level INFO, verbose commands will set DEBUG)
     setup_cli_logging(verbose=False, show_timestamps=timestamps)
 
