@@ -1,9 +1,9 @@
 # Inspecting Files
 
-The `inspect` command provides quick, human-readable summaries of GeoParquet files.
+The `inspect` command provides quick, human-readable summaries of GeoParquet files. `gpio inspect` is a shortcut for `gpio inspect summary` — both show the same output.
 
 !!! tip "Need more detail?"
-    For comprehensive metadata analysis including row group details and full schema information, use `gpio inspect --meta`.
+    For comprehensive metadata analysis including row group details and full schema information, use `gpio inspect meta`.
 
 ## Basic Usage
 
@@ -40,17 +40,17 @@ Shows:
 === "CLI"
 
     ```bash
-    # First 10 rows (default when no value given)
-    gpio inspect data.parquet --head
+    # First 10 rows (default)
+    gpio inspect head data.parquet
 
     # First 20 rows
-    gpio inspect data.parquet --head 20
+    gpio inspect head data.parquet 20
 
-    # Last 10 rows (default when no value given)
-    gpio inspect data.parquet --tail
+    # Last 10 rows (default)
+    gpio inspect tail data.parquet
 
     # Last 5 rows
-    gpio inspect data.parquet --tail 5
+    gpio inspect tail data.parquet 5
     ```
 
 === "Python"
@@ -83,9 +83,6 @@ Shows:
     ```bash
     # Column statistics (nulls, min/max, unique counts)
     gpio inspect stats data.parquet
-
-    # Combine with preview
-    gpio inspect data.parquet --head --stats
     ```
 
 === "Python"
@@ -138,10 +135,10 @@ Output includes a "Compression Ratios" table showing which columns benefit most 
 
     ```bash
     # Human-readable format
-    gpio inspect data.parquet --geo-metadata
+    gpio inspect meta data.parquet --geo
 
     # JSON format (exact metadata content)
-    gpio inspect data.parquet --geo-metadata --json
+    gpio inspect meta data.parquet --geo --json
     ```
 
 === "Python"
@@ -181,10 +178,10 @@ View the complete Parquet file metadata (low-level details):
 
 ```bash
 # Human-readable format
-gpio inspect data.parquet --parquet-metadata
+gpio inspect meta data.parquet --parquet
 
 # JSON format (detailed metadata)
-gpio inspect data.parquet --parquet-metadata --json
+gpio inspect meta data.parquet --parquet --json
 ```
 
 The metadata includes:
@@ -199,10 +196,10 @@ View geospatial metadata from the Parquet footer (column-level statistics and lo
 
 ```bash
 # Human-readable format
-gpio inspect data.parquet --parquet-geo-metadata
+gpio inspect meta data.parquet --parquet-geo
 
 # JSON format
-gpio inspect data.parquet --parquet-geo-metadata --json
+gpio inspect meta data.parquet --parquet-geo --json
 ```
 
 This shows metadata from the Parquet specification for geospatial types:
@@ -211,7 +208,7 @@ This shows metadata from the Parquet specification for geospatial types:
 - Geospatial types (WKB integer codes)
 - Custom geospatial key-value metadata
 
-**Note:** This is different from `--geo-metadata` which shows GeoParquet metadata from the 'geo' key.
+**Note:** This is different from `--geo` which shows GeoParquet metadata from the 'geo' key.
 
 ## Bloom Filter Information
 
@@ -300,11 +297,14 @@ Returns layer names for files with 2+ layers. Single-layer files return nothing.
 ## JSON Output
 
 ```bash
-# Machine-readable output
+# Machine-readable summary
 gpio inspect data.parquet --json
 
 # Use with jq
 gpio inspect data.parquet --json | jq '.file_info.rows'
+
+# Metadata as JSON
+gpio inspect meta data.parquet --json
 ```
 
 ## Inspecting Partitioned Data
@@ -355,9 +355,6 @@ gpio inspect partitions/ --check-all --json
 # Markdown output for documentation
 gpio inspect partitions/ --check-all --markdown
 ```
-
-!!! note "Preview options not available with --check-all"
-    The `--head`, `--tail`, and `--stats` options cannot be combined with `--check-all` since they apply to individual files.
 
 ## See Also
 
