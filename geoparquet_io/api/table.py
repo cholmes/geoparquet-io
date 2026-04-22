@@ -190,6 +190,10 @@ def read_partition(
     *,
     hive_input: bool | None = None,
     allow_schema_diff: bool = False,
+    s3_endpoint: str | None = None,
+    s3_region: str | None = None,
+    s3_use_ssl: bool = True,
+    aws_profile: str | None = None,
 ) -> Table:
     """
     Read a Hive-partitioned GeoParquet dataset.
@@ -204,6 +208,10 @@ def read_partition(
         hive_input: Explicitly enable/disable hive partitioning. None = auto-detect.
         allow_schema_diff: If True, allow merging schemas across files with
                            different columns (uses DuckDB union_by_name)
+        s3_endpoint: Custom S3 endpoint (e.g., 'data.source.coop')
+        s3_region: S3 region for custom endpoints
+        s3_use_ssl: Whether to use SSL (default: True)
+        aws_profile: AWS profile name for S3 operations
 
     Returns:
         Table containing all partition data combined
@@ -216,10 +224,24 @@ def read_partition(
     from geoparquet_io.core.duckdb_utils import (
         _wrap_query_with_wkb_conversion,
         get_duckdb_connection,
+        s3_config_scope,
     )
     from geoparquet_io.core.partition.reader import build_read_parquet_expr
-    from geoparquet_io.core.remote import needs_httpfs
+    from geoparquet_io.core.remote import (
+        needs_httpfs,
+        resolve_s3_config,
+        setup_aws_profile_if_needed,
+    )
     from geoparquet_io.core.streaming import find_geometry_column_from_table
+
+    s3_config = resolve_s3_config(
+        s3_endpoint=s3_endpoint,
+        s3_region=s3_region,
+        s3_no_ssl=not s3_use_ssl,
+        aws_profile=aws_profile,
+    )
+    if s3_config["profile"]:
+        setup_aws_profile_if_needed(s3_config["profile"], str(path))
 
     path_str = str(path)
     expr = build_read_parquet_expr(
@@ -228,16 +250,17 @@ def read_partition(
         hive_input=hive_input,
     )
 
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(path_str))
-    try:
-        query = f"SELECT * FROM {expr}"
-        for row in con.execute(f"DESCRIBE ({query})").fetchall():
-            if row[1] and row[1].upper() == "GEOMETRY":
-                query = _wrap_query_with_wkb_conversion(query, row[0], con=con)
+    with s3_config_scope(s3_config):
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(path_str))
+        try:
+            query = f"SELECT * FROM {expr}"
+            for row in con.execute(f"DESCRIBE ({query})").fetchall():
+                if row[1] and row[1].upper() == "GEOMETRY":
+                    query = _wrap_query_with_wkb_conversion(query, row[0], con=con)
 
-        arrow_table = con.execute(query).arrow().read_all()
-    finally:
-        con.close()
+            arrow_table = con.execute(query).arrow().read_all()
+        finally:
+            con.close()
 
     # Detect geometry column from the combined table
     geometry_column = find_geometry_column_from_table(arrow_table)
