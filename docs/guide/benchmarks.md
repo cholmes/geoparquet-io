@@ -223,8 +223,8 @@ gpio also includes built-in benchmark commands:
 # Run benchmark suite on specific files
 gpio benchmark suite --files path/to/file.parquet --operations core
 
-# Run quick benchmark (single operation, timing only)
-gpio benchmark run inspect path/to/file.parquet
+# Compare converter performance on a single file
+gpio benchmark compare path/to/file.parquet
 ```
 
 ## Profiling Integration

@@ -491,7 +491,7 @@ DuckDB also uses significantly less memory than alternatives (near-zero vs 600MB
 To run your own benchmarks:
 
 ```bash
-gpio benchmark input.geojson --iterations 3
+gpio benchmark compare input.geojson --iterations 3
 ```
 
 See [`gpio benchmark`](../cli/benchmark.md) for details.
