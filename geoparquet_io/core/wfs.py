@@ -439,27 +439,44 @@ def _validate_crs_coordinates(
         finally:
             con.close()
 
-        # Check if coordinates look like WGS84 when WGS84 was requested
+        # Validate coordinates match requested CRS
         normalized_crs = _normalize_crs(requested_crs)
+        xmin, ymin, xmax, ymax = bbox
+        detected = _estimate_crs_from_bbox(bbox)
+
+        # Check for mismatch between requested and detected CRS
+        mismatch = False
         if normalized_crs == "EPSG:4326":
-            xmin, ymin, xmax, ymax = bbox
             # WGS84 coordinates should be in valid range
             if abs(xmin) > 180 or abs(xmax) > 180 or abs(ymin) > 90 or abs(ymax) > 90:
-                detected = _estimate_crs_from_bbox(bbox)
-                msg = (
-                    f"Coordinate mismatch: requested {requested_crs} but got bbox "
-                    f"[{xmin:.2f}, {ymin:.2f}, {xmax:.2f}, {ymax:.2f}]. "
-                )
-                if detected:
-                    msg += f"Coordinates look like {detected}. Server may have ignored srsName."
-                else:
-                    msg += "Server may have returned data in a different CRS."
+                mismatch = True
+        elif normalized_crs == "EPSG:3857":
+            # Web Mercator should have large meter values, not small degree values
+            if abs(xmin) < 1000 and abs(xmax) < 1000 and abs(ymin) < 1000 and abs(ymax) < 1000:
+                mismatch = True
+        elif normalized_crs == "EPSG:3035":
+            # LAEA Europe should be in specific range
+            if not (2_000_000 < xmin < 7_500_000 and 1_000_000 < ymin < 5_500_000):
+                mismatch = True
+        elif detected and detected != normalized_crs:
+            # Generic check: if we detected a CRS and it differs from requested
+            mismatch = True
 
-                if strict:
-                    raise WFSError(msg)
-                else:
-                    warn(msg)
-                    return False, detected
+        if mismatch:
+            msg = (
+                f"Coordinate mismatch: requested {requested_crs} but got bbox "
+                f"[{xmin:.2f}, {ymin:.2f}, {xmax:.2f}, {ymax:.2f}]. "
+            )
+            if detected:
+                msg += f"Coordinates look like {detected}. Server may have ignored srsName."
+            else:
+                msg += "Server may have returned data in a different CRS."
+
+            if strict:
+                raise WFSError(msg)
+            else:
+                warn(msg)
+                return False, detected
 
         return True, None
 
@@ -899,7 +916,7 @@ def _get_feature_count(
         "service": "WFS",
         "version": version,
         "request": "GetFeature",
-        "typeName" if version == "1.0.0" else "typeNames": typename,
+        "typeNames" if version == "2.0.0" else "typeName": typename,
         "resultType": "hits",
     }
 
@@ -1024,11 +1041,11 @@ def _build_wfs_url(
         "service": "WFS",
         "version": version,
         "request": "GetFeature",
-        "typeName" if version == "1.0.0" else "typeNames": typename,
+        "typeNames" if version == "2.0.0" else "typeName": typename,
         "outputFormat": "application/json",
     }
 
-    if max_features:
+    if max_features is not None:
         # WFS 2.0 uses count, WFS 1.x uses maxFeatures
         if version == "2.0.0":
             params["count"] = str(max_features)

@@ -1297,17 +1297,29 @@ class TestVersionNegotiation:
         assert "maxFeatures=100" in url
         assert "count=" not in url
 
-    def test_build_wfs_url_uses_typenames_for_wfs_11_plus(self):
-        """WFS 1.1.0+ should use 'typeNames' (plural)."""
+    def test_build_wfs_url_uses_typenames_for_wfs_20(self):
+        """WFS 2.0.0 should use 'typeNames' (plural)."""
         from geoparquet_io.core.wfs import _build_wfs_url
 
-        for version in ["1.1.0", "2.0.0"]:
-            url = _build_wfs_url(
-                "https://example.com/wfs",
-                "test:layer",
-                version=version,
-            )
-            assert "typeNames=test%3Alayer" in url or "typeNames=test:layer" in url
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="2.0.0",
+        )
+        assert "typeNames=test%3Alayer" in url or "typeNames=test:layer" in url
+        assert "typeName=" not in url
+
+    def test_build_wfs_url_uses_typename_for_wfs_11(self):
+        """WFS 1.1.0 should use 'typeName' (singular) per OGC spec."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.1.0",
+        )
+        assert "typeName=test%3Alayer" in url or "typeName=test:layer" in url
+        assert "typeNames=" not in url
 
     def test_build_wfs_url_uses_typename_for_wfs_10(self):
         """WFS 1.0.0 should use 'typeName' (singular)."""
@@ -1431,6 +1443,7 @@ class TestCRSValidation:
 # =============================================================================
 
 
+@pytest.mark.integration
 @pytest.mark.network
 @pytest.mark.slow
 class TestWFS20Integration:
