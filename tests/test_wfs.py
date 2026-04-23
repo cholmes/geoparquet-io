@@ -1145,3 +1145,322 @@ class TestDuckDBNativeWFS:
 
         geom_type = table.schema.field("geometry").type
         assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
+
+
+# =============================================================================
+# Axis Order Tests (Issue #397)
+# =============================================================================
+
+
+class TestAxisOrder:
+    """Test axis order detection and bbox parameter building.
+
+    WFS 1.1.0+ with URN format CRS uses lat,lon (YX) axis order per OGC spec,
+    while simple EPSG:4326 format uses lon,lat (XY).
+    """
+
+    def test_is_urn_crs_detects_urn_format(self):
+        """Should correctly identify URN format CRS strings."""
+        from geoparquet_io.core.wfs import _is_urn_crs
+
+        assert _is_urn_crs("urn:ogc:def:crs:EPSG::4326") is True
+        assert _is_urn_crs("urn:x-ogc:def:crs:EPSG::4326") is True
+        assert _is_urn_crs("URN:OGC:DEF:CRS:EPSG::3857") is True
+        assert _is_urn_crs("EPSG:4326") is False
+        assert _is_urn_crs("http://www.opengis.net/def/crs/EPSG/0/4326") is False
+
+    def test_is_geographic_crs_detects_geographic_systems(self):
+        """Should correctly identify geographic (lat/lon) CRS."""
+        from geoparquet_io.core.wfs import _is_geographic_crs
+
+        assert _is_geographic_crs("EPSG:4326") is True
+        assert _is_geographic_crs("urn:ogc:def:crs:EPSG::4326") is True
+        assert _is_geographic_crs("EPSG:4269") is True  # NAD83
+        assert _is_geographic_crs("CRS:84") is True
+        assert _is_geographic_crs("EPSG:3857") is False  # Web Mercator (projected)
+        assert _is_geographic_crs("EPSG:3035") is False  # LAEA (projected)
+
+    @pytest.mark.parametrize(
+        "crs,version,axis_order,expected_swap",
+        [
+            # WFS 1.0.0 always uses XY
+            ("EPSG:4326", "1.0.0", "auto", False),
+            ("urn:ogc:def:crs:EPSG::4326", "1.0.0", "auto", False),
+            # WFS 1.1.0+ with simple EPSG format uses XY
+            ("EPSG:4326", "1.1.0", "auto", False),
+            ("EPSG:4326", "2.0.0", "auto", False),
+            # WFS 1.1.0+ with URN format uses YX (lat,lon)
+            ("urn:ogc:def:crs:EPSG::4326", "1.1.0", "auto", True),
+            ("urn:ogc:def:crs:EPSG::4326", "2.0.0", "auto", True),
+            ("urn:x-ogc:def:crs:EPSG::4326", "1.1.0", "auto", True),
+            # CRS:84 is always XY by definition
+            ("CRS:84", "1.1.0", "auto", False),
+            ("urn:ogc:def:crs:OGC:1.3:CRS84", "2.0.0", "auto", False),
+            # Projected CRS never swaps
+            ("urn:ogc:def:crs:EPSG::3857", "1.1.0", "auto", False),
+            # Forced axis order overrides auto-detection
+            ("urn:ogc:def:crs:EPSG::4326", "1.1.0", "xy", False),
+            ("EPSG:4326", "1.1.0", "latlon", True),
+        ],
+    )
+    def test_needs_axis_swap(self, crs, version, axis_order, expected_swap):
+        """Axis swap decision based on CRS format, version, and override."""
+        from geoparquet_io.core.wfs import _needs_axis_swap
+
+        result = _needs_axis_swap(crs, version, axis_order)
+        assert result is expected_swap
+
+    @pytest.mark.parametrize(
+        "bbox,crs,version,axis_order,expected",
+        [
+            # WFS 1.0.0: no CRS suffix
+            ((-122.5, 37.5, -122.0, 38.0), "EPSG:4326", "1.0.0", "auto", "-122.5,37.5,-122.0,38.0"),
+            # WFS 1.1.0 with simple CRS: XY order with CRS suffix
+            (
+                (-122.5, 37.5, -122.0, 38.0),
+                "EPSG:4326",
+                "1.1.0",
+                "auto",
+                "-122.5,37.5,-122.0,38.0,EPSG:4326",
+            ),
+            # WFS 1.1.0 with URN CRS: YX order (lat,lon) with CRS suffix
+            (
+                (-122.5, 37.5, -122.0, 38.0),
+                "urn:ogc:def:crs:EPSG::4326",
+                "1.1.0",
+                "auto",
+                "37.5,-122.5,38.0,-122.0,urn:ogc:def:crs:EPSG::4326",
+            ),
+            # WFS 2.0.0 with URN CRS: YX order
+            (
+                (4.82, 50.44, 4.92, 50.48),
+                "urn:ogc:def:crs:EPSG::4326",
+                "2.0.0",
+                "auto",
+                "50.44,4.82,50.48,4.92,urn:ogc:def:crs:EPSG::4326",
+            ),
+            # Forced XY order ignores URN format
+            (
+                (-122.5, 37.5, -122.0, 38.0),
+                "urn:ogc:def:crs:EPSG::4326",
+                "1.1.0",
+                "xy",
+                "-122.5,37.5,-122.0,38.0,urn:ogc:def:crs:EPSG::4326",
+            ),
+        ],
+    )
+    def test_build_bbox_param_axis_order(self, bbox, crs, version, axis_order, expected):
+        """Bbox parameter string should have correct axis order."""
+        from geoparquet_io.core.wfs import _build_bbox_param
+
+        result = _build_bbox_param(bbox, crs, version, axis_order)
+        assert result == expected
+
+
+# =============================================================================
+# Version Negotiation Tests (Issue #312)
+# =============================================================================
+
+
+class TestVersionNegotiation:
+    """Test WFS version negotiation and WFS 2.0 support."""
+
+    def test_wfs_versions_list(self):
+        """WFS_VERSIONS should be in preference order (newest first)."""
+        from geoparquet_io.core.wfs import WFS_VERSIONS
+
+        assert WFS_VERSIONS == ["2.0.0", "1.1.0", "1.0.0"]
+
+    def test_build_wfs_url_uses_count_for_wfs_2(self):
+        """WFS 2.0 should use 'count' parameter instead of 'maxFeatures'."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="2.0.0",
+            max_features=100,
+        )
+        assert "count=100" in url
+        assert "maxFeatures" not in url
+
+    def test_build_wfs_url_uses_maxfeatures_for_wfs_1(self):
+        """WFS 1.x should use 'maxFeatures' parameter."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.1.0",
+            max_features=100,
+        )
+        assert "maxFeatures=100" in url
+        assert "count=" not in url
+
+    def test_build_wfs_url_uses_typenames_for_wfs_11_plus(self):
+        """WFS 1.1.0+ should use 'typeNames' (plural)."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        for version in ["1.1.0", "2.0.0"]:
+            url = _build_wfs_url(
+                "https://example.com/wfs",
+                "test:layer",
+                version=version,
+            )
+            assert "typeNames=test%3Alayer" in url or "typeNames=test:layer" in url
+
+    def test_build_wfs_url_uses_typename_for_wfs_10(self):
+        """WFS 1.0.0 should use 'typeName' (singular)."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.0.0",
+        )
+        assert "typeName=test" in url
+        assert "typeNames=" not in url
+
+
+# =============================================================================
+# CRS Validation Tests (Issue #398)
+# =============================================================================
+
+
+class TestCRSValidation:
+    """Test CRS coordinate validation and mismatch detection."""
+
+    def test_estimate_crs_from_bbox_detects_wgs84(self):
+        """Should detect WGS84 coordinates."""
+        from geoparquet_io.core.wfs import _estimate_crs_from_bbox
+
+        # Valid WGS84 bbox
+        assert _estimate_crs_from_bbox((-122.5, 37.5, -122.0, 38.0)) == "EPSG:4326"
+        assert _estimate_crs_from_bbox((-180, -90, 180, 90)) == "EPSG:4326"
+        assert _estimate_crs_from_bbox((4.82, 50.44, 4.92, 50.48)) == "EPSG:4326"
+
+    def test_estimate_crs_from_bbox_detects_laea_europe(self):
+        """Should detect EPSG:3035 (LAEA Europe) coordinates."""
+        from geoparquet_io.core.wfs import _estimate_crs_from_bbox
+
+        # Typical EPSG:3035 bbox (Belgian buildings in meters)
+        bbox = (3817324.31, 2942224.42, 4063861.36, 3100245.97)
+        assert _estimate_crs_from_bbox(bbox) == "EPSG:3035"
+
+    def test_estimate_crs_from_bbox_detects_web_mercator(self):
+        """Should detect EPSG:3857 (Web Mercator) coordinates."""
+        from geoparquet_io.core.wfs import _estimate_crs_from_bbox
+
+        # Web Mercator coordinates (world extent)
+        bbox = (-20037508.34, -20037508.34, 20037508.34, 20037508.34)
+        assert _estimate_crs_from_bbox(bbox) == "EPSG:3857"
+
+    def test_validate_crs_coordinates_passes_for_valid_wgs84(self):
+        """Should pass when coordinates match requested WGS84 CRS."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Create a table with valid WGS84 geometry
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(-122.4, 37.8)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:4326")
+        assert is_valid is True
+        assert detected is None
+
+    def test_validate_crs_coordinates_detects_mismatch(self):
+        """Should detect when coordinates don't match requested CRS."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Create a table with EPSG:3035 coordinates (not WGS84)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(3900000, 3000000)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # Request WGS84 but coordinates are clearly projected
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:4326", strict=False)
+        assert is_valid is False
+        assert detected == "EPSG:3035"
+
+    def test_validate_crs_coordinates_raises_on_strict_mismatch(self):
+        """Should raise error in strict mode when CRS doesn't match."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import WFSError, _validate_crs_coordinates
+
+        # Create a table with projected coordinates
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(3900000, 3000000)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        with pytest.raises(WFSError, match="Coordinate mismatch"):
+            _validate_crs_coordinates(table, "EPSG:4326", strict=True)
+
+    def test_validate_crs_coordinates_skips_empty_table(self):
+        """Should pass for empty tables without checking."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Empty table
+        table = pa.table({"geometry": pa.array([], type=pa.binary())})
+
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:4326")
+        assert is_valid is True
+        assert detected is None
+
+
+# =============================================================================
+# Integration Tests for WFS 2.0 (Issue #312)
+# =============================================================================
+
+
+@pytest.mark.network
+@pytest.mark.slow
+class TestWFS20Integration:
+    """Integration tests against real WFS 2.0 servers.
+
+    Uses Helsinki WFS (kartta.hel.fi) which reliably supports WFS 2.0.0.
+    """
+
+    HELSINKI_WFS = "https://kartta.hel.fi/ws/geoserver/avoindata/wfs"
+    HELSINKI_LAYER = "avoindata:Ajoneuvoliikenne_liikennemaarat_viiva"
+
+    @pytest.mark.xfail(reason="External WFS service may be unavailable")
+    def test_version_negotiation_finds_wfs_2(self):
+        """Auto negotiation should find WFS 2.0.0 when available."""
+        from geoparquet_io.core.wfs import negotiate_wfs_version
+
+        version, wfs = negotiate_wfs_version(self.HELSINKI_WFS)
+        assert version in ["2.0.0", "1.1.0", "1.0.0"]
+
+    @pytest.mark.xfail(reason="External WFS service may be unavailable")
+    def test_extract_with_wfs_2_version(self):
+        """Should successfully extract features using WFS 2.0.0."""
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        table = wfs_to_table(
+            self.HELSINKI_WFS,
+            self.HELSINKI_LAYER,
+            version="2.0.0",
+            limit=10,
+        )
+
+        assert table.num_rows <= 10
+        assert "geometry" in table.column_names

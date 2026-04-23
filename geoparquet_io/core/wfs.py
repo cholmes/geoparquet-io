@@ -2,7 +2,7 @@
 WFS (Web Feature Service) to GeoParquet conversion.
 
 This module provides functionality to download features from OGC WFS services
-and convert them to GeoParquet format. Supports WFS 1.0.0 and 1.1.0.
+and convert them to GeoParquet format. Supports WFS 1.0.0, 1.1.0, and 2.0.0.
 
 Key features:
 - DuckDB-native HTTP streaming for fast extraction (10x+ faster than Python HTTP)
@@ -26,10 +26,12 @@ import pyarrow as pa
 __all__ = [
     "WFSError",
     "WFSLayerInfo",
+    "WFS_VERSIONS",
     "convert_wfs_to_geoparquet",
     "get_layer_info",
     "get_wfs_capabilities",
     "list_available_layers",
+    "negotiate_wfs_version",
     "wfs_to_table",
 ]
 
@@ -271,6 +273,50 @@ def get_wfs_capabilities(service_url: str, version: str = "1.1.0"):
             raise WFSError(f"Failed to get WFS capabilities: {e}") from e
 
 
+# WFS versions in preference order (newest first)
+WFS_VERSIONS = ["2.0.0", "1.1.0", "1.0.0"]
+
+
+def negotiate_wfs_version(service_url: str, preferred_version: str = "auto"):
+    """
+    Negotiate the best WFS version to use with the server.
+
+    Args:
+        service_url: WFS service URL
+        preferred_version: "auto" to try all versions, or specific version
+
+    Returns:
+        Tuple of (negotiated_version, wfs_capabilities_object)
+
+    Raises:
+        WFSError: If no supported version works
+    """
+    if preferred_version != "auto":
+        # User specified version, use it directly
+        wfs = get_wfs_capabilities(service_url, preferred_version)
+        return preferred_version, wfs
+
+    # Auto-negotiate: try versions in preference order
+    errors = []
+    for version in WFS_VERSIONS:
+        try:
+            debug(f"Trying WFS version {version}...")
+            wfs = get_wfs_capabilities(service_url, version)
+            info(f"Using WFS version {version}")
+            return version, wfs
+        except WFSError as e:
+            errors.append(f"  {version}: {e}")
+            continue
+
+    # All versions failed
+    error_details = "\n".join(errors)
+    raise WFSError(
+        f"Could not connect to WFS service with any supported version.\n"
+        f"Tried: {', '.join(WFS_VERSIONS)}\n"
+        f"Errors:\n{error_details}"
+    )
+
+
 def _normalize_crs(crs: str) -> str:
     """
     Normalize CRS string to consistent EPSG format.
@@ -310,6 +356,118 @@ def _normalize_crs(crs: str) -> str:
 def _crs_matches(crs1: str, crs2: str) -> bool:
     """Check if two CRS strings represent the same coordinate system."""
     return _normalize_crs(crs1) == _normalize_crs(crs2)
+
+
+def _estimate_crs_from_bbox(
+    bbox: tuple[float, float, float, float],
+) -> str | None:
+    """
+    Estimate CRS from coordinate ranges (rough heuristic).
+
+    This is a best-effort detection for common mismatches.
+    Returns None if unable to determine.
+
+    Args:
+        bbox: (xmin, ymin, xmax, ymax)
+
+    Returns:
+        Estimated EPSG code or None
+    """
+    xmin, ymin, xmax, ymax = bbox
+
+    # WGS84 / EPSG:4326: lon in [-180, 180], lat in [-90, 90]
+    if -180 <= xmin <= 180 and -180 <= xmax <= 180 and -90 <= ymin <= 90 and -90 <= ymax <= 90:
+        return "EPSG:4326"
+
+    # ETRS89-LAEA / EPSG:3035: European extent roughly 2M-7M x 1M-5.5M
+    # Check this BEFORE Web Mercator since it's more specific
+    if 2_000_000 < xmin < 7_500_000 and 2_000_000 < xmax < 7_500_000:
+        if 1_000_000 < ymin < 5_500_000 and 1_000_000 < ymax < 5_500_000:
+            return "EPSG:3035"
+
+    # Web Mercator / EPSG:3857: typically ±20M meters, centered at 0,0
+    # Uses wider ranges than EPSG:3035
+    if abs(xmin) > 1_000_000 or abs(xmax) > 1_000_000:
+        if abs(xmin) < 21_000_000 and abs(xmax) < 21_000_000:
+            if abs(ymin) < 21_000_000 and abs(ymax) < 21_000_000:
+                return "EPSG:3857"
+
+    return None
+
+
+def _validate_crs_coordinates(
+    table: pa.Table,
+    requested_crs: str,
+    strict: bool = False,
+) -> tuple[bool, str | None]:
+    """
+    Validate that table coordinates match the requested CRS.
+
+    Computes bbox from geometries and checks if coordinates are in expected range.
+
+    Args:
+        table: PyArrow table with geometry column
+        requested_crs: CRS that was requested from WFS
+        strict: If True, raise error on mismatch; if False, warn and return detected CRS
+
+    Returns:
+        Tuple of (is_valid, detected_crs_if_mismatch)
+    """
+    if table.num_rows == 0:
+        return True, None
+
+    try:
+        # Extract bbox from geometry column using DuckDB
+        # Geometry is stored as WKB, so we need ST_GeomFromWKB to convert
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            con.register("data", table)
+            result = con.execute("""
+                SELECT
+                    MIN(ST_XMin(ST_GeomFromWKB(geometry))) as xmin,
+                    MIN(ST_YMin(ST_GeomFromWKB(geometry))) as ymin,
+                    MAX(ST_XMax(ST_GeomFromWKB(geometry))) as xmax,
+                    MAX(ST_YMax(ST_GeomFromWKB(geometry))) as ymax
+                FROM data
+                WHERE geometry IS NOT NULL
+            """).fetchone()
+
+            if result is None or result[0] is None:
+                return True, None
+
+            bbox = (result[0], result[1], result[2], result[3])
+        finally:
+            con.close()
+
+        # Check if coordinates look like WGS84 when WGS84 was requested
+        normalized_crs = _normalize_crs(requested_crs)
+        if normalized_crs == "EPSG:4326":
+            xmin, ymin, xmax, ymax = bbox
+            # WGS84 coordinates should be in valid range
+            if abs(xmin) > 180 or abs(xmax) > 180 or abs(ymin) > 90 or abs(ymax) > 90:
+                detected = _estimate_crs_from_bbox(bbox)
+                msg = (
+                    f"Coordinate mismatch: requested {requested_crs} but got bbox "
+                    f"[{xmin:.2f}, {ymin:.2f}, {xmax:.2f}, {ymax:.2f}]. "
+                )
+                if detected:
+                    msg += f"Coordinates look like {detected}. Server may have ignored srsName."
+                else:
+                    msg += "Server may have returned data in a different CRS."
+
+                if strict:
+                    raise WFSError(msg)
+                else:
+                    warn(msg)
+                    return False, detected
+
+        return True, None
+
+    except WFSError:
+        raise
+    except Exception as e:
+        debug(f"CRS validation skipped due to error: {e}")
+        return True, None
 
 
 def _detect_geometry_column(wfs, typename: str) -> str:
@@ -571,31 +729,98 @@ def _determine_bbox_strategy(
     return True
 
 
+def _is_urn_crs(crs: str) -> bool:
+    """Check if CRS string is in URN format (urn:ogc:def:crs:EPSG::4326)."""
+    return crs.lower().startswith("urn:")
+
+
+def _is_geographic_crs(crs: str) -> bool:
+    """Check if CRS is a geographic coordinate system (lat/lon, not projected)."""
+    normalized = _normalize_crs(crs)
+    # Common geographic CRS codes
+    geographic_codes = {
+        "EPSG:4326",  # WGS84
+        "EPSG:4269",  # NAD83
+        "EPSG:4267",  # NAD27
+        "EPSG:4258",  # ETRS89
+    }
+    return normalized in geographic_codes or "CRS84" in crs.upper()
+
+
+def _needs_axis_swap(crs: str, version: str, axis_order: str = "auto") -> bool:
+    """
+    Determine if bbox coordinates need axis order swap (lat,lon instead of lon,lat).
+
+    Per OGC spec:
+    - WFS 1.0.0: Always lon,lat (XY)
+    - WFS 1.1.0+: Depends on CRS definition
+      - EPSG:4326 (simple): lon,lat (common practice, though spec says lat,lon)
+      - urn:ogc:def:crs:EPSG::4326: lat,lon per spec (YX)
+      - CRS:84: Always lon,lat (XY) by definition
+
+    Args:
+        crs: Coordinate reference system string
+        version: WFS version
+        axis_order: "auto" (detect), "xy" (force lon,lat), "latlon" (force lat,lon)
+
+    Returns:
+        True if bbox needs to be swapped to lat,lon order
+    """
+    if axis_order == "xy":
+        return False
+    if axis_order == "latlon":
+        return True
+
+    # WFS 1.0.0 always uses XY order
+    if version == "1.0.0":
+        return False
+
+    # CRS:84 is explicitly XY ordered
+    if "CRS84" in crs.upper() or "CRS:84" in crs.upper():
+        return False
+
+    # For WFS 1.1.0+: URN format with geographic CRS uses lat,lon
+    if _is_urn_crs(crs) and _is_geographic_crs(crs):
+        return True
+
+    return False
+
+
 def _build_bbox_param(
     bbox: tuple[float, float, float, float],
     crs: str,
     version: str = "1.1.0",
+    axis_order: str = "auto",
 ) -> str:
     """
-    Build WFS bbox parameter string.
+    Build WFS bbox parameter string with correct axis order.
 
-    WFS 1.0.0: xmin,ymin,xmax,ymax
-    WFS 1.1.0: xmin,ymin,xmax,ymax,crs
+    WFS 1.0.0: xmin,ymin,xmax,ymax (always XY)
+    WFS 1.1.0+: Axis order depends on CRS format
+      - EPSG:4326 (simple): xmin,ymin,xmax,ymax,crs
+      - urn:ogc:def:crs:EPSG::4326: ymin,xmin,ymax,xmax,crs (lat,lon per spec)
 
     Args:
-        bbox: Bounding box tuple (xmin, ymin, xmax, ymax)
+        bbox: Bounding box tuple (xmin, ymin, xmax, ymax) in lon,lat order
         crs: Coordinate reference system
         version: WFS version
+        axis_order: "auto" (detect from CRS), "xy" (force lon,lat), "latlon" (force lat,lon)
 
     Returns:
-        Bbox parameter string
+        Bbox parameter string with correct axis order for the CRS
     """
     xmin, ymin, xmax, ymax = bbox
 
     if version == "1.0.0":
         return f"{xmin},{ymin},{xmax},{ymax}"
+
+    # Check if we need to swap axis order for this CRS
+    if _needs_axis_swap(crs, version, axis_order):
+        # Swap to lat,lon order (ymin,xmin,ymax,xmax)
+        debug(f"Using lat,lon axis order for URN CRS: {crs}")
+        return f"{ymin},{xmin},{ymax},{xmax},{crs}"
     else:
-        # WFS 1.1.0+ includes CRS
+        # Standard lon,lat order (xmin,ymin,xmax,ymax)
         return f"{xmin},{ymin},{xmax},{ymax},{crs}"
 
 
@@ -788,6 +1013,7 @@ def _build_wfs_url(
     start_index: int | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
+    axis_order: str = "auto",
 ) -> str:
     """Build a WFS GetFeature URL with pagination support."""
     from urllib.parse import urlencode
@@ -803,14 +1029,17 @@ def _build_wfs_url(
     }
 
     if max_features:
-        # WFS 1.0.0 uses maxFeatures, WFS 1.1.0+ uses count (but maxFeatures often works)
-        params["maxFeatures"] = str(max_features)
+        # WFS 2.0 uses count, WFS 1.x uses maxFeatures
+        if version == "2.0.0":
+            params["count"] = str(max_features)
+        else:
+            params["maxFeatures"] = str(max_features)
 
     if start_index is not None and start_index > 0 and version != "1.0.0":
         params["startIndex"] = str(start_index)
 
     if bbox and crs:
-        params["bbox"] = _build_bbox_param(bbox, crs, version)
+        params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
 
     return f"{clean_url}?{urlencode(params)}"
 
@@ -824,6 +1053,7 @@ def fetch_all_features_duckdb(
     crs: str | None = None,
     max_workers: int = 1,
     page_size: int = 10000,
+    axis_order: str = "auto",
 ) -> pa.Table:
     """
     Fetch WFS features using DuckDB's native HTTP streaming.
@@ -842,6 +1072,7 @@ def fetch_all_features_duckdb(
         crs: CRS for bbox parameter
         max_workers: Number of parallel requests (1 = single streaming request)
         page_size: Features per page when using parallel mode (default: 10000)
+        axis_order: Bbox axis order ("auto", "xy", "latlon")
 
     Returns:
         PyArrow Table with geometry (WKB) and all properties
@@ -861,7 +1092,13 @@ def fetch_all_features_duckdb(
             progress("Streaming features via DuckDB...")
 
         url = _build_wfs_url(
-            service_url, typename, version, max_features=max_features, bbox=bbox, crs=crs
+            service_url,
+            typename,
+            version,
+            max_features=max_features,
+            bbox=bbox,
+            crs=crs,
+            axis_order=axis_order,
         )
         return _fetch_wfs_page_duckdb(url)
 
@@ -869,7 +1106,13 @@ def fetch_all_features_duckdb(
     if total_count is None:
         warn("Cannot determine feature count; falling back to single request mode.")
         url = _build_wfs_url(
-            service_url, typename, version, max_features=max_features, bbox=bbox, crs=crs
+            service_url,
+            typename,
+            version,
+            max_features=max_features,
+            bbox=bbox,
+            crs=crs,
+            axis_order=axis_order,
         )
         return _fetch_wfs_page_duckdb(url)
 
@@ -898,6 +1141,7 @@ def fetch_all_features_duckdb(
             start_index=start,
             bbox=bbox,
             crs=crs,
+            axis_order=axis_order,
         )
         pages.append((i, start, url))
 
@@ -939,6 +1183,8 @@ def wfs_to_table(
     limit: int | None = None,
     max_workers: int = 1,
     page_size: int = 10000,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
     verbose: bool = False,
 ) -> pa.Table:
     """
@@ -955,19 +1201,25 @@ def wfs_to_table(
     Args:
         service_url: WFS service URL
         typename: Layer typename
-        version: WFS version (1.0.0 or 1.1.0)
+        version: WFS version (1.0.0, 1.1.0, or 2.0.0)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax)
         bbox_mode: Bbox strategy ("auto", "server", "local")
         output_crs: Request specific CRS (e.g., "EPSG:4326")
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1 = single request)
         page_size: Features per page when using parallel mode (default: 10000)
+        axis_order: Bbox axis order ("auto", "xy", "latlon")
+        strict_crs: If True, fail on CRS mismatch; if False, warn and use detected CRS
         verbose: Enable debug output
 
     Returns:
         PyArrow Table with GeoParquet-compatible geometry
     """
     configure_verbose(verbose)
+
+    # Handle auto version negotiation
+    if version == "auto":
+        version, _ = negotiate_wfs_version(service_url)
 
     # Get layer info
     info("Connecting to WFS service...")
@@ -1002,6 +1254,7 @@ def wfs_to_table(
         crs=crs,
         max_workers=max_workers,
         page_size=page_size,
+        axis_order=axis_order,
     )
 
     if table.num_rows == 0:
@@ -1027,6 +1280,13 @@ def wfs_to_table(
             debug(f"After local filter: {table.num_rows:,} features")
         finally:
             con.close()
+
+    # Validate CRS - check if coordinates match requested CRS
+    crs_valid, detected_crs = _validate_crs_coordinates(table, crs, strict=strict_crs)
+    if not crs_valid and detected_crs:
+        # Server returned data in different CRS - use detected CRS for metadata
+        info(f"Using detected CRS {detected_crs} for output metadata")
+        crs = detected_crs
 
     # Add CRS metadata to schema
     projjson = parse_crs_string_to_projjson(_normalize_crs(crs))
@@ -1060,6 +1320,8 @@ def convert_wfs_to_geoparquet(
     limit: int | None = None,
     max_workers: int = 1,
     page_size: int = 10000,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     compression: str = "ZSTD",
@@ -1084,6 +1346,8 @@ def convert_wfs_to_geoparquet(
         limit: Maximum features
         max_workers: Parallel requests for large datasets (default: 1)
         page_size: Features per page when using parallel mode (default: 10000)
+        axis_order: Bbox axis order ("auto", "xy", "latlon")
+        strict_crs: If True, fail on CRS mismatch
         skip_hilbert: Skip Hilbert curve sorting
         skip_bbox: Skip adding bbox column
         compression: Compression algorithm
@@ -1112,6 +1376,8 @@ def convert_wfs_to_geoparquet(
         limit=limit,
         max_workers=max_workers,
         page_size=page_size,
+        axis_order=axis_order,
+        strict_crs=strict_crs,
         verbose=verbose,
     )
 
