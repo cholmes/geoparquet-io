@@ -73,15 +73,11 @@ uv tool install geoparquet-io --with gpio-pmtiles
 **Commands**:
 ```bash
 # Convert GeoParquet to PMTiles
-gpio pmtiles write input.parquet output.pmtiles
-
-# Convert PMTiles to GeoParquet
-gpio pmtiles read input.pmtiles output.parquet
+gpio pmtiles create input.parquet output.pmtiles
 ```
 
 **Use Cases**:
 - Generating tilesets from GeoParquet for web mapping
-- Converting PMTiles archives to GeoParquet for analysis
 - Building vector tile pipelines
 
 ## How Plugins Work
