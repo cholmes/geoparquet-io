@@ -44,8 +44,9 @@ dependencies = [
     "mercantile>=1.2.0",  # Required for quadkey generation
     "httpx>=0.25.0",  # Required for ArcGIS REST API requests (http2 disabled due to ArcGIS compatibility)
     "owslib>=0.29.0",  # Required for OGC Web Feature Service (WFS) extraction
-    # Security: explicit constraint for transitive dependency
+    # Security: explicit constraints for transitive dependencies
     "requests>=2.33.0",  # CVE-2026-25645 fix
+    "lxml>=6.1.0",  # CVE-2026-41066 fix
 ]
 
 [project.scripts]
