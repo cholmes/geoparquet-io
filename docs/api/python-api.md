@@ -189,10 +189,11 @@ from geoparquet_io.api import Table
 table = Table.from_wfs(
     'https://geo.example.com/wfs',
     'cities',
-    version='1.1.0',      # WFS version (1.0.0 or 1.1.0)
+    version='auto',       # WFS version (auto, 2.0.0, 1.1.0, 1.0.0)
     bbox=(-122.5, 37.5, -122.0, 38.0),  # Optional filter
     limit=1000,           # Max features
     max_workers=2,        # Parallel requests
+    axis_order='auto',    # Bbox axis order (auto, xy, latlon)
 )
 ```
 
@@ -212,11 +213,13 @@ table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
 |-----------|------|-------------|
 | `service_url` | str | WFS service URL |
 | `typename` | str | Layer name to extract |
-| `version` | str | WFS version: `1.0.0` or `1.1.0` (default) |
+| `version` | str | WFS version: `auto` (default), `2.0.0`, `1.1.0`, `1.0.0`. Auto tries 2.0.0 first. |
 | `bbox` | tuple | Bounding box filter (xmin, ymin, xmax, ymax) |
 | `limit` | int | Maximum number of features |
 | `max_workers` | int | Number of parallel fetch workers (default: 1) |
 | `page_size` | int | Features per WFS request page (default: 10000) |
+| `axis_order` | str | Bbox axis order: `auto` (default), `xy`, `latlon`. Auto detects from CRS format. |
+| `strict_crs` | bool | Fail on CRS mismatch (default: False, warns instead) |
 
 !!! note "No automatic Hilbert sorting"
     Like other Python API extraction methods, `from_wfs()` does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if needed.
@@ -1068,7 +1071,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
 | `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
-| `ops.from_wfs(service_url, typename, version='1.1.0', bbox=None, limit=None, max_workers=1, page_size=10000)` | Fetch from WFS service |
+| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=10000, axis_order='auto', strict_crs=False)` | Fetch from WFS service |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

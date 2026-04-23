@@ -1116,6 +1116,34 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --compression-level 6
 ```
 
+### WFS Version
+
+gpio supports WFS 1.0.0, 1.1.0, and 2.0.0. By default, auto-negotiation tries the newest version first:
+
+```bash
+# Auto-negotiate (default) - tries 2.0.0, then 1.1.0, then 1.0.0
+gpio extract wfs https://geo.example.com/wfs cities output.parquet
+
+# Force specific version
+gpio extract wfs https://geo.example.com/wfs cities output.parquet \
+    --wfs-version 1.1.0
+```
+
+### Axis Order
+
+WFS 1.1.0+ with URN-format CRS (e.g., `urn:ogc:def:crs:EPSG::4326`) uses lat,lon axis order per OGC spec. gpio auto-detects this, but you can override:
+
+```bash
+# Force lon,lat (XY) axis order
+gpio extract wfs https://geo.example.com/wfs cities output.parquet \
+    --bbox 4.82,50.44,4.92,50.48 \
+    --axis-order xy
+
+# Force lat,lon axis order
+gpio extract wfs https://geo.example.com/wfs cities output.parquet \
+    --axis-order latlon
+```
+
 ### CRS Handling
 
 gpio automatically negotiates the coordinate reference system with the WFS server:
@@ -1124,6 +1152,14 @@ gpio automatically negotiates the coordinate reference system with the WFS serve
 # Request specific CRS from server
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --output-crs EPSG:3857
+```
+
+Some servers ignore `srsName` and return data in their native CRS. gpio detects this and warns:
+
+```bash
+# Fail instead of warn on CRS mismatch
+gpio extract wfs https://geo.example.com/wfs cities output.parquet \
+    --strict-crs
 ```
 
 ### Common Public WFS Services

@@ -756,11 +756,13 @@ def from_arcgis(
 def from_wfs(
     service_url: str,
     typename: str,
-    version: str = "1.1.0",
+    version: str = "auto",
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
     page_size: int = 10000,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -771,11 +773,16 @@ def from_wfs(
     Args:
         service_url: WFS service URL
         typename: Feature type name (e.g., 'cities' or 'ns:cities')
-        version: WFS version (1.0.0 or 1.1.0)
+        version: WFS version ('auto', '2.0.0', '1.1.0', '1.0.0'). Default 'auto'
+            tries 2.0.0, then 1.1.0, then 1.0.0.
         bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1)
         page_size: Features per page when using parallel mode (default: 10000)
+        axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
+            CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
+        strict_crs: If True, fail when server returns coordinates that don't match
+            requested CRS. If False (default), warn and use detected CRS.
 
     Returns:
         PyArrow Table with geometry column
@@ -785,6 +792,8 @@ def from_wfs(
         >>> table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
         >>> # For large datasets:
         >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', max_workers=4)
+        >>> # Force axis order for problematic servers:
+        >>> table = ops.from_wfs(url, layer, axis_order='latlon')
     """
     from geoparquet_io.core.wfs import wfs_to_table
 
@@ -796,6 +805,8 @@ def from_wfs(
         limit=limit,
         max_workers=max_workers,
         page_size=page_size,
+        axis_order=axis_order,
+        strict_crs=strict_crs,
     )
 
 
