@@ -2756,17 +2756,52 @@ def extract_bigquery_cmd(
     )
 
 
+def _deprecated_version_callback(ctx, param, value):
+    """Callback to warn about deprecated --version flag."""
+    if value is not None:
+        import click
+
+        click.echo(
+            "Warning: --version is deprecated, use --wfs-version instead",
+            err=True,
+        )
+    return value
+
+
 @extract.command(name="wfs")
 @handle_geoparquet_errors
 @click.argument("service_url")
 @click.argument("typename", required=False)
 @click.argument("output_file", required=False, type=click.Path())
 @click.option(
-    "--version",
+    "--wfs-version",
     "wfs_version",
     default="1.1.0",
-    type=click.Choice(["1.0.0", "1.1.0"]),
-    help="WFS protocol version",
+    type=click.Choice(["auto", "2.0.0", "1.1.0", "1.0.0"]),
+    help="WFS protocol version. 'auto' tries 2.0.0, then 1.1.0, then 1.0.0. Default: 1.1.0",
+)
+@click.option(
+    "--version",
+    "deprecated_version",
+    type=click.Choice(["auto", "2.0.0", "1.1.0", "1.0.0"]),
+    hidden=True,
+    callback=_deprecated_version_callback,
+    expose_value=True,
+    is_eager=True,
+    help="Deprecated: use --wfs-version instead",
+)
+@click.option(
+    "--axis-order",
+    type=click.Choice(["auto", "xy", "latlon"]),
+    default="auto",
+    help="Bbox axis order. 'auto' (default) detects from CRS format. "
+    "'xy' forces lon,lat order. 'latlon' forces lat,lon order.",
+)
+@click.option(
+    "--strict-crs",
+    is_flag=True,
+    help="Fail if server returns coordinates that don't match requested CRS. "
+    "Without this flag, a warning is shown and detected CRS is used.",
 )
 @click.option(
     "--bbox",
@@ -2822,6 +2857,9 @@ def extract_wfs_cmd(
     typename,
     output_file,
     wfs_version,
+    deprecated_version,
+    axis_order,
+    strict_crs,
     bbox,
     bbox_mode,
     limit,
@@ -2879,12 +2917,22 @@ def extract_wfs_cmd(
         WFSError,
         convert_wfs_to_geoparquet,
         list_available_layers,
+        negotiate_wfs_version,
     )
+
+    # Handle deprecated --version flag
+    if deprecated_version is not None:
+        wfs_version = deprecated_version
 
     # If no typename, list available layers
     if typename is None:
         try:
-            layers = list_available_layers(service_url, version=wfs_version)
+            # Handle auto version negotiation for listing
+            if wfs_version == "auto":
+                negotiated_version, _ = negotiate_wfs_version(service_url)
+                layers = list_available_layers(service_url, version=negotiated_version)
+            else:
+                layers = list_available_layers(service_url, version=wfs_version)
         except WFSError as e:
             raise click.ClickException(str(e)) from None
 
@@ -2948,6 +2996,8 @@ def extract_wfs_cmd(
             limit=limit,
             max_workers=workers,
             page_size=page_size,
+            axis_order=axis_order,
+            strict_crs=strict_crs,
             skip_hilbert=skip_hilbert,
             skip_bbox=skip_bbox,
             compression=compression.upper(),
