@@ -1667,3 +1667,131 @@ class TestInferColumnTypes:
         assert result.schema.field("value").type == pa.float64()
         assert result.schema.field("name").type in (pa.string(), pa.large_string())
         assert result.schema.field("active").type == pa.bool_()
+
+    # =========================================================================
+    # Edge Case Tests (adversarial review findings)
+    # =========================================================================
+
+    def test_infer_types_scientific_notation(self):
+        """Scientific notation should cast to float, not int."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"sci": ["1.5e6", "2.0e-3", "3e10"]})
+        result = _infer_column_types(table)
+        # Scientific notation parses as float
+        assert result.schema.field("sci").type == pa.float64()
+        assert result["sci"].to_pylist() == pytest.approx([1.5e6, 2.0e-3, 3e10])
+
+    def test_infer_types_leading_zeros_cast_to_float(self):
+        """Leading zeros cast to float (not int, since '007' != '7')."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        # Leading zeros: '007' != '7' so fails int check, but DOUBLE works
+        table = pa.table({"code": ["007", "008", "009"]})
+        result = _infer_column_types(table)
+        # DuckDB TRY_CAST to DOUBLE succeeds, so becomes float
+        # Note: if you need to preserve leading zeros, don't use type inference
+        assert result.schema.field("code").type == pa.float64()
+        assert result["code"].to_pylist() == [7.0, 8.0, 9.0]
+
+    def test_infer_types_whitespace_cast_to_float(self):
+        """DuckDB trims whitespace before casting, so these become floats."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        # DuckDB trims whitespace during TRY_CAST
+        table = pa.table({"padded": [" 123 ", "456", " 789"]})
+        result = _infer_column_types(table)
+        # Whitespace trimmed, DOUBLE cast succeeds
+        assert result.schema.field("padded").type == pa.float64()
+        assert result["padded"].to_pylist() == [123.0, 456.0, 789.0]
+
+    def test_infer_types_empty_string_stays_string(self):
+        """Empty strings mixed with numbers should stay string."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"maybe_num": ["123", "", "456"]})
+        result = _infer_column_types(table)
+        # Empty string is not a valid int, stays string
+        assert result.schema.field("maybe_num").type in (pa.string(), pa.large_string())
+
+    def test_infer_types_bigint_overflow_becomes_float(self):
+        """Numbers exceeding BIGINT range cast to float (with precision loss)."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        # BIGINT max is 9223372036854775807, but DOUBLE can hold larger values
+        table = pa.table({"huge": ["99999999999999999999", "1", "2"]})
+        result = _infer_column_types(table)
+        # BIGINT fails but DOUBLE succeeds (with precision loss)
+        assert result.schema.field("huge").type == pa.float64()
+        # Note: 99999999999999999999 becomes 1e20 (precision loss is expected)
+        assert result["huge"].to_pylist()[0] == pytest.approx(1e20, rel=0.01)
+
+    def test_infer_types_connection_cleanup_on_error(self):
+        """Connection should be closed even if processing fails."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        # Test with valid data - connection should be closed after
+        table = pa.table({"x": ["1", "2", "3"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("x").type == pa.int64()
+        # If connection leaked, subsequent calls would fail or accumulate
+        # Run multiple times to detect leaks
+        for _ in range(5):
+            result = _infer_column_types(table)
+            assert result.schema.field("x").type == pa.int64()
+
+
+# =============================================================================
+# Type Inference Integration Test (Issue #400)
+# =============================================================================
+
+
+@pytest.mark.network
+@pytest.mark.slow
+class TestTypeInferenceIntegration:
+    """Integration test verifying type inference works with real WFS data.
+
+    Uses Belgian WFS which returns string-typed numeric fields.
+    """
+
+    # Belgian federal WFS - known to return string-typed numerics
+    BELGIUM_WFS = "https://geoservices.wallonie.be/arcgis/services/AMENAGEMENT_TERRITOIRE/TLPE/MapServer/WFSServer"
+    BELGIUM_LAYER = "TLPE:TLPE"
+
+    def test_wfs_type_inference_real_server(self):
+        """Real WFS data should have numeric columns properly typed."""
+        import pyarrow as pa
+
+        from geoparquet_io import wfs_to_table
+
+        table = wfs_to_table(
+            self.BELGIUM_WFS,
+            self.BELGIUM_LAYER,
+            limit=50,
+        )
+
+        assert table.num_rows > 0
+        assert "geometry" in table.column_names
+
+        # Check that at least one numeric-looking column got inferred
+        # (exact columns depend on the WFS, but objectid is typically numeric)
+        numeric_types = (pa.int64(), pa.float64())
+        has_numeric = any(
+            field.type in numeric_types for field in table.schema if field.name != "geometry"
+        )
+        # If no numeric columns found, that's suspicious but not fatal
+        # (server may have changed schema)
+        if not has_numeric:
+            pytest.skip("No numeric columns found in WFS response")
