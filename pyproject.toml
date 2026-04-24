@@ -271,7 +271,7 @@ verbose = false
 
 [tool.codespell]
 skip = ".git,*.lock,*.parquet,*.json,tests/data/*,.venv,uv.lock"
-ignore-words-list = "nd,ot,crs,inout,hel"
+ignore-words-list = "nd,ot,crs,inout,hel,bu"
 check-filenames = true
 
 [tool.coverage.run]

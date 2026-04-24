@@ -82,7 +82,15 @@ jobs:
         run: uv run bandit -r geoparquet_io/ -c pyproject.toml
 
       - name: Dependency audit
-        run: uv run pip-audit
+        # CVE-2026-3219: pip tar/ZIP handling (CVSS 4.6). Fix in pip 26.1.
+        # Self-expiring ignore: removed automatically when pip 26.1+ available.
+        run: |
+          PIP_VERSION=$(uv run pip --version | awk '{print $2}' | cut -d. -f1,2)
+          if [[ "$(printf '%s\n' "26.1" "$PIP_VERSION" | sort -V | head -n1)" == "26.1" ]]; then
+            uv run pip-audit
+          else
+            uv run pip-audit --ignore-vuln CVE-2026-3219
+          fi
 
   test:
     runs-on: ${{ matrix.os }}
