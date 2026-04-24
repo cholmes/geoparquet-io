@@ -941,6 +941,112 @@ def _get_feature_count(
     return None
 
 
+def _infer_column_types(table: pa.Table) -> pa.Table:
+    """
+    Infer and cast string columns to appropriate types.
+
+    WFS servers often serialize all values as quoted strings in JSON,
+    causing DuckDB to infer them as VARCHAR. This function detects
+    columns that can be safely cast to int64, float64, or bool.
+
+    Args:
+        table: PyArrow table with potentially mis-typed string columns
+
+    Returns:
+        Table with string columns cast to inferred types
+    """
+    if table.num_rows == 0:
+        return table
+
+    con = get_duckdb_connection()
+    con.register("_wfs_data", table)
+
+    new_columns = []
+    for field in table.schema:
+        col_name = field.name
+
+        # Only process string/large_string columns
+        if field.type not in (pa.string(), pa.large_string()):
+            new_columns.append((col_name, table[col_name]))
+            continue
+
+        # Check type compatibility using TRY_CAST
+        # Quote column name to handle reserved words/special chars
+        quoted_col = f'"{col_name}"'
+
+        try:
+            stats = con.execute(f"""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT({quoted_col}) AS non_null,
+                    SUM(CASE WHEN TRY_CAST({quoted_col} AS BIGINT)::VARCHAR = {quoted_col}
+                        THEN 1 ELSE 0 END) AS is_int,
+                    SUM(CASE WHEN TRY_CAST({quoted_col} AS DOUBLE) IS NOT NULL
+                        THEN 1 ELSE 0 END) AS is_float,
+                    SUM(CASE WHEN LOWER({quoted_col}) IN ('true', 'false', '1', '0')
+                        THEN 1 ELSE 0 END) AS is_bool
+                FROM _wfs_data
+            """).fetchone()
+
+            total, non_null, is_int, is_float, is_bool = stats
+
+            # Skip columns with all nulls
+            if non_null == 0:
+                new_columns.append((col_name, table[col_name]))
+                continue
+
+            # Determine target type (order matters: int > float > bool > string)
+            if is_int == non_null:
+                # All non-null values are valid integers
+                casted = (
+                    con.execute(f"""
+                    SELECT CAST({quoted_col} AS BIGINT) FROM _wfs_data
+                """)
+                    .arrow()
+                    .read_all()
+                    .column(0)
+                )
+                new_columns.append((col_name, casted))
+            elif is_float == non_null and is_int < non_null:
+                # All non-null values are valid floats (but not all integers)
+                casted = (
+                    con.execute(f"""
+                    SELECT CAST({quoted_col} AS DOUBLE) FROM _wfs_data
+                """)
+                    .arrow()
+                    .read_all()
+                    .column(0)
+                )
+                new_columns.append((col_name, casted))
+            elif is_bool == non_null:
+                # All non-null values are valid booleans
+                casted = (
+                    con.execute(f"""
+                    SELECT CASE
+                        WHEN LOWER({quoted_col}) IN ('true', '1') THEN TRUE
+                        WHEN LOWER({quoted_col}) IN ('false', '0') THEN FALSE
+                        ELSE NULL
+                    END
+                    FROM _wfs_data
+                """)
+                    .arrow()
+                    .read_all()
+                    .column(0)
+                )
+                new_columns.append((col_name, casted))
+            else:
+                # Keep as string
+                new_columns.append((col_name, table[col_name]))
+
+        except Exception:
+            # On any error, keep original column
+            new_columns.append((col_name, table[col_name]))
+
+    con.unregister("_wfs_data")
+
+    return pa.table(dict(new_columns))
+
+
 def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
     """
     Fetch a WFS GeoJSON page directly using DuckDB's httpfs.
@@ -1012,6 +1118,10 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
 
         result = con.execute(query)
         table = result.arrow().read_all()
+
+        # Infer proper types for string columns (issue #400)
+        table = _infer_column_types(table)
+
         elapsed = time.time() - start_time
         debug(f"DuckDB OK: {table.num_rows:,} rows in {elapsed:.1f}s")
         return table

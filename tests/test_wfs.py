@@ -1477,3 +1477,193 @@ class TestWFS20Integration:
 
         assert table.num_rows <= 10
         assert "geometry" in table.column_names
+
+
+# =============================================================================
+# Type Inference Tests (Issue #400)
+# =============================================================================
+
+
+class TestInferColumnTypes:
+    """Tests for string column type inference.
+
+    WFS servers often return all values as quoted strings in JSON, causing
+    DuckDB to infer them as VARCHAR. These tests verify that _infer_column_types
+    correctly detects and casts numeric, boolean, and other typed columns.
+    """
+
+    def test_infer_types_integer(self):
+        """Integer strings should be cast to int64."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"objectid": ["12345", "67890", "11111"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("objectid").type == pa.int64()
+        assert result["objectid"].to_pylist() == [12345, 67890, 11111]
+
+    def test_infer_types_float(self):
+        """Float strings should be cast to double."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"value": ["3.14", "2.71", "1.618"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("value").type == pa.float64()
+        assert result["value"].to_pylist() == pytest.approx([3.14, 2.71, 1.618])
+
+    def test_infer_types_string_preserved(self):
+        """Non-numeric strings should stay as string."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"name": ["Alice", "Bob", "Charlie"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("name").type in (pa.string(), pa.large_string())
+        assert result["name"].to_pylist() == ["Alice", "Bob", "Charlie"]
+
+    def test_infer_types_with_nulls(self):
+        """Null values should be preserved during type inference."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"count": ["100", None, "200"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("count").type == pa.int64()
+        assert result["count"].to_pylist() == [100, None, 200]
+
+    def test_infer_types_prefers_int_over_float(self):
+        """Whole numbers should be int64, not float64."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"id": ["1", "2", "3"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("id").type == pa.int64()
+
+    def test_infer_types_skips_non_string_columns(self):
+        """Already-typed columns should not be modified."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table(
+            {
+                "existing_int": pa.array([1, 2, 3], type=pa.int64()),
+                "existing_float": pa.array([1.1, 2.2, 3.3], type=pa.float64()),
+            }
+        )
+        result = _infer_column_types(table)
+        assert result.schema.field("existing_int").type == pa.int64()
+        assert result.schema.field("existing_float").type == pa.float64()
+
+    def test_infer_types_boolean(self):
+        """Boolean strings should be cast to bool."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"active": ["true", "false", "true"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("active").type == pa.bool_()
+        assert result["active"].to_pylist() == [True, False, True]
+
+    def test_infer_types_boolean_variants(self):
+        """Various boolean representations should work."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"flag": ["True", "FALSE", "1", "0"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("flag").type == pa.bool_()
+        assert result["flag"].to_pylist() == [True, False, True, False]
+
+    def test_infer_types_empty_table(self):
+        """Empty tables should not crash."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"col": pa.array([], type=pa.string())})
+        result = _infer_column_types(table)
+        assert result.num_rows == 0
+
+    def test_infer_types_all_nulls(self):
+        """Column with all nulls should stay string."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"maybe": pa.array([None, None], type=pa.string())})
+        result = _infer_column_types(table)
+        # Stays string (or large_string) because we can't infer type from nulls
+        assert result.schema.field("maybe").type in (pa.string(), pa.large_string())
+
+    def test_infer_types_mixed_numeric_stays_string(self):
+        """Mixed numeric and text should stay string."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table({"mixed": ["123", "abc", "456"]})
+        result = _infer_column_types(table)
+        assert result.schema.field("mixed").type in (pa.string(), pa.large_string())
+
+    def test_infer_types_negative_numbers(self):
+        """Negative numbers should be handled correctly."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table(
+            {
+                "negative_int": ["-100", "-200", "300"],
+                "negative_float": ["-1.5", "2.5", "-3.5"],
+            }
+        )
+        result = _infer_column_types(table)
+        assert result.schema.field("negative_int").type == pa.int64()
+        assert result.schema.field("negative_float").type == pa.float64()
+        assert result["negative_int"].to_pylist() == [-100, -200, 300]
+
+    def test_infer_types_geometry_preserved(self):
+        """Binary geometry column should not be touched."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        geom = pa.array([b"\x01\x02\x03"], type=pa.binary())
+        table = pa.table(
+            {
+                "geometry": geom,
+                "id": ["1"],
+            }
+        )
+        result = _infer_column_types(table)
+        assert result.schema.field("geometry").type == pa.binary()
+
+    def test_infer_types_multiple_columns(self):
+        """Multiple columns should all be processed."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _infer_column_types
+
+        table = pa.table(
+            {
+                "id": ["1", "2"],
+                "value": ["3.14", "2.71"],
+                "name": ["foo", "bar"],
+                "active": ["true", "false"],
+            }
+        )
+        result = _infer_column_types(table)
+        assert result.schema.field("id").type == pa.int64()
+        assert result.schema.field("value").type == pa.float64()
+        assert result.schema.field("name").type in (pa.string(), pa.large_string())
+        assert result.schema.field("active").type == pa.bool_()
