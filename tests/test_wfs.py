@@ -1333,6 +1333,34 @@ class TestVersionNegotiation:
         assert "typeName=test" in url
         assert "typeNames=" not in url
 
+    def test_build_wfs_url_includes_srsname_without_bbox(self):
+        """srsName should be included even without bbox filter (Issue #405)."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.1.0",
+            crs="EPSG:4326",
+            # No bbox provided
+        )
+        assert "srsName=" in url or "srsname=" in url.lower()
+
+    def test_build_wfs_url_includes_srsname_with_bbox(self):
+        """srsName should still work when bbox is also provided."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.1.0",
+            bbox=(4.0, 50.0, 5.0, 51.0),
+            crs="EPSG:4326",
+        )
+        # Should have both srsName param AND bbox with CRS suffix
+        assert "srsName=" in url or "srsname=" in url.lower()
+        assert "bbox=" in url
+
 
 # =============================================================================
 # CRS Validation Tests (Issue #398)
@@ -1795,3 +1823,61 @@ class TestTypeInferenceIntegration:
         # (server may have changed schema)
         if not has_numeric:
             pytest.skip("No numeric columns found in WFS response")
+
+
+# =============================================================================
+# srsName Without Bbox Tests (Issue #405)
+# =============================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.network
+@pytest.mark.slow
+class TestSrsNameWithoutBbox:
+    """Integration tests for srsName parameter without bbox filter.
+
+    Issue #405: srsName was only sent when bbox was provided, causing servers
+    to return data in their native CRS instead of the requested CRS.
+    """
+
+    # Wallonia INSPIRE server - returns EPSG:3035 natively, supports WGS84
+    WALLONIA_WFS = "https://geoservices.wallonie.be/geoserver/inspire_bu/ows"
+    WALLONIA_LAYER = "inspire_bu:BU.Building_building_emprise"
+
+    @pytest.mark.xfail(reason="External WFS service may be unavailable")
+    def test_wfs_without_bbox_returns_wgs84_coordinates(self):
+        """Without bbox, server should still return WGS84 when requested.
+
+        The Wallonia server's native CRS is EPSG:3035 (ETRS89-LAEA).
+        If srsName is properly sent, we should get WGS84 coords (~4.3, ~50.7).
+        If srsName is missing, we'd get EPSG:3035 coords (~3923264, ~3080361).
+        """
+        import shapely
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        table = wfs_to_table(
+            self.WALLONIA_WFS,
+            self.WALLONIA_LAYER,
+            version="1.1.0",
+            limit=5,
+            # No bbox - this is the key condition for #405
+        )
+
+        assert table.num_rows > 0
+        geom = shapely.from_wkb(table.column("geometry")[0].as_py())
+
+        # Get first coordinate
+        if hasattr(geom, "exterior"):
+            x, y = geom.exterior.coords[0]
+        else:
+            x, y = geom.coords[0]
+
+        # WGS84 Belgium coords: longitude ~3-6, latitude ~49-52
+        # EPSG:3035 coords would be ~3.8M, ~3.0M
+        assert -180 <= x <= 180, f"X coord {x} not in WGS84 range, likely EPSG:3035"
+        assert -90 <= y <= 90, f"Y coord {y} not in WGS84 range, likely EPSG:3035"
+
+        # More specific check for Belgium
+        assert 2.5 <= x <= 6.5, f"X coord {x} not in Belgium longitude range"
+        assert 49.0 <= y <= 52.0, f"Y coord {y} not in Belgium latitude range"

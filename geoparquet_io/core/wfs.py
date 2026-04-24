@@ -1165,6 +1165,11 @@ def _build_wfs_url(
     if start_index is not None and start_index > 0 and version != "1.0.0":
         params["startIndex"] = str(start_index)
 
+    # Always include srsName when CRS is specified (Issue #405)
+    # This tells the server what CRS to return data in, independent of bbox
+    if crs:
+        params["srsName"] = crs
+
     if bbox and crs:
         params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
 
