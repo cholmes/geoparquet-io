@@ -27,7 +27,7 @@ from click.testing import CliRunner
 
 from geoparquet_io.api.table import convert
 from geoparquet_io.core.convert import _validate_layer_name, read_spatial_to_arrow
-from geoparquet_io.core.list_layers import list_layers
+from geoparquet_io.core.layers import list_layers
 
 
 @pytest.fixture
@@ -336,6 +336,7 @@ class TestEstoniaGeoPackageIntegration:
     URL: https://geoportaal.maaamet.ee/
     """
 
+    # URL may change; if tests fail, check Estonian Land Board geoportal for current link
     ESTONIA_GPKG_URL = (
         "https://geoportaal.maaamet.ee/index.php?lang_id=1&plugin_act=otsing"
         "&andmetyyp=ETAK&dl=1&f=ETAK_EESTI_GPKG.zip&page_id=609"
