@@ -1167,7 +1167,8 @@ def _build_wfs_url(
 
     # Always include srsName when CRS is specified (Issue #405)
     # This tells the server what CRS to return data in, independent of bbox
-    if crs:
+    # Note: WFS 1.0.0 uses SRS in bbox only, srsName is 1.1.0+ parameter
+    if crs and version != "1.0.0":
         params["srsName"] = crs
 
     if bbox and crs:

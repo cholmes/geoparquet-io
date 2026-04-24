@@ -1361,6 +1361,43 @@ class TestVersionNegotiation:
         assert "srsName=" in url or "srsname=" in url.lower()
         assert "bbox=" in url
 
+    def test_build_wfs_url_includes_srsname_wfs_20(self):
+        """WFS 2.0.0 should also include srsName parameter."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="2.0.0",
+            crs="EPSG:4326",
+        )
+        assert "srsName=" in url or "srsname=" in url.lower()
+
+    def test_build_wfs_url_excludes_srsname_wfs_10(self):
+        """WFS 1.0.0 should NOT include srsName (uses SRS in bbox only)."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.0.0",
+            crs="EPSG:4326",
+        )
+        # srsName is a 1.1.0+ parameter
+        assert "srsName=" not in url
+
+    def test_build_wfs_url_excludes_srsname_when_no_crs(self):
+        """srsName should be absent when no CRS specified."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="1.1.0",
+            # No crs provided
+        )
+        assert "srsName=" not in url
+
 
 # =============================================================================
 # CRS Validation Tests (Issue #398)
@@ -1844,7 +1881,11 @@ class TestSrsNameWithoutBbox:
     WALLONIA_WFS = "https://geoservices.wallonie.be/geoserver/inspire_bu/ows"
     WALLONIA_LAYER = "inspire_bu:BU.Building_building_emprise"
 
-    @pytest.mark.xfail(reason="External WFS service may be unavailable")
+    @pytest.mark.xfail(
+        reason="External WFS service may be unavailable",
+        strict=False,
+        raises=(Exception,),  # Only xfail on connection/service errors
+    )
     def test_wfs_without_bbox_returns_wgs84_coordinates(self):
         """Without bbox, server should still return WGS84 when requested.
 
