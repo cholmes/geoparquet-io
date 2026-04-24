@@ -673,6 +673,15 @@ class TestReadPartition:
         assert table.num_rows > 0
         assert table.geometry_column == "geometry"
 
+    def test_read_partition_then_sort_hilbert(self, partition_dir):
+        """Test reading a partitioned directory and then sorting it by Hilbert curve."""
+        from geoparquet_io import read_partition
+
+        sorted_table = read_partition(partition_dir).sort_hilbert()
+        assert sorted_table.num_rows > 0
+        assert sorted_table.geometry_column == "geometry"
+        assert sorted_table.check_spatial().passed()
+
 
 class TestTableHeadTail:
     """Tests for head() and tail() methods."""
