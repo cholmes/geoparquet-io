@@ -213,7 +213,10 @@ def read_partition(
         >>> table = gpio.read_partition('partitioned_output/')
         >>> table = gpio.read_partition('data/quadkey=*/*.parquet')
     """
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import (
+        _wrap_query_with_wkb_conversion,
+        get_duckdb_connection,
+    )
     from geoparquet_io.core.partition.reader import build_read_parquet_expr
     from geoparquet_io.core.remote import needs_httpfs
     from geoparquet_io.core.streaming import find_geometry_column_from_table
@@ -227,7 +230,12 @@ def read_partition(
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(path_str))
     try:
-        arrow_table = con.execute(f"SELECT * FROM {expr}").arrow().read_all()
+        query = f"SELECT * FROM {expr}"
+        for row in con.execute(f"DESCRIBE ({query})").fetchall():
+            if row[1] and row[1].upper() == "GEOMETRY":
+                query = _wrap_query_with_wkb_conversion(query, row[0], con=con)
+
+        arrow_table = con.execute(query).arrow().read_all()
     finally:
         con.close()
 
