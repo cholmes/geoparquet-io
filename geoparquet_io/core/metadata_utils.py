@@ -593,8 +593,8 @@ def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict
         if is_geo and min_val == "-" and col.get("geo_bbox"):
             geo_bbox = col["geo_bbox"]
             if geo_bbox.get("xmin") is not None:
-                min_val = f"({geo_bbox['xmin']:.4f}, {geo_bbox['ymin']:.4f})"[:20]
-                max_val = f"({geo_bbox['xmax']:.4f}, {geo_bbox['ymax']:.4f})"[:20]
+                min_val = f"({geo_bbox['xmin']:.2f}, {geo_bbox['ymin']:.2f})"
+                max_val = f"({geo_bbox['xmax']:.2f}, {geo_bbox['ymax']:.2f})"
 
         table.add_row(
             col_name_display,
