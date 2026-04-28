@@ -566,6 +566,15 @@ def _format_parquet_metadata_json(
     print(json.dumps(metadata_dict, indent=2))
 
 
+def _format_bbox_corner(x: float, y: float) -> str:
+    """Format a bbox corner as (x, y), adapting precision to fit."""
+    for fmt in (".2f", ".1f", ".0f"):
+        result = f"({x:{fmt}}, {y:{fmt}})"
+        if len(result) <= 24:
+            return result
+    return f"({x:.0f}, {y:.0f})"
+
+
 def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict) -> None:
     """Print a table of columns for a row group."""
     table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
@@ -593,8 +602,8 @@ def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict
         if is_geo and min_val == "-" and col.get("geo_bbox"):
             geo_bbox = col["geo_bbox"]
             if geo_bbox.get("xmin") is not None:
-                min_val = f"({geo_bbox['xmin']:.2f}, {geo_bbox['ymin']:.2f})"
-                max_val = f"({geo_bbox['xmax']:.2f}, {geo_bbox['ymax']:.2f})"
+                min_val = _format_bbox_corner(geo_bbox["xmin"], geo_bbox["ymin"])
+                max_val = _format_bbox_corner(geo_bbox["xmax"], geo_bbox["ymax"])
 
         table.add_row(
             col_name_display,
