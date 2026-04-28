@@ -951,9 +951,9 @@ def format_parquet_geo_metadata(
                     }
                 )
     else:
-        native_stats = get_per_row_group_native_geo_stats(safe_url)
-        if native_stats:
-            for col_name in geo_columns_info:
+        for col_name in geo_columns_info:
+            native_stats = get_per_row_group_native_geo_stats(safe_url, geometry_column=col_name)
+            if native_stats:
                 for rg_stat in native_stats:
                     geo_columns_info[col_name]["row_group_stats"].append(
                         {
