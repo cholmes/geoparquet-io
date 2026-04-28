@@ -2027,8 +2027,8 @@ def inspect_stats(parquet_file, json_output, markdown_output, verbose):
     "--row-groups",
     "meta_row_groups",
     type=int,
-    default=1,
-    help="Number of row groups to display (default: 1)",
+    default=None,
+    help="Number of row groups to display (default: 1, or all with --geo-stats)",
 )
 @click.option(
     "--geo-stats",

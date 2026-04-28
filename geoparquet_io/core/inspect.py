@@ -396,7 +396,7 @@ def display_metadata(
     parquet: bool = False,
     geoparquet: bool = False,
     parquet_geo: bool = False,
-    row_groups: int = 1,
+    row_groups: int | None = None,
     json_output: bool = False,
     geo_stats: bool = False,
 ) -> None:
@@ -407,7 +407,7 @@ def display_metadata(
         parquet: Show only Parquet file metadata
         geoparquet: Show only GeoParquet 'geo' metadata
         parquet_geo: Show only Parquet geospatial metadata
-        row_groups: Number of row groups to display
+        row_groups: Number of row groups to display (None = 1 for metadata, all for --geo-stats)
         json_output: Output as JSON
         geo_stats: Show per-row-group geo_bbox statistics
     """
@@ -420,31 +420,39 @@ def display_metadata(
     )
 
     if geo_stats:
+        # --geo-stats: show all row groups by default, unless --row-groups was explicit
         format_row_group_geo_stats(parquet_file, json_output, row_groups)
         return
+
+    # For regular metadata display, default to showing 1 row group
+    effective_row_groups = row_groups if row_groups is not None else 1
 
     # Count how many specific flags were set
     specific_flags = sum([parquet, geoparquet, parquet_geo])
 
     if specific_flags == 0:
         # Show all sections
-        format_all_metadata(parquet_file, json_output, row_groups)
+        format_all_metadata(parquet_file, json_output, effective_row_groups)
     elif specific_flags > 1:
         # Multiple specific flags - show each requested section
         primary_col = get_primary_geometry_column(parquet_file)
 
         if parquet:
-            format_parquet_metadata_enhanced(parquet_file, json_output, row_groups, primary_col)
+            format_parquet_metadata_enhanced(
+                parquet_file, json_output, effective_row_groups, primary_col
+            )
         if parquet_geo:
-            format_parquet_geo_metadata(parquet_file, json_output, row_groups)
+            format_parquet_geo_metadata(parquet_file, json_output, effective_row_groups)
         if geoparquet:
             format_geoparquet_metadata(parquet_file, json_output)
     else:
         # Single specific flag
         if parquet:
             primary_col = get_primary_geometry_column(parquet_file)
-            format_parquet_metadata_enhanced(parquet_file, json_output, row_groups, primary_col)
+            format_parquet_metadata_enhanced(
+                parquet_file, json_output, effective_row_groups, primary_col
+            )
         elif geoparquet:
             format_geoparquet_metadata(parquet_file, json_output)
         elif parquet_geo:
-            format_parquet_geo_metadata(parquet_file, json_output, row_groups)
+            format_parquet_geo_metadata(parquet_file, json_output, effective_row_groups)

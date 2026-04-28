@@ -507,6 +507,14 @@ def _build_row_group_json(rg_id: int, cols_in_rg: list, geo_columns: dict) -> di
                 "min": str(col.get("stats_min")),
                 "max": str(col.get("stats_max")),
             }
+        elif is_geo and col.get("geo_bbox"):
+            geo_bbox = col["geo_bbox"]
+            if geo_bbox.get("xmin") is not None:
+                col_dict["statistics"] = {
+                    "min": f"({geo_bbox['xmin']}, {geo_bbox['ymin']})",
+                    "max": f"({geo_bbox['xmax']}, {geo_bbox['ymax']})",
+                    "source": "geo_bbox",
+                }
         rg_dict["columns"].append(col_dict)
 
     return rg_dict
@@ -581,6 +589,12 @@ def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict
 
         min_val = str(col.get("stats_min", "-"))[:20] if col.get("stats_min") else "-"
         max_val = str(col.get("stats_max", "-"))[:20] if col.get("stats_max") else "-"
+
+        if is_geo and min_val == "-" and col.get("geo_bbox"):
+            geo_bbox = col["geo_bbox"]
+            if geo_bbox.get("xmin") is not None:
+                min_val = f"({geo_bbox['xmin']:.4f}, {geo_bbox['ymin']:.4f})"[:20]
+                max_val = f"({geo_bbox['xmax']:.4f}, {geo_bbox['ymax']:.4f})"[:20]
 
         table.add_row(
             col_name_display,
@@ -897,6 +911,7 @@ def format_parquet_geo_metadata(
         detect_geometry_columns,
         get_file_metadata,
         get_per_row_group_bbox_stats,
+        get_per_row_group_native_geo_stats,
         get_schema_info,
         has_bbox_column,
     )
@@ -912,7 +927,7 @@ def format_parquet_geo_metadata(
 
     geo_columns_info = _build_geo_columns_info(schema_info, geo_columns)
 
-    # Add bbox row group stats if bbox column exists
+    # Add row group stats: try bbox column first, then native geo_bbox
     if has_bbox and bbox_col_name:
         rg_bbox_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
         for col_name in geo_columns_info:
@@ -926,6 +941,20 @@ def format_parquet_geo_metadata(
                         "ymax": rg_stat["ymax"],
                     }
                 )
+    else:
+        native_stats = get_per_row_group_native_geo_stats(safe_url)
+        if native_stats:
+            for col_name in geo_columns_info:
+                for rg_stat in native_stats:
+                    geo_columns_info[col_name]["row_group_stats"].append(
+                        {
+                            "row_group": rg_stat["row_group_id"],
+                            "xmin": rg_stat["xmin"],
+                            "ymin": rg_stat["ymin"],
+                            "xmax": rg_stat["xmax"],
+                            "ymax": rg_stat["ymax"],
+                        }
+                    )
 
     num_rg_to_show = num_row_groups
     if row_groups_limit is not None:
