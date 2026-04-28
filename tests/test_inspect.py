@@ -1110,12 +1110,22 @@ class TestInspectSubcommands:
         )
         return output
 
-    def test_geo_stats_shows_all_row_groups_by_default(self, runner, v2_multi_rg_file):
-        """--geo-stats should show ALL row groups by default, not just 1."""
+    def test_geo_stats_defaults_to_one_row_group_with_hint(self, runner, v2_multi_rg_file):
+        """--geo-stats should show 1 row group by default with '... and N more' hint."""
         result = runner.invoke(cli, ["inspect", "meta", v2_multi_rg_file, "--geo-stats"])
 
         assert result.exit_code == 0
-        assert "5 row group(s)" in result.output
+        assert "4 more row group(s)" in result.output
+        assert "--row-groups 5" in result.output
+
+    def test_geo_stats_shows_all_with_row_groups_flag(self, runner, v2_multi_rg_file):
+        """--geo-stats with --row-groups 5 should show all 5 row groups."""
+        result = runner.invoke(
+            cli, ["inspect", "meta", v2_multi_rg_file, "--geo-stats", "--row-groups", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "more row group(s)" not in result.output
 
     def test_geo_stats_respects_row_groups_limit(self, runner, v2_multi_rg_file):
         """--geo-stats with --row-groups N should show only N row groups."""
@@ -1124,7 +1134,8 @@ class TestInspectSubcommands:
         )
 
         assert result.exit_code == 0
-        assert "2 row group(s)" in result.output
+        assert "3 more row group(s)" in result.output
+        assert "--row-groups 5" in result.output
 
     def test_inspect_meta_geometry_shows_geo_bbox_minmax(self, runner, v2_multi_rg_file):
         """V2 geometry column should show geo_bbox coords as MinValue/MaxValue, not '-'."""
@@ -1158,14 +1169,13 @@ class TestInspectSubcommands:
 
     # --- V1.1 regression tests ---
 
-    def test_v11_geo_stats_shows_all_row_groups_by_default(self, runner, v11_multi_rg_file):
-        """--geo-stats should show all row groups for V1.1 files with bbox columns too."""
+    def test_v11_geo_stats_defaults_to_one_with_hint(self, runner, v11_multi_rg_file):
+        """--geo-stats should show 1 row group by default with hint for V1.1 files."""
         result = runner.invoke(cli, ["inspect", "meta", v11_multi_rg_file, "--geo-stats"])
 
         assert result.exit_code == 0
-        # Should show more than 1 row group
-        assert "1 row group(s)" not in result.output
-        assert "row group(s)" in result.output
+        assert "more row group(s)" in result.output
+        assert "--row-groups" in result.output
 
     def test_v11_geo_stats_respects_row_groups_limit(self, runner, v11_multi_rg_file):
         """--geo-stats with --row-groups N should work for V1.1 bbox column files."""
@@ -1174,7 +1184,7 @@ class TestInspectSubcommands:
         )
 
         assert result.exit_code == 0
-        assert "2 row group(s)" in result.output
+        assert "more row group(s)" in result.output
 
     def test_v11_inspect_meta_unchanged(self, runner):
         """V1.1 file inspect meta should continue working (no regression)."""

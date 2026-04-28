@@ -420,7 +420,6 @@ def display_metadata(
     )
 
     if geo_stats:
-        # --geo-stats: show all row groups by default, unless --row-groups was explicit
         format_row_group_geo_stats(parquet_file, json_output, row_groups)
         return
 

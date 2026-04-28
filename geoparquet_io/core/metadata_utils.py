@@ -1235,14 +1235,14 @@ def format_row_group_geo_stats(
     # Merge num_rows into stats
     stats_with_rows = _merge_row_counts(rg_stats, num_rows_per_rg)
 
-    # Apply row_groups limit if specified
-    if row_groups is not None:
-        stats_with_rows = stats_with_rows[:row_groups]
+    total_row_groups = len(stats_with_rows)
+    effective_limit = row_groups if row_groups is not None else 1
+    stats_with_rows = stats_with_rows[:effective_limit]
 
     if json_output:
         print(json.dumps({"row_group_geo_stats": stats_with_rows}, indent=2))
     else:
-        _format_geo_stats_terminal(stats_with_rows)
+        _format_geo_stats_terminal(stats_with_rows, total_row_groups)
 
 
 def _get_num_rows_per_row_group(safe_url: str, file_meta: dict) -> dict[int, int]:
@@ -1284,7 +1284,7 @@ def _merge_row_counts(rg_stats: list[dict], num_rows_per_rg: dict[int, int]) -> 
     return merged
 
 
-def _format_geo_stats_terminal(stats: list[dict]) -> None:
+def _format_geo_stats_terminal(stats: list[dict], total_row_groups: int) -> None:
     """Render per-row-group geo_bbox stats as a Rich table."""
     console = Console()
     console.print()
@@ -1315,5 +1315,11 @@ def _format_geo_stats_terminal(stats: list[dict]) -> None:
         )
 
     console.print(table)
-    console.print(f"\n[dim]{len(stats)} row group(s) with geo_bbox statistics[/dim]")
+
+    shown = len(stats)
+    remaining = total_row_groups - shown
+    if remaining > 0:
+        console.print(f"\n  [dim]... and {remaining} more row group(s)[/dim]")
+        console.print(f"  [dim]Use --row-groups {total_row_groups} to see all row groups[/dim]")
+
     console.print()
