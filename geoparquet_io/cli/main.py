@@ -404,6 +404,11 @@ class MultiFileCheckRunner:
     default=None,
     help="Check best practices for specific use case",
 )
+@click.option(
+    "--pmtiles",
+    is_flag=True,
+    help="Generate PMTiles after fixing (requires tippecanoe)",
+)
 @check_partition_options
 def check_all(
     parquet_file,
@@ -418,6 +423,7 @@ def check_all(
     check_all_files,
     check_sample,
     profile,
+    pmtiles,
 ):
     """Check compression, bbox, row groups, spatial order, and spec compliance."""
     from geoparquet_io.core.partition.reader import get_files_to_check
@@ -451,12 +457,40 @@ def check_all(
                 f"  2. Omit --fix-output to fix files in-place (with .bak backups)"
             )
 
+    # Check pmtiles requires --fix
+    if pmtiles and not fix:
+        raise click.UsageError("--pmtiles requires --fix to generate PMTiles from fixed files")
+
+    # Check tippecanoe availability once before processing files
+    if pmtiles:
+        from geoparquet_io.core.pmtiles import _check_tippecanoe
+
+        if not _check_tippecanoe():
+            raise click.ClickException(
+                "--pmtiles requires tippecanoe.\n\n"
+                "Install tippecanoe:\n"
+                "  macOS:  brew install tippecanoe\n"
+                "  Ubuntu: sudo apt install tippecanoe"
+            )
+
     # Create runner for multi-file progress tracking
     runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
 
     # Process each file
     for file_path in files_to_check:
         runner.start_file(file_path)
+
+        # Early skip for non-GeoParquet files when --pmtiles is passed
+        # This avoids crashes in check_structure_impl which assumes geo metadata
+        if pmtiles:
+            from geoparquet_io.core.common import detect_geoparquet_file_type
+
+            file_info = detect_geoparquet_file_type(file_path)
+            if file_info["file_type"] == "unknown":
+                click.echo(
+                    click.style(f"→ Skipping {file_path}: not a GeoParquet file", fg="yellow")
+                )
+                continue
 
         # Show single progress message for remote files (only in verbose mode for multi-file)
         if runner.verbose or not runner.is_multi_file:
@@ -569,6 +603,29 @@ def check_all(
             )
             if not applied:
                 continue
+
+        # Generate PMTiles if requested (non-geo files already skipped at loop start)
+        if pmtiles:
+            from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
+
+            # Generate PMTiles
+            # Use fixed output path if available, otherwise original
+            source_file = per_file_output if fix and per_file_output else file_path
+            # Handle S3 URIs: Path().with_suffix() mangles s3:// schemes
+            if source_file.startswith("s3://"):
+                output_pmtiles = source_file.rsplit(".", 1)[0] + ".pmtiles"
+            else:
+                output_pmtiles = str(Path(source_file).with_suffix(".pmtiles"))
+
+            try:
+                create_pmtiles_from_geoparquet(
+                    input_path=source_file,
+                    output_path=output_pmtiles,
+                    verbose=verbose,
+                )
+                click.echo(click.style(f"✓ Generated {output_pmtiles}", fg="green"))
+            except Exception as e:
+                click.echo(click.style(f"✗ PMTiles failed for {file_path}: {e}", fg="red"))
 
     # Print summary for multi-file checks
     runner.print_summary()
@@ -6055,6 +6112,99 @@ def benchmark_report(
         click.echo(json.dumps([r.__dict__ for r in all_results], indent=2, default=str))
     else:
         progress(format_table(all_results))
+
+
+# =============================================================================
+# PMTiles Commands (requires tippecanoe)
+# =============================================================================
+
+
+@cli.group()
+@click.pass_context
+def pmtiles(ctx):
+    """PMTiles generation commands.
+
+    Generate PMTiles from GeoParquet files using tippecanoe.
+    Requires tippecanoe to be installed and available in PATH.
+
+    Install tippecanoe:
+      macOS:  brew install tippecanoe
+      Ubuntu: sudo apt install tippecanoe
+    """
+    pass
+
+
+@pmtiles.command(name="create", cls=SingleFileCommand)
+@click.argument("input_file", type=click.Path())
+@click.argument("output_file", type=click.Path())
+@click.option("--layer", "-l", help="Layer name in output (defaults to output filename)")
+@click.option("--min-zoom", type=int, help="Minimum zoom level")
+@click.option("--max-zoom", type=int, help="Maximum zoom level (auto-detected if not set)")
+@click.option("--bbox", help="Bounding box filter: minx,miny,maxx,maxy")
+@click.option("--where", help="SQL WHERE clause for filtering")
+@click.option("--include-cols", help="Comma-separated list of columns to include")
+@click.option(
+    "--precision",
+    type=int,
+    default=6,
+    show_default=True,
+    help="Coordinate decimal precision",
+)
+@click.option("--src-crs", help="Source CRS for reprojection to WGS84")
+@click.option("--attribution", help="Custom attribution HTML for tiles")
+@verbose_option
+@aws_profile_option
+def pmtiles_create(
+    input_file,
+    output_file,
+    layer,
+    min_zoom,
+    max_zoom,
+    bbox,
+    where,
+    include_cols,
+    precision,
+    src_crs,
+    attribution,
+    verbose,
+    aws_profile,
+):
+    """Create PMTiles from a GeoParquet file.
+
+    Streams GeoParquet through gpio and tippecanoe to generate PMTiles.
+    All processing is done via subprocess pipelines - no intermediate files.
+
+    Examples:
+
+        gpio pmtiles create buildings.parquet buildings.pmtiles
+
+        gpio pmtiles create roads.parquet roads.pmtiles -l roads --max-zoom 14
+
+        gpio pmtiles create data.parquet tiles.pmtiles --bbox "-122.5,37.5,-122.0,38.0"
+
+        gpio pmtiles create data.parquet tiles.pmtiles --where "population > 10000"
+    """
+    from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
+
+    try:
+        create_pmtiles_from_geoparquet(
+            input_path=input_file,
+            output_path=output_file,
+            layer=layer,
+            min_zoom=min_zoom,
+            max_zoom=max_zoom,
+            bbox=bbox,
+            where=where,
+            include_cols=include_cols,
+            precision=precision,
+            verbose=verbose,
+            profile=aws_profile,
+            src_crs=src_crs,
+            attribution=attribution,
+        )
+        click.echo(click.style(f"✓ Created {output_file}", fg="green"))
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
 
 
 if __name__ == "__main__":

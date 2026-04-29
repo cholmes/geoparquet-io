@@ -39,16 +39,12 @@ If you're piping to a tool that doesn't support RFC 8142, disable the separators
 gpio convert geojson data.parquet --no-rs | some-other-tool
 ```
 
-### Using the gpio-pmtiles Plugin
+### Using gpio pmtiles (Built-in)
 
-For a simpler PMTiles workflow, install the [`gpio-pmtiles`](https://github.com/geoparquet/geoparquet-io/tree/main/plugins/gpio-pmtiles) plugin:
+For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It provides integrated PMTiles generation with production-quality defaults and built-in CRS handling.
 
-```bash
-pipx inject geoparquet-io gpio-pmtiles  # CLI tool
-pip install gpio-pmtiles                # Python library
-```
-
-The plugin provides integrated PMTiles generation with better defaults and built-in CRS handling:
+!!! note "Requires tippecanoe"
+    Install tippecanoe first: `brew install tippecanoe` (macOS) or `sudo apt install tippecanoe` (Ubuntu)
 
 === "CLI"
 
@@ -69,16 +65,16 @@ The plugin provides integrated PMTiles generation with better defaults and built
 === "Python"
 
     ```python
-    from gpio_pmtiles import create_pmtiles_from_geoparquet
+    from geoparquet_io.api import ops
 
     # Basic usage
-    create_pmtiles_from_geoparquet(
+    ops.create_pmtiles(
         input_path="buildings.parquet",
         output_path="buildings.pmtiles"
     )
 
     # With filtering (no manual piping needed)
-    create_pmtiles_from_geoparquet(
+    ops.create_pmtiles(
         input_path="data.parquet",
         output_path="tiles.pmtiles",
         bbox="-122.5,37.5,-122.0,38.0",
@@ -87,14 +83,14 @@ The plugin provides integrated PMTiles generation with better defaults and built
     )
 
     # With CRS override (for incorrect metadata)
-    create_pmtiles_from_geoparquet(
+    ops.create_pmtiles(
         input_path="data.parquet",
         output_path="tiles.pmtiles",
         src_crs="EPSG:3857"
     )
     ```
 
-The plugin handles the entire pipeline internally (reprojection → filtering → conversion → tippecanoe) with optimal settings. See the [plugin README](https://github.com/geoparquet/geoparquet-io/blob/main/plugins/gpio-pmtiles/README.md) for details.
+The command handles the entire pipeline internally (reprojection → filtering → conversion → tippecanoe) with optimal settings.
 
 ## Common Workflows
 
@@ -146,7 +142,7 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
   tippecanoe -P -o output.pmtiles
 ```
 
-**Note:** If you have `gpio-pmtiles` installed, reprojection is built-in:
+**Tip:** The built-in `gpio pmtiles` command handles reprojection automatically:
 
 === "CLI"
 
@@ -158,10 +154,10 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
 === "Python"
 
     ```python
-    from gpio_pmtiles import create_pmtiles_from_geoparquet
+    from geoparquet_io.api import ops
 
     # Automatically reproject from EPSG:3857 to WGS84
-    create_pmtiles_from_geoparquet(
+    ops.create_pmtiles(
         input_path="data.parquet",
         output_path="tiles.pmtiles",
         src_crs="EPSG:3857"

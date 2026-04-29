@@ -122,6 +122,16 @@ jobs:
         run: |
           uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
 
+      - name: Install tippecanoe
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tippecanoe
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install tippecanoe
+          fi
+
       - name: Run fast tests with pytest (parallel)
         shell: bash
         run: |
@@ -200,6 +210,16 @@ jobs:
       - name: Pre-install DuckDB extensions
         run: |
           uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+
+      - name: Install tippecanoe
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tippecanoe
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install tippecanoe
+          fi
 
       - name: Run slow and network tests (parallel)
         shell: bash
