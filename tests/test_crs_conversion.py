@@ -893,3 +893,35 @@ class TestReprojectBboxPreservation:
         columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
         column_names = [col[0] for col in columns]
         assert "bbox" not in column_names, "bbox should not be added if input didn't have one"
+
+    def test_reproject_streaming_preserves_bbox_column(self, tmp_path, places_test_file):
+        """Test that streaming reproject also regenerates bbox column via internal function."""
+        import duckdb
+
+        from geoparquet_io.core.reproject import _reproject_streaming
+
+        output_file = str(tmp_path / "streaming_output.parquet")
+
+        # Test the internal streaming function directly (simulates stdin->file path)
+        _reproject_streaming(
+            input_path=places_test_file,  # File as source (simulates stdin materialized)
+            output_path=output_file,
+            target_crs="EPSG:3857",
+            source_crs=None,
+            compression="ZSTD",
+            compression_level=None,
+            verbose=False,
+            profile=None,
+            geoparquet_version=None,
+        )
+
+        # Verify bbox column exists in output
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert "bbox" in column_names, "bbox column should be preserved in streaming reproject"
+
+        # Verify bbox has correct structure
+        bbox_struct = conn.execute(f'SELECT bbox FROM "{output_file}" LIMIT 1').fetchone()[0]
+        assert "xmin" in bbox_struct and "ymax" in bbox_struct

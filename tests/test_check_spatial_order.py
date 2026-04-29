@@ -333,6 +333,7 @@ class TestNativeGeoBboxDetection:
     def test_check_spatial_order_with_native_geo_bbox(self, tmp_path):
         """Test that check_spatial_order detects native geo_bbox stats from GeoParquet 2.0."""
         import duckdb
+        import pytest
 
         # Create a GeoParquet 2.0 file (without separate bbox column, but with native geo_bbox)
         output_file = str(tmp_path / "test_v2.parquet")
@@ -355,7 +356,7 @@ class TestNativeGeoBboxDetection:
         column_names = [col[0] for col in columns]
         assert "bbox" not in column_names, "Test file should not have bbox column"
 
-        # Check for native geo_bbox stats
+        # Check for native geo_bbox stats - skip if DuckDB version doesn't support them
         geo_bbox_result = conn.execute(f"""
             SELECT geo_bbox
             FROM parquet_metadata('{output_file}')
@@ -364,22 +365,26 @@ class TestNativeGeoBboxDetection:
             LIMIT 1
         """).fetchone()
 
-        # If native geo_bbox stats exist, check_spatial_order should use them
-        if geo_bbox_result:
-            from geoparquet_io.core.check_spatial_order import check_spatial_order
-
-            result = check_spatial_order(
-                output_file,
-                random_sample_size=50,
-                limit_rows=500,
-                verbose=False,
-                return_results=True,
+        if not geo_bbox_result:
+            pytest.skip(
+                "DuckDB version does not populate geo_bbox stats for GeoParquet V2 - "
+                "cannot test native geo_bbox detection"
             )
 
-            # Should use native_geo_bbox method, not sampling
-            assert result["method"] in ("native_geo_bbox", "bbox_stats"), (
-                f"Expected native_geo_bbox or bbox_stats method, got {result['method']}"
-            )
+        from geoparquet_io.core.check_spatial_order import check_spatial_order
+
+        result = check_spatial_order(
+            output_file,
+            random_sample_size=50,
+            limit_rows=500,
+            verbose=False,
+            return_results=True,
+        )
+
+        # Should use native_geo_bbox method, not sampling
+        assert result["method"] in ("native_geo_bbox", "bbox_stats"), (
+            f"Expected native_geo_bbox or bbox_stats method, got {result['method']}"
+        )
 
     def test_helper_function_returns_correct_structure(self):
         """Test that _check_spatial_order_from_row_group_bboxes returns correct structure."""
