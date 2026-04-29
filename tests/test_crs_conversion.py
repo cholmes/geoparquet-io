@@ -828,3 +828,68 @@ class TestCRSDetectionHelpers:
         crs = _detect_source_crs(test_file, verbose=False)
         assert crs != "EPSG:4326", "Should not fall back to 4326 when valid PROJJSON exists"
         assert "32145" in crs or crs.startswith("{")
+
+
+class TestReprojectBboxPreservation:
+    """Tests for bbox column preservation during reproject (fixes #409)."""
+
+    def test_reproject_preserves_bbox_column(self, runner, temp_output_file, places_test_file):
+        """Test that reproject regenerates bbox column with transformed coordinates."""
+        import duckdb
+
+        # places_test_file has bbox column, reproject it
+        result = runner.invoke(
+            cli,
+            ["convert", "reproject", places_test_file, temp_output_file, "-d", "EPSG:3857"],
+        )
+        assert result.exit_code == 0
+
+        # Verify bbox column exists in output
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert "bbox" in column_names, "bbox column should be preserved after reproject"
+
+        # Verify bbox structure has xmin, ymin, xmax, ymax
+        bbox_struct = conn.execute(f'SELECT bbox FROM "{temp_output_file}" LIMIT 1').fetchone()[0]
+        assert "xmin" in bbox_struct
+        assert "ymin" in bbox_struct
+        assert "xmax" in bbox_struct
+        assert "ymax" in bbox_struct
+
+        # Verify bbox values are in Web Mercator range (not WGS84)
+        bbox_stats = conn.execute(f"""
+            SELECT
+                MIN(bbox.xmin) as min_x,
+                MAX(bbox.xmax) as max_x,
+                MIN(bbox.ymin) as min_y,
+                MAX(bbox.ymax) as max_y
+            FROM "{temp_output_file}"
+        """).fetchone()
+
+        # Web Mercator coordinates are typically in meters, much larger than WGS84 degrees
+        # WGS84: -180 to 180, Web Mercator: ~-20M to ~20M
+        min_x, max_x, min_y, max_y = bbox_stats
+        assert abs(min_x) > 1000 or abs(max_x) > 1000, (
+            f"bbox x values {min_x}, {max_x} look like WGS84 degrees, not Web Mercator"
+        )
+
+    def test_reproject_without_bbox_does_not_add_bbox(
+        self, runner, temp_output_file, buildings_test_file
+    ):
+        """Test that reproject doesn't add bbox if input didn't have one."""
+        import duckdb
+
+        # buildings_test_file doesn't have bbox column
+        result = runner.invoke(
+            cli,
+            ["convert", "reproject", buildings_test_file, temp_output_file, "-d", "EPSG:3857"],
+        )
+        assert result.exit_code == 0
+
+        # Verify no bbox column in output
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert "bbox" not in column_names, "bbox should not be added if input didn't have one"
