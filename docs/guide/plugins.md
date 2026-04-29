@@ -10,20 +10,20 @@ Install gpio with plugins in one command:
 
 === "uv"
     ```bash
-    # Install gpio with PMTiles support
-    uv tool install geoparquet-io --with gpio-pmtiles
+    # Install gpio with a plugin
+    uv tool install geoparquet-io --with gpio-myplugin
 
     # Install with multiple plugins
-    uv tool install geoparquet-io --with gpio-pmtiles --with gpio-other
+    uv tool install geoparquet-io --with gpio-myplugin --with gpio-other
     ```
 
 === "pipx"
     ```bash
-    # Install gpio with PMTiles support
-    pipx install geoparquet-io --preinstall gpio-pmtiles
+    # Install gpio with a plugin
+    pipx install geoparquet-io --preinstall gpio-myplugin
 
     # Install with multiple plugins (chain --preinstall flags)
-    pipx install geoparquet-io --preinstall gpio-pmtiles --preinstall gpio-other
+    pipx install geoparquet-io --preinstall gpio-myplugin --preinstall gpio-other
     ```
 
 ### Adding to Existing Installation
@@ -33,13 +33,13 @@ Add plugins to an already-installed gpio tool:
 === "uv"
     ```bash
     # Add plugin to existing installation
-    uv tool install --with gpio-pmtiles geoparquet-io
+    uv tool install --with gpio-myplugin geoparquet-io
     ```
 
 === "pipx"
     ```bash
     # Inject plugin into existing installation
-    pipx inject geoparquet-io gpio-pmtiles
+    pipx inject geoparquet-io gpio-myplugin
     ```
 
 ### In Python Projects
@@ -48,12 +48,12 @@ For Python API usage, install plugins as regular dependencies:
 
 === "uv"
     ```bash
-    uv add geoparquet-io gpio-pmtiles
+    uv add geoparquet-io gpio-myplugin
     ```
 
 === "pip"
     ```bash
-    pip install geoparquet-io gpio-pmtiles
+    pip install geoparquet-io gpio-myplugin
     ```
 
 ## Available Plugins
@@ -81,12 +81,12 @@ Plugins register themselves by declaring an entry point in their `pyproject.toml
 
 ```toml
 [project.entry-points."gpio.plugins"]
-pmtiles = "gpio_pmtiles.cli:pmtiles"
+myplugin = "gpio_myplugin.cli:myplugin"
 ```
 
 This tells gpio:
-- The plugin provides a command group named `pmtiles`
-- The command implementation is at `gpio_pmtiles.cli:pmtiles`
+- The plugin provides a command group named `myplugin`
+- The command implementation is at `gpio_myplugin.cli:myplugin`
 
 ### Verifying Plugin Installation
 
@@ -99,7 +99,7 @@ uv tool list
 pipx list
 
 # Check if plugin command is available
-gpio pmtiles --help
+gpio myplugin --help
 ```
 
 ## Removing Plugins
@@ -116,19 +116,19 @@ gpio pmtiles --help
 === "pipx"
     ```bash
     # Remove injected plugin
-    pipx uninject geoparquet-io gpio-pmtiles
+    pipx uninject geoparquet-io gpio-myplugin
     ```
 
 ### From Python Projects
 
 === "uv"
     ```bash
-    uv remove gpio-pmtiles
+    uv remove gpio-myplugin
     ```
 
 === "pip"
     ```bash
-    pip uninstall gpio-pmtiles
+    pip uninstall gpio-myplugin
     ```
 
 ## Developing Plugins

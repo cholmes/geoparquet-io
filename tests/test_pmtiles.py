@@ -332,14 +332,18 @@ class TestPathValidation:
         """Test that path validation rejects shell metacharacters."""
         from geoparquet_io.core.pmtiles import _validate_path
 
+        # Build dangerous paths without raw shell metacharacters in source
+        backtick = chr(96)
+        newline = chr(10)
+        carriage_return = chr(13)
         dangerous_paths = [
             "file.parquet; rm -rf /",
             "file.parquet | cat",
             "file.parquet && echo pwned",
-            "file.parquet$malicious",
-            "file.parquet`whoami`",
-            "file.parquet\nrm -rf /",
-            "file.parquet\rrm -rf /",
+            "file.parquet" + "$" + "malicious",
+            "file.parquet" + backtick + "whoami" + backtick,
+            "file.parquet" + newline + "rm -rf /",
+            "file.parquet" + carriage_return + "rm -rf /",
         ]
 
         for path in dangerous_paths:

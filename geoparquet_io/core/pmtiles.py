@@ -84,9 +84,10 @@ def _build_gpio_commands(
     needs_extract = bbox or where or include_cols
 
     if needs_reproject or needs_extract:
-        commands = []
+        commands: list[list[str]] = []
 
         if needs_reproject:
+            assert src_crs is not None  # Type narrowing for mypy
             reproject_cmd = [
                 gpio_exe,
                 "convert",
@@ -200,7 +201,7 @@ def _run_pipeline(
             cmd_str = " | ".join(" ".join(cmd) for cmd in gpio_commands)
             debug(f"Running: {cmd_str} | {' '.join(tippecanoe_cmd)}")
 
-    processes = []
+    processes: list[subprocess.Popen[bytes]] = []
 
     try:
         for i, cmd in enumerate(gpio_commands):
@@ -233,10 +234,15 @@ def _run_pipeline(
         if tippecanoe_proc.returncode != 0:
             raise RuntimeError(f"tippecanoe failed with exit code {tippecanoe_proc.returncode}")
 
+        # Drain stderr and wait for earlier processes
+        # Note: stdout is already closed for piping, so we only drain stderr
         for proc in processes[:-1]:
+            if proc.stderr:
+                proc.stderr.read()
+                proc.stderr.close()
             proc.wait()
             if proc.returncode != 0:
-                cmd_name = proc.args[0] if hasattr(proc, "args") else "command"
+                cmd_name = proc.args[0] if isinstance(proc.args, list) else "command"
                 raise RuntimeError(f"{cmd_name} failed with exit code {proc.returncode}")
 
     except KeyboardInterrupt:

@@ -457,6 +457,10 @@ def check_all(
                 f"  2. Omit --fix-output to fix files in-place (with .bak backups)"
             )
 
+    # Check pmtiles requires --fix
+    if pmtiles and not fix:
+        raise click.UsageError("--pmtiles requires --fix to generate PMTiles from fixed files")
+
     # Check tippecanoe availability once before processing files
     if pmtiles:
         from geoparquet_io.core.pmtiles import _check_tippecanoe
@@ -606,7 +610,11 @@ def check_all(
             # Generate PMTiles
             # Use fixed output path if available, otherwise original
             source_file = per_file_output if fix and per_file_output else file_path
-            output_pmtiles = str(Path(source_file).with_suffix(".pmtiles"))
+            # Handle S3 URIs: Path().with_suffix() mangles s3:// schemes
+            if source_file.startswith("s3://"):
+                output_pmtiles = source_file.rsplit(".", 1)[0] + ".pmtiles"
+            else:
+                output_pmtiles = str(Path(source_file).with_suffix(".pmtiles"))
 
             try:
                 create_pmtiles_from_geoparquet(
@@ -6126,7 +6134,7 @@ def pmtiles(ctx):
 
 
 @pmtiles.command(name="create", cls=SingleFileCommand)
-@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("input_file", type=click.Path())
 @click.argument("output_file", type=click.Path())
 @click.option("--layer", "-l", help="Layer name in output (defaults to output filename)")
 @click.option("--min-zoom", type=int, help="Minimum zoom level")
