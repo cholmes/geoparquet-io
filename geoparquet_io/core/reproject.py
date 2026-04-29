@@ -350,16 +350,44 @@ def reproject_impl(
         # Build SQL query with ST_Transform
         # geometry_always_xy is set at connection level (DuckDB 1.5+)
         log("Reprojecting...")
-        query = f"""
-            SELECT
-                * EXCLUDE ({exclude_clause}),
-                ST_Transform(
-                    "{geom_col}",
-                    '{effective_source_crs}',
-                    '{target_crs}'
-                ) AS "{geom_col}"
-            FROM '{input_url}'
-        """
+
+        # Build bbox regeneration clause if input had bbox column
+        if bbox_col:
+            # Use CTE to avoid computing ST_Transform multiple times
+            query = f"""
+                WITH reprojected AS (
+                    SELECT
+                        * EXCLUDE ({exclude_clause}),
+                        ST_Transform(
+                            "{geom_col}",
+                            '{effective_source_crs}',
+                            '{target_crs}'
+                        ) AS "{geom_col}"
+                    FROM '{input_url}'
+                )
+                SELECT
+                    *,
+                    STRUCT_PACK(
+                        xmin := ST_XMin("{geom_col}"),
+                        ymin := ST_YMin("{geom_col}"),
+                        xmax := ST_XMax("{geom_col}"),
+                        ymax := ST_YMax("{geom_col}")
+                    ) AS "{bbox_col}"
+                FROM reprojected
+            """
+            if verbose:
+                debug(f"Regenerating bbox column '{bbox_col}' with reprojected coordinates")
+        else:
+            query = f"""
+                SELECT
+                    * EXCLUDE ({exclude_clause}),
+                    ST_Transform(
+                        "{geom_col}",
+                        '{effective_source_crs}',
+                        '{target_crs}'
+                    ) AS "{geom_col}"
+                FROM '{input_url}'
+            """
 
         # Determine output path
         if output_parquet:
@@ -506,7 +534,7 @@ def _reproject_streaming(
             detected_crs = _detect_source_crs(working_url, verbose=False)
             effective_source_crs = source_crs if source_crs else detected_crs
 
-            # Check for existing bbox column to exclude
+            # Check for existing bbox column to exclude (will be regenerated)
             bbox_col = _get_bbox_column_name(working_url, verbose=False)
             exclude_cols = [geom_col]
             if bbox_col:
@@ -514,17 +542,41 @@ def _reproject_streaming(
             # Quote column names to handle special characters (colons, spaces, etc.)
             exclude_clause = ", ".join(f'"{c}"' for c in exclude_cols)
 
-            # Build reprojection query
-            query = f"""
-                SELECT
-                    * EXCLUDE ({exclude_clause}),
-                    ST_Transform(
-                        "{geom_col}",
-                        '{effective_source_crs}',
-                        '{target_crs}'
-                    ) AS "{geom_col}"
-                FROM '{working_url}'
-            """
+            # Build reprojection query with bbox regeneration if input had bbox
+            if bbox_col:
+                # Use CTE to compute reprojected geometry once, then regenerate bbox
+                query = f"""
+                    WITH reprojected AS (
+                        SELECT
+                            * EXCLUDE ({exclude_clause}),
+                            ST_Transform(
+                                "{geom_col}",
+                                '{effective_source_crs}',
+                                '{target_crs}'
+                            ) AS "{geom_col}"
+                        FROM '{working_url}'
+                    )
+                    SELECT
+                        *,
+                        STRUCT_PACK(
+                            xmin := ST_XMin("{geom_col}"),
+                            ymin := ST_YMin("{geom_col}"),
+                            xmax := ST_XMax("{geom_col}"),
+                            ymax := ST_YMax("{geom_col}")
+                        ) AS "{bbox_col}"
+                    FROM reprojected
+                """
+            else:
+                query = f"""
+                    SELECT
+                        * EXCLUDE ({exclude_clause}),
+                        ST_Transform(
+                            "{geom_col}",
+                            '{effective_source_crs}',
+                            '{target_crs}'
+                        ) AS "{geom_col}"
+                    FROM '{working_url}'
+                """
 
             # Get original metadata for preservation
             from geoparquet_io.core.common import get_parquet_metadata

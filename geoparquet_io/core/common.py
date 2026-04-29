@@ -1538,6 +1538,13 @@ def write_parquet_with_metadata(
     # Check if we need to add/rewrite geo metadata
     rewrite_needed = needs_metadata_rewrite(effective_version, original_metadata)
 
+    # Force rewrite if custom_metadata contains covering (e.g., bbox, H3, S2)
+    # This ensures covering metadata is written even for 2.0→2.0 operations
+    if custom_metadata and "covering" in custom_metadata:
+        rewrite_needed = True
+        if verbose:
+            debug("Forcing metadata rewrite for covering metadata")
+
     if show_sql:
         info("\n-- Query:")
         progress(query)

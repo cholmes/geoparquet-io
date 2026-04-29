@@ -325,3 +325,92 @@ class TestAutoDetectionAndFallback:
         for field in ["passed", "ratio", "issues", "recommendations", "fix_available", "method"]:
             assert field in bbox_result
             assert field in sampling_result
+
+
+class TestNativeGeoBboxDetection:
+    """Tests for native geo_bbox stats detection (fixes #410)."""
+
+    def test_check_spatial_order_with_native_geo_bbox(self, tmp_path):
+        """Test that check_spatial_order detects native geo_bbox stats from GeoParquet 2.0."""
+        import duckdb
+        import pytest
+
+        # Create a GeoParquet 2.0 file (without separate bbox column, but with native geo_bbox)
+        output_file = str(tmp_path / "test_v2.parquet")
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+
+        # Create test data with geometry
+        conn.execute(f"""
+            COPY (
+                SELECT
+                    ST_Point(i * 0.01, i * 0.01) as geometry,
+                    i as id
+                FROM range(100) t(i)
+            ) TO '{output_file}'
+            (FORMAT PARQUET, COMPRESSION ZSTD, GEOPARQUET_VERSION 'V2')
+        """)
+
+        # Verify no bbox column exists
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert "bbox" not in column_names, "Test file should not have bbox column"
+
+        # Check for native geo_bbox stats - skip if DuckDB version doesn't support them
+        geo_bbox_result = conn.execute(f"""
+            SELECT geo_bbox
+            FROM parquet_metadata('{output_file}')
+            WHERE path_in_schema = 'geometry'
+              AND geo_bbox IS NOT NULL
+            LIMIT 1
+        """).fetchone()
+
+        if not geo_bbox_result:
+            pytest.skip(
+                "DuckDB version does not populate geo_bbox stats for GeoParquet V2 - "
+                "cannot test native geo_bbox detection"
+            )
+
+        from geoparquet_io.core.check_spatial_order import check_spatial_order
+
+        result = check_spatial_order(
+            output_file,
+            random_sample_size=50,
+            limit_rows=500,
+            verbose=False,
+            return_results=True,
+        )
+
+        # Should use native_geo_bbox method, not sampling
+        assert result["method"] in ("native_geo_bbox", "bbox_stats"), (
+            f"Expected native_geo_bbox or bbox_stats method, got {result['method']}"
+        )
+
+    def test_helper_function_returns_correct_structure(self):
+        """Test that _check_spatial_order_from_row_group_bboxes returns correct structure."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        # Mock row group bboxes
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 1.0, "ymax": 1.0},
+            {"row_group_id": 1, "xmin": 0.5, "ymin": 0.5, "xmax": 1.5, "ymax": 1.5},
+            {"row_group_id": 2, "xmin": 1.0, "ymin": 1.0, "xmax": 2.0, "ymax": 2.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        # Verify structure
+        assert "passed" in result
+        assert "ratio" in result
+        assert "method" in result
+        assert result["method"] == "native_geo_bbox"
+        assert "overlap_count" in result
+        assert "total_pairs" in result

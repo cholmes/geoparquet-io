@@ -260,6 +260,18 @@ def _add_bbox_streaming(
 
         return _make_add_bbox_query(source, geom_col, bbox_column_name, replace_existing=force)
 
+    # Build covering metadata for the bbox column (GeoParquet 1.1+ spec)
+    covering_metadata = {
+        "covering": {
+            "bbox": {
+                "xmin": [bbox_column_name, "xmin"],
+                "ymin": [bbox_column_name, "ymin"],
+                "xmax": [bbox_column_name, "xmax"],
+                "ymax": [bbox_column_name, "ymax"],
+            }
+        }
+    }
+
     execute_transform(
         input_path,
         output_path,
@@ -270,6 +282,7 @@ def _add_bbox_streaming(
         row_group_size_mb=row_group_size_mb,
         row_group_rows=row_group_rows,
         profile=profile,
+        custom_metadata=covering_metadata,
         geoparquet_version=geoparquet_version,
     )
 
@@ -344,6 +357,18 @@ def _add_bbox_file_based(
         ymax := ST_YMax({geom_col})
     )"""
 
+    # Build covering metadata for the bbox column (GeoParquet 1.1+ spec)
+    covering_metadata = {
+        "covering": {
+            "bbox": {
+                "xmin": [bbox_column_name, "xmin"],
+                "ymin": [bbox_column_name, "ymin"],
+                "xmax": [bbox_column_name, "xmax"],
+                "ymax": [bbox_column_name, "ymax"],
+            }
+        }
+    }
+
     # Use the generic helper for all boilerplate
     add_computed_column(
         input_parquet=input_parquet,
@@ -361,6 +386,7 @@ def _add_bbox_file_based(
         profile=profile,
         replace_column=replace_column,
         geoparquet_version=geoparquet_version,
+        custom_metadata=covering_metadata,
     )
 
     if not dry_run:

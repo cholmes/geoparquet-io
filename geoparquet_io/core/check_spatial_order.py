@@ -262,6 +262,72 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
     return ratio
 
 
+def _check_spatial_order_from_row_group_bboxes(
+    row_group_bboxes, parquet_file, verbose=False, return_results=False, quiet=False
+):
+    """Check spatial ordering from row group bboxes (native geo_bbox stats).
+
+    Shared logic for checking spatial order from pre-fetched row group bboxes.
+    Used by both bbox column method and native geo_bbox stats method.
+
+    Args:
+        row_group_bboxes: List of dicts with row_group_id, xmin, ymin, xmax, ymax
+        parquet_file: Path to parquet file (for logging)
+        verbose: Print additional information
+        return_results: If True, return structured results dict
+        quiet: If True, suppress all output
+
+    Returns:
+        ratio (float) if return_results=False, or dict if return_results=True
+    """
+    if len(row_group_bboxes) <= 1:
+        if verbose:
+            debug("Only one or zero row groups - assuming well ordered")
+        ratio = 0.0
+        overlap_count = 0
+        total_pairs = 0
+    else:
+        overlap_count = 0
+        for i in range(len(row_group_bboxes) - 1):
+            bbox1 = row_group_bboxes[i]
+            bbox2 = row_group_bboxes[i + 1]
+            if _bboxes_overlap(bbox1, bbox2):
+                overlap_count += 1
+                if verbose:
+                    debug(f"Row groups {bbox1['row_group_id']} and {bbox2['row_group_id']} overlap")
+
+        total_pairs = len(row_group_bboxes) - 1
+        ratio = overlap_count / total_pairs if total_pairs > 0 else 0.0
+
+        if verbose:
+            debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
+
+    passed = ratio < 0.3
+
+    issues = []
+    recommendations = []
+    if not passed:
+        issues.append(f"Poor spatial ordering (overlap ratio: {ratio:.2f})")
+        recommendations.append("Apply Hilbert spatial ordering for better query performance")
+
+    if not quiet and not return_results and not verbose:
+        _print_bbox_stats_results(ratio, overlap_count, total_pairs)
+
+    if return_results:
+        return {
+            "passed": passed,
+            "ratio": ratio,
+            "overlap_count": overlap_count,
+            "total_pairs": total_pairs,
+            "method": "native_geo_bbox",
+            "issues": issues,
+            "recommendations": recommendations,
+            "fix_available": not passed,
+        }
+
+    return ratio
+
+
 def check_spatial_order(
     parquet_file, random_sample_size, limit_rows, verbose, return_results=False, quiet=False
 ):
@@ -281,7 +347,10 @@ def check_spatial_order(
     Returns:
         ratio (float) if return_results=False, or dict if return_results=True
     """
-    from geoparquet_io.core.duckdb_metadata import has_bbox_column
+    from geoparquet_io.core.duckdb_metadata import (
+        get_per_row_group_native_geo_stats,
+        has_bbox_column,
+    )
     from geoparquet_io.core.logging_config import warn
 
     safe_url = safe_file_url(parquet_file, verbose)
@@ -301,13 +370,28 @@ def check_spatial_order(
             # IndexError: Empty or malformed row group stats
             if verbose:
                 warn(f"Bbox-stats method failed: {e}, falling back to sampling")
+            # Fall through to try native geo_bbox stats
+
+    # Try native geo_bbox stats (GeoParquet 2.0 / parquet-geo-only)
+    geometry_column = find_primary_geometry_column(parquet_file, verbose)
+    native_geo_stats = get_per_row_group_native_geo_stats(safe_url, geometry_column)
+    if native_geo_stats:
+        if verbose:
+            debug(f"Using native geo_bbox stats ({len(native_geo_stats)} row groups)")
+        try:
+            return _check_spatial_order_from_row_group_bboxes(
+                native_geo_stats, parquet_file, verbose, return_results, quiet
+            )
+        except (ValueError, KeyError, IndexError) as e:
+            if verbose:
+                warn(f"Native geo_bbox method failed: {e}, falling back to sampling")
             # Fall through to sampling method
 
     # Fall back to sampling method
     if verbose or not quiet:
         warn(
-            "Bbox column not found - using slower sampling method. "
-            "For faster checks, add bbox column with 'gpio add bbox'."
+            "No bbox column or native geo_bbox stats found - using slower sampling method. "
+            "For faster checks, add bbox column with 'gpio add bbox' or use GeoParquet 2.0."
         )
 
     geometry_column = find_primary_geometry_column(parquet_file, verbose)

@@ -478,3 +478,106 @@ class TestAddCommandErrorHandling:
 
         # Should show friendly error message
         assert "Traceback" not in result.output
+
+
+class TestAddBboxCoveringMetadata:
+    """Tests for bbox covering metadata (fixes #412)."""
+
+    def test_add_bbox_includes_covering_metadata_for_v2(
+        self, buildings_test_file, temp_output_file
+    ):
+        """Test that add bbox includes covering metadata for GeoParquet 2.0."""
+        import json
+
+        import pyarrow.parquet as pq
+
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["bbox", buildings_test_file, temp_output_file, "--geoparquet-version", "2.0"],
+        )
+        assert result.exit_code == 0
+        assert os.path.exists(temp_output_file)
+
+        # Check covering metadata in geo metadata
+        pf = pq.ParquetFile(temp_output_file)
+        geo_meta = json.loads(pf.schema_arrow.metadata.get(b"geo", b"{}"))
+
+        # Find the geometry column's covering metadata
+        primary_col = geo_meta.get("primary_column", "geometry")
+        col_meta = geo_meta.get("columns", {}).get(primary_col, {})
+        covering = col_meta.get("covering", {})
+
+        # Verify bbox covering exists with correct structure
+        assert "bbox" in covering, "covering.bbox should exist in geo metadata"
+        bbox_covering = covering["bbox"]
+        assert bbox_covering.get("xmin") == ["bbox", "xmin"]
+        assert bbox_covering.get("ymin") == ["bbox", "ymin"]
+        assert bbox_covering.get("xmax") == ["bbox", "xmax"]
+        assert bbox_covering.get("ymax") == ["bbox", "ymax"]
+
+    def test_add_bbox_includes_covering_metadata_for_v1_1(
+        self, buildings_test_file, temp_output_file
+    ):
+        """Test that add bbox includes covering metadata for GeoParquet 1.1."""
+        import json
+
+        import pyarrow.parquet as pq
+
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["bbox", buildings_test_file, temp_output_file, "--geoparquet-version", "1.1"],
+        )
+        assert result.exit_code == 0
+        assert os.path.exists(temp_output_file)
+
+        # Check covering metadata
+        pf = pq.ParquetFile(temp_output_file)
+        geo_meta = json.loads(pf.schema_arrow.metadata.get(b"geo", b"{}"))
+
+        primary_col = geo_meta.get("primary_column", "geometry")
+        col_meta = geo_meta.get("columns", {}).get(primary_col, {})
+        covering = col_meta.get("covering", {})
+
+        assert "bbox" in covering, "covering.bbox should exist for GeoParquet 1.1"
+
+    def test_add_bbox_streaming_includes_covering_metadata(self, buildings_test_file, tmp_path):
+        """Test that streaming add bbox also includes covering metadata via internal function."""
+        import json
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.add.bbox import _add_bbox_streaming
+
+        output_file = str(tmp_path / "streaming_bbox.parquet")
+
+        # Test the internal streaming function directly (simulates stdin->file path)
+        _add_bbox_streaming(
+            input_path=buildings_test_file,  # File as source (simulates stdin materialized)
+            output_path=output_file,
+            bbox_column_name="bbox",
+            verbose=False,
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            profile=None,
+            force=False,
+            geoparquet_version="2.0",
+        )
+
+        assert os.path.exists(output_file)
+
+        # Check covering metadata exists in streaming output
+        pf = pq.ParquetFile(output_file)
+        geo_meta = json.loads(pf.schema_arrow.metadata.get(b"geo", b"{}"))
+
+        primary_col = geo_meta.get("primary_column", "geometry")
+        col_meta = geo_meta.get("columns", {}).get(primary_col, {})
+        covering = col_meta.get("covering", {})
+
+        assert "bbox" in covering, "covering.bbox should exist in streaming output"
+        bbox_covering = covering["bbox"]
+        assert bbox_covering.get("xmin") == ["bbox", "xmin"]
+        assert bbox_covering.get("ymax") == ["bbox", "ymax"]
