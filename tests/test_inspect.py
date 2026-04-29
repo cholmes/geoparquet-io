@@ -930,6 +930,94 @@ class TestCRSComparison:
         assert _crs_are_equivalent(crs1, crs2) is False
 
 
+@pytest.fixture(scope="module")
+def v2_multi_rg_file(tmp_path_factory):
+    """Create a GeoParquet 2.0 file with multiple row groups and native geo_bbox."""
+    import duckdb
+
+    output = str(tmp_path_factory.mktemp("v2") / "v2_multi_rg.parquet")
+    con = duckdb.connect()
+    con.install_extension("spatial")
+    con.load_extension("spatial")
+    con.execute(
+        """
+        COPY (
+            SELECT
+                ST_Point(i % 360 - 180, (i % 180) - 90) AS geometry,
+                i AS id
+            FROM range(500000) t(i)
+        )
+        TO '{}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, GEOPARQUET_VERSION 'V2', ROW_GROUP_SIZE 100000)
+    """.format(output.replace("'", "''"))
+    )
+    con.close()
+    return output
+
+
+@pytest.fixture(scope="module")
+def v11_multi_rg_file(tmp_path_factory):
+    """Create a GeoParquet 1.1 file with multiple row groups and a bbox column."""
+    import duckdb
+
+    from geoparquet_io.core.convert import convert_to_geoparquet
+
+    tmpdir = tmp_path_factory.mktemp("v11")
+    v2_path = str(tmpdir / "v2_source.parquet")
+    output = str(tmpdir / "v11_multi_rg.parquet")
+    con = duckdb.connect()
+    con.install_extension("spatial")
+    con.load_extension("spatial")
+    con.execute(
+        """
+        COPY (
+            SELECT
+                ST_Point(i % 360 - 180, (i % 180) - 90) AS geometry,
+                i AS id
+            FROM range(500000) t(i)
+        )
+        TO '{}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, GEOPARQUET_VERSION 'V1', ROW_GROUP_SIZE 100000)
+    """.format(v2_path.replace("'", "''"))
+    )
+    con.close()
+
+    convert_to_geoparquet(
+        v2_path,
+        output,
+        skip_hilbert=True,
+        verbose=False,
+        geoparquet_version="1.1",
+    )
+    return output
+
+
+@pytest.fixture(scope="module")
+def v2_multi_geom_file(tmp_path_factory):
+    """Create a GeoParquet 2.0 file with two geometry columns."""
+    import duckdb
+
+    output = str(tmp_path_factory.mktemp("v2mg") / "v2_multi_geom.parquet")
+    con = duckdb.connect()
+    con.install_extension("spatial")
+    con.load_extension("spatial")
+    con.execute(
+        """
+        COPY (
+            SELECT
+                ST_Point(i % 360 - 180, (i % 180) - 90) AS geometry,
+                ST_Point((i + 100) % 360 - 180, ((i + 50) % 180) - 90) AS geometry2,
+                i AS id
+            FROM range(500000) t(i)
+        )
+        TO '{}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, GEOPARQUET_VERSION 'V2', ROW_GROUP_SIZE 100000)
+    """.format(output.replace("'", "''"))
+    )
+    con.close()
+    return output
+
+
 # Tests for new subcommand structure
 class TestInspectSubcommands:
     """Tests for the new inspect subcommand structure."""
@@ -1047,6 +1135,128 @@ class TestInspectSubcommands:
         no_bbox_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
         stats = get_row_group_geo_stats(no_bbox_file)
         assert stats == []
+
+    # --- V2 multi-row-group geo_bbox display tests ---
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_geo_stats_defaults_to_one_row_group_with_hint(self, runner, v2_multi_rg_file):
+        """--geo-stats should show 1 row group by default with '... and N more' hint."""
+        result = runner.invoke(cli, ["inspect", "meta", v2_multi_rg_file, "--geo-stats"])
+
+        assert result.exit_code == 0
+        assert "4 more row group(s)" in result.output
+        assert "--row-groups 5" in result.output
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_geo_stats_shows_all_with_row_groups_flag(self, runner, v2_multi_rg_file):
+        """--geo-stats with --row-groups 5 should show all 5 row groups."""
+        result = runner.invoke(
+            cli, ["inspect", "meta", v2_multi_rg_file, "--geo-stats", "--row-groups", "5"]
+        )
+
+        assert result.exit_code == 0
+        assert "more row group(s)" not in result.output
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_geo_stats_respects_row_groups_limit(self, runner, v2_multi_rg_file):
+        """--geo-stats with --row-groups N should show only N row groups."""
+        result = runner.invoke(
+            cli, ["inspect", "meta", v2_multi_rg_file, "--geo-stats", "--row-groups", "2"]
+        )
+
+        assert result.exit_code == 0
+        assert "3 more row group(s)" in result.output
+        assert "--row-groups 5" in result.output
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_inspect_meta_geometry_shows_geo_bbox_minmax(self, runner, v2_multi_rg_file):
+        """V2 geometry column should show geo_bbox coords as MinValue/MaxValue, not '-'."""
+        result = runner.invoke(cli, ["inspect", "meta", v2_multi_rg_file, "--row-groups", "1"])
+
+        assert result.exit_code == 0
+        lines = result.output.split("\n")
+        geo_line = next(
+            (line for line in lines if "BYTE_ARRAY" in line and "Geometry" in line),
+            None,
+        )
+        assert geo_line is not None, "Could not find geometry column in row group output"
+        assert "(" in geo_line, (
+            f"Geometry MinValue/MaxValue should show geo_bbox coordinates, got: {geo_line}"
+        )
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_parquet_geo_section_shows_native_row_group_stats(self, runner, v2_multi_rg_file):
+        """Parquet Geo section should show per-RG bbox stats from native geo_bbox for V2."""
+        result = runner.invoke(
+            cli, ["inspect", "meta", v2_multi_rg_file, "--parquet-geo", "--row-groups", "2"]
+        )
+
+        assert result.exit_code == 0
+        assert "Row Group" in result.output
+        assert "Bbox:" in result.output or "xmin" in result.output.lower()
+
+    # --- V1.1 regression tests ---
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_v11_geo_stats_defaults_to_one_with_hint(self, runner, v11_multi_rg_file):
+        """--geo-stats should show 1 row group by default with hint for V1.1 files."""
+        result = runner.invoke(cli, ["inspect", "meta", v11_multi_rg_file, "--geo-stats"])
+
+        assert result.exit_code == 0
+        assert "more row group(s)" in result.output
+        assert "--row-groups" in result.output
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_v11_geo_stats_respects_row_groups_limit(self, runner, v11_multi_rg_file):
+        """--geo-stats with --row-groups N should work for V1.1 bbox column files."""
+        result = runner.invoke(
+            cli, ["inspect", "meta", v11_multi_rg_file, "--geo-stats", "--row-groups", "2"]
+        )
+
+        assert result.exit_code == 0
+        assert "more row group(s)" in result.output
+
+    def test_v11_inspect_meta_unchanged(self, runner):
+        """V1.1 file inspect meta should continue working (no regression)."""
+        v11_file = os.path.join(os.path.dirname(__file__), "data", "places_test.parquet")
+        result = runner.invoke(cli, ["inspect", "meta", v11_file])
+
+        assert result.exit_code == 0
+        assert "GeoParquet Metadata" in result.output
+        assert "Parquet File Metadata" in result.output
+
+    def test_v11_inspect_meta_row_groups_default_still_1(self, runner):
+        """Default row groups display (without --geo-stats) should still be 1."""
+        v11_file = os.path.join(os.path.dirname(__file__), "data", "places_test.parquet")
+        result = runner.invoke(cli, ["inspect", "meta", v11_file])
+
+        assert result.exit_code == 0
+        # Should show "showing 1 of N" for the parquet section
+        assert "Row Group 0:" in result.output
+
+    # --- Multi-geometry tests ---
+
+    @pytest.mark.slow
+    @pytest.mark.integration
+    def test_multi_geom_parquet_geo_shows_per_column_stats(self, runner, v2_multi_geom_file):
+        """Each geometry column should get its own native geo_bbox stats."""
+        result = runner.invoke(
+            cli,
+            ["inspect", "meta", v2_multi_geom_file, "--parquet-geo", "--row-groups", "5"],
+        )
+
+        assert result.exit_code == 0
+        assert "geometry" in result.output
+        assert "geometry2" in result.output
+        output_lower = result.output.lower()
+        assert output_lower.count("xmin") >= 2 or result.output.count("Bbox:") >= 2
 
     def test_inspect_stats_subcommand_markdown(self, runner, test_file):
         """Test stats subcommand with markdown output."""

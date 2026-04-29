@@ -507,6 +507,14 @@ def _build_row_group_json(rg_id: int, cols_in_rg: list, geo_columns: dict) -> di
                 "min": str(col.get("stats_min")),
                 "max": str(col.get("stats_max")),
             }
+        elif is_geo and col.get("geo_bbox"):
+            geo_bbox = col["geo_bbox"]
+            if geo_bbox.get("xmin") is not None:
+                col_dict["statistics"] = {
+                    "min": f"({geo_bbox['xmin']}, {geo_bbox['ymin']})",
+                    "max": f"({geo_bbox['xmax']}, {geo_bbox['ymax']})",
+                    "source": "geo_bbox",
+                }
         rg_dict["columns"].append(col_dict)
 
     return rg_dict
@@ -558,6 +566,15 @@ def _format_parquet_metadata_json(
     print(json.dumps(metadata_dict, indent=2))
 
 
+def _format_bbox_corner(x: float, y: float) -> str:
+    """Format a bbox corner as (x, y), adapting precision to fit."""
+    for fmt in (".2f", ".1f", ".0f"):
+        result = f"({x:{fmt}}, {y:{fmt}})"
+        if len(result) <= 24:
+            return result
+    return f"({x:.0f}, {y:.0f})"
+
+
 def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict) -> None:
     """Print a table of columns for a row group."""
     table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
@@ -581,6 +598,12 @@ def _print_row_group_table(console: Console, cols_in_rg: list, geo_columns: dict
 
         min_val = str(col.get("stats_min", "-"))[:20] if col.get("stats_min") else "-"
         max_val = str(col.get("stats_max", "-"))[:20] if col.get("stats_max") else "-"
+
+        if is_geo and min_val == "-" and col.get("geo_bbox"):
+            geo_bbox = col["geo_bbox"]
+            if geo_bbox.get("xmin") is not None:
+                min_val = _format_bbox_corner(geo_bbox["xmin"], geo_bbox["ymin"])
+                max_val = _format_bbox_corner(geo_bbox["xmax"], geo_bbox["ymax"])
 
         table.add_row(
             col_name_display,
@@ -897,6 +920,7 @@ def format_parquet_geo_metadata(
         detect_geometry_columns,
         get_file_metadata,
         get_per_row_group_bbox_stats,
+        get_per_row_group_native_geo_stats,
         get_schema_info,
         has_bbox_column,
     )
@@ -912,7 +936,7 @@ def format_parquet_geo_metadata(
 
     geo_columns_info = _build_geo_columns_info(schema_info, geo_columns)
 
-    # Add bbox row group stats if bbox column exists
+    # Add row group stats: try bbox column first, then native geo_bbox
     if has_bbox and bbox_col_name:
         rg_bbox_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
         for col_name in geo_columns_info:
@@ -926,6 +950,20 @@ def format_parquet_geo_metadata(
                         "ymax": rg_stat["ymax"],
                     }
                 )
+    else:
+        for col_name in geo_columns_info:
+            native_stats = get_per_row_group_native_geo_stats(safe_url, geometry_column=col_name)
+            if native_stats:
+                for rg_stat in native_stats:
+                    geo_columns_info[col_name]["row_group_stats"].append(
+                        {
+                            "row_group": rg_stat["row_group_id"],
+                            "xmin": rg_stat["xmin"],
+                            "ymin": rg_stat["ymin"],
+                            "xmax": rg_stat["xmax"],
+                            "ymax": rg_stat["ymax"],
+                        }
+                    )
 
     num_rg_to_show = num_row_groups
     if row_groups_limit is not None:
@@ -1197,14 +1235,14 @@ def format_row_group_geo_stats(
     # Merge num_rows into stats
     stats_with_rows = _merge_row_counts(rg_stats, num_rows_per_rg)
 
-    # Apply row_groups limit if specified
-    if row_groups is not None:
-        stats_with_rows = stats_with_rows[:row_groups]
+    total_row_groups = len(stats_with_rows)
+    effective_limit = row_groups if row_groups is not None else 1
+    stats_with_rows = stats_with_rows[:effective_limit]
 
     if json_output:
         print(json.dumps({"row_group_geo_stats": stats_with_rows}, indent=2))
     else:
-        _format_geo_stats_terminal(stats_with_rows)
+        _format_geo_stats_terminal(stats_with_rows, total_row_groups)
 
 
 def _get_num_rows_per_row_group(safe_url: str, file_meta: dict) -> dict[int, int]:
@@ -1246,7 +1284,7 @@ def _merge_row_counts(rg_stats: list[dict], num_rows_per_rg: dict[int, int]) -> 
     return merged
 
 
-def _format_geo_stats_terminal(stats: list[dict]) -> None:
+def _format_geo_stats_terminal(stats: list[dict], total_row_groups: int) -> None:
     """Render per-row-group geo_bbox stats as a Rich table."""
     console = Console()
     console.print()
@@ -1277,5 +1315,11 @@ def _format_geo_stats_terminal(stats: list[dict]) -> None:
         )
 
     console.print(table)
-    console.print(f"\n[dim]{len(stats)} row group(s) with geo_bbox statistics[/dim]")
+
+    shown = len(stats)
+    remaining = total_row_groups - shown
+    if remaining > 0:
+        console.print(f"\n  [dim]... and {remaining} more row group(s)[/dim]")
+        console.print(f"  [dim]Use --row-groups {total_row_groups} to see all row groups[/dim]")
+
     console.print()
