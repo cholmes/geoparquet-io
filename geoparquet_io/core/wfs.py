@@ -1347,7 +1347,8 @@ def wfs_to_table(
         max_workers: Parallel requests for large datasets (default: 1 = single request)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch; if False, warn and reproject/detect
+        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
+            output_crs is set, reproject automatically; otherwise warn and use detected CRS
         verbose: Enable debug output
 
     Returns:
@@ -1425,7 +1426,12 @@ def wfs_to_table(
         if output_crs:
             # User explicitly requested CRS but server returned different — reproject
             info(f"Server returned {detected_crs}, reprojecting to requested {output_crs}")
-            table = reproject_table(table, target_crs=output_crs, source_crs=detected_crs)
+            try:
+                table = reproject_table(table, target_crs=output_crs, source_crs=detected_crs)
+            except Exception as e:
+                raise WFSError(
+                    f"Failed to reproject from {detected_crs} to {output_crs}: {e}"
+                ) from e
             crs = output_crs
         else:
             # No explicit request — use detected CRS for metadata
@@ -1491,7 +1497,8 @@ def convert_wfs_to_geoparquet(
         max_workers: Parallel requests for large datasets (default: 1)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch; if False, warn and reproject/detect
+        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
+            output_crs is set, reproject automatically; otherwise warn and use detected CRS
         skip_hilbert: Skip Hilbert curve sorting
         skip_bbox: Skip adding bbox column
         compression: Compression algorithm
