@@ -52,6 +52,7 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
+from geoparquet_io.core.reproject import reproject_table
 
 
 class WFSError(Exception):
@@ -1340,12 +1341,13 @@ def wfs_to_table(
         version: WFS version (1.0.0, 1.1.0, or 2.0.0)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax)
         bbox_mode: Bbox strategy ("auto", "server", "local")
-        output_crs: Request specific CRS (e.g., "EPSG:4326")
+        output_crs: Guarantee output in this CRS. If server returns different CRS, data is
+            reprojected automatically. (e.g., "EPSG:4326")
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1 = single request)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch; if False, warn and use detected CRS
+        strict_crs: If True, fail on CRS mismatch; if False, warn and reproject/detect
         verbose: Enable debug output
 
     Returns:
@@ -1420,9 +1422,15 @@ def wfs_to_table(
     # Validate CRS - check if coordinates match requested CRS
     crs_valid, detected_crs = _validate_crs_coordinates(table, crs, strict=strict_crs)
     if not crs_valid and detected_crs:
-        # Server returned data in different CRS - use detected CRS for metadata
-        info(f"Using detected CRS {detected_crs} for output metadata")
-        crs = detected_crs
+        if output_crs:
+            # User explicitly requested CRS but server returned different — reproject
+            info(f"Server returned {detected_crs}, reprojecting to requested {output_crs}")
+            table = reproject_table(table, target_crs=output_crs, source_crs=detected_crs)
+            crs = output_crs
+        else:
+            # No explicit request — use detected CRS for metadata
+            info(f"Using detected CRS {detected_crs} for output metadata")
+            crs = detected_crs
 
     # Add CRS metadata to schema
     projjson = parse_crs_string_to_projjson(_normalize_crs(crs))
@@ -1478,12 +1486,12 @@ def convert_wfs_to_geoparquet(
         version: WFS version
         bbox: Bounding box filter
         bbox_mode: Bbox strategy
-        output_crs: Request specific CRS
+        output_crs: Guarantee output in this CRS (reprojects if server returns different)
         limit: Maximum features
         max_workers: Parallel requests for large datasets (default: 1)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch
+        strict_crs: If True, fail on CRS mismatch; if False, warn and reproject/detect
         skip_hilbert: Skip Hilbert curve sorting
         skip_bbox: Skip adding bbox column
         compression: Compression algorithm
