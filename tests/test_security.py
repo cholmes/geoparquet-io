@@ -78,11 +78,12 @@ class TestSecurityScanResults:
             cwd=_PROJECT_ROOT,
         )
         pip_version = pip_version_result.stdout.split()[1]
-        major_minor = ".".join(pip_version.split(".")[:2])
+        version_parts = pip_version.split(".")[:2]
+        major_minor = (int(version_parts[0]), int(version_parts[1]))
 
         # CVE-2026-3219: pip tar/ZIP handling (CVSS 4.6). Fix expected in pip 26.1+.
         cmd = ["uv", "run", "pip-audit"]
-        if major_minor < "26.1":
+        if major_minor < (26, 1):
             cmd.extend(["--ignore-vuln", "CVE-2026-3219"])
 
         result = subprocess.run(
