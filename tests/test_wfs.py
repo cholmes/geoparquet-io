@@ -1839,9 +1839,9 @@ class TestTypeInferenceIntegration:
         """Real WFS data should have numeric columns properly typed."""
         import pyarrow as pa
 
-        from geoparquet_io import wfs_to_table
+        from geoparquet_io.api import ops
 
-        table = wfs_to_table(
+        table = ops.from_wfs(
             self.BELGIUM_WFS,
             self.BELGIUM_LAYER,
             limit=50,
