@@ -65,9 +65,28 @@ class TestSecurityScanResults:
 
     @pytest.mark.network
     def test_pip_audit_passes(self):
-        """Verify no known vulnerabilities in dependencies."""
+        """Verify no known vulnerabilities in dependencies.
+
+        Self-expiring CVE ignores: remove once fixed versions are released.
+        """
+        # Check pip version to see if CVE-2026-3219 ignore is still needed
+        pip_version_result = subprocess.run(
+            ["uv", "run", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+            cwd=_PROJECT_ROOT,
+        )
+        pip_version = pip_version_result.stdout.split()[1]
+        major_minor = ".".join(pip_version.split(".")[:2])
+
+        # CVE-2026-3219: pip tar/ZIP handling (CVSS 4.6). Fix expected in pip 26.1+.
+        cmd = ["uv", "run", "pip-audit"]
+        if major_minor < "26.1":
+            cmd.extend(["--ignore-vuln", "CVE-2026-3219"])
+
         result = subprocess.run(
-            ["uv", "run", "pip-audit"],
+            cmd,
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
