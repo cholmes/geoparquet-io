@@ -1502,6 +1502,149 @@ class TestCRSValidation:
         assert is_valid is True
         assert detected is None
 
+    def test_reproject_on_crs_mismatch(self):
+        """Should reproject data when CRS mismatch detected (issue #407)."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.reproject import reproject_table
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Create table with EPSG:3035 coordinates (Belgium area)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(3900000, 3000000)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # Verify mismatch detection
+        is_valid, detected_crs = _validate_crs_coordinates(table, "EPSG:4326", strict=False)
+        assert is_valid is False
+        assert detected_crs == "EPSG:3035"
+
+        # Reproject to WGS84 (simulates the new wfs_to_table behavior)
+        reprojected = reproject_table(table, target_crs="EPSG:4326", source_crs="EPSG:3035")
+
+        # Verify output coordinates are in WGS84 range
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            con.register("data", reprojected)
+            result = con.execute("""
+                SELECT
+                    ST_X(ST_GeomFromWKB(geometry)) as x,
+                    ST_Y(ST_GeomFromWKB(geometry)) as y
+                FROM data
+            """).fetchone()
+            x, y = result
+        finally:
+            con.close()
+
+        # WGS84 coordinates should be in valid range
+        assert -180 <= x <= 180, f"X coordinate {x} out of WGS84 range"
+        assert -90 <= y <= 90, f"Y coordinate {y} out of WGS84 range"
+        # Should be roughly in Western Europe (Belgium area)
+        assert 0 < x < 10, f"Expected longitude ~4-6, got {x}"
+        assert 45 < y < 55, f"Expected latitude ~50, got {y}"
+
+    def test_wfs_to_table_reprojects_on_mismatch(self):
+        """wfs_to_table should reproject when output_crs set and server returns different CRS."""
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        # Create mock table with EPSG:3035 coordinates
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(3900000, 3000000)) as geometry
+            """).arrow()
+            mock_table = result.read_all()
+        finally:
+            con.close()
+
+        # Mock the WFS fetching to return our test table
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb") as mock_fetch,
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:4326", "EPSG:3035"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+            )
+            mock_fetch.return_value = mock_table
+
+            # Call wfs_to_table with output_crs - should trigger reprojection
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                output_crs="EPSG:4326",
+            )
+
+        # Verify result is reprojected to WGS84
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            con.register("data", result)
+            coords = con.execute("""
+                SELECT
+                    ST_X(ST_GeomFromWKB(geometry)) as x,
+                    ST_Y(ST_GeomFromWKB(geometry)) as y
+                FROM data
+            """).fetchone()
+            x, y = coords
+        finally:
+            con.close()
+
+        # Should be in WGS84 range (Western Europe)
+        assert -180 <= x <= 180, f"X {x} not in WGS84 range"
+        assert -90 <= y <= 90, f"Y {y} not in WGS84 range"
+
+    def test_reproject_error_wrapped_in_wfs_error(self):
+        """Reprojection errors should be wrapped in WFSError with context."""
+        from unittest.mock import MagicMock, patch
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import WFSError, wfs_to_table
+
+        # Create mock table with invalid geometry
+        mock_table = pa.table({"geometry": [b"invalid_wkb"]})
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb") as mock_fetch,
+            patch("geoparquet_io.core.wfs._validate_crs_coordinates") as mock_validate,
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+            )
+            mock_fetch.return_value = mock_table
+            # Force mismatch detection
+            mock_validate.return_value = (False, "EPSG:3035")
+
+            with pytest.raises(WFSError) as exc_info:
+                wfs_to_table(
+                    service_url="https://mock.wfs.server/wfs",
+                    typename="mock:layer",
+                    output_crs="EPSG:4326",
+                )
+
+            assert "Failed to reproject" in str(exc_info.value)
+            assert "EPSG:3035" in str(exc_info.value)
+            assert "EPSG:4326" in str(exc_info.value)
+
 
 # =============================================================================
 # Integration Tests for WFS 2.0 (Issue #312)
@@ -1835,6 +1978,11 @@ class TestTypeInferenceIntegration:
     BELGIUM_WFS = "https://geoservices.wallonie.be/arcgis/services/AMENAGEMENT_TERRITOIRE/TLPE/MapServer/WFSServer"
     BELGIUM_LAYER = "TLPE:TLPE"
 
+    @pytest.mark.xfail(
+        reason="External WFS service may be unavailable",
+        strict=False,
+        raises=(Exception,),
+    )
     def test_wfs_type_inference_real_server(self):
         """Real WFS data should have numeric columns properly typed."""
         import pyarrow as pa
