@@ -480,6 +480,18 @@ def check_all(
     for file_path in files_to_check:
         runner.start_file(file_path)
 
+        # Early skip for non-GeoParquet files when --pmtiles is passed
+        # This avoids crashes in check_structure_impl which assumes geo metadata
+        if pmtiles:
+            from geoparquet_io.core.common import detect_geoparquet_file_type
+
+            file_info = detect_geoparquet_file_type(file_path)
+            if file_info["file_type"] == "unknown":
+                click.echo(
+                    click.style(f"→ Skipping {file_path}: not a GeoParquet file", fg="yellow")
+                )
+                continue
+
         # Show single progress message for remote files (only in verbose mode for multi-file)
         if runner.verbose or not runner.is_multi_file:
             show_remote_read_message(file_path, verbose=False)
@@ -592,20 +604,9 @@ def check_all(
             if not applied:
                 continue
 
-        # Generate PMTiles if requested
+        # Generate PMTiles if requested (non-geo files already skipped at loop start)
         if pmtiles:
-            from geoparquet_io.core.common import detect_geoparquet_file_type
             from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
-
-            # Skip non-geospatial files
-            file_info = detect_geoparquet_file_type(file_path)
-            if file_info["file_type"] == "unknown":
-                click.echo(
-                    click.style(
-                        f"→ Skipped PMTiles for {file_path}: not a GeoParquet file", fg="yellow"
-                    )
-                )
-                continue
 
             # Generate PMTiles
             # Use fixed output path if available, otherwise original
