@@ -92,6 +92,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Plugin system documentation
 - Dependency updates (actions/checkout v6, astral-sh/setup-uv v7, etc.)
 
+## v1.1.1 (2026-04-29)
+
+### Fix
+
+- **windows**: release file handles before replace in bbox_metadata
+
 ## v1.1.0 (2026-04-29)
 
 ### Feat
