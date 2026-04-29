@@ -58,27 +58,11 @@ For Python API usage, install plugins as regular dependencies:
 
 ## Available Plugins
 
-### gpio-pmtiles
+!!! note "PMTiles is now built-in"
+    The `gpio pmtiles` command is now part of geoparquet-io core. No plugin installation needed.
+    See the [GeoJSON guide](geojson.md#using-gpio-pmtiles-built-in) for usage.
 
-**Repository**: [github.com/geoparquet-io/gpio-pmtiles](https://github.com/geoparquet-io/gpio-pmtiles)
-**PyPI**: [pypi.org/project/gpio-pmtiles](https://pypi.org/project/gpio-pmtiles/)
-
-Convert between GeoParquet and PMTiles format for efficient web map tiles.
-
-**Installation**:
-```bash
-uv tool install geoparquet-io --with gpio-pmtiles
-```
-
-**Commands**:
-```bash
-# Convert GeoParquet to PMTiles
-gpio pmtiles create input.parquet output.pmtiles
-```
-
-**Use Cases**:
-- Generating tilesets from GeoParquet for web mapping
-- Building vector tile pipelines
+Currently there are no external plugins. The plugin system is available for community extensions.
 
 ## How Plugins Work
 

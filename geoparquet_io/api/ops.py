@@ -924,3 +924,76 @@ def explain_analyze(
         file_path=file_path,
         query=query,
     )
+
+
+def create_pmtiles(
+    input_path: str,
+    output_path: str,
+    *,
+    layer: str | None = None,
+    min_zoom: int | None = None,
+    max_zoom: int | None = None,
+    bbox: str | None = None,
+    where: str | None = None,
+    include_cols: str | None = None,
+    precision: int = 6,
+    verbose: bool = False,
+    profile: str | None = None,
+    src_crs: str | None = None,
+    attribution: str | None = None,
+) -> None:
+    """
+    Create PMTiles from a GeoParquet file using tippecanoe.
+
+    Streams GeoParquet through gpio and tippecanoe to generate PMTiles.
+    Requires tippecanoe to be installed and available in PATH.
+
+    Args:
+        input_path: Path to input GeoParquet file
+        output_path: Path for output PMTiles file
+        layer: Layer name in PMTiles (defaults to output filename)
+        min_zoom: Minimum zoom level (optional)
+        max_zoom: Maximum zoom level (optional, auto-detected if not set)
+        bbox: Bounding box filter as "minx,miny,maxx,maxy"
+        where: SQL WHERE clause for filtering
+        include_cols: Comma-separated list of columns to include
+        precision: Coordinate decimal precision (default: 6)
+        verbose: Enable verbose output
+        profile: AWS profile name for S3 files
+        src_crs: Source CRS for reprojection to WGS84
+        attribution: Attribution HTML for the tiles
+
+    Raises:
+        TippecanoeNotFoundError: If tippecanoe is not in PATH
+        ValueError: If paths contain shell metacharacters
+        RuntimeError: If any subprocess fails
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_pmtiles('buildings.parquet', 'buildings.pmtiles')
+        >>> # With options:
+        >>> ops.create_pmtiles(
+        ...     'data.parquet',
+        ...     'tiles.pmtiles',
+        ...     layer='buildings',
+        ...     max_zoom=14,
+        ...     bbox='-122.5,37.5,-122.0,38.0'
+        ... )
+    """
+    from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
+
+    create_pmtiles_from_geoparquet(
+        input_path=input_path,
+        output_path=output_path,
+        layer=layer,
+        min_zoom=min_zoom,
+        max_zoom=max_zoom,
+        bbox=bbox,
+        where=where,
+        include_cols=include_cols,
+        precision=precision,
+        verbose=verbose,
+        profile=profile,
+        src_crs=src_crs,
+        attribution=attribution,
+    )

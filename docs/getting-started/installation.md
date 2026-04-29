@@ -16,22 +16,24 @@ uv add geoparquet-io
     If you prefer pip: `pip install geoparquet-io`
     If you prefer pipx: `pipx install geoparquet-io`
 
-## Installing Plugins
+## PMTiles Support
 
-gpio supports plugins that add specialized format support:
+PMTiles generation is built-in. Just install tippecanoe:
 
 ```bash
-# Install with PMTiles support
-uv tool install geoparquet-io --with gpio-pmtiles
+# macOS
+brew install tippecanoe
 
-# Add plugin to existing installation
-uv tool install --with gpio-pmtiles geoparquet-io
+# Ubuntu
+sudo apt install tippecanoe
 ```
 
-Available plugins:
+Then use `gpio pmtiles create` to generate PMTiles from GeoParquet files.
+See the [GeoJSON guide](../guide/geojson.md#using-gpio-pmtiles-built-in) for usage.
 
-- **[gpio-pmtiles](https://github.com/geoparquet-io/gpio-pmtiles)** - Convert between GeoParquet and PMTiles
+## Plugins
 
+gpio supports a plugin system for community extensions.
 See the [Plugins Guide](../guide/plugins.md) for more information.
 
 ## From Source
