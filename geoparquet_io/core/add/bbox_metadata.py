@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import gc
 import json
 import os
 
@@ -109,6 +110,10 @@ def add_bbox_metadata(parquet_file, verbose=False):
             version="2.6",
             write_page_index=False,
         )
+
+        # Release references before file replace (Windows file locking)
+        del table, new_table
+        gc.collect()
 
         # Replace original file
         os.replace(temp_file, parquet_file)
