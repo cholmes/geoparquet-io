@@ -457,6 +457,18 @@ def check_all(
                 f"  2. Omit --fix-output to fix files in-place (with .bak backups)"
             )
 
+    # Check tippecanoe availability once before processing files
+    if pmtiles:
+        from geoparquet_io.core.pmtiles import _check_tippecanoe
+
+        if not _check_tippecanoe():
+            raise click.ClickException(
+                "--pmtiles requires tippecanoe.\n\n"
+                "Install tippecanoe:\n"
+                "  macOS:  brew install tippecanoe\n"
+                "  Ubuntu: sudo apt install tippecanoe"
+            )
+
     # Create runner for multi-file progress tracking
     runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
 
@@ -579,20 +591,7 @@ def check_all(
         # Generate PMTiles if requested
         if pmtiles:
             from geoparquet_io.core.common import detect_geoparquet_file_type
-            from geoparquet_io.core.pmtiles import (
-                TippecanoeNotFoundError,
-                _check_tippecanoe,
-                create_pmtiles_from_geoparquet,
-            )
-
-            # Check tippecanoe availability once at start
-            if not _check_tippecanoe():
-                raise click.ClickException(
-                    "--pmtiles requires tippecanoe.\n\n"
-                    "Install tippecanoe:\n"
-                    "  macOS:  brew install tippecanoe\n"
-                    "  Ubuntu: sudo apt install tippecanoe"
-                )
+            from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
 
             # Skip non-geospatial files
             file_info = detect_geoparquet_file_type(file_path)
@@ -616,13 +615,6 @@ def check_all(
                     verbose=verbose,
                 )
                 click.echo(click.style(f"✓ Generated {output_pmtiles}", fg="green"))
-            except TippecanoeNotFoundError:
-                raise click.ClickException(
-                    "--pmtiles requires tippecanoe.\n\n"
-                    "Install tippecanoe:\n"
-                    "  macOS:  brew install tippecanoe\n"
-                    "  Ubuntu: sudo apt install tippecanoe"
-                ) from None
             except Exception as e:
                 click.echo(click.style(f"✗ PMTiles failed for {file_path}: {e}", fg="red"))
 

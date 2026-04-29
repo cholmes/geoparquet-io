@@ -143,6 +143,43 @@ class TestBuildGpioCommands:
         assert "geojson" in convert_cmd
         assert "-" in convert_cmd
 
+    def test_with_reprojection_and_filters(self):
+        """Test building gpio commands with both reprojection and filters."""
+        from geoparquet_io.core.pmtiles import _build_gpio_commands
+
+        commands = _build_gpio_commands(
+            input_path="input.parquet",
+            bbox="-122,37,-121,38",
+            where="type = 'building'",
+            include_cols="name,height",
+            precision=6,
+            verbose=False,
+            profile=None,
+            src_crs="EPSG:3857",
+        )
+
+        assert len(commands) == 3
+
+        reproject_cmd = commands[0]
+        assert "convert" in reproject_cmd
+        assert "reproject" in reproject_cmd
+        assert "input.parquet" in reproject_cmd
+        assert "--src-crs" in reproject_cmd
+        assert "EPSG:3857" in reproject_cmd
+
+        extract_cmd = commands[1]
+        assert "extract" in extract_cmd
+        assert "geoparquet" in extract_cmd
+        assert "-" in extract_cmd
+        assert "--bbox" in extract_cmd
+        assert "--where" in extract_cmd
+        assert "--include-cols" in extract_cmd
+
+        convert_cmd = commands[2]
+        assert "convert" in convert_cmd
+        assert "geojson" in convert_cmd
+        assert "-" in convert_cmd
+
 
 class TestBuildTippecanoeCommand:
     """Tests for tippecanoe command building."""
@@ -257,6 +294,24 @@ class TestBuildTippecanoeCommand:
         assert "-z" in cmd
         assert "11" in cmd
         assert cmd.count("-Z") == 0
+
+    def test_min_zoom_only(self):
+        """Test that -Z and -zg are used for min zoom without max zoom."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=5,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+        )
+
+        assert "-Z" in cmd
+        assert "5" in cmd
+        assert "-zg" in cmd
+        assert cmd.count("-z") == 0  # lowercase -z should not be present
 
 
 class TestPathValidation:

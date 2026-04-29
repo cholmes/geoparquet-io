@@ -108,7 +108,7 @@ def _build_gpio_commands(
             next_input = input_path
 
         if needs_extract:
-            extract_cmd = [gpio_exe, "extract", next_input]
+            extract_cmd = [gpio_exe, "extract", "geoparquet", next_input]
 
             if bbox:
                 extract_cmd.extend(["--bbox", bbox])
@@ -168,6 +168,8 @@ def _build_tippecanoe_command(
 
     if min_zoom is not None and max_zoom is not None:
         cmd.extend(["-Z", str(min_zoom), "-z", str(max_zoom)])
+    elif min_zoom is not None:
+        cmd.extend(["-Z", str(min_zoom), "-zg"])
     elif max_zoom is not None:
         cmd.extend(["-z", str(max_zoom)])
     else:
