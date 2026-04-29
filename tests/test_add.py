@@ -169,7 +169,9 @@ class TestAddCommands:
 
         runner = CliRunner()
         result = runner.invoke(add, ["bbox-metadata", temp_file])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, (
+            f"Command failed: {result.output}\nException: {result.exception}"
+        )
         # Should either add metadata or report it already exists
         assert "Added bbox covering metadata" in result.output or "already exists" in result.output
 
