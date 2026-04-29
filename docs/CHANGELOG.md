@@ -92,6 +92,41 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Plugin system documentation
 - Dependency updates (actions/checkout v6, astral-sh/setup-uv v7, etc.)
 
+## v1.1.0 (2026-04-29)
+
+### Feat
+
+- integrate gpio-pmtiles into core
+- **api**: expose axis_order and strict_crs in Python API
+- **wfs**: add WFS 2.0 support, axis order fix, and CRS validation
+
+### Fix
+
+- **wfs**: address adversarial review findings for --output-crs
+- **wfs**: honor --output-crs by reprojecting when server returns different CRS
+- skip non-GeoParquet files early in check --pmtiles (#408)
+- address PR #417 adversarial review findings
+- PMTiles pipeline bugs found in adversarial review
+- extend bbox fixes to streaming code paths
+- GeoParquet 2.0 bbox handling for reproject, check, and add commands
+- **tests**: use tuple comparison for pip version check
+- **tests**: resolve CI failures for pip-audit CVE and wfs import
+- **inspect**: scope fixtures to module, add markers, fix multi-geometry stats
+- **inspect**: default --geo-stats to 1 row group with "... and N more" hint
+- **inspect**: adapt geo_bbox precision to fit large projected coordinates
+- **inspect**: use 2 decimal places for geo_bbox display and remove truncation
+- **inspect**: show geo_bbox stats in row group tables and --geo-stats
+- **wfs**: add version guard for srsName and improve test coverage
+- **wfs**: include srsName parameter without bbox filter
+- **test**: correct import path for list_layers module
+- **convert**: apply gc.collect() on all platforms for multi-layer reads
+- **wfs**: move type inference after concat, fix resource leak
+- **wfs**: infer column types from string values
+- **wfs**: address review findings
+- **deps**: bump lxml>=6.1.0 for CVE-2026-41066 (#395)
+- **deps**: remove pyarrow version cap
+- **ci**: rename release.yml back to publish.yml for PyPI trusted publisher
+
 ## v1.0.1 (2026-04-20)
 
 ### Fix
