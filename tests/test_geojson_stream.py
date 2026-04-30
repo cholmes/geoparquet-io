@@ -11,6 +11,7 @@ Tests verify that gpio convert geojson:
 """
 
 import json
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -340,6 +341,7 @@ class TestPipelineIntegration:
                 output_path.unlink()
 
     @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX `head` not available")
     def test_streaming_handles_broken_pipe(self):
         """Stream survives downstream closing pipe early (e.g. tippecanoe done).
 

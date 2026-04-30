@@ -481,3 +481,30 @@ class TestRunPipelineErrorSurfacing:
         msg = str(exc_info.value)
         assert "exit code 7" in msg
         assert sentinel in msg, f"upstream stderr '{sentinel}' not surfaced in error: {msg!r}"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX shell")
+    def test_tippecanoe_failure_still_surfaces_upstream_stderr(self):
+        """When tippecanoe also exits non-zero, upstream stderr must still surface.
+
+        Real-world failure mode: upstream gpio crashes, tippecanoe sees a
+        truncated stream and also exits non-zero. The previous implementation
+        short-circuited on tippecanoe's exit code, hiding the real cause.
+        """
+        from geoparquet_io.core.pmtiles import _run_pipeline
+
+        sentinel = "GPIO_UPSTREAM_TIPPECANOE_DUAL_b7c4"
+        with pytest.raises(RuntimeError) as exc_info:
+            _run_pipeline(
+                gpio_commands=[
+                    ["sh", "-c", f"echo {sentinel} >&2; exit 5"],
+                ],
+                tippecanoe_cmd=["sh", "-c", "exit 9"],
+                verbose=False,
+            )
+        msg = str(exc_info.value)
+        assert "tippecanoe failed" in msg
+        assert "exit code 9" in msg
+        assert sentinel in msg, (
+            f"upstream stderr '{sentinel}' lost behind tippecanoe error: {msg!r}"
+        )
+        assert "exit code 5" in msg

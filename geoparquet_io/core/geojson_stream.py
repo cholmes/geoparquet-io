@@ -264,8 +264,15 @@ def _stream_to_stdout(
         # Downstream consumer closed the pipe early (e.g. `| head`, tippecanoe
         # finished reading). Redirect stdout to devnull so interpreter-shutdown
         # flush does not re-raise. Standard Unix pipe-tool behavior.
+        try:
+            stdout_fd = sys.stdout.fileno()
+        except (OSError, ValueError):
+            return count
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull_fd, sys.stdout.fileno())
+        try:
+            os.dup2(devnull_fd, stdout_fd)
+        finally:
+            os.close(devnull_fd)
 
     return count
 

@@ -187,6 +187,32 @@ def _build_tippecanoe_command(
     return cmd
 
 
+def _format_proc_error(proc: "subprocess.Popen[bytes]", stderr_bytes: bytes) -> str:
+    """Build a diagnostic message for a failed pipeline process.
+
+    Picks an informative `cmd_name` — for `python -m geoparquet_io …`
+    invocations, surfaces the module + subcommand rather than the
+    interpreter path.
+    """
+    args = proc.args if isinstance(proc.args, list) else [str(proc.args)]
+    cmd_name = "command"
+    if args:
+        if "-m" in args:
+            m_idx = args.index("-m")
+            tail = args[m_idx + 1 : m_idx + 4]
+            if tail:
+                cmd_name = " ".join(tail)
+        else:
+            binary = Path(args[0]).name
+            rest = next((a for a in args[1:] if not a.startswith("-")), "")
+            cmd_name = f"{binary} {rest}".strip() or binary
+    stderr_text = stderr_bytes.decode(errors="replace").strip()
+    msg = f"{cmd_name} failed with exit code {proc.returncode}"
+    if stderr_text:
+        msg = f"{msg}\nstderr:\n{stderr_text}"
+    return msg
+
+
 def _run_pipeline(
     gpio_commands: list[list[str]],
     tippecanoe_cmd: list[str],
@@ -231,11 +257,12 @@ def _run_pipeline(
 
         tippecanoe_proc.communicate()
 
-        if tippecanoe_proc.returncode != 0:
-            raise RuntimeError(f"tippecanoe failed with exit code {tippecanoe_proc.returncode}")
-
-        # Drain stderr and wait for earlier processes
-        # Note: stdout is already closed for piping, so we only drain stderr
+        # Drain stderr and wait for upstream procs FIRST. If an upstream gpio
+        # process crashed, tippecanoe almost always exits non-zero too (read
+        # truncated input), and the upstream stderr is the real diagnostic —
+        # we must not short-circuit on tippecanoe's exit code before
+        # collecting it.
+        upstream_errors: list[str] = []
         for proc in processes[:-1]:
             stderr_bytes = b""
             if proc.stderr:
@@ -243,12 +270,16 @@ def _run_pipeline(
                 proc.stderr.close()
             proc.wait()
             if proc.returncode != 0:
-                cmd_name = proc.args[0] if isinstance(proc.args, list) else "command"
-                stderr_text = stderr_bytes.decode(errors="replace").strip()
-                msg = f"{cmd_name} failed with exit code {proc.returncode}"
-                if stderr_text:
-                    msg = f"{msg}\nstderr:\n{stderr_text}"
-                raise RuntimeError(msg)
+                upstream_errors.append(_format_proc_error(proc, stderr_bytes))
+
+        if tippecanoe_proc.returncode != 0:
+            msg = f"tippecanoe failed with exit code {tippecanoe_proc.returncode}"
+            if upstream_errors:
+                msg = f"{msg}\nUpstream errors:\n" + "\n\n".join(upstream_errors)
+            raise RuntimeError(msg)
+
+        if upstream_errors:
+            raise RuntimeError("\n\n".join(upstream_errors))
 
     except KeyboardInterrupt:
         for proc in processes:
