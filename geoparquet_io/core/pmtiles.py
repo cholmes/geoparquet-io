@@ -272,7 +272,7 @@ def _run_pipeline(
         if layer_by_column:
             debug(f"Add layer metadata into PMTiles from column '{layer_by_column}'")
 
-    processes: list[subprocess.Popen[bytes]] = []
+    processes: list[subprocess.Popen] = []
 
     try:
         for i, cmd in enumerate(gpio_commands):
@@ -379,7 +379,7 @@ def _run_pipeline(
                 stdin=processes[-1].stdout if processes else None,
                 stdout=None if verbose else subprocess.PIPE,
                 stderr=None,
-            )
+            )  # type: ignore
             processes.append(tippecanoe_proc)
             if len(processes) > 1 and processes[-2].stdout:
                 processes[-2].stdout.close()
@@ -391,7 +391,7 @@ def _run_pipeline(
             # truncated input), and the upstream stderr is the real diagnostic —
             # we must not short-circuit on tippecanoe's exit code before
             # collecting it.
-            upstream_errors: list[str] = []
+            upstream_gpio_errors: list[str] = []
             for proc in processes[:-1]:
                 stderr_bytes = b""
                 if proc.stderr:
@@ -399,16 +399,16 @@ def _run_pipeline(
                     proc.stderr.close()
                 proc.wait()
                 if proc.returncode != 0:
-                    upstream_errors.append(_format_proc_error(proc, stderr_bytes))
+                    upstream_gpio_errors.append(_format_proc_error(proc, stderr_bytes))
 
             if tippecanoe_proc.returncode != 0:
                 msg = f"tippecanoe failed with exit code {tippecanoe_proc.returncode}"
-                if upstream_errors:
-                    msg = f"{msg}\nUpstream errors:\n" + "\n\n".join(upstream_errors)
+                if upstream_gpio_errors:
+                    msg = f"{msg}\nUpstream errors:\n" + "\n\n".join(upstream_gpio_errors)
                 raise RuntimeError(msg)
 
-            if upstream_errors:
-                raise RuntimeError("\n\n".join(upstream_errors))
+            if upstream_gpio_errors:
+                raise RuntimeError("\n\n".join(upstream_gpio_errors))
 
     except KeyboardInterrupt:
         for proc in processes:
@@ -479,6 +479,7 @@ def create_pmtiles_from_geoparquet(
         raise TippecanoeNotFoundError()
 
     # If layer_by_column is set, ensure that the group by column is always included
+    include_cols_with_layer_by_column: str | None
     if layer_by_column and include_cols:
         cols = [c.strip() for c in include_cols.split(",")]
         if layer_by_column not in cols:

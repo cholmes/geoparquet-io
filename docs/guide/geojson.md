@@ -91,6 +91,13 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
         output_path="tiles.pmtiles",
         src_crs="EPSG:3857"
     )
+
+    # Add layer metadata to the output PMTiles based on the values of column 'owner'
+    ops.create_pmtiles(
+        input_path="data.parquet",
+        output_path="tiles.pmtiles",
+        layer_by_column="owner"
+    )
     ```
 
 The command handles the entire pipeline internally (reprojection → filtering → conversion → tippecanoe) with optimal settings.
