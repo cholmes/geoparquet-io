@@ -6152,6 +6152,12 @@ def pmtiles(ctx):
 )
 @click.option("--src-crs", help="Source CRS for reprojection to WGS84")
 @click.option("--attribution", help="Custom attribution HTML for tiles")
+@click.option(
+    "--layer-by-column",
+    type=str,
+    default=None,
+    help="In the generated PMTiles, split tiles into layers based on the value of this column",
+)
 @verbose_option
 @aws_profile_option
 def pmtiles_create(
@@ -6168,6 +6174,7 @@ def pmtiles_create(
     attribution,
     verbose,
     aws_profile,
+    layer_by_column,
 ):
     """Create PMTiles from a GeoParquet file.
 
@@ -6183,6 +6190,8 @@ def pmtiles_create(
         gpio pmtiles create data.parquet tiles.pmtiles --bbox "-122.5,37.5,-122.0,38.0"
 
         gpio pmtiles create data.parquet tiles.pmtiles --where "population > 10000"
+
+        gpio pmtiles create data.parquet tiles.pmtiles --layer-by-column owner
     """
     from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
 
@@ -6201,6 +6210,7 @@ def pmtiles_create(
             profile=aws_profile,
             src_crs=src_crs,
             attribution=attribution,
+            layer_by_column=layer_by_column,
         )
         click.echo(click.style(f"✓ Created {output_file}", fg="green"))
     except Exception as e:

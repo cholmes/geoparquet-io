@@ -941,6 +941,7 @@ def create_pmtiles(
     profile: str | None = None,
     src_crs: str | None = None,
     attribution: str | None = None,
+    layer_by_column: str | None = None,
 ) -> None:
     """
     Create PMTiles from a GeoParquet file using tippecanoe.
@@ -962,6 +963,7 @@ def create_pmtiles(
         profile: AWS profile name for S3 files
         src_crs: Source CRS for reprojection to WGS84
         attribution: Attribution HTML for the tiles
+        layer_by_column: Split tiles into layers grouped by the values of this column
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -996,4 +998,5 @@ def create_pmtiles(
         profile=profile,
         src_crs=src_crs,
         attribution=attribution,
+        layer_by_column=layer_by_column,
     )
