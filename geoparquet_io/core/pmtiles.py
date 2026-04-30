@@ -270,7 +270,7 @@ def _run_pipeline(
             cmd_str = " | ".join(" ".join(cmd) for cmd in gpio_commands)
             debug(f"Running: {cmd_str} | {' '.join(tippecanoe_cmd)}")
         if layer_by_column:
-            debug(f"Add layer metadata into PMTiles from column '{layer_by_column}'")
+            debug(f"Adding layer metadata into PMTiles from column '{layer_by_column}'")
 
     processes: list[subprocess.Popen] = []
 
