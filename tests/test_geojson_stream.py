@@ -341,6 +341,7 @@ class TestPipelineIntegration:
             if output_path.exists():
                 output_path.unlink()
 
+    @pytest.mark.integration
     @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
     @pytest.mark.skipif(
         sys.platform == "win32" or shutil.which("head") is None,
