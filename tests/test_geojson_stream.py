@@ -339,6 +339,45 @@ class TestPipelineIntegration:
             if output_path.exists():
                 output_path.unlink()
 
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_streaming_handles_broken_pipe(self):
+        """Stream survives downstream closing pipe early (e.g. tippecanoe done).
+
+        Regression for issue #421: piping `gpio convert geojson` to a consumer
+        that closes early caused a silent BrokenPipeError exit 1, surfaced to
+        users as `gpio failed with exit code 1` with no logs.
+        """
+        import subprocess
+        import sys
+
+        producer = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from geoparquet_io.cli.main import cli; cli()",
+                "convert",
+                "geojson",
+                str(PLACES_PARQUET),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        consumer = subprocess.Popen(
+            ["head", "-n", "1"],
+            stdin=producer.stdout,
+            stdout=subprocess.DEVNULL,
+        )
+        producer.stdout.close()
+        consumer.wait(timeout=30)
+        stderr = producer.stderr.read()
+        producer.stderr.close()
+        producer.wait(timeout=30)
+
+        assert producer.returncode == 0, (
+            f"gpio convert geojson exited {producer.returncode} after downstream "
+            f"closed pipe. stderr: {stderr.decode(errors='replace')!r}"
+        )
+
 
 @pytest.mark.skipif(not BUILDINGS_PARQUET.exists(), reason="Test data not available")
 class TestPolygonGeometries:

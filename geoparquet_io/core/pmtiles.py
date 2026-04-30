@@ -237,13 +237,18 @@ def _run_pipeline(
         # Drain stderr and wait for earlier processes
         # Note: stdout is already closed for piping, so we only drain stderr
         for proc in processes[:-1]:
+            stderr_bytes = b""
             if proc.stderr:
-                proc.stderr.read()
+                stderr_bytes = proc.stderr.read()
                 proc.stderr.close()
             proc.wait()
             if proc.returncode != 0:
                 cmd_name = proc.args[0] if isinstance(proc.args, list) else "command"
-                raise RuntimeError(f"{cmd_name} failed with exit code {proc.returncode}")
+                stderr_text = stderr_bytes.decode(errors="replace").strip()
+                msg = f"{cmd_name} failed with exit code {proc.returncode}"
+                if stderr_text:
+                    msg = f"{msg}\nstderr:\n{stderr_text}"
+                raise RuntimeError(msg)
 
     except KeyboardInterrupt:
         for proc in processes:

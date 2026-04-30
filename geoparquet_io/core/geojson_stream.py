@@ -234,30 +234,39 @@ def _stream_to_stdout(
         Number of features written
     """
     import json
+    import os
 
     result = con.execute(query)
     count = 0
     output = sys.stdout
 
-    while True:
-        row = result.fetchone()
-        if row is None:
-            break
+    try:
+        while True:
+            row = result.fetchone()
+            if row is None:
+                break
 
-        if rs:
-            output.write(RS)
+            if rs:
+                output.write(RS)
 
-        if pretty:
-            # Parse and re-serialize with indentation
-            feature = json.loads(row[0])
-            output.write(json.dumps(feature, indent=2))
-        else:
-            output.write(row[0])
+            if pretty:
+                # Parse and re-serialize with indentation
+                feature = json.loads(row[0])
+                output.write(json.dumps(feature, indent=2))
+            else:
+                output.write(row[0])
 
-        output.write("\n")
-        count += 1
+            output.write("\n")
+            count += 1
 
-    output.flush()
+        output.flush()
+    except BrokenPipeError:
+        # Downstream consumer closed the pipe early (e.g. `| head`, tippecanoe
+        # finished reading). Redirect stdout to devnull so interpreter-shutdown
+        # flush does not re-raise. Standard Unix pipe-tool behavior.
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, sys.stdout.fileno())
+
     return count
 
 
