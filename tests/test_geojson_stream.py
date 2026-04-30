@@ -342,7 +342,10 @@ class TestPipelineIntegration:
                 output_path.unlink()
 
     @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
-    @pytest.mark.skipif(shutil.which("head") is None, reason="POSIX `head` binary not available")
+    @pytest.mark.skipif(
+        sys.platform == "win32" or shutil.which("head") is None,
+        reason="needs POSIX platform with `head` binary (Git-for-Windows head triggers cp1252 encoding bug, unrelated to #421)",
+    )
     def test_streaming_handles_broken_pipe(self):
         """Stream survives downstream closing pipe early (e.g. tippecanoe done).
 
