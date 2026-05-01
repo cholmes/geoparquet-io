@@ -1147,6 +1147,168 @@ class TestDuckDBNativeWFS:
         assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
 
 
+class TestAutoPageSingleWorker:
+    """Test that single-worker mode auto-paginates for large datasets."""
+
+    def test_single_worker_paginates_when_count_exceeds_page_size(self):
+        """With max_workers=1 and total > page_size, should paginate sequentially."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        page1 = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+        page2 = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x03"], type=pa.binary()),
+                "name": pa.array(["b"]),
+            }
+        )
+
+        call_count = 0
+
+        def mock_fetch(url):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return page1
+            return page2
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", side_effect=mock_fetch),
+        ):
+            result = fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                page_size=10000,
+            )
+
+        assert call_count == 2
+        assert result.num_rows == 2
+
+    def test_single_worker_no_pagination_when_count_within_page_size(self):
+        """With max_workers=1 and total <= page_size, should use single request."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=5000),
+            patch(
+                "geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=mock_table
+            ) as mock_fetch,
+        ):
+            result = fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                page_size=10000,
+            )
+
+        mock_fetch.assert_called_once()
+        assert result.num_rows == 1
+
+    def test_single_worker_no_pagination_when_count_unknown(self):
+        """With max_workers=1 and unknown count, should use single request."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=None),
+            patch(
+                "geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=mock_table
+            ) as mock_fetch,
+        ):
+            result = fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                page_size=10000,
+            )
+
+        mock_fetch.assert_called_once()
+        assert result.num_rows == 1
+
+    def test_single_worker_pagination_respects_max_features(self):
+        """Auto-pagination should respect max_features limit."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        page = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=100000),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=page) as mock_fetch,
+        ):
+            fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                max_features=15000,
+                page_size=10000,
+            )
+
+        # 15000 features / 10000 page_size = 2 pages
+        assert mock_fetch.call_count == 2
+
+    def test_parallel_workers_use_http_fetcher(self):
+        """Parallel mode should use _fetch_wfs_page_via_http, not httpfs."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        page = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch(
+                "geoparquet_io.core.wfs._fetch_wfs_page_via_http", return_value=page
+            ) as mock_http,
+            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb") as mock_duckdb,
+        ):
+            fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=2,
+                page_size=10000,
+            )
+
+        assert mock_http.call_count == 2
+        mock_duckdb.assert_not_called()
+
+
 # =============================================================================
 # Axis Order Tests (Issue #397)
 # =============================================================================

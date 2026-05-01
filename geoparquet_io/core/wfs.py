@@ -1133,6 +1133,70 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
         raise WFSError(f"Failed to parse WFS response: {e}") from e
 
 
+def _fetch_wfs_page_via_http(url: str) -> pa.Table:
+    """
+    Fetch a WFS GeoJSON page using Python HTTP, parse with DuckDB from disk.
+
+    Thread-safe alternative to _fetch_wfs_page_duckdb for parallel fetching.
+    DuckDB's httpfs extension crashes when multiple connections make concurrent
+    HTTP requests (libc++abi: terminating). This downloads via Python's
+    thread-safe httpx client, writes to a temp file, and parses locally.
+    """
+    import tempfile
+
+    start_time = time.time()
+    debug(f"HTTP fetch: {url[:80]}...")
+
+    client = _get_shared_http_client(timeout=600)
+    response = client.get(url, headers={"Accept-Encoding": "gzip, deflate"})
+    response.raise_for_status()
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        tmp.write(response.content)
+        tmp_path = tmp.name
+
+    try:
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        safe_path = _escape_sql_string(tmp_path)
+
+        count_result = con.execute(f"""
+            SELECT len(features) AS cnt
+            FROM read_json_auto('{safe_path}', maximum_object_size=536870912)
+        """).fetchone()
+        feature_count = count_result[0] if count_result else 0
+
+        if feature_count == 0:
+            debug("Empty response, returning empty table")
+            return pa.table({"geometry": pa.array([], type=pa.binary())})
+
+        query = f"""
+            WITH features AS (
+                SELECT unnest(features) AS feature
+                FROM read_json_auto('{safe_path}', maximum_object_size=536870912)
+            ),
+            extracted AS (
+                SELECT
+                    ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
+                    feature.properties AS props
+                FROM features
+            )
+            SELECT geometry, unnest(props) FROM extracted
+        """
+        result = con.execute(query)
+        table = result.arrow().read_all()
+
+        elapsed = time.time() - start_time
+        debug(f"HTTP+DuckDB OK: {table.num_rows:,} rows in {elapsed:.1f}s")
+        return table
+    except Exception as e:
+        error_msg = str(e)
+        if "HTTP" in error_msg or "Could not" in error_msg:
+            raise WFSError(f"Failed to fetch WFS data: {e}") from e
+        raise WFSError(f"Failed to parse WFS response: {e}") from e
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 def _build_wfs_url(
     service_url: str,
     typename: str,
@@ -1218,8 +1282,12 @@ def fetch_all_features_duckdb(
     if max_features and total_count:
         total_count = min(total_count, max_features)
 
-    # Single request mode (default) - fastest for most cases
-    if max_workers == 1 or version == "1.0.0":
+    # Single request for small datasets or when count is unknown
+    needs_pagination = (
+        total_count is not None and version != "1.0.0" and (max_features or total_count) > page_size
+    )
+
+    if not needs_pagination:
         if total_count:
             progress(f"Streaming {total_count:,} features via DuckDB...")
         else:
@@ -1237,28 +1305,14 @@ def fetch_all_features_duckdb(
         table = _fetch_wfs_page_duckdb(url)
         return _infer_column_types(table)
 
-    # Parallel pagination mode for large datasets
-    if total_count is None:
-        warn("Cannot determine feature count; falling back to single request mode.")
-        url = _build_wfs_url(
-            service_url,
-            typename,
-            version,
-            max_features=max_features,
-            bbox=bbox,
-            crs=crs,
-            axis_order=axis_order,
-        )
-        table = _fetch_wfs_page_duckdb(url)
-        return _infer_column_types(table)
-
-    # Calculate page ranges
+    # Paginated mode — sequential (max_workers=1) or parallel
     effective_total = max_features if max_features else total_count
     num_pages = (effective_total + page_size - 1) // page_size
     actual_workers = min(max_workers, num_pages)
 
     progress(
-        f"Fetching {effective_total:,} features in {num_pages} pages using {actual_workers} workers..."
+        f"Fetching {effective_total:,} features in {num_pages} pages "
+        f"using {actual_workers} {'worker' if actual_workers == 1 else 'workers'}..."
     )
 
     # Build page URLs
@@ -1281,22 +1335,33 @@ def fetch_all_features_duckdb(
         )
         pages.append((i, start, url))
 
-    # Fetch pages in parallel
+    # Fetch pages (sequentially if 1 worker, parallel otherwise)
     results = {}
-    with ThreadPoolExecutor(max_workers=actual_workers) as executor:
-        future_to_page = {
-            executor.submit(_fetch_wfs_page_duckdb, url): (page_num, start)
-            for page_num, start, url in pages
-        }
-
-        for future in as_completed(future_to_page):
-            page_num, start = future_to_page[future]
+    if actual_workers == 1:
+        for page_num, start, url in pages:
             try:
-                table = future.result()
+                table = _fetch_wfs_page_duckdb(url)
                 results[page_num] = table
                 debug(f"Page {page_num + 1}/{num_pages}: {table.num_rows:,} features")
             except Exception as e:
                 raise WFSError(f"Failed to fetch page {page_num + 1} (offset {start}): {e}") from e
+    else:
+        with ThreadPoolExecutor(max_workers=actual_workers) as executor:
+            future_to_page = {
+                executor.submit(_fetch_wfs_page_via_http, url): (page_num, start)
+                for page_num, start, url in pages
+            }
+
+            for future in as_completed(future_to_page):
+                page_num, start = future_to_page[future]
+                try:
+                    table = future.result()
+                    results[page_num] = table
+                    debug(f"Page {page_num + 1}/{num_pages}: {table.num_rows:,} features")
+                except Exception as e:
+                    raise WFSError(
+                        f"Failed to fetch page {page_num + 1} (offset {start}): {e}"
+                    ) from e
 
     # Combine tables in order
     if not results:
