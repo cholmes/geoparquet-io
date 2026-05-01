@@ -45,6 +45,43 @@ print(f"Columns: {table.column_names}")
 print(f"Geometry column: {table.geometry_column}")
 ```
 
+### S3-Compatible Storage
+
+`read_partition()` supports custom S3 endpoints for reading from MinIO, Cloudflare R2, source.coop, and other S3-compatible services:
+
+```python
+import geoparquet_io as gpio
+
+# Read from source.coop
+table = gpio.read_partition(
+    's3://bucket/data/*.parquet',
+    s3_endpoint='data.source.coop'
+)
+
+# Read from MinIO (no SSL)
+table = gpio.read_partition(
+    's3://bucket/data/',
+    s3_endpoint='minio.local:9000',
+    s3_use_ssl=False,
+    aws_profile='minio-dev'
+)
+
+# Environment variables also work
+import os
+os.environ['AWS_ENDPOINT_URL'] = 'https://data.source.coop'
+table = gpio.read_partition('s3://bucket/data/')
+```
+
+For uploads to S3-compatible storage, use `Table.upload()`:
+
+```python
+table.upload(
+    's3://bucket/output.parquet',
+    s3_endpoint='minio.local:9000',
+    s3_use_ssl=False
+)
+```
+
 ### Reading from BigQuery
 
 Use `Table.from_bigquery()` to read directly from BigQuery tables. The `table_id` parameter accepts fully-qualified `"project.dataset.table"` format or `"dataset.table"` when a separate `project` argument is provided (or when using your default gcloud project). When using `bbox`, provide coordinates as `"minx,miny,maxx,maxy"` representing longitude,latitude in EPSG:4326 degrees (e.g., `"-122.52,37.70,-122.35,37.82"`).

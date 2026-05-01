@@ -10,7 +10,7 @@ gpio uses different libraries for reads and writes:
 
 - **Writes**: All commands write to remote destinations using obstore. When you specify a remote output path, gpio writes to a local temp file first, then uploads via obstore automatically.
 
-The `--aws-profile` flag is available on all commands for AWS authentication.
+The `--aws-profile` global flag is available on all commands for AWS authentication. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
 
 ### gpio publish upload
 
@@ -112,20 +112,21 @@ gpio add bbox gs://bucket/input.parquet gs://bucket/output.parquet
 
 ## S3-Compatible Storage
 
-For MinIO, Ceph, or other S3-compatible storage:
+All commands support S3-compatible endpoints (MinIO, Cloudflare R2, source.coop, Ceph) via global flags:
 
 === "CLI"
 
     ```bash
-    # MinIO without SSL
-    gpio publish upload data.parquet s3://bucket/file.parquet \
-      --s3-endpoint minio.example.com:9000 \
-      --s3-no-ssl
+    # Read from source.coop
+    gpio --s3-endpoint data.source.coop inspect summary s3://bucket/file.parquet
 
-    # Custom endpoint with specific region
-    gpio publish upload data/ s3://bucket/dataset/ \
-      --s3-endpoint storage.example.com \
-      --s3-region eu-west-1
+    # MinIO without SSL
+    gpio --s3-endpoint minio.local:9000 --s3-no-ssl \
+      extract geoparquet s3://bucket/input.parquet output.parquet
+
+    # Upload to custom endpoint
+    gpio --s3-endpoint storage.example.com --s3-region eu-west-1 \
+      publish upload data.parquet s3://bucket/file.parquet
     ```
 
 === "Python"
@@ -133,22 +134,42 @@ For MinIO, Ceph, or other S3-compatible storage:
     ```python
     import geoparquet_io as gpio
 
-    # MinIO without SSL
+    # Read from source.coop
+    table = gpio.read_partition(
+        's3://bucket/data/',
+        s3_endpoint='data.source.coop'
+    )
+
+    # Upload to MinIO
     gpio.read('data.parquet').upload(
         's3://bucket/file.parquet',
         s3_endpoint='minio.example.com:9000',
         s3_use_ssl=False
     )
-
-    # Custom endpoint with specific region
-    gpio.read('data.parquet').upload(
-        's3://bucket/file.parquet',
-        s3_endpoint='storage.example.com',
-        s3_region='eu-west-1'
-    )
     ```
 
-These options use obstore for direct uploads. Standard commands reading from S3 use DuckDB's httpfs which only supports standard AWS S3 endpoints.
+### Environment Variables
+
+Instead of flags, you can set standard AWS environment variables:
+
+| Variable | Equivalent Flag |
+|----------|----------------|
+| `AWS_ENDPOINT_URL` | `--s3-endpoint` |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | `--s3-region` |
+| `AWS_PROFILE` | `--aws-profile` |
+
+```bash
+export AWS_ENDPOINT_URL=https://data.source.coop
+gpio inspect summary s3://bucket/file.parquet
+```
+
+### SSL Detection
+
+SSL is auto-detected from the endpoint URL:
+
+- `http://` → SSL off
+- `https://` or no scheme → SSL on
+- `--s3-no-ssl` overrides in either case
 
 ## Piping to Upload
 
@@ -188,4 +209,4 @@ See [Command Piping](piping.md) for more streaming patterns.
 - Remote writes use temporary local storage (~2× output file size required)
 - HTTPS wildcards (`*.parquet`) not supported
 - For very large files (>10 GB), consider processing locally for better performance
-- S3-compatible endpoints (MinIO, Ceph) require `gpio publish upload`
+- S3-compatible endpoints work with all commands via `--s3-endpoint`

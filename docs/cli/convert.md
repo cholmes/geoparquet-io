@@ -177,3 +177,10 @@ gpio convert reproject input.parquet output.parquet --dst-crs EPSG:32610
 ```
 
 See `gpio convert reproject --help` for all options.
+
+## S3-Compatible Storage
+
+```bash
+gpio --s3-endpoint data.source.coop \
+  convert geoparquet s3://bucket/geojson/data.geojson output.parquet
+```

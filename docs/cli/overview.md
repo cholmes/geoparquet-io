@@ -28,9 +28,16 @@ Upload files to cloud storage and generate STAC metadata for datasets. Use `gpio
 ## Global Options
 
 ```bash
---version    # Show version number
---help       # Show help message
+--version        # Show version number
+--timestamps     # Show timestamps in output messages
+--s3-endpoint    # Custom S3-compatible endpoint (MinIO, R2, source.coop)
+--s3-region      # S3 region for custom endpoints
+--s3-no-ssl      # Disable SSL (use HTTP instead of HTTPS)
+--aws-profile    # AWS profile name for S3 operations
+--help           # Show help message
 ```
+
+S3 options apply to all commands. See [Remote Files](../guide/remote-files.md) for details.
 
 ## Getting Help
 

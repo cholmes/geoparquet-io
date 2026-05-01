@@ -66,6 +66,10 @@ gpio inspect meta data.parquet --geo
 
 # JSON output for scripting
 gpio inspect meta data.parquet --json
+
+# S3-compatible storage
+gpio --s3-endpoint data.source.coop inspect summary s3://bucket/file.parquet
+gpio --s3-endpoint minio.local:9000 --s3-no-ssl inspect meta s3://bucket/file.parquet
 ```
 
 ## Metadata Flags Comparison
