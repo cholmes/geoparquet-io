@@ -1308,6 +1308,76 @@ class TestAutoPageSingleWorker:
         assert mock_http.call_count == 2
         mock_duckdb.assert_not_called()
 
+    def test_startindex_limit_raises_clear_error(self):
+        """When server has startIndex limit, should raise with actionable guidance."""
+        from geoparquet_io.core.wfs import WFSError, fetch_all_features_duckdb
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=11000000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=50000),
+        ):
+            with pytest.raises(WFSError, match="startIndex.*50,000"):
+                fetch_all_features_duckdb(
+                    "https://mock.wfs/wfs",
+                    "layer",
+                    max_workers=1,
+                    page_size=10000,
+                )
+
+    def test_startindex_limit_allows_small_datasets(self):
+        """When total features fit within the startIndex limit, should proceed."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        page = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=30000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=50000),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=page),
+        ):
+            result = fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                page_size=10000,
+            )
+
+        assert result.num_rows > 0
+
+    def test_no_startindex_limit_proceeds_normally(self):
+        """When server has no startIndex limit, pagination should proceed."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        page = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=page),
+        ):
+            result = fetch_all_features_duckdb(
+                "https://mock.wfs/wfs",
+                "layer",
+                max_workers=1,
+                page_size=10000,
+            )
+
+        assert result.num_rows > 0
+
 
 # =============================================================================
 # Axis Order Tests (Issue #397)

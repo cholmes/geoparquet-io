@@ -1133,6 +1133,15 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
         raise WFSError(f"Failed to parse WFS response: {e}") from e
 
 
+class WFSStartIndexLimitError(WFSError):
+    """Raised when server rejects a startIndex beyond its limit."""
+
+    def __init__(self, limit: int, total_count: int, message: str):
+        self.limit = limit
+        self.total_count = total_count
+        super().__init__(message)
+
+
 def _fetch_wfs_page_via_http(url: str) -> pa.Table:
     """
     Fetch a WFS GeoJSON page using Python HTTP, parse with DuckDB from disk.
@@ -1144,12 +1153,23 @@ def _fetch_wfs_page_via_http(url: str) -> pa.Table:
     """
     import tempfile
 
+    import httpx
+
     start_time = time.time()
     debug(f"HTTP fetch: {url[:80]}...")
 
     client = _get_shared_http_client(timeout=600)
     response = client.get(url, headers={"Accept-Encoding": "gzip, deflate"})
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 400:
+            body = e.response.text
+            if "startindex" in body.lower():
+                raise WFSError(
+                    f"Server rejected paginated request (startIndex limit): {body.strip()}"
+                ) from e
+        raise
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         tmp.write(response.content)
@@ -1195,6 +1215,56 @@ def _fetch_wfs_page_via_http(url: str) -> pa.Table:
         raise WFSError(f"Failed to parse WFS response: {e}") from e
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def _probe_startindex_limit(
+    service_url: str,
+    typename: str,
+    version: str,
+    crs: str | None = None,
+    axis_order: str = "auto",
+) -> int | None:
+    """
+    Probe a WFS server to discover any startIndex limit.
+
+    Some servers (e.g., PDOK) reject requests with startIndex above a
+    threshold (e.g., 50,000). This sends a lightweight probe request
+    to detect that limit before attempting full pagination.
+
+    Returns the limit value if detected, or None if no limit found.
+    """
+    import httpx
+
+    probe_offset = 50001
+    url = _build_wfs_url(
+        service_url,
+        typename,
+        version,
+        max_features=1,
+        start_index=probe_offset,
+        crs=crs,
+        axis_order=axis_order,
+    )
+
+    try:
+        client = _get_shared_http_client(timeout=30)
+        response = client.get(url, headers={"Accept-Encoding": "gzip, deflate"})
+        if response.status_code == 400:
+            body = response.text.lower()
+            if "startindex" in body:
+                import re as _re
+
+                match = _re.search(r"startindex.*?(\d[\d.,]+)", body)
+                if match:
+                    limit_str = match.group(1).replace(",", "").replace(".", "")
+                    try:
+                        return int(limit_str)
+                    except ValueError:
+                        pass
+                return 50000
+        return None
+    except httpx.HTTPError:
+        return None
 
 
 def _build_wfs_url(
@@ -1307,6 +1377,23 @@ def fetch_all_features_duckdb(
 
     # Paginated mode — sequential (max_workers=1) or parallel
     effective_total = max_features if max_features else total_count
+
+    # Probe for server-side startIndex limit before building all pages
+    startindex_limit = _probe_startindex_limit(
+        service_url, typename, version, crs=crs, axis_order=axis_order
+    )
+    if startindex_limit is not None:
+        max_reachable = startindex_limit + page_size
+        if effective_total > max_reachable:
+            raise WFSError(
+                f"Server limits startIndex to {startindex_limit:,}, so only "
+                f"{max_reachable:,} of {effective_total:,} features are reachable via pagination.\n\n"
+                f"Options:\n"
+                f"  1. Use --limit {max_reachable} to fetch only what's reachable\n"
+                f"  2. Use --bbox to spatially filter to a smaller region\n"
+                f"  3. Download the dataset directly from the provider's bulk download service"
+            )
+
     num_pages = (effective_total + page_size - 1) // page_size
     actual_workers = min(max_workers, num_pages)
 
