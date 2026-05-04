@@ -763,6 +763,7 @@ def from_wfs(
     page_size: int = 10000,
     axis_order: str = "auto",
     strict_crs: bool = False,
+    auto_tile: bool = False,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -783,6 +784,8 @@ def from_wfs(
             CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
         strict_crs: If True, fail when server returns coordinates that don't match
             requested CRS. If False (default), warn and use detected CRS.
+        auto_tile: Automatically subdivide into spatial tiles for servers with
+            startIndex limits (default: False)
 
     Returns:
         PyArrow Table with geometry column
@@ -790,10 +793,8 @@ def from_wfs(
     Example:
         >>> from geoparquet_io.api import ops
         >>> table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
-        >>> # For large datasets:
-        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', max_workers=4)
-        >>> # Force axis order for problematic servers:
-        >>> table = ops.from_wfs(url, layer, axis_order='latlon')
+        >>> # For large datasets on servers with startIndex limits:
+        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
     """
     from geoparquet_io.core.wfs import wfs_to_table
 
@@ -807,6 +808,7 @@ def from_wfs(
         page_size=page_size,
         axis_order=axis_order,
         strict_crs=strict_crs,
+        auto_tile=auto_tile,
     )
 
 

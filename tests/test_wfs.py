@@ -1171,7 +1171,7 @@ class TestAutoPageSingleWorker:
 
         call_count = 0
 
-        def mock_fetch(url):
+        def mock_fetch(url, extract_fid=False):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -2302,3 +2302,367 @@ class TestSrsNameWithoutBbox:
         # More specific check for Belgium
         assert 2.5 <= x <= 6.5, f"X coord {x} not in Belgium longitude range"
         assert 49.0 <= y <= 52.0, f"Y coord {y} not in Belgium latitude range"
+
+
+# =============================================================================
+# Spatial Tiling Tests (startIndex limit workaround)
+# =============================================================================
+
+
+class TestGenerateTileGrid:
+    """Test grid generation for spatial tiling."""
+
+    def test_correct_count(self):
+        """Grid should produce at least the requested number of tiles."""
+        from geoparquet_io.core.wfs import _generate_tile_grid
+
+        bbox = (3.0, 50.0, 7.0, 54.0)
+        tiles = _generate_tile_grid(bbox, 4)
+        assert len(tiles) >= 4
+
+    def test_covers_full_bbox(self):
+        """Union of tile bboxes should cover the original bbox."""
+        from geoparquet_io.core.wfs import _generate_tile_grid
+
+        bbox = (3.0, 50.0, 7.0, 54.0)
+        tiles = _generate_tile_grid(bbox, 6)
+
+        all_xmin = min(t[0] for t in tiles)
+        all_ymin = min(t[1] for t in tiles)
+        all_xmax = max(t[2] for t in tiles)
+        all_ymax = max(t[3] for t in tiles)
+
+        assert all_xmin == pytest.approx(bbox[0])
+        assert all_ymin == pytest.approx(bbox[1])
+        assert all_xmax == pytest.approx(bbox[2])
+        assert all_ymax == pytest.approx(bbox[3])
+
+    def test_single_tile(self):
+        """Requesting 1 tile should return the original bbox."""
+        from geoparquet_io.core.wfs import _generate_tile_grid
+
+        bbox = (3.0, 50.0, 7.0, 54.0)
+        tiles = _generate_tile_grid(bbox, 1)
+        assert len(tiles) == 1
+        assert tiles[0] == pytest.approx(bbox)
+
+    def test_respects_aspect_ratio(self):
+        """Wide bbox should produce more columns than rows."""
+        from geoparquet_io.core.wfs import _generate_tile_grid
+
+        wide_bbox = (0.0, 0.0, 10.0, 2.0)
+        tiles = _generate_tile_grid(wide_bbox, 10)
+
+        xs = sorted({t[0] for t in tiles} | {t[2] for t in tiles})
+        ys = sorted({t[1] for t in tiles} | {t[3] for t in tiles})
+        cols = len(xs) - 1
+        rows = len(ys) - 1
+        assert cols > rows
+
+
+class TestRefineTilesAdaptive:
+    """Test adaptive quadtree refinement of tile grid."""
+
+    def test_splits_oversized_tile(self):
+        """Tile with count > limit should be subdivided into 4."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        tiles = [(0.0, 0.0, 1.0, 1.0)]
+
+        def mock_count(service_url, typename, version, bbox=None, crs=None, axis_order="auto"):
+            if bbox == (0.0, 0.0, 1.0, 1.0):
+                return 100000
+            return 20000
+
+        with patch("geoparquet_io.core.wfs._get_feature_count", side_effect=mock_count):
+            result = _refine_tiles_adaptive(
+                tiles,
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                crs="EPSG:4326",
+                axis_order="auto",
+                max_per_tile=50000,
+            )
+
+        assert len(result) == 4
+
+    def test_leaves_small_tiles_alone(self):
+        """Tile with count < limit should not be subdivided."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        tiles = [(0.0, 0.0, 1.0, 1.0)]
+
+        with patch("geoparquet_io.core.wfs._get_feature_count", return_value=10000):
+            result = _refine_tiles_adaptive(
+                tiles,
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                crs="EPSG:4326",
+                axis_order="auto",
+                max_per_tile=50000,
+            )
+
+        assert len(result) == 1
+        assert result[0] == tiles[0]
+
+    def test_max_depth_prevents_infinite_recursion(self):
+        """Recursion should stop at max_depth even if tiles are still too large."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        tiles = [(0.0, 0.0, 1.0, 1.0)]
+
+        with patch("geoparquet_io.core.wfs._get_feature_count", return_value=999999):
+            result = _refine_tiles_adaptive(
+                tiles,
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                crs="EPSG:4326",
+                axis_order="auto",
+                max_per_tile=50000,
+                max_depth=2,
+            )
+
+        # depth 0: 1 tile -> 4 (depth 1) -> 16 (depth 2, max)
+        assert len(result) == 16
+
+    def test_handles_none_count_gracefully(self):
+        """If _get_feature_count returns None, tile should be kept as-is."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        tiles = [(0.0, 0.0, 1.0, 1.0)]
+
+        with patch("geoparquet_io.core.wfs._get_feature_count", return_value=None):
+            result = _refine_tiles_adaptive(
+                tiles,
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                crs="EPSG:4326",
+                axis_order="auto",
+                max_per_tile=50000,
+            )
+
+        assert len(result) == 1
+
+
+class TestGetFeatureCountWithBbox:
+    """Test _get_feature_count extended with bbox parameter."""
+
+    def test_bbox_included_in_request(self):
+        """When bbox provided, it should appear in the hits request."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with patch("geoparquet_io.core.wfs._make_request") as mock_req:
+            mock_req.return_value = b'numberOfFeatures="42"'
+            result = _get_feature_count(
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                bbox=(4.0, 52.0, 5.0, 53.0),
+                crs="EPSG:4326",
+            )
+
+        assert result == 42
+        call_params = mock_req.call_args[1]["params"]
+        assert "bbox" in call_params
+
+    def test_no_bbox_backward_compatible(self):
+        """Without bbox, request should not include bbox param."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with patch("geoparquet_io.core.wfs._make_request") as mock_req:
+            mock_req.return_value = b'numberOfFeatures="100"'
+            result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+        assert result == 100
+        call_params = mock_req.call_args[1]["params"]
+        assert "bbox" not in call_params
+
+
+class TestDeduplicateTiles:
+    """Test deduplication of features across tile boundaries."""
+
+    def test_removes_duplicates_by_fid(self):
+        """Features with same _wfs_fid should be deduplicated."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _deduplicate_tiles
+
+        table = pa.table(
+            {
+                "_wfs_fid": pa.array(["a", "b", "a", "c"]),
+                "geometry": pa.array([b"\x01", b"\x02", b"\x01", b"\x03"], type=pa.binary()),
+                "name": pa.array(["x", "y", "x", "z"]),
+            }
+        )
+
+        result = _deduplicate_tiles(table)
+        assert result.num_rows == 3
+
+    def test_drops_fid_column(self):
+        """_wfs_fid column should be removed from output."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _deduplicate_tiles
+
+        table = pa.table(
+            {
+                "_wfs_fid": pa.array(["a", "b"]),
+                "geometry": pa.array([b"\x01", b"\x02"], type=pa.binary()),
+            }
+        )
+
+        result = _deduplicate_tiles(table)
+        assert "_wfs_fid" not in result.column_names
+
+    def test_fallback_geometry_dedup_when_no_fid(self):
+        """When _wfs_fid is absent, deduplicate by geometry bytes."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _deduplicate_tiles
+
+        table = pa.table(
+            {
+                "geometry": pa.array([b"\x01", b"\x02", b"\x01"], type=pa.binary()),
+                "name": pa.array(["x", "y", "x"]),
+            }
+        )
+
+        result = _deduplicate_tiles(table)
+        assert result.num_rows == 2
+
+
+class TestFetchWithSpatialTiles:
+    """Test the spatial tiling orchestrator."""
+
+    def test_combines_tile_results(self):
+        """Should fetch each tile and combine results."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_with_spatial_tiles
+
+        tile1 = pa.table(
+            {
+                "_wfs_fid": pa.array(["a"]),
+                "geometry": pa.array([b"\x01\x02"], type=pa.binary()),
+                "name": pa.array(["x"]),
+            }
+        )
+        tile2 = pa.table(
+            {
+                "_wfs_fid": pa.array(["b"]),
+                "geometry": pa.array([b"\x01\x03"], type=pa.binary()),
+                "name": pa.array(["y"]),
+            }
+        )
+
+        call_count = 0
+
+        def mock_fetch(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return tile1 if call_count == 1 else tile2
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._generate_tile_grid",
+                return_value=[
+                    (0.0, 0.0, 0.5, 0.5),
+                    (0.5, 0.0, 1.0, 0.5),
+                ],
+            ),
+            patch(
+                "geoparquet_io.core.wfs._refine_tiles_adaptive",
+                side_effect=lambda tiles, *a, **kw: tiles,
+            ),
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", side_effect=mock_fetch),
+        ):
+            result = _fetch_with_spatial_tiles(
+                service_url="http://mock/wfs",
+                typename="layer",
+                version="1.1.0",
+                total_count=100000,
+                startindex_limit=50000,
+                layer_bbox=(0.0, 0.0, 1.0, 0.5),
+                crs="EPSG:4326",
+            )
+
+        assert result.num_rows == 2
+        assert "_wfs_fid" not in result.column_names
+
+    def test_auto_tile_triggers_tiling(self):
+        """wfs_to_table with auto_tile=True should invoke tiling when limit detected."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=11000000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=50000),
+            patch(
+                "geoparquet_io.core.wfs._fetch_with_spatial_tiles", return_value=mock_table
+            ) as mock_tile,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_tile.assert_called_once()
+
+    def test_auto_tile_noop_when_no_limit(self):
+        """When server has no startIndex limit, should use normal fetch path."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch(
+                "geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=mock_table
+            ) as mock_fetch,
+            patch("geoparquet_io.core.wfs._fetch_with_spatial_tiles") as mock_tile,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_fetch.assert_called_once()
+        mock_tile.assert_not_called()

@@ -895,6 +895,9 @@ def _get_feature_count(
     service_url: str,
     typename: str,
     version: str = "1.1.0",
+    bbox: tuple[float, float, float, float] | None = None,
+    crs: str | None = None,
+    axis_order: str = "auto",
 ) -> int | None:
     """
     Try to get feature count using resultType=hits.
@@ -905,6 +908,9 @@ def _get_feature_count(
         service_url: WFS service URL
         typename: Layer typename
         version: WFS version
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
+        crs: CRS for bbox parameter
+        axis_order: Bbox axis order ("auto", "xy", "latlon")
 
     Returns:
         Feature count or None if not supported
@@ -920,6 +926,9 @@ def _get_feature_count(
         "typeNames" if version == "2.0.0" else "typeName": typename,
         "resultType": "hits",
     }
+
+    if bbox and crs:
+        params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
 
     try:
         content = _make_request(clean_url, params=params)
@@ -1051,7 +1060,7 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
         con.close()
 
 
-def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
+def _fetch_wfs_page_duckdb(url: str, extract_fid: bool = False) -> pa.Table:
     """
     Fetch a WFS GeoJSON page directly using DuckDB's httpfs.
 
@@ -1103,6 +1112,8 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
             return pa.table({"geometry": pa.array([], type=pa.binary())})
 
         # Full query to extract features
+        fid_col = "feature.id AS _wfs_fid," if extract_fid else ""
+        fid_select = "_wfs_fid," if extract_fid else ""
         query = f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
@@ -1110,11 +1121,13 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
             ),
             extracted AS (
                 SELECT
+                    {fid_col}
                     ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
                     feature.properties AS props
                 FROM features
             )
             SELECT
+                {fid_select}
                 geometry,
                 unnest(props)
             FROM extracted
@@ -1142,7 +1155,7 @@ class WFSStartIndexLimitError(WFSError):
         super().__init__(message)
 
 
-def _fetch_wfs_page_via_http(url: str) -> pa.Table:
+def _fetch_wfs_page_via_http(url: str, extract_fid: bool = False) -> pa.Table:
     """
     Fetch a WFS GeoJSON page using Python HTTP, parse with DuckDB from disk.
 
@@ -1189,6 +1202,8 @@ def _fetch_wfs_page_via_http(url: str) -> pa.Table:
             debug("Empty response, returning empty table")
             return pa.table({"geometry": pa.array([], type=pa.binary())})
 
+        fid_col = "feature.id AS _wfs_fid," if extract_fid else ""
+        fid_select = "_wfs_fid," if extract_fid else ""
         query = f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
@@ -1196,11 +1211,12 @@ def _fetch_wfs_page_via_http(url: str) -> pa.Table:
             ),
             extracted AS (
                 SELECT
+                    {fid_col}
                     ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
                     feature.properties AS props
                 FROM features
             )
-            SELECT geometry, unnest(props) FROM extracted
+            SELECT {fid_select} geometry, unnest(props) FROM extracted
         """
         result = con.execute(query)
         table = result.arrow().read_all()
@@ -1215,6 +1231,235 @@ def _fetch_wfs_page_via_http(url: str) -> pa.Table:
         raise WFSError(f"Failed to parse WFS response: {e}") from e
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def _generate_tile_grid(
+    bbox: tuple[float, float, float, float],
+    num_tiles: int,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Generate a grid of tile bboxes covering the given bbox.
+
+    Uses aspect-ratio-aware layout so tiles are roughly square in
+    geographic coordinates.
+    """
+    import math
+
+    if num_tiles <= 1:
+        return [bbox]
+
+    xmin, ymin, xmax, ymax = bbox
+    width = xmax - xmin
+    height = ymax - ymin
+
+    if width <= 0 or height <= 0:
+        return [bbox]
+
+    aspect = width / height
+    cols = max(1, round(math.sqrt(num_tiles * aspect)))
+    rows = max(1, math.ceil(num_tiles / cols))
+
+    dx = width / cols
+    dy = height / rows
+
+    tiles = []
+    for r in range(rows):
+        for c in range(cols):
+            tiles.append(
+                (
+                    xmin + c * dx,
+                    ymin + r * dy,
+                    xmin + (c + 1) * dx,
+                    ymin + (r + 1) * dy,
+                )
+            )
+
+    return tiles
+
+
+def _refine_tiles_adaptive(
+    tiles: list[tuple[float, float, float, float]],
+    service_url: str,
+    typename: str,
+    version: str,
+    crs: str,
+    axis_order: str,
+    max_per_tile: int,
+    max_depth: int = 8,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Recursively subdivide tiles that exceed the feature count limit.
+
+    For each tile, probes the server with resultType=hits + bbox to check
+    the feature count. Tiles over max_per_tile are split into 4 quadrants.
+    """
+
+    def _subdivide(
+        bbox: tuple[float, float, float, float], depth: int
+    ) -> list[tuple[float, float, float, float]]:
+        if depth >= max_depth:
+            return [bbox]
+
+        count = _get_feature_count(
+            service_url,
+            typename,
+            version,
+            bbox=bbox,
+            crs=crs,
+            axis_order=axis_order,
+        )
+
+        if count is None or count <= max_per_tile:
+            return [bbox]
+
+        xmin, ymin, xmax, ymax = bbox
+        mx = (xmin + xmax) / 2
+        my = (ymin + ymax) / 2
+
+        quadrants = [
+            (xmin, ymin, mx, my),
+            (mx, ymin, xmax, my),
+            (xmin, my, mx, ymax),
+            (mx, my, xmax, ymax),
+        ]
+
+        result = []
+        for q in quadrants:
+            result.extend(_subdivide(q, depth + 1))
+        return result
+
+    refined = []
+    for tile in tiles:
+        refined.extend(_subdivide(tile, 0))
+    return refined
+
+
+def _deduplicate_tiles(table: pa.Table) -> pa.Table:
+    """
+    Deduplicate features that appear in multiple tiles.
+
+    Uses _wfs_fid column if present (from GeoJSON feature.id).
+    Falls back to geometry bytes deduplication.
+    Always drops the _wfs_fid column from output.
+    """
+    if table.num_rows == 0:
+        if "_wfs_fid" in table.column_names:
+            return table.drop(["_wfs_fid"])
+        return table
+
+    con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
+
+    try:
+        con.register("tile_data", table)
+
+        if "_wfs_fid" in table.column_names:
+            all_cols = [c for c in table.column_names if c != "_wfs_fid"]
+            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            query = f"""
+                SELECT {col_list}
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY "_wfs_fid") AS _rn
+                    FROM tile_data
+                    WHERE "_wfs_fid" IS NOT NULL
+                ) WHERE _rn = 1
+                UNION ALL
+                SELECT {col_list}
+                FROM tile_data
+                WHERE "_wfs_fid" IS NULL
+            """
+        else:
+            all_cols = table.column_names
+            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            query = f"""
+                SELECT {col_list}
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY geometry) AS _rn
+                    FROM tile_data
+                ) WHERE _rn = 1
+            """
+
+        result = con.execute(query)
+        return result.arrow().read_all()
+    finally:
+        con.close()
+
+
+def _fetch_with_spatial_tiles(
+    service_url: str,
+    typename: str,
+    version: str,
+    total_count: int,
+    startindex_limit: int,
+    layer_bbox: tuple[float, float, float, float],
+    crs: str,
+    max_workers: int = 1,
+    page_size: int = 10000,
+    axis_order: str = "auto",
+    max_features: int | None = None,
+) -> pa.Table:
+    """
+    Fetch a large WFS dataset by subdividing into spatial tiles.
+
+    Used when the server caps startIndex, making full pagination impossible.
+    Subdivides the layer bbox into tiles, fetches each tile separately,
+    deduplicates features on tile boundaries, and combines results.
+    """
+    import math
+
+    max_per_tile = startindex_limit
+    num_tiles = max(2, math.ceil(total_count / (max_per_tile * 0.8)))
+
+    progress(f"Auto-tiling: splitting {total_count:,} features into ~{num_tiles} spatial tiles...")
+
+    tiles = _generate_tile_grid(layer_bbox, num_tiles)
+
+    progress(f"Refining {len(tiles)} tiles (checking feature counts per tile)...")
+    tiles = _refine_tiles_adaptive(
+        tiles,
+        service_url,
+        typename,
+        version,
+        crs=crs,
+        axis_order=axis_order,
+        max_per_tile=max_per_tile,
+    )
+
+    progress(f"Fetching {len(tiles)} tiles...")
+
+    all_tables = []
+    for i, tile_bbox in enumerate(tiles):
+        debug(f"Tile {i + 1}/{len(tiles)}: bbox={tile_bbox}")
+        tile_table = fetch_all_features_duckdb(
+            service_url,
+            typename,
+            version,
+            max_features=max_features,
+            bbox=tile_bbox,
+            crs=crs,
+            max_workers=max_workers,
+            page_size=page_size,
+            axis_order=axis_order,
+            extract_fid=True,
+        )
+        if tile_table.num_rows > 0:
+            all_tables.append(tile_table)
+        progress(f"Tile {i + 1}/{len(tiles)}: {tile_table.num_rows:,} features")
+
+    if not all_tables:
+        raise WFSError("No features returned from any spatial tile.")
+
+    combined = pa.concat_tables(all_tables, promote_options="default")
+    before_dedup = combined.num_rows
+
+    combined = _deduplicate_tiles(combined)
+    after_dedup = combined.num_rows
+
+    if before_dedup != after_dedup:
+        debug(
+            f"Deduplicated: {before_dedup:,} → {after_dedup:,} ({before_dedup - after_dedup:,} duplicates)"
+        )
+
+    return _infer_column_types(combined)
 
 
 def _probe_startindex_limit(
@@ -1322,6 +1567,7 @@ def fetch_all_features_duckdb(
     max_workers: int = 1,
     page_size: int = 10000,
     axis_order: str = "auto",
+    extract_fid: bool = False,
 ) -> pa.Table:
     """
     Fetch WFS features using DuckDB's native HTTP streaming.
@@ -1372,7 +1618,7 @@ def fetch_all_features_duckdb(
             crs=crs,
             axis_order=axis_order,
         )
-        table = _fetch_wfs_page_duckdb(url)
+        table = _fetch_wfs_page_duckdb(url, extract_fid=extract_fid)
         return _infer_column_types(table)
 
     # Paginated mode — sequential (max_workers=1) or parallel
@@ -1389,9 +1635,10 @@ def fetch_all_features_duckdb(
                 f"Server limits startIndex to {startindex_limit:,}, so only "
                 f"{max_reachable:,} of {effective_total:,} features are reachable via pagination.\n\n"
                 f"Options:\n"
-                f"  1. Use --limit {max_reachable} to fetch only what's reachable\n"
-                f"  2. Use --bbox to spatially filter to a smaller region\n"
-                f"  3. Download the dataset directly from the provider's bulk download service"
+                f"  1. Use --auto-tile to automatically subdivide into spatial tiles\n"
+                f"  2. Use --limit {max_reachable} to fetch only what's reachable\n"
+                f"  3. Use --bbox to spatially filter to a smaller region\n"
+                f"  4. Download the dataset directly from the provider's bulk download service"
             )
 
     num_pages = (effective_total + page_size - 1) // page_size
@@ -1427,7 +1674,7 @@ def fetch_all_features_duckdb(
     if actual_workers == 1:
         for page_num, start, url in pages:
             try:
-                table = _fetch_wfs_page_duckdb(url)
+                table = _fetch_wfs_page_duckdb(url, extract_fid=extract_fid)
                 results[page_num] = table
                 debug(f"Page {page_num + 1}/{num_pages}: {table.num_rows:,} features")
             except Exception as e:
@@ -1435,7 +1682,7 @@ def fetch_all_features_duckdb(
     else:
         with ThreadPoolExecutor(max_workers=actual_workers) as executor:
             future_to_page = {
-                executor.submit(_fetch_wfs_page_via_http, url): (page_num, start)
+                executor.submit(_fetch_wfs_page_via_http, url, extract_fid): (page_num, start)
                 for page_num, start, url in pages
             }
 
@@ -1475,6 +1722,7 @@ def wfs_to_table(
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,
+    auto_tile: bool = False,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -1533,20 +1781,49 @@ def wfs_to_table(
     if bbox:
         use_server_bbox = _determine_bbox_strategy(bbox_mode, layer_info)
 
-    # Use DuckDB-native streaming for fast extraction
-    # Single request mode is 10x+ faster than Python HTTP
-    # Parallel mode is useful for very large datasets (1M+ features)
-    table = fetch_all_features_duckdb(
-        service_url=service_url,
-        typename=layer_info.typename,
-        version=version,
-        max_features=limit,
-        bbox=bbox if use_server_bbox else None,
-        crs=crs,
-        max_workers=max_workers,
-        page_size=page_size,
-        axis_order=axis_order,
-    )
+    # Check if auto-tiling is needed (server has startIndex limit + dataset exceeds it)
+    use_tiling = False
+    if auto_tile and version != "1.0.0":
+        total_count = _get_feature_count(service_url, layer_info.typename, version)
+        startindex_limit = _probe_startindex_limit(
+            service_url, layer_info.typename, version, crs=crs, axis_order=axis_order
+        )
+        if startindex_limit and total_count:
+            effective = min(limit, total_count) if limit else total_count
+            if effective > startindex_limit + page_size:
+                if not layer_info.bbox:
+                    raise WFSError(
+                        "Auto-tiling requires a layer bounding box from capabilities, "
+                        "but this layer has none. Use --bbox to specify one manually."
+                    )
+                use_tiling = True
+
+    if use_tiling:
+        table = _fetch_with_spatial_tiles(
+            service_url=service_url,
+            typename=layer_info.typename,
+            version=version,
+            total_count=effective,
+            startindex_limit=startindex_limit,
+            layer_bbox=layer_info.bbox,
+            crs=crs,
+            max_workers=max_workers,
+            page_size=page_size,
+            axis_order=axis_order,
+            max_features=limit,
+        )
+    else:
+        table = fetch_all_features_duckdb(
+            service_url=service_url,
+            typename=layer_info.typename,
+            version=version,
+            max_features=limit,
+            bbox=bbox if use_server_bbox else None,
+            crs=crs,
+            max_workers=max_workers,
+            page_size=page_size,
+            axis_order=axis_order,
+        )
 
     if table.num_rows == 0:
         if bbox:
@@ -1633,6 +1910,7 @@ def convert_wfs_to_geoparquet(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
+    auto_tile: bool = False,
 ) -> None:
     """
     Extract WFS layer and save as optimized GeoParquet.
@@ -1660,6 +1938,7 @@ def convert_wfs_to_geoparquet(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing file
         verbose: Enable debug output
+        auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
     """
     configure_verbose(verbose)
 
@@ -1682,6 +1961,7 @@ def convert_wfs_to_geoparquet(
         axis_order=axis_order,
         strict_crs=strict_crs,
         verbose=verbose,
+        auto_tile=auto_tile,
     )
 
     # Apply Hilbert ordering (unless skipped)
