@@ -1309,6 +1309,9 @@ def _refine_tiles_adaptive(
             axis_order=axis_order,
         )
 
+        if count is not None and count == 0:
+            return []
+
         if count is None or count <= max_per_tile:
             return [bbox]
 
@@ -1594,7 +1597,9 @@ def fetch_all_features_duckdb(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # Get expected count for progress and pagination
-    total_count = _get_feature_count(service_url, typename, version)
+    total_count = _get_feature_count(
+        service_url, typename, version, bbox=bbox, crs=crs, axis_order=axis_order
+    )
     if max_features and total_count:
         total_count = min(total_count, max_features)
 
@@ -1618,28 +1623,39 @@ def fetch_all_features_duckdb(
             crs=crs,
             axis_order=axis_order,
         )
-        table = _fetch_wfs_page_duckdb(url, extract_fid=extract_fid)
-        return _infer_column_types(table)
+        fetcher = _fetch_wfs_page_via_http if extract_fid else _fetch_wfs_page_duckdb
+        table = fetcher(url, extract_fid=extract_fid)
+        expected = max_features or total_count
+        if expected and table.num_rows < expected and version != "1.0.0":
+            # Server returned fewer than expected — likely has a maxFeatures cap.
+            # Fall through to adaptive pagination to fetch the rest.
+            needs_pagination = True
+            page_size = table.num_rows or page_size
+        else:
+            return table if extract_fid else _infer_column_types(table)
 
     # Paginated mode — sequential (max_workers=1) or parallel
     effective_total = max_features if max_features else total_count
 
-    # Probe for server-side startIndex limit before building all pages
-    startindex_limit = _probe_startindex_limit(
-        service_url, typename, version, crs=crs, axis_order=axis_order
-    )
-    if startindex_limit is not None:
-        max_reachable = startindex_limit + page_size
-        if effective_total > max_reachable:
-            raise WFSError(
-                f"Server limits startIndex to {startindex_limit:,}, so only "
-                f"{max_reachable:,} of {effective_total:,} features are reachable via pagination.\n\n"
-                f"Options:\n"
-                f"  1. Use --auto-tile to automatically subdivide into spatial tiles\n"
-                f"  2. Use --limit {max_reachable} to fetch only what's reachable\n"
-                f"  3. Use --bbox to spatially filter to a smaller region\n"
-                f"  4. Download the dataset directly from the provider's bulk download service"
-            )
+    # Probe for server-side startIndex limit before building all pages.
+    # Skip the probe when fetching a spatial tile (extract_fid=True) since
+    # the tiling orchestrator already ensured each tile fits within the limit.
+    if not extract_fid:
+        startindex_limit = _probe_startindex_limit(
+            service_url, typename, version, crs=crs, axis_order=axis_order
+        )
+        if startindex_limit is not None:
+            max_reachable = startindex_limit + page_size
+            if effective_total > max_reachable:
+                raise WFSError(
+                    f"Server limits startIndex to {startindex_limit:,}, so only "
+                    f"{max_reachable:,} of {effective_total:,} features are reachable via pagination.\n\n"
+                    f"Options:\n"
+                    f"  1. Use --auto-tile to automatically subdivide into spatial tiles\n"
+                    f"  2. Use --limit {max_reachable} to fetch only what's reachable\n"
+                    f"  3. Use --bbox to spatially filter to a smaller region\n"
+                    f"  4. Download the dataset directly from the provider's bulk download service"
+                )
 
     num_pages = (effective_total + page_size - 1) // page_size
     actual_workers = min(max_workers, num_pages)
@@ -1649,37 +1665,65 @@ def fetch_all_features_duckdb(
         f"using {actual_workers} {'worker' if actual_workers == 1 else 'workers'}..."
     )
 
-    # Build page URLs
-    pages = []
-    for i in range(num_pages):
-        start = i * page_size
-        remaining = effective_total - start
-        count = min(page_size, remaining)
-        if count <= 0:
-            break
-        url = _build_wfs_url(
-            service_url,
-            typename,
-            version,
-            max_features=count,
-            start_index=start,
-            bbox=bbox,
-            crs=crs,
-            axis_order=axis_order,
-        )
-        pages.append((i, start, url))
+    fetcher = _fetch_wfs_page_via_http if extract_fid else _fetch_wfs_page_duckdb
 
-    # Fetch pages (sequentially if 1 worker, parallel otherwise)
+    # Sequential adaptive pagination — adjusts page size if server caps maxFeatures
     results = {}
     if actual_workers == 1:
-        for page_num, start, url in pages:
+        offset = 0
+        page_num = 0
+        server_page_size = page_size
+        while offset < effective_total:
+            remaining = effective_total - offset
+            count = min(server_page_size, remaining)
+            url = _build_wfs_url(
+                service_url,
+                typename,
+                version,
+                max_features=count,
+                start_index=offset,
+                bbox=bbox,
+                crs=crs,
+                axis_order=axis_order,
+            )
             try:
-                table = _fetch_wfs_page_duckdb(url, extract_fid=extract_fid)
-                results[page_num] = table
-                debug(f"Page {page_num + 1}/{num_pages}: {table.num_rows:,} features")
+                table = fetcher(url, extract_fid=extract_fid)
             except Exception as e:
-                raise WFSError(f"Failed to fetch page {page_num + 1} (offset {start}): {e}") from e
+                raise WFSError(f"Failed to fetch page {page_num + 1} (offset {offset}): {e}") from e
+            if table.num_rows == 0:
+                break
+            results[page_num] = table
+            # Detect server-side maxFeatures cap: if the server returned fewer
+            # than requested but we haven't reached the end, adapt page_size
+            if table.num_rows < count and server_page_size > table.num_rows:
+                server_page_size = table.num_rows
+                debug(f"Server caps response to {server_page_size} features per request")
+            offset += table.num_rows
+            page_num += 1
+            debug(
+                f"Page {page_num}: {table.num_rows:,} features (offset {offset:,}/{effective_total:,})"
+            )
     else:
+        # Parallel mode — pre-build pages (cannot adapt dynamically)
+        pages = []
+        for i in range(num_pages):
+            start = i * page_size
+            remaining = effective_total - start
+            count = min(page_size, remaining)
+            if count <= 0:
+                break
+            url = _build_wfs_url(
+                service_url,
+                typename,
+                version,
+                max_features=count,
+                start_index=start,
+                bbox=bbox,
+                crs=crs,
+                axis_order=axis_order,
+            )
+            pages.append((i, start, url))
+
         with ThreadPoolExecutor(max_workers=actual_workers) as executor:
             future_to_page = {
                 executor.submit(_fetch_wfs_page_via_http, url, extract_fid): (page_num, start)
@@ -1702,10 +1746,12 @@ def fetch_all_features_duckdb(
         raise WFSError("No features returned from WFS service.")
 
     tables = [results[i] for i in sorted(results.keys())]
-    combined = pa.concat_tables(tables)
+    combined = pa.concat_tables(tables, promote_options="default")
     debug(f"Combined {len(tables)} pages: {combined.num_rows:,} total features")
 
-    # Infer types AFTER concat to ensure consistent schema (issue #400)
+    # Skip type inference for tile fetches — the tiling orchestrator handles it
+    if extract_fid:
+        return combined
     return _infer_column_types(combined)
 
 
