@@ -456,6 +456,46 @@ class TestPMTilesIntegration:
         assert output_file.exists()
         assert output_file.stat().st_size > 0
 
+    @skip_windows
+    @pytest.mark.skipif(not has_gpio(), reason="gpio not installed")
+    @pytest.mark.skipif(not has_tippecanoe(), reason="tippecanoe not installed")
+    @pytest.mark.slow
+    def test_layer_by_column(self, tmp_path):
+        """Test PMTiles creation with multiple layers based on a column name"""
+        test_data_dir = Path(__file__).parent / "data"
+        input_file = test_data_dir / "places_test.parquet"
+
+        if not input_file.exists():
+            pytest.skip(f"Test file not found: {input_file}")
+
+        output_file = tmp_path / "layer_by_column.pmtiles"
+
+        from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
+
+        create_pmtiles_from_geoparquet(
+            input_path=str(input_file),
+            output_path=str(output_file),
+            min_zoom=0,
+            max_zoom=10,
+            verbose=True,
+            layer_by_column="address",
+        )
+
+        assert output_file.exists()
+        assert output_file.stat().st_size > 0
+
+        with pytest.raises(ValueError):
+            # ensure that both a layer by column
+            # and a single layer name cannot be specified
+            # since these are mutually exclusive
+            create_pmtiles_from_geoparquet(
+                input_path=str(input_file),
+                output_path=str(output_file),
+                verbose=True,
+                layer_by_column="address",
+                layer="DUMMY",
+            )
+
 
 class TestRunPipelineErrorSurfacing:
     """Pipeline errors must surface upstream stderr.

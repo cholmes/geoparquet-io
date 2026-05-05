@@ -60,6 +60,9 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
     # With CRS override (for incorrect metadata)
     gpio pmtiles create data.parquet tiles.pmtiles --src-crs EPSG:3857
+
+    # Add layer metadata to the output PMTiles based on the values of column 'owner'
+    gpio pmtiles create --layer-by-column owner data.parquet tiles.pmtiles
     ```
 
 === "Python"
@@ -87,6 +90,13 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
         input_path="data.parquet",
         output_path="tiles.pmtiles",
         src_crs="EPSG:3857"
+    )
+
+    # Add layer metadata to the output PMTiles based on the values of column 'owner'
+    ops.create_pmtiles(
+        input_path="data.parquet",
+        output_path="tiles.pmtiles",
+        layer_by_column="owner"
     )
     ```
 
