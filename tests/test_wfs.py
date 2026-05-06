@@ -1118,11 +1118,11 @@ class TestDuckDBNativeWFS:
         "&maxFeatures=10"
     )
 
-    def test_fetch_wfs_page_duckdb_returns_arrow_table(self):
+    def test_fetch_wfs_page_returns_arrow_table(self):
         """DuckDB-native fetch should return an Arrow table with geometry."""
-        from geoparquet_io.core.wfs import _fetch_wfs_page_duckdb
+        from geoparquet_io.core.wfs import _fetch_wfs_page
 
-        table = _fetch_wfs_page_duckdb(self.WFS_URL)
+        table = _fetch_wfs_page(self.WFS_URL)
 
         # Should return Arrow table
         import pyarrow as pa
@@ -1134,11 +1134,11 @@ class TestDuckDBNativeWFS:
         assert table.num_rows > 0
         assert table.num_rows <= 10
 
-    def test_fetch_wfs_page_duckdb_geometry_is_wkb(self):
+    def test_fetch_wfs_page_geometry_is_wkb(self):
         """Geometry should be WKB binary format."""
-        from geoparquet_io.core.wfs import _fetch_wfs_page_duckdb
+        from geoparquet_io.core.wfs import _fetch_wfs_page
 
-        table = _fetch_wfs_page_duckdb(self.WFS_URL)
+        table = _fetch_wfs_page(self.WFS_URL)
 
         # Geometry should be binary (WKB)
         import pyarrow as pa
@@ -1182,7 +1182,7 @@ class TestAutoPageSingleWorker:
 
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
-            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", side_effect=mock_fetch),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", side_effect=mock_fetch),
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1209,9 +1209,7 @@ class TestAutoPageSingleWorker:
 
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=5000),
-            patch(
-                "geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=mock_table
-            ) as mock_fetch,
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=mock_table) as mock_fetch,
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1238,9 +1236,7 @@ class TestAutoPageSingleWorker:
 
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=None),
-            patch(
-                "geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=mock_table
-            ) as mock_fetch,
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=mock_table) as mock_fetch,
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1273,7 +1269,7 @@ class TestAutoPageSingleWorker:
 
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=100000),
-            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", side_effect=mock_fetch),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", side_effect=mock_fetch),
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1286,8 +1282,8 @@ class TestAutoPageSingleWorker:
         assert call_count == 2
         assert result.num_rows == 15000
 
-    def test_parallel_workers_use_http_fetcher(self):
-        """Parallel mode should use _fetch_wfs_page_via_http, not httpfs."""
+    def test_parallel_workers_use_httpx_fetcher(self):
+        """Parallel mode should use _fetch_wfs_page (httpx-based)."""
         import pyarrow as pa
 
         from geoparquet_io.core.wfs import fetch_all_features_duckdb
@@ -1301,10 +1297,7 @@ class TestAutoPageSingleWorker:
 
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
-            patch(
-                "geoparquet_io.core.wfs._fetch_wfs_page_via_http", return_value=page
-            ) as mock_http,
-            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb") as mock_duckdb,
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=page) as mock_fetch,
         ):
             fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1313,8 +1306,7 @@ class TestAutoPageSingleWorker:
                 page_size=10000,
             )
 
-        assert mock_http.call_count == 2
-        mock_duckdb.assert_not_called()
+        assert mock_fetch.call_count == 2
 
     def test_startindex_limit_raises_clear_error(self):
         """When server has startIndex limit, should raise with actionable guidance."""
@@ -1348,7 +1340,7 @@ class TestAutoPageSingleWorker:
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=30000),
             patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=50000),
-            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=page),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=page),
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
@@ -1375,7 +1367,7 @@ class TestAutoPageSingleWorker:
         with (
             patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
             patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
-            patch("geoparquet_io.core.wfs._fetch_wfs_page_duckdb", return_value=page),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=page),
         ):
             result = fetch_all_features_duckdb(
                 "https://mock.wfs/wfs",
