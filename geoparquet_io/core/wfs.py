@@ -5,7 +5,7 @@ This module provides functionality to download features from OGC WFS services
 and convert them to GeoParquet format. Supports WFS 1.0.0, 1.1.0, and 2.0.0.
 
 Key features:
-- DuckDB-native HTTP streaming for fast extraction (10x+ faster than Python HTTP)
+- Fast extraction via Python httpx download + DuckDB local parsing
 - Server-side bbox filtering
 - CRS negotiation with EPSG variant handling
 - Hilbert curve sorting and bbox column generation
@@ -1053,12 +1053,11 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
 
 def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
     """
-    Fetch a WFS GeoJSON page directly using DuckDB's httpfs.
+    Fetch a WFS GeoJSON page and parse with DuckDB.
 
-    This is MUCH faster than Python HTTP because:
-    - DuckDB streams the HTTP response (no Python memory buffering)
-    - JSON parsing happens in C++ (faster than Python json)
-    - Geometry conversion happens in-database (no temp files)
+    Downloads via Python httpx then parses locally. This is ~10x faster than
+    DuckDB's httpfs streaming for JSON because httpx handles HTTP more
+    efficiently for large responses.
 
     Args:
         url: Full WFS GetFeature URL with all parameters
@@ -1066,47 +1065,43 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
     Returns:
         PyArrow Table with geometry column (WKB) and all properties
     """
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+    import tempfile
 
-    # Configure longer HTTP timeout for slow WFS servers (10 minutes)
-    # Large datasets like 309k features can take 2-3 minutes to stream
-    con.execute("SET http_timeout=600000")
+    debug(f"Fetching WFS: {url[:80]}...")
+    start_time = time.time()
 
-    # Escape single quotes in URL to prevent SQL injection
-    safe_url = _escape_sql_string(url)
+    # Download with Python httpx (much faster than DuckDB httpfs for JSON)
+    try:
+        content = _make_request(url, accept="application/json", timeout=600.0)
+    except WFSError:
+        raise
+    except Exception as e:
+        raise WFSError(f"Failed to fetch WFS data: {e}") from e
 
-    # Use DuckDB to fetch and parse the WFS GeoJSON in one query
-    # This streams the HTTP response and parses JSON directly
-    # Step 1: Check for empty features array (DuckDB can't UNNEST empty JSON arrays)
-    # Step 2: Unnest features and extract geometry + properties struct
-    # Step 3: Expand properties struct into individual columns
-    #
-    # Note: When features is [] (empty), read_json_auto infers it as JSON type
-    # rather than a list, causing UNNEST to fail. We handle this by first
-    # checking the feature count.
-    count_query = f"""
-        SELECT len(features) AS cnt
-        FROM read_json_auto('{safe_url}', maximum_object_size=536870912)
-    """
+    download_time = time.time() - start_time
+    size_mb = len(content) / (1024 * 1024)
+    debug(f"Downloaded {size_mb:.1f} MB in {download_time:.1f}s")
+
+    # Quick check for empty response before writing temp file
+    # GeoJSON FeatureCollections have "features": [] when empty
+    if b'"features":[]' in content or b'"features": []' in content:
+        debug("Empty response, returning empty table")
+        return pa.table({"geometry": pa.array([], type=pa.binary())})
+
+    # Write to temp file and parse with DuckDB (local parsing is instant)
+    with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as tmp_file:
+        tmp_file.write(content)
+        tmp_path = tmp_file.name
 
     try:
-        debug(f"DuckDB fetch: {url[:80]}...")
-        start_time = time.time()
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        safe_path = _escape_sql_string(tmp_path)
 
-        # Check if response has any features
-        count_result = con.execute(count_query).fetchone()
-        feature_count = count_result[0] if count_result else 0
-
-        if feature_count == 0:
-            # Return empty table with just geometry column
-            debug("Empty response, returning empty table")
-            return pa.table({"geometry": pa.array([], type=pa.binary())})
-
-        # Full query to extract features
+        parse_start = time.time()
         query = f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_url}', maximum_object_size=536870912)
+                FROM read_json_auto('{safe_path}', maximum_object_size=1073741824)
             ),
             extracted AS (
                 SELECT
@@ -1123,14 +1118,15 @@ def _fetch_wfs_page_duckdb(url: str) -> pa.Table:
         result = con.execute(query)
         table = result.arrow().read_all()
 
-        elapsed = time.time() - start_time
-        debug(f"DuckDB OK: {table.num_rows:,} rows in {elapsed:.1f}s")
+        parse_time = time.time() - parse_start
+        total_time = time.time() - start_time
+        debug(f"Parsed {table.num_rows:,} rows in {parse_time:.1f}s (total: {total_time:.1f}s)")
         return table
     except Exception as e:
-        error_msg = str(e)
-        if "HTTP" in error_msg or "Could not" in error_msg:
-            raise WFSError(f"Failed to fetch WFS data: {e}") from e
         raise WFSError(f"Failed to parse WFS response: {e}") from e
+    finally:
+        # Clean up temp file
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 def _build_wfs_url(
@@ -1190,12 +1186,15 @@ def fetch_all_features_duckdb(
     axis_order: str = "auto",
 ) -> pa.Table:
     """
-    Fetch WFS features using DuckDB's native HTTP streaming.
+    Fetch WFS features via Python HTTP download and DuckDB local parsing.
+
+    Downloads GeoJSON with Python httpx (faster than DuckDB httpfs for JSON),
+    then parses locally with DuckDB's spatial extension.
 
     Supports two modes:
-    - Single request (max_workers=1): Streams all features in one request. Fast for most cases.
-    - Parallel pagination (max_workers>1): Splits into paginated requests for very large
-      datasets (1M+ features) where a single request might timeout.
+    - Single request (max_workers=1): One request for all features.
+    - Parallel pagination (max_workers>1): Concurrent paginated requests.
+      Recommended for large datasets (100k+ features) - typically 5-6x faster.
 
     Args:
         service_url: WFS service URL
@@ -1204,7 +1203,7 @@ def fetch_all_features_duckdb(
         max_features: Maximum features to fetch (None = all)
         bbox: Optional bounding box filter
         crs: CRS for bbox parameter
-        max_workers: Number of parallel requests (1 = single streaming request)
+        max_workers: Number of parallel requests (1-10). Use 4-8 for large datasets.
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
 
@@ -1221,9 +1220,9 @@ def fetch_all_features_duckdb(
     # Single request mode (default) - fastest for most cases
     if max_workers == 1 or version == "1.0.0":
         if total_count:
-            progress(f"Streaming {total_count:,} features via DuckDB...")
+            progress(f"Fetching {total_count:,} features...")
         else:
-            progress("Streaming features via DuckDB...")
+            progress("Fetching features...")
 
         url = _build_wfs_url(
             service_url,
