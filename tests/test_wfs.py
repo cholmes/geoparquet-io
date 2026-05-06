@@ -1118,6 +1118,8 @@ class TestDuckDBNativeWFS:
         "&maxFeatures=10"
     )
 
+    @pytest.mark.network
+    @pytest.mark.xfail(reason="requires external WFS endpoint, flaky in CI", strict=False)
     def test_fetch_wfs_page_returns_arrow_table(self):
         """DuckDB-native fetch should return an Arrow table with geometry."""
         from geoparquet_io.core.wfs import _fetch_wfs_page
@@ -1134,6 +1136,8 @@ class TestDuckDBNativeWFS:
         assert table.num_rows > 0
         assert table.num_rows <= 10
 
+    @pytest.mark.network
+    @pytest.mark.xfail(reason="requires external WFS endpoint, flaky in CI", strict=False)
     def test_fetch_wfs_page_geometry_is_wkb(self):
         """Geometry should be WKB binary format."""
         from geoparquet_io.core.wfs import _fetch_wfs_page
@@ -1145,6 +1149,166 @@ class TestDuckDBNativeWFS:
 
         geom_type = table.schema.field("geometry").type
         assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
+
+
+class TestContentTypeValidation:
+    """Test content-type validation catches error pages returned with 200 OK."""
+
+    def test_rejects_html_content_type(self):
+        """HTML responses should be rejected with clear error."""
+        import httpx
+
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        html_response = b"<html><body>Error: Service unavailable</body></html>"
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "text/html; charset=utf-8"}
+
+                def raise_for_status(self):
+                    pass
+
+                def read(self):
+                    return html_response
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        with patch.object(httpx.Client, "stream", mock_stream):
+            with pytest.raises(WFSError, match="Expected JSON.*text/html"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+    def test_rejects_xml_content_type(self):
+        """XML error responses should be rejected."""
+        import httpx
+
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        xml_response = b"<ows:ExceptionReport>Service error</ows:ExceptionReport>"
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "application/xml"}
+
+                def raise_for_status(self):
+                    pass
+
+                def read(self):
+                    return xml_response
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        with patch.object(httpx.Client, "stream", mock_stream):
+            with pytest.raises(WFSError, match="Expected JSON.*application/xml"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+    def test_rejects_text_plain_content_type(self):
+        """text/plain error responses should be rejected."""
+        import httpx
+
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        text_response = b"Error: Invalid request parameters"
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "text/plain"}
+
+                def raise_for_status(self):
+                    pass
+
+                def read(self):
+                    return text_response
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        with patch.object(httpx.Client, "stream", mock_stream):
+            with pytest.raises(WFSError, match="Expected JSON.*text/plain"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+    def test_accepts_application_json(self):
+        """application/json should be accepted."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        json_response = b'{"type": "FeatureCollection", "features": []}'
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "application/json"}
+
+                def raise_for_status(self):
+                    pass
+
+                def iter_bytes(self, chunk_size=None):
+                    yield json_response
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        with patch.object(httpx.Client, "stream", mock_stream):
+            # Should not raise, returns empty table
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+            assert result.num_rows == 0
+
+    def test_accepts_text_javascript(self):
+        """text/javascript (used by some servers) should be accepted."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        json_response = b'{"type": "FeatureCollection", "features": []}'
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "text/javascript"}
+
+                def raise_for_status(self):
+                    pass
+
+                def iter_bytes(self, chunk_size=None):
+                    yield json_response
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        with patch.object(httpx.Client, "stream", mock_stream):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+            assert result.num_rows == 0
 
 
 class TestAutoPageSingleWorker:
@@ -2533,6 +2697,44 @@ class TestDeduplicateTiles:
 
         result = _deduplicate_tiles(table)
         assert result.num_rows == 2
+
+    def test_null_fid_uses_geometry_dedup(self):
+        """Features with NULL _wfs_fid should be deduplicated by geometry."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _deduplicate_tiles
+
+        # Mix of valid fids and NULLs - NULLs should use geometry dedup
+        table = pa.table(
+            {
+                "_wfs_fid": pa.array(["a", None, None, "b"], type=pa.string()),
+                "geometry": pa.array([b"\x01", b"\x02", b"\x02", b"\x03"], type=pa.binary()),
+                "name": pa.array(["w", "x", "x", "z"]),
+            }
+        )
+
+        result = _deduplicate_tiles(table)
+        # "a" and "b" kept (unique fids), one of the two NULL rows kept (same geometry)
+        assert result.num_rows == 3
+        assert "_wfs_fid" not in result.column_names
+
+    def test_all_null_fids_uses_geometry_dedup(self):
+        """When all fids are NULL, deduplicate entirely by geometry."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _deduplicate_tiles
+
+        table = pa.table(
+            {
+                "_wfs_fid": pa.array([None, None, None, None], type=pa.string()),
+                "geometry": pa.array([b"\x01", b"\x02", b"\x01", b"\x02"], type=pa.binary()),
+                "name": pa.array(["a", "b", "a", "b"]),
+            }
+        )
+
+        result = _deduplicate_tiles(table)
+        assert result.num_rows == 2
+        assert "_wfs_fid" not in result.column_names
 
 
 class TestFetchWithSpatialTiles:
