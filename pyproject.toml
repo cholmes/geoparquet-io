@@ -77,6 +77,7 @@ dev = [
     "codespell>=2.2",
     "import-linter>=2.0",
     "bandit>=1.7",
+    "pip>=26.1",  # CVE-2026-6357
     "pip-audit>=2.7",
     "menard>=0.4.0",
     "deptry>=0.25.0",

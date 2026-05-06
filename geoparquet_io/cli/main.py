@@ -2894,6 +2894,12 @@ def _deprecated_version_callback(ctx, param, value):
     help="Features per page when using --workers > 1. Default: 10000.",
 )
 @click.option(
+    "--auto-tile",
+    is_flag=True,
+    help="Automatically subdivide into spatial tiles to work around server "
+    "startIndex limits. Use for large datasets on servers that cap pagination.",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert curve sorting (faster, but no spatial clustering)",
@@ -2923,6 +2929,7 @@ def extract_wfs_cmd(
     output_crs,
     workers,
     page_size,
+    auto_tile,
     skip_hilbert,
     skip_bbox,
     compression,
@@ -3064,6 +3071,7 @@ def extract_wfs_cmd(
             geoparquet_version=geoparquet_version,
             overwrite=overwrite,
             verbose=verbose,
+            auto_tile=auto_tile,
         )
     except WFSError as e:
         raise click.ClickException(str(e)) from None

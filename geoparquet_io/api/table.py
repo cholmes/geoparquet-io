@@ -554,6 +554,7 @@ class Table:
         page_size: int = 10000,
         axis_order: str = "auto",
         strict_crs: bool = False,
+        auto_tile: bool = False,
     ) -> Table:
         """
         Create Table from WFS layer.
@@ -574,6 +575,8 @@ class Table:
                 CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
             strict_crs: If True, fail when server returns coordinates that don't match
                 requested CRS. If False (default), warn and use detected CRS.
+            auto_tile: Automatically subdivide into spatial tiles for servers with
+                startIndex limits (default: False)
 
         Returns:
             Table for chaining operations
@@ -581,10 +584,8 @@ class Table:
         Example:
             >>> import geoparquet_io as gpio
             >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'cities').add_bbox().write('cities.parquet')
-            >>> # For large datasets:
-            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', max_workers=4)
-            >>> # Force axis order for problematic servers:
-            >>> gpio.Table.from_wfs(url, layer, axis_order='latlon')
+            >>> # For large datasets on servers with startIndex limits:
+            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
         """
         from geoparquet_io.core.wfs import wfs_to_table
 
@@ -598,6 +599,7 @@ class Table:
             page_size=page_size,
             axis_order=axis_order,
             strict_crs=strict_crs,
+            auto_tile=auto_tile,
         )
         return cls(table)
 
