@@ -1066,81 +1066,109 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
         con.close()
 
 
-def _fetch_wfs_page(url: str, extract_fid: bool = False) -> pa.Table:
+def _fetch_wfs_page(
+    url: str, extract_fid: bool = False, max_retries: int = 3, retry_delay: float = 2.0
+) -> pa.Table:
     """
     Fetch a WFS GeoJSON page via httpx and parse with DuckDB locally.
 
     Downloads GeoJSON using Python httpx (thread-safe, ~10x faster than DuckDB
     httpfs for JSON), streams to a temp file, then parses with DuckDB's spatial
-    extension.
+    extension. Includes automatic retry for transient network errors.
 
     Args:
         url: Full WFS GetFeature URL with all parameters
         extract_fid: If True, extract feature.id as _wfs_fid column (for dedup)
+        max_retries: Number of retry attempts for transient errors
+        retry_delay: Base delay between retries (exponential backoff)
 
     Returns:
         PyArrow Table with geometry column (WKB) and all properties
     """
     import httpx
 
-    start_time = time.time()
-    debug(f"Fetching: {url[:100]}...")
+    last_exception: Exception | None = None
 
-    # Stream response to temp file to avoid memory exhaustion on large responses
-    tmp_path = None
-    total_bytes = 0
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            client = _get_shared_http_client(timeout=600)
+    for attempt in range(max_retries):
+        start_time = time.time()
+        if attempt > 0:
+            debug(f"Retry {attempt}/{max_retries - 1}: {url[:80]}...")
+        else:
+            debug(f"Fetching: {url[:100]}...")
 
-            with client.stream(
-                "GET",
-                url,
-                headers={"Accept": "application/json", "Accept-Encoding": "gzip, deflate"},
-            ) as response:
-                # Check HTTP status
-                if response.status_code == 400:
-                    body = response.read().decode("utf-8", errors="replace")
-                    if "startindex" in body.lower():
-                        raise WFSError(
-                            f"Server rejected paginated request (startIndex limit): {body.strip()}"
-                        )
-                    raise WFSError(f"WFS request failed with HTTP 400: {body[:500]}")
-                response.raise_for_status()
+        # Stream response to temp file to avoid memory exhaustion on large responses
+        tmp_path = None
+        total_bytes = 0
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+                client = _get_shared_http_client(timeout=600)
 
-                # Validate content-type (servers may return HTML errors with 200 OK)
-                content_type = response.headers.get("content-type", "").lower()
-                if content_type and "json" not in content_type and "javascript" not in content_type:
-                    # Reject HTML, XML, or text/plain (often error pages)
-                    if any(t in content_type for t in ("html", "xml", "text/plain")):
-                        preview = response.read().decode("utf-8", errors="replace")[:500]
-                        raise WFSError(
-                            f"Expected JSON response but got {content_type}. "
-                            f"Server may have returned an error page:\n{preview}"
-                        )
+                with client.stream(
+                    "GET",
+                    url,
+                    headers={"Accept": "application/json", "Accept-Encoding": "gzip, deflate"},
+                ) as response:
+                    # Check HTTP status
+                    if response.status_code == 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        if "startindex" in body.lower():
+                            raise WFSError(
+                                f"Server rejected paginated request (startIndex limit): {body.strip()}"
+                            )
+                        raise WFSError(f"WFS request failed with HTTP 400: {body[:500]}")
+                    response.raise_for_status()
 
-                # Stream content to file
-                for chunk in response.iter_bytes(chunk_size=65536):
-                    tmp_file.write(chunk)
-                    total_bytes += len(chunk)
+                    # Validate content-type (servers may return HTML errors with 200 OK)
+                    content_type = response.headers.get("content-type", "").lower()
+                    if (
+                        content_type
+                        and "json" not in content_type
+                        and "javascript" not in content_type
+                    ):
+                        # Reject HTML, XML, or text/plain (often error pages)
+                        if any(t in content_type for t in ("html", "xml", "text/plain")):
+                            preview = response.read().decode("utf-8", errors="replace")[:500]
+                            raise WFSError(
+                                f"Expected JSON response but got {content_type}. "
+                                f"Server may have returned an error page:\n{preview}"
+                            )
 
-    except httpx.HTTPStatusError as e:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
-        raise WFSError(f"WFS request failed with HTTP {e.response.status_code}") from e
-    except httpx.RequestError as e:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
-        raise WFSError(f"Failed to fetch WFS data: {e}") from e
-    except WFSError:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
-        raise
+                    # Stream content to file
+                    for chunk in response.iter_bytes(chunk_size=65536):
+                        tmp_file.write(chunk)
+                        total_bytes += len(chunk)
 
-    download_time = time.time() - start_time
-    size_mb = total_bytes / (1024 * 1024)
-    debug(f"Downloaded {size_mb:.1f} MB in {download_time:.1f}s")
+            # Success - break out of retry loop
+            download_time = time.time() - start_time
+            size_mb = total_bytes / (1024 * 1024)
+            debug(f"Downloaded {size_mb:.1f} MB in {download_time:.1f}s")
+            break
+
+        except httpx.HTTPStatusError as e:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+            raise WFSError(f"WFS request failed with HTTP {e.response.status_code}") from e
+        except (httpx.RequestError, httpx.RemoteProtocolError) as e:
+            # Transient network error - retry
+            last_exception = e
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+            if attempt < max_retries - 1:
+                delay = retry_delay * (attempt + 1)
+                warn(f"Network error (attempt {attempt + 1}/{max_retries}): {e}")
+                warn(f"Retrying in {delay:.1f}s...")
+                _reset_http_client()
+                time.sleep(delay)
+                continue
+            raise WFSError(f"Failed to fetch WFS data after {max_retries} attempts: {e}") from e
+        except WFSError:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+            raise
+    else:
+        # Exhausted retries without success
+        raise WFSError(f"Failed to fetch WFS data after {max_retries} attempts: {last_exception}")
 
     con = None
     try:
