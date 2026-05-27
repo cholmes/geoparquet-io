@@ -1,4 +1,5 @@
 import os
+import sys
 from contextlib import contextmanager
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -169,6 +170,14 @@ def _activate_s3(ctx, aws_profile=None, s3_endpoint=None, s3_region=None, s3_no_
 @click.pass_context
 def cli(ctx, timestamps, s3_endpoint, s3_region, s3_no_ssl, aws_profile):
     """Fast I/O and transformation tools for GeoParquet files."""
+    # Ensure stdout/stderr can emit UTF-8 even on Windows, where the default
+    # codec (cp1252) raises UnicodeEncodeError on non-ASCII GeoJSON content.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
     ctx.ensure_object(dict)
     ctx.obj["timestamps"] = timestamps
     ctx.obj["s3_endpoint"] = s3_endpoint
