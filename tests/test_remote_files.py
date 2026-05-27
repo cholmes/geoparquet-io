@@ -6,7 +6,7 @@ import pytest
 
 from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
-from geoparquet_io.core.remote import is_remote_url, needs_httpfs
+from geoparquet_io.core.remote import is_remote_url, needs_httpfs, resolve_s3_config
 
 
 class TestRemoteURLDetection:
@@ -343,3 +343,109 @@ class TestSTACRemoteBlocking:
                 bucket_prefix="s3://bucket/",
                 verbose=False,
             )
+
+
+_S3_ENV_VARS = ("AWS_ENDPOINT_URL", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE")
+
+
+class TestResolveS3Config:
+    """Tests for S3 configuration resolution with env var fallbacks."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_s3_env(self, monkeypatch):
+        """Remove S3-related env vars before each test."""
+        for var in _S3_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    def test_defaults_no_config(self):
+        """No params and no env vars returns None/defaults."""
+        config = resolve_s3_config()
+        assert config["s3_endpoint"] is None
+        assert config["s3_region"] is None
+        assert config["s3_use_ssl"] is True
+        assert config["profile"] is None
+
+    def test_explicit_endpoint_overrides_env(self, monkeypatch):
+        """Explicit s3_endpoint param wins over AWS_ENDPOINT_URL."""
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "env.example.com")
+        config = resolve_s3_config(s3_endpoint="explicit.example.com")
+        assert config["s3_endpoint"] == "explicit.example.com"
+
+    def test_falls_back_to_aws_endpoint_url(self, monkeypatch):
+        """Reads AWS_ENDPOINT_URL when no explicit param."""
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "env.example.com")
+        config = resolve_s3_config()
+        assert config["s3_endpoint"] == "env.example.com"
+
+    def test_region_resolution_explicit_wins(self, monkeypatch):
+        """Explicit s3_region wins over AWS_REGION and AWS_DEFAULT_REGION."""
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        config = resolve_s3_config(s3_region="ap-southeast-1")
+        assert config["s3_region"] == "ap-southeast-1"
+
+    def test_region_falls_back_to_aws_region(self, monkeypatch):
+        """Falls back to AWS_REGION env var."""
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        config = resolve_s3_config()
+        assert config["s3_region"] == "us-west-2"
+
+    def test_region_falls_back_to_aws_default_region(self, monkeypatch):
+        """Falls back to AWS_DEFAULT_REGION when AWS_REGION not set."""
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        config = resolve_s3_config()
+        assert config["s3_region"] == "eu-west-1"
+
+    def test_profile_resolution_explicit_wins(self, monkeypatch):
+        """Explicit aws_profile wins over AWS_PROFILE env var."""
+        monkeypatch.setenv("AWS_PROFILE", "env-profile")
+        config = resolve_s3_config(aws_profile="explicit-profile")
+        assert config["profile"] == "explicit-profile"
+
+    def test_profile_falls_back_to_aws_profile(self, monkeypatch):
+        """Falls back to AWS_PROFILE env var."""
+        monkeypatch.setenv("AWS_PROFILE", "env-profile")
+        config = resolve_s3_config()
+        assert config["profile"] == "env-profile"
+
+    def test_ssl_auto_detect_http_scheme(self):
+        """http:// endpoint -> SSL off."""
+        config = resolve_s3_config(s3_endpoint="http://minio.local:9000")
+        assert config["s3_use_ssl"] is False
+        assert config["s3_endpoint"] == "minio.local:9000"
+
+    def test_ssl_auto_detect_https_scheme(self):
+        """https:// endpoint -> SSL on, scheme stripped."""
+        config = resolve_s3_config(s3_endpoint="https://storage.example.com")
+        assert config["s3_use_ssl"] is True
+        assert config["s3_endpoint"] == "storage.example.com"
+
+    def test_ssl_auto_detect_no_scheme(self):
+        """No scheme -> SSL on, endpoint unchanged."""
+        config = resolve_s3_config(s3_endpoint="data.source.coop")
+        assert config["s3_use_ssl"] is True
+        assert config["s3_endpoint"] == "data.source.coop"
+
+    def test_ssl_explicit_no_ssl_overrides_https(self):
+        """--s3-no-ssl overrides even https:// auto-detection."""
+        config = resolve_s3_config(s3_endpoint="https://storage.example.com", s3_no_ssl=True)
+        assert config["s3_use_ssl"] is False
+        assert config["s3_endpoint"] == "storage.example.com"
+
+    def test_scheme_stripped_from_env_var(self, monkeypatch):
+        """Scheme is stripped from AWS_ENDPOINT_URL env var too."""
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "http://env.minio.local:9000")
+        config = resolve_s3_config()
+        assert config["s3_endpoint"] == "env.minio.local:9000"
+        assert config["s3_use_ssl"] is False
+
+    def test_empty_string_endpoint_treated_as_none(self):
+        """Empty string endpoint is treated as no endpoint."""
+        config = resolve_s3_config(s3_endpoint="")
+        assert config["s3_endpoint"] is None
+
+    def test_profile_only_no_endpoint(self):
+        """Profile can be set without any endpoint (standard AWS S3)."""
+        config = resolve_s3_config(aws_profile="prod")
+        assert config["profile"] == "prod"
+        assert config["s3_endpoint"] is None

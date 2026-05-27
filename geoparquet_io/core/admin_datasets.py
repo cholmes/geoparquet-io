@@ -244,22 +244,25 @@ class AdminDataset(ABC):
         Raises:
             Exception: If download fails
         """
+        from geoparquet_io.core.duckdb_utils import s3_config_scope
+
         source = self.get_default_source()
 
-        con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
-        self.configure_s3(con)
+        with s3_config_scope(self.get_s3_config()):
+            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            try:
+                # Get read options
+                read_options = self.get_read_parquet_options()
+                if read_options:
+                    options_str = ", ".join([f"{k}={v}" for k, v in read_options.items()])
+                    query = f"SELECT * FROM read_parquet('{source}', {options_str})"
+                else:
+                    query = f"SELECT * FROM read_parquet('{source}')"
 
-        # Get read options
-        read_options = self.get_read_parquet_options()
-        if read_options:
-            options_str = ", ".join([f"{k}={v}" for k, v in read_options.items()])
-            query = f"SELECT * FROM read_parquet('{source}', {options_str})"
-        else:
-            query = f"SELECT * FROM read_parquet('{source}')"
-
-        # Write to cache
-        con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
-        con.close()
+                # Write to cache
+                con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
+            finally:
+                con.close()
 
         return cache_path
 
@@ -468,6 +471,10 @@ class AdminDataset(ABC):
             # Custom prefix with underscore format
             return f"{prefix}_{level_name}"
 
+    def get_s3_config(self) -> dict:
+        """Return S3 configuration for this dataset. Override in subclasses."""
+        return {}
+
     @abstractmethod
     def configure_s3(self, con: duckdb.DuckDBPyConnection) -> None:
         """
@@ -538,6 +545,9 @@ class CurrentAdminDataset(AdminDataset):
     def get_bbox_column(self) -> str | None:
         return "bbox"
 
+    def get_s3_config(self) -> dict:
+        return {"s3_endpoint": "data.source.coop", "s3_use_ssl": True}
+
     def configure_s3(self, con: duckdb.DuckDBPyConnection) -> None:
         """Configure S3 for source.coop endpoint."""
         con.execute("SET s3_endpoint='data.source.coop';")
@@ -583,6 +593,9 @@ class GAULAdminDataset(AdminDataset):
 
     def get_bbox_column(self) -> str | None:
         return "geometry_bbox"
+
+    def get_s3_config(self) -> dict:
+        return {"s3_endpoint": "data.source.coop", "s3_use_ssl": True}
 
     def configure_s3(self, con: duckdb.DuckDBPyConnection) -> None:
         """Configure S3 for source.coop endpoint."""
@@ -681,6 +694,9 @@ class OvertureAdminDataset(AdminDataset):
 
     # Overture now uses the base class implementation
     # No override needed - base class handles all prefix logic
+
+    def get_s3_config(self) -> dict:
+        return {"s3_region": "us-west-2"}
 
     def configure_s3(self, con: duckdb.DuckDBPyConnection) -> None:
         """Configure S3 for AWS us-west-2 region where Overture data is stored."""

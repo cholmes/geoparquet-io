@@ -213,6 +213,14 @@ gpio extract data.parquet output.parquet \
 # Extract from remote file
 gpio extract s3://bucket/data.parquet output.parquet --bbox 0,0,10,10
 
+# Extract from S3-compatible storage
+gpio --s3-endpoint minio.local:9000 --s3-no-ssl \
+  extract geoparquet s3://bucket/input.parquet output.parquet --bbox -122,37,-121,38
+
+# Extract from source.coop
+gpio --s3-endpoint data.source.coop \
+  extract geoparquet s3://bucket/data.parquet output.parquet --limit 1000
+
 # Preview query with dry run
 gpio extract data.parquet output.parquet \
   --where "name LIKE '%Hotel%'" \

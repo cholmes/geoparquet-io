@@ -147,6 +147,43 @@ def setup_aws_profile_if_needed(profile, *paths):
         os.environ["AWS_PROFILE"] = profile
 
 
+def resolve_s3_config(
+    s3_endpoint: str | None = None,
+    s3_region: str | None = None,
+    s3_no_ssl: bool = False,
+    aws_profile: str | None = None,
+) -> dict:
+    """Resolve S3 configuration from explicit params with env var fallbacks.
+
+    Resolution order (highest wins):
+    1. Explicit params
+    2. AWS env vars (AWS_ENDPOINT_URL, AWS_REGION/AWS_DEFAULT_REGION, AWS_PROFILE)
+    3. Defaults (no endpoint, no region, SSL on, no profile)
+    """
+    endpoint = s3_endpoint or os.environ.get("AWS_ENDPOINT_URL") or None
+    region = s3_region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    profile = aws_profile or os.environ.get("AWS_PROFILE")
+
+    use_ssl = True
+    bare_endpoint = endpoint
+    if endpoint:
+        if endpoint.startswith("http://"):
+            use_ssl = False
+            bare_endpoint = endpoint[len("http://") :]
+        elif endpoint.startswith("https://"):
+            bare_endpoint = endpoint[len("https://") :]
+
+    if s3_no_ssl:
+        use_ssl = False
+
+    return {
+        "s3_endpoint": bare_endpoint,
+        "s3_region": region,
+        "s3_use_ssl": use_ssl,
+        "profile": profile,
+    }
+
+
 def validate_profile_for_urls(profile, *urls):
     """
     Validate that profile parameter is only used with S3 URLs.

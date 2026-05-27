@@ -16,6 +16,8 @@ gpio publish upload --help
 gpio publish upload [OPTIONS] SOURCE DESTINATION
 ```
 
+> **Note:** `--s3-endpoint`, `--s3-region`, `--s3-no-ssl`, and `--aws-profile` are now global options on `gpio`. They still work as command-level flags for backwards compatibility.
+
 ## Options
 
 | Option | Description | Default |

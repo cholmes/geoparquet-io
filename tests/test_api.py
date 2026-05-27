@@ -1373,3 +1373,28 @@ class TestOpsConversionFunctions:
             assert output_path.exists()
         finally:
             safe_unlink(output_path)
+
+
+class TestReadPartitionS3:
+    """Test read_partition() S3 kwargs."""
+
+    def test_read_partition_accepts_s3_kwargs(self, tmp_path):
+        """read_partition() accepts S3 kwargs without TypeError."""
+        from geoparquet_io.api.table import read_partition
+
+        table = pa.table({"id": [1, 2], "geometry": [b"\x01\x00", b"\x01\x00"]})
+        path = tmp_path / "test.parquet"
+        pq.write_table(table, path)
+
+        try:
+            read_partition(
+                str(path),
+                s3_endpoint="minio.local:9000",
+                s3_region="us-east-1",
+                s3_use_ssl=False,
+                aws_profile="test",
+            )
+        except TypeError:
+            raise
+        except Exception:
+            pass

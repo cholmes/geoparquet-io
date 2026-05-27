@@ -7,8 +7,6 @@ This module extends the add_country_codes functionality to support
 multiple admin datasets with hierarchical level support.
 """
 
-import duckdb
-
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -281,16 +279,11 @@ def _setup_dataset_and_columns(
     )
 
 
-def _setup_duckdb_connection(dataset):
+def _setup_duckdb_connection():
     """Create and configure DuckDB connection."""
-    con = duckdb.connect()
-    con.execute("INSTALL spatial;")
-    con.execute("LOAD spatial;")
-    con.execute("SET geometry_always_xy = true;")
-    con.execute("INSTALL httpfs;")
-    con.execute("LOAD httpfs;")
-    dataset.configure_s3(con)
-    return con
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+    return get_duckdb_connection(load_spatial=True, load_httpfs=True)
 
 
 def _build_admin_where_clauses_list(
@@ -510,71 +503,74 @@ def add_admin_divisions_multi(
         if verbose:
             debug(f"Using geometry columns: {input_geom_col} (input), {admin_geom_col} (admin)")
 
-    # Create DuckDB connection
-    con = _setup_duckdb_connection(dataset)
+    # Create DuckDB connection with ambient S3 config from dataset
+    from geoparquet_io.core.duckdb_utils import s3_config_scope
 
-    # Get total input count (skip in dry-run)
-    if not dry_run:
-        total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
-        progress(f"Processing {total_count:,} input features...")
+    with s3_config_scope(dataset.get_s3_config()):
+        con = _setup_duckdb_connection()
+        try:
+            # Get total input count (skip in dry-run)
+            if not dry_run:
+                total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+                progress(f"Processing {total_count:,} input features...")
 
-    # Build query components (use cached admin_source from _setup_dataset_and_columns)
-    query, admin_source = _build_query_components(
-        con,
-        dataset,
-        levels,
-        partition_columns,
-        input_url,
-        admin_source,
-        admin_geom_col,
-        admin_bbox_col,
-        input_geom_col,
-        input_bbox_col,
-        verbose,
-        dry_run,
-        prefix=prefix,
-    )
+            # Build query components (use cached admin_source from _setup_dataset_and_columns)
+            query, admin_source = _build_query_components(
+                con,
+                dataset,
+                levels,
+                partition_columns,
+                input_url,
+                admin_source,
+                admin_geom_col,
+                admin_bbox_col,
+                input_geom_col,
+                input_bbox_col,
+                verbose,
+                dry_run,
+                prefix=prefix,
+            )
 
-    # Handle dry-run mode
-    if _handle_dry_run_mode(
-        dry_run,
-        input_url,
-        admin_source,
-        output_parquet,
-        input_geom_col,
-        admin_geom_col,
-        input_bbox_col,
-        admin_bbox_col,
-        query,
-        compression,
-        compression_level,
-    ):
-        con.close()
-        return
+            # Handle dry-run mode
+            if _handle_dry_run_mode(
+                dry_run,
+                input_url,
+                admin_source,
+                output_parquet,
+                input_geom_col,
+                admin_geom_col,
+                input_bbox_col,
+                admin_bbox_col,
+                query,
+                compression,
+                compression_level,
+            ):
+                return
 
-    # Execute the query using the common write method
-    if verbose:
-        debug("Performing spatial join with admin boundaries...")
+            # Execute the query using the common write method
+            if verbose:
+                debug("Performing spatial join with admin boundaries...")
 
-    write_parquet_with_metadata(
-        con,
-        query,
-        output_parquet,
-        original_metadata=metadata,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        verbose=verbose,
-        profile=profile,
-        geoparquet_version=geoparquet_version,
-    )
+            write_parquet_with_metadata(
+                con,
+                query,
+                output_parquet,
+                original_metadata=metadata,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                verbose=verbose,
+                profile=profile,
+                geoparquet_version=geoparquet_version,
+            )
 
-    # Get statistics about the results
-    total_features, features_with_admin, unique_counts = _get_result_stats(
-        con, output_parquet, dataset, levels, verbose
-    )
-    con.close()
+            # Get statistics about the results
+            total_features, features_with_admin, unique_counts = _get_result_stats(
+                con, output_parquet, dataset, levels, verbose
+            )
+        finally:
+            con.close()
 
     progress("\nResults:")
     progress(
