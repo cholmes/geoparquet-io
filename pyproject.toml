@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "click>=8.0.0",
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
-    "pyarrow>=12.0.0",
+    "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
     "duckdb>=1.5.0",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
@@ -47,6 +47,8 @@ dependencies = [
     # Security: explicit constraints for transitive dependencies
     "requests>=2.33.0",  # CVE-2026-25645 fix
     "lxml>=6.1.0",  # CVE-2026-41066 fix
+    "idna>=3.15",  # CVE-2026-45409 fix
+    "urllib3>=2.7.0",  # PYSEC-2026-141, PYSEC-2026-142 fix
 ]
 
 [project.scripts]
@@ -86,7 +88,7 @@ docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
-    "pymdown-extensions>=10.18",  # Fix: 10.17.1 has filename=None bug with pygments
+    "pymdown-extensions>=10.21.3",  # CVE-2026-46338 fix
 ]
 benchmark = [
     "geopandas>=0.14.0",
