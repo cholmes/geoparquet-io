@@ -250,18 +250,19 @@ class AdminDataset(ABC):
 
         with s3_config_scope(self.get_s3_config()):
             con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            try:
+                # Get read options
+                read_options = self.get_read_parquet_options()
+                if read_options:
+                    options_str = ", ".join([f"{k}={v}" for k, v in read_options.items()])
+                    query = f"SELECT * FROM read_parquet('{source}', {options_str})"
+                else:
+                    query = f"SELECT * FROM read_parquet('{source}')"
 
-            # Get read options
-            read_options = self.get_read_parquet_options()
-            if read_options:
-                options_str = ", ".join([f"{k}={v}" for k, v in read_options.items()])
-                query = f"SELECT * FROM read_parquet('{source}', {options_str})"
-            else:
-                query = f"SELECT * FROM read_parquet('{source}')"
-
-            # Write to cache
-            con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
-            con.close()
+                # Write to cache
+                con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
+            finally:
+                con.close()
 
         return cache_path
 

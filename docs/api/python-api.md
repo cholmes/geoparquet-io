@@ -47,40 +47,70 @@ print(f"Geometry column: {table.geometry_column}")
 
 ### S3-Compatible Storage
 
-`read_partition()` supports custom S3 endpoints for reading from MinIO, Cloudflare R2, source.coop, and other S3-compatible services:
+Read from MinIO, Cloudflare R2, source.coop, and other S3-compatible services:
 
-```python
-import geoparquet_io as gpio
+=== "Python"
 
-# Read from source.coop
-table = gpio.read_partition(
-    's3://bucket/data/*.parquet',
-    s3_endpoint='data.source.coop'
-)
+    ```python
+    import geoparquet_io as gpio
 
-# Read from MinIO (no SSL)
-table = gpio.read_partition(
-    's3://bucket/data/',
-    s3_endpoint='minio.local:9000',
-    s3_use_ssl=False,
-    aws_profile='minio-dev'
-)
+    # Read from source.coop
+    table = gpio.read_partition(
+        's3://bucket/data/*.parquet',
+        s3_endpoint='data.source.coop'
+    )
 
-# Environment variables also work
-import os
-os.environ['AWS_ENDPOINT_URL'] = 'https://data.source.coop'
-table = gpio.read_partition('s3://bucket/data/')
-```
+    # Read from MinIO (no SSL)
+    table = gpio.read_partition(
+        's3://bucket/data/',
+        s3_endpoint='minio.local:9000',
+        s3_use_ssl=False,
+        aws_profile='minio-dev'
+    )
 
-For uploads to S3-compatible storage, use `Table.upload()`:
+    # Environment variables also work
+    import os
+    os.environ['AWS_ENDPOINT_URL'] = 'https://data.source.coop'
+    table = gpio.read_partition('s3://bucket/data/')
+    ```
 
-```python
-table.upload(
-    's3://bucket/output.parquet',
-    s3_endpoint='minio.local:9000',
-    s3_use_ssl=False
-)
-```
+=== "CLI"
+
+    ```bash
+    # Read from source.coop
+    gpio inspect summary s3://bucket/data/*.parquet \
+      --s3-endpoint data.source.coop
+
+    # Read from MinIO (no SSL)
+    gpio inspect summary s3://bucket/data/ \
+      --s3-endpoint minio.local:9000 \
+      --s3-no-ssl \
+      --aws-profile minio-dev
+
+    # Environment variables also work
+    export AWS_ENDPOINT_URL=https://data.source.coop
+    gpio inspect summary s3://bucket/data/
+    ```
+
+For uploads to S3-compatible storage:
+
+=== "Python"
+
+    ```python
+    table.upload(
+        's3://bucket/output.parquet',
+        s3_endpoint='minio.local:9000',
+        s3_use_ssl=False
+    )
+    ```
+
+=== "CLI"
+
+    ```bash
+    gpio publish upload local.parquet s3://bucket/output.parquet \
+      --s3-endpoint minio.local:9000 \
+      --s3-no-ssl
+    ```
 
 ### Reading from BigQuery
 
