@@ -464,7 +464,9 @@ class MultiFileCheckRunner:
     help="Generate PMTiles after fixing (requires tippecanoe)",
 )
 @check_partition_options
+@click.pass_context
 def check_all(
+    ctx,
     parquet_file,
     verbose,
     fix,
@@ -484,205 +486,210 @@ def check_all(
     from geoparquet_io.core.remote import is_remote_url, show_remote_read_message
 
     configure_verbose(verbose)
-
-    # Get files to check based on partition options
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"📁 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    # Validate fix_output for multi-file operations
-    if fix and fix_output and len(files_to_check) > 1:
-        from pathlib import Path
-
-        fix_path = Path(fix_output)
-        if not fix_path.is_dir():
-            raise click.ClickException(
-                f"When fixing multiple files ({len(files_to_check)} files), "
-                f"--fix-output must be a directory, not a file path.\n"
-                f"Either:\n"
-                f"  1. Specify a directory: --fix-output /path/to/output_dir/\n"
-                f"  2. Omit --fix-output to fix files in-place (with .bak backups)"
-            )
-
-    # Check pmtiles requires --fix
-    if pmtiles and not fix:
-        raise click.UsageError("--pmtiles requires --fix to generate PMTiles from fixed files")
-
-    # Check tippecanoe availability once before processing files
-    if pmtiles:
-        from geoparquet_io.core.pmtiles import _check_tippecanoe
-
-        if not _check_tippecanoe():
-            raise click.ClickException(
-                "--pmtiles requires tippecanoe.\n\n"
-                "Install tippecanoe:\n"
-                "  macOS:  brew install tippecanoe\n"
-                "  Ubuntu: sudo apt install tippecanoe"
-            )
-
-    # Create runner for multi-file progress tracking
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    # Process each file
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        # Early skip for non-GeoParquet files when --pmtiles is passed
-        # This avoids crashes in check_structure_impl which assumes geo metadata
-        if pmtiles:
-            from geoparquet_io.core.common import detect_geoparquet_file_type
-
-            file_info = detect_geoparquet_file_type(file_path)
-            if file_info["file_type"] == "unknown":
-                click.echo(
-                    click.style(f"→ Skipping {file_path}: not a GeoParquet file", fg="yellow")
-                )
-                continue
-
-        # Show single progress message for remote files (only in verbose mode for multi-file)
-        if runner.verbose or not runner.is_multi_file:
-            show_remote_read_message(file_path, verbose=False)
-            if is_remote_url(file_path):
-                click.echo()  # Add blank line after remote message
-
-        # Run all checks and collect results
-        # In non-verbose multi-file mode, suppress detailed output
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-        structure_results = check_structure_impl(
-            file_path, verbose and show_output, return_results=True, quiet=quiet, profile=profile
+    with _activate_s3(ctx):
+        # Get files to check based on partition options
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
 
-        if show_output:
-            click.echo("\nSpatial Order Analysis:")
-        spatial_result = check_spatial_impl(
-            file_path,
-            random_sample_size,
-            limit_rows,
-            verbose and show_output,
-            return_results=True,
-            quiet=quiet,
-        )
+        if notice:
+            click.echo(click.style(f"📁 {notice}", fg="cyan"))
 
-        from geoparquet_io.cli.fix_helpers import (
-            aggregate_check_results,
-            display_spatial_result,
-        )
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
 
-        display_spatial_result(spatial_result, show_output)
-
-        # Run spec validation
-        from geoparquet_io.core.validate import validate_geoparquet
-
-        spec_result = validate_geoparquet(
-            file_path, validate_data=True, sample_size=1000, verbose=False
-        )
-
-        # Display spec validation results
-        if show_output:
-            click.echo("\nSpec Validation:")
-            if spec_details:
-                # Full output
-                from geoparquet_io.core.validate import format_terminal_output
-
-                format_terminal_output(spec_result)
-            else:
-                # Summary only
-                if spec_result.failed_count > 0:
-                    click.echo(
-                        click.style(
-                            f"  ✗ {spec_result.failed_count} failed, "
-                            f"{spec_result.passed_count} passed",
-                            fg="red",
-                        )
-                    )
-                elif spec_result.warning_count > 0:
-                    click.echo(
-                        click.style(
-                            f"  ⚠ {spec_result.passed_count} passed, "
-                            f"{spec_result.warning_count} warnings",
-                            fg="yellow",
-                        )
-                    )
-                else:
-                    click.echo(
-                        click.style(f"  ✓ {spec_result.passed_count} checks passed", fg="green")
-                    )
-
-        # Aggregate results for runner tracking (include spec failures)
-        combined_passed, combined_issues, _ = aggregate_check_results(
-            structure_results, spatial_result
-        )
-        # Include spec failures in passed status and issues summary
-        if spec_result.failed_count > 0:
-            combined_passed = False
-            combined_issues.append(f"Spec validation: {spec_result.failed_count} checks failed")
-        runner.record_result(
-            file_path, {"passed": combined_passed, "issues": combined_issues, **structure_results}
-        )
-
-        # If --fix flag is set, apply fixes
-        if fix:
+        # Validate fix_output for multi-file operations
+        if fix and fix_output and len(files_to_check) > 1:
             from pathlib import Path
 
-            from geoparquet_io.cli.fix_helpers import apply_check_all_fixes
-
-            # If fix_output is a directory, generate per-file output path
-            per_file_output = fix_output
-            if fix_output and Path(fix_output).is_dir():
-                # Extract filename from file_path and place in output directory
-                filename = Path(file_path).name
-                per_file_output = str(Path(fix_output) / filename)
-
-            all_results = {**structure_results, "spatial": spatial_result}
-            applied = apply_check_all_fixes(
-                file_path=file_path,
-                all_results=all_results,
-                fix_output=per_file_output,
-                no_backup=no_backup,
-                overwrite=overwrite,
-                verbose=verbose,
-                profile=None,
-                check_structure_impl=check_structure_impl,
-                check_spatial_impl=check_spatial_impl,
-                random_sample_size=random_sample_size,
-                limit_rows=limit_rows,
-            )
-            if not applied:
-                continue
-
-        # Generate PMTiles if requested (non-geo files already skipped at loop start)
-        if pmtiles:
-            from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
-
-            # Generate PMTiles
-            # Use fixed output path if available, otherwise original
-            source_file = per_file_output if fix and per_file_output else file_path
-            # Handle S3 URIs: Path().with_suffix() mangles s3:// schemes
-            if source_file.startswith("s3://"):
-                output_pmtiles = source_file.rsplit(".", 1)[0] + ".pmtiles"
-            else:
-                output_pmtiles = str(Path(source_file).with_suffix(".pmtiles"))
-
-            try:
-                create_pmtiles_from_geoparquet(
-                    input_path=source_file,
-                    output_path=output_pmtiles,
-                    verbose=verbose,
+            fix_path = Path(fix_output)
+            if not fix_path.is_dir():
+                raise click.ClickException(
+                    f"When fixing multiple files ({len(files_to_check)} files), "
+                    f"--fix-output must be a directory, not a file path.\n"
+                    f"Either:\n"
+                    f"  1. Specify a directory: --fix-output /path/to/output_dir/\n"
+                    f"  2. Omit --fix-output to fix files in-place (with .bak backups)"
                 )
-                click.echo(click.style(f"✓ Generated {output_pmtiles}", fg="green"))
-            except Exception as e:
-                click.echo(click.style(f"✗ PMTiles failed for {file_path}: {e}", fg="red"))
 
-    # Print summary for multi-file checks
-    runner.print_summary()
+        # Check pmtiles requires --fix
+        if pmtiles and not fix:
+            raise click.UsageError("--pmtiles requires --fix to generate PMTiles from fixed files")
+
+        # Check tippecanoe availability once before processing files
+        if pmtiles:
+            from geoparquet_io.core.pmtiles import _check_tippecanoe
+
+            if not _check_tippecanoe():
+                raise click.ClickException(
+                    "--pmtiles requires tippecanoe.\n\n"
+                    "Install tippecanoe:\n"
+                    "  macOS:  brew install tippecanoe\n"
+                    "  Ubuntu: sudo apt install tippecanoe"
+                )
+
+        # Create runner for multi-file progress tracking
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
+
+        # Process each file
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            # Early skip for non-GeoParquet files when --pmtiles is passed
+            # This avoids crashes in check_structure_impl which assumes geo metadata
+            if pmtiles:
+                from geoparquet_io.core.common import detect_geoparquet_file_type
+
+                file_info = detect_geoparquet_file_type(file_path)
+                if file_info["file_type"] == "unknown":
+                    click.echo(
+                        click.style(f"→ Skipping {file_path}: not a GeoParquet file", fg="yellow")
+                    )
+                    continue
+
+            # Show single progress message for remote files (only in verbose mode for multi-file)
+            if runner.verbose or not runner.is_multi_file:
+                show_remote_read_message(file_path, verbose=False)
+                if is_remote_url(file_path):
+                    click.echo()  # Add blank line after remote message
+
+            # Run all checks and collect results
+            # In non-verbose multi-file mode, suppress detailed output
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+            structure_results = check_structure_impl(
+                file_path,
+                verbose and show_output,
+                return_results=True,
+                quiet=quiet,
+                profile=profile,
+            )
+
+            if show_output:
+                click.echo("\nSpatial Order Analysis:")
+            spatial_result = check_spatial_impl(
+                file_path,
+                random_sample_size,
+                limit_rows,
+                verbose and show_output,
+                return_results=True,
+                quiet=quiet,
+            )
+
+            from geoparquet_io.cli.fix_helpers import (
+                aggregate_check_results,
+                display_spatial_result,
+            )
+
+            display_spatial_result(spatial_result, show_output)
+
+            # Run spec validation
+            from geoparquet_io.core.validate import validate_geoparquet
+
+            spec_result = validate_geoparquet(
+                file_path, validate_data=True, sample_size=1000, verbose=False
+            )
+
+            # Display spec validation results
+            if show_output:
+                click.echo("\nSpec Validation:")
+                if spec_details:
+                    # Full output
+                    from geoparquet_io.core.validate import format_terminal_output
+
+                    format_terminal_output(spec_result)
+                else:
+                    # Summary only
+                    if spec_result.failed_count > 0:
+                        click.echo(
+                            click.style(
+                                f"  ✗ {spec_result.failed_count} failed, "
+                                f"{spec_result.passed_count} passed",
+                                fg="red",
+                            )
+                        )
+                    elif spec_result.warning_count > 0:
+                        click.echo(
+                            click.style(
+                                f"  ⚠ {spec_result.passed_count} passed, "
+                                f"{spec_result.warning_count} warnings",
+                                fg="yellow",
+                            )
+                        )
+                    else:
+                        click.echo(
+                            click.style(f"  ✓ {spec_result.passed_count} checks passed", fg="green")
+                        )
+
+            # Aggregate results for runner tracking (include spec failures)
+            combined_passed, combined_issues, _ = aggregate_check_results(
+                structure_results, spatial_result
+            )
+            # Include spec failures in passed status and issues summary
+            if spec_result.failed_count > 0:
+                combined_passed = False
+                combined_issues.append(f"Spec validation: {spec_result.failed_count} checks failed")
+            runner.record_result(
+                file_path,
+                {"passed": combined_passed, "issues": combined_issues, **structure_results},
+            )
+
+            # If --fix flag is set, apply fixes
+            if fix:
+                from pathlib import Path
+
+                from geoparquet_io.cli.fix_helpers import apply_check_all_fixes
+
+                # If fix_output is a directory, generate per-file output path
+                per_file_output = fix_output
+                if fix_output and Path(fix_output).is_dir():
+                    # Extract filename from file_path and place in output directory
+                    filename = Path(file_path).name
+                    per_file_output = str(Path(fix_output) / filename)
+
+                all_results = {**structure_results, "spatial": spatial_result}
+                applied = apply_check_all_fixes(
+                    file_path=file_path,
+                    all_results=all_results,
+                    fix_output=per_file_output,
+                    no_backup=no_backup,
+                    overwrite=overwrite,
+                    verbose=verbose,
+                    profile=None,
+                    check_structure_impl=check_structure_impl,
+                    check_spatial_impl=check_spatial_impl,
+                    random_sample_size=random_sample_size,
+                    limit_rows=limit_rows,
+                )
+                if not applied:
+                    continue
+
+            # Generate PMTiles if requested (non-geo files already skipped at loop start)
+            if pmtiles:
+                from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
+
+                # Generate PMTiles
+                # Use fixed output path if available, otherwise original
+                source_file = per_file_output if fix and per_file_output else file_path
+                # Handle S3 URIs: Path().with_suffix() mangles s3:// schemes
+                if source_file.startswith("s3://"):
+                    output_pmtiles = source_file.rsplit(".", 1)[0] + ".pmtiles"
+                else:
+                    output_pmtiles = str(Path(source_file).with_suffix(".pmtiles"))
+
+                try:
+                    create_pmtiles_from_geoparquet(
+                        input_path=source_file,
+                        output_path=output_pmtiles,
+                        verbose=verbose,
+                    )
+                    click.echo(click.style(f"✓ Generated {output_pmtiles}", fg="green"))
+                except Exception as e:
+                    click.echo(click.style(f"✗ PMTiles failed for {file_path}: {e}", fg="red"))
+
+        # Print summary for multi-file checks
+        runner.print_summary()
 
 
 @check.command(name="spatial", cls=GlobAwareCommand)
@@ -712,7 +719,9 @@ def check_all(
     help="Skip .bak backup when fixing",
 )
 @check_partition_options
+@click.pass_context
 def check_spatial(
+    ctx,
     parquet_file,
     random_sample_size,
     limit_rows,
@@ -729,106 +738,111 @@ def check_spatial(
 
     configure_verbose(verbose)
 
-    # Get files to check based on partition options
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"📁 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    # Create runner for multi-file progress tracking
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-        result = check_spatial_impl(
-            file_path,
-            random_sample_size,
-            limit_rows,
-            verbose and show_output,
-            return_results=True,
-            quiet=quiet,
+    with _activate_s3(ctx):
+        # Get files to check based on partition options
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
-        ratio = result["ratio"]
-        passed = result.get("passed", ratio < 0.5 if ratio is not None else True)
 
-        if show_output and ratio is not None:
-            if passed:
-                click.echo(click.style("✓ Data appears to be spatially ordered", fg="green"))
-            else:
-                click.echo(
-                    click.style(
-                        "⚠️  Data may not be optimally spatially ordered\n"
-                        "Consider running 'gpio sort hilbert' to improve spatial locality",
-                        fg="yellow",
-                    )
-                )
+        if notice:
+            click.echo(click.style(f"📁 {notice}", fg="cyan"))
 
-        # Pushdown readiness metric
-        if show_output:
-            from geoparquet_io.core.check_spatial_order import check_spatial_pushdown_readiness
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
 
-            try:
-                pushdown = check_spatial_pushdown_readiness(
-                    file_path, verbose=verbose and show_output
-                )
-            except Exception as e:
-                if verbose:
-                    click.echo(f"  Debug: Pushdown check failed: {e}", err=True)
-                pushdown = {"has_geo_bbox": False}
+        # Create runner for multi-file progress tracking
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
 
-            click.echo("\nSpatial Filter Pushdown Readiness:")
-            if pushdown.get("has_geo_bbox"):
-                skip_pct = pushdown["estimated_skip_rate"] * 100
-                click.echo(f"  Row groups: {pushdown['num_row_groups']}")
-                click.echo(f"  Estimated skip rate: {skip_pct:.0f}%")
-                click.echo(f"  Avg bbox area ratio: {pushdown['avg_bbox_area_ratio']:.2f}")
-                if pushdown["passed"]:
-                    click.echo(click.style("  ✓ Good pushdown readiness", fg="green"))
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+            result = check_spatial_impl(
+                file_path,
+                random_sample_size,
+                limit_rows,
+                verbose and show_output,
+                return_results=True,
+                quiet=quiet,
+            )
+            ratio = result["ratio"]
+            passed = result.get("passed", ratio < 0.5 if ratio is not None else True)
+
+            if show_output and ratio is not None:
+                if passed:
+                    click.echo(click.style("✓ Data appears to be spatially ordered", fg="green"))
                 else:
-                    click.echo(click.style("  ⚠️  Low pushdown efficiency", fg="yellow"))
-            else:
-                click.echo(
-                    click.style(
-                        "  ⚠️  No geo_bbox column found. "
-                        "Add bbox with 'gpio add bbox' for pushdown support.",
-                        fg="yellow",
+                    click.echo(
+                        click.style(
+                            "⚠️  Data may not be optimally spatially ordered\n"
+                            "Consider running 'gpio sort hilbert' to improve spatial locality",
+                            fg="yellow",
+                        )
                     )
+
+            # Pushdown readiness metric
+            if show_output:
+                from geoparquet_io.core.check_spatial_order import check_spatial_pushdown_readiness
+
+                try:
+                    pushdown = check_spatial_pushdown_readiness(
+                        file_path, verbose=verbose and show_output
+                    )
+                except Exception as e:
+                    if verbose:
+                        click.echo(f"  Debug: Pushdown check failed: {e}", err=True)
+                    pushdown = {"has_geo_bbox": False}
+
+                click.echo("\nSpatial Filter Pushdown Readiness:")
+                if pushdown.get("has_geo_bbox"):
+                    skip_pct = pushdown["estimated_skip_rate"] * 100
+                    click.echo(f"  Row groups: {pushdown['num_row_groups']}")
+                    click.echo(f"  Estimated skip rate: {skip_pct:.0f}%")
+                    click.echo(f"  Avg bbox area ratio: {pushdown['avg_bbox_area_ratio']:.2f}")
+                    if pushdown["passed"]:
+                        click.echo(click.style("  ✓ Good pushdown readiness", fg="green"))
+                    else:
+                        click.echo(click.style("  ⚠️  Low pushdown efficiency", fg="yellow"))
+                else:
+                    click.echo(
+                        click.style(
+                            "  ⚠️  No geo_bbox column found. "
+                            "Add bbox with 'gpio add bbox' for pushdown support.",
+                            fg="yellow",
+                        )
+                    )
+
+            # Record result for summary
+            runner.record_result(file_path, result)
+
+            if fix:
+                if not result.get("fix_available", False):
+                    if show_output:
+                        click.echo(
+                            click.style(
+                                "\n✓ No fix needed - already spatially ordered!", fg="green"
+                            )
+                        )
+                    continue
+
+                if show_output:
+                    click.echo("\nApplying Hilbert spatial ordering...")
+                output_path, backup_path = handle_fix_common(
+                    file_path, fix_output, no_backup, fix_spatial_ordering, verbose, False, None
                 )
 
-        # Record result for summary
-        runner.record_result(file_path, result)
-
-        if fix:
-            if not result.get("fix_available", False):
                 if show_output:
                     click.echo(
-                        click.style("\n✓ No fix needed - already spatially ordered!", fg="green")
+                        click.style("\n✓ Spatial ordering applied successfully!", fg="green")
                     )
-                continue
+                    click.echo(f"Optimized file: {output_path}")
+                    if backup_path:
+                        click.echo(f"Backup: {backup_path}")
 
-            if show_output:
-                click.echo("\nApplying Hilbert spatial ordering...")
-            output_path, backup_path = handle_fix_common(
-                file_path, fix_output, no_backup, fix_spatial_ordering, verbose, False, None
-            )
-
-            if show_output:
-                click.echo(click.style("\n✓ Spatial ordering applied successfully!", fg="green"))
-                click.echo(f"Optimized file: {output_path}")
-                if backup_path:
-                    click.echo(f"Backup: {backup_path}")
-
-    # Print summary for multi-file checks
-    runner.print_summary()
+        # Print summary for multi-file checks
+        runner.print_summary()
 
 
 @check.command(name="compression", cls=GlobAwareCommand)
@@ -847,7 +861,9 @@ def check_spatial(
 )
 @overwrite_option
 @check_partition_options
+@click.pass_context
 def check_compression_cmd(
+    ctx,
     parquet_file,
     verbose,
     fix,
@@ -864,53 +880,56 @@ def check_compression_cmd(
 
     configure_verbose(verbose)
 
-    # Get files to check based on partition options
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"📁 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    # Create runner for multi-file progress tracking
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-        result = check_compression(
-            file_path, verbose and show_output, return_results=True, quiet=quiet
+    with _activate_s3(ctx):
+        # Get files to check based on partition options
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
 
-        # Record result for summary
-        runner.record_result(file_path, result)
+        if notice:
+            click.echo(click.style(f"📁 {notice}", fg="cyan"))
 
-        if fix:
-            if not result.get("fix_available", False):
-                if show_output:
-                    click.echo(click.style("\n✓ No fix needed - already using ZSTD!", fg="green"))
-                continue
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
 
-            if show_output:
-                click.echo("\nRe-compressing with ZSTD...")
-            output_path, backup_path = handle_fix_common(
-                file_path, fix_output, no_backup, fix_compression, verbose, overwrite, None
+        # Create runner for multi-file progress tracking
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
+
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+            result = check_compression(
+                file_path, verbose and show_output, return_results=True, quiet=quiet
             )
 
-            if show_output:
-                click.echo(click.style("\n✓ Compression optimized successfully!", fg="green"))
-                click.echo(f"Optimized file: {output_path}")
-                if backup_path:
-                    click.echo(f"Backup: {backup_path}")
+            # Record result for summary
+            runner.record_result(file_path, result)
 
-    # Print summary for multi-file checks
-    runner.print_summary()
+            if fix:
+                if not result.get("fix_available", False):
+                    if show_output:
+                        click.echo(
+                            click.style("\n✓ No fix needed - already using ZSTD!", fg="green")
+                        )
+                    continue
+
+                if show_output:
+                    click.echo("\nRe-compressing with ZSTD...")
+                output_path, backup_path = handle_fix_common(
+                    file_path, fix_output, no_backup, fix_compression, verbose, overwrite, None
+                )
+
+                if show_output:
+                    click.echo(click.style("\n✓ Compression optimized successfully!", fg="green"))
+                    click.echo(f"Optimized file: {output_path}")
+                    if backup_path:
+                        click.echo(f"Backup: {backup_path}")
+
+        # Print summary for multi-file checks
+        runner.print_summary()
 
 
 @check.command(name="bbox", cls=GlobAwareCommand)
@@ -929,7 +948,9 @@ def check_compression_cmd(
 )
 @overwrite_option
 @check_partition_options
+@click.pass_context
 def check_bbox_cmd(
+    ctx,
     parquet_file,
     verbose,
     fix,
@@ -951,94 +972,95 @@ def check_bbox_cmd(
 
     configure_verbose(verbose)
 
-    # Get files to check based on partition options
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"📁 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    # Create runner for multi-file progress tracking
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-        result = check_metadata_and_bbox(
-            file_path, verbose and show_output, return_results=True, quiet=quiet
+    with _activate_s3(ctx):
+        # Get files to check based on partition options
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
 
-        # Record result for summary
-        runner.record_result(file_path, result)
+        if notice:
+            click.echo(click.style(f"📁 {notice}", fg="cyan"))
 
-        if fix:
-            if not result.get("fix_available", False):
-                if show_output:
-                    click.echo(click.style("\n✓ No fix needed - bbox is optimal!", fg="green"))
-                continue
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
 
-            # Check if this is a removal (v2/parquet-geo-only) or addition (v1.x)
-            if result.get("needs_bbox_removal", False):
-                # V2 or parquet-geo-only: remove bbox column
-                bbox_column_name = result.get("bbox_column_name")
+        # Create runner for multi-file progress tracking
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
 
-                def bbox_fix_func(
-                    input_path, output_path, verbose_flag, profile_name, _col=bbox_column_name
-                ):
-                    return fix_bbox_removal(
-                        input_path, output_path, _col, verbose_flag, profile_name
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+            result = check_metadata_and_bbox(
+                file_path, verbose and show_output, return_results=True, quiet=quiet
+            )
+
+            # Record result for summary
+            runner.record_result(file_path, result)
+
+            if fix:
+                if not result.get("fix_available", False):
+                    if show_output:
+                        click.echo(click.style("\n✓ No fix needed - bbox is optimal!", fg="green"))
+                    continue
+
+                # Check if this is a removal (v2/parquet-geo-only) or addition (v1.x)
+                if result.get("needs_bbox_removal", False):
+                    # V2 or parquet-geo-only: remove bbox column
+                    bbox_column_name = result.get("bbox_column_name")
+
+                    def bbox_fix_func(
+                        input_path, output_path, verbose_flag, profile_name, _col=bbox_column_name
+                    ):
+                        return fix_bbox_removal(
+                            input_path, output_path, _col, verbose_flag, profile_name
+                        )
+
+                    output_path, backup_path = handle_fix_common(
+                        file_path, fix_output, no_backup, bbox_fix_func, verbose, overwrite, None
                     )
 
-                output_path, backup_path = handle_fix_common(
-                    file_path, fix_output, no_backup, bbox_fix_func, verbose, overwrite, None
-                )
+                    if show_output:
+                        click.echo(click.style("\n✓ Bbox column removed successfully!", fg="green"))
+                        click.echo(f"Optimized file: {output_path}")
+                        if backup_path:
+                            click.echo(f"Backup: {backup_path}")
+                else:
+                    # V1.x: add bbox column/metadata (existing logic)
+                    needs_column = result.get("needs_bbox_column", False)
+                    needs_metadata = result.get("needs_bbox_metadata", False)
 
-                if show_output:
-                    click.echo(click.style("\n✓ Bbox column removed successfully!", fg="green"))
-                    click.echo(f"Optimized file: {output_path}")
-                    if backup_path:
-                        click.echo(f"Backup: {backup_path}")
-            else:
-                # V1.x: add bbox column/metadata (existing logic)
-                needs_column = result.get("needs_bbox_column", False)
-                needs_metadata = result.get("needs_bbox_metadata", False)
-
-                def bbox_fix_func(
-                    input_path,
-                    output_path,
-                    verbose_flag,
-                    profile_name,
-                    _needs_col=needs_column,
-                    _needs_meta=needs_metadata,
-                ):
-                    return fix_bbox_all(
+                    def bbox_fix_func(
                         input_path,
                         output_path,
-                        _needs_col,
-                        _needs_meta,
                         verbose_flag,
                         profile_name,
+                        _needs_col=needs_column,
+                        _needs_meta=needs_metadata,
+                    ):
+                        return fix_bbox_all(
+                            input_path,
+                            output_path,
+                            _needs_col,
+                            _needs_meta,
+                            verbose_flag,
+                            profile_name,
+                        )
+
+                    output_path, backup_path = handle_fix_common(
+                        file_path, fix_output, no_backup, bbox_fix_func, verbose, overwrite, None
                     )
 
-                output_path, backup_path = handle_fix_common(
-                    file_path, fix_output, no_backup, bbox_fix_func, verbose, overwrite, None
-                )
+                    if show_output:
+                        click.echo(click.style("\n✓ Bbox optimized successfully!", fg="green"))
+                        click.echo(f"Optimized file: {output_path}")
+                        if backup_path:
+                            click.echo(f"Backup: {backup_path}")
 
-                if show_output:
-                    click.echo(click.style("\n✓ Bbox optimized successfully!", fg="green"))
-                    click.echo(f"Optimized file: {output_path}")
-                    if backup_path:
-                        click.echo(f"Backup: {backup_path}")
-
-    # Print summary for multi-file checks
-    runner.print_summary()
+        # Print summary for multi-file checks
+        runner.print_summary()
 
 
 @check.command(name="row-group", cls=GlobAwareCommand)
@@ -1064,7 +1086,9 @@ def check_bbox_cmd(
 )
 @overwrite_option
 @check_partition_options
+@click.pass_context
 def check_row_group_cmd(
+    ctx,
     parquet_file,
     verbose,
     fix,
@@ -1082,55 +1106,60 @@ def check_row_group_cmd(
 
     configure_verbose(verbose)
 
-    # Get files to check based on partition options
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"📁 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    # Create runner for multi-file progress tracking
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-        result = check_row_groups(
-            file_path, verbose and show_output, return_results=True, quiet=quiet, profile=profile
+    with _activate_s3(ctx):
+        # Get files to check based on partition options
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
 
-        # Record result for summary
-        runner.record_result(file_path, result)
+        if notice:
+            click.echo(click.style(f"📁 {notice}", fg="cyan"))
 
-        if fix:
-            if not result.get("fix_available", False):
-                if show_output:
-                    click.echo(
-                        click.style("\n✓ No fix needed - row groups are optimal!", fg="green")
-                    )
-                continue
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
 
-            if show_output:
-                click.echo("\nOptimizing row groups...")
-            output_path, backup_path = handle_fix_common(
-                file_path, fix_output, no_backup, fix_row_groups, verbose, overwrite, None
+        # Create runner for multi-file progress tracking
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
+
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+            result = check_row_groups(
+                file_path,
+                verbose and show_output,
+                return_results=True,
+                quiet=quiet,
+                profile=profile,
             )
 
-            if show_output:
-                click.echo(click.style("\n✓ Row groups optimized successfully!", fg="green"))
-                click.echo(f"Optimized file: {output_path}")
-                if backup_path:
-                    click.echo(f"Backup: {backup_path}")
+            # Record result for summary
+            runner.record_result(file_path, result)
 
-    # Print summary for multi-file checks
-    runner.print_summary()
+            if fix:
+                if not result.get("fix_available", False):
+                    if show_output:
+                        click.echo(
+                            click.style("\n✓ No fix needed - row groups are optimal!", fg="green")
+                        )
+                    continue
+
+                if show_output:
+                    click.echo("\nOptimizing row groups...")
+                output_path, backup_path = handle_fix_common(
+                    file_path, fix_output, no_backup, fix_row_groups, verbose, overwrite, None
+                )
+
+                if show_output:
+                    click.echo(click.style("\n✓ Row groups optimized successfully!", fg="green"))
+                    click.echo(f"Optimized file: {output_path}")
+                    if backup_path:
+                        click.echo(f"Backup: {backup_path}")
+
+        # Print summary for multi-file checks
+        runner.print_summary()
 
 
 # Convert commands group
@@ -3209,7 +3238,9 @@ def sort(ctx):
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def hilbert_order(
+    ctx,
     input_parquet,
     output_parquet,
     geometry_column,
@@ -3236,34 +3267,35 @@ def hilbert_order(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    hilbert_impl(
-        input_parquet,
-        output_parquet,
-        geometry_column,
-        add_bbox,
-        verbose,
-        compression.upper(),
-        compression_level,
-        row_group_mb,
-        row_group_size,
-        None,
-        geoparquet_version,
-        overwrite,
-    )
+        hilbert_impl(
+            input_parquet,
+            output_parquet,
+            geometry_column,
+            add_bbox,
+            verbose,
+            compression.upper(),
+            compression_level,
+            row_group_mb,
+            row_group_size,
+            None,
+            geoparquet_version,
+            overwrite,
+        )
 
 
 @sort.command(name="column", cls=SingleFileCommand)
@@ -3281,7 +3313,9 @@ def hilbert_order(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def sort_column(
+    ctx,
     input_parquet,
     output_parquet,
     columns,
@@ -3310,25 +3344,26 @@ def sort_column(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+    with _activate_s3(ctx):
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    sort_by_column_impl(
-        input_parquet,
-        output_parquet,
-        columns=columns,
-        descending=descending,
-        verbose=verbose,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        geoparquet_version=geoparquet_version,
-        overwrite=overwrite,
-    )
+        sort_by_column_impl(
+            input_parquet,
+            output_parquet,
+            columns=columns,
+            descending=descending,
+            verbose=verbose,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            geoparquet_version=geoparquet_version,
+            overwrite=overwrite,
+        )
 
 
 @sort.command(name="quadkey", cls=SingleFileCommand)
@@ -3361,7 +3396,9 @@ def sort_column(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def sort_quadkey(
+    ctx,
     input_parquet,
     output_parquet,
     quadkey_name,
@@ -3391,27 +3428,28 @@ def sort_quadkey(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+    with _activate_s3(ctx):
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    sort_by_quadkey_impl(
-        input_parquet,
-        output_parquet,
-        quadkey_column_name=quadkey_name,
-        resolution=resolution,
-        use_centroid=use_centroid,
-        remove_quadkey_column=remove_quadkey_column,
-        verbose=verbose,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        geoparquet_version=geoparquet_version,
-        overwrite=overwrite,
-    )
+        sort_by_quadkey_impl(
+            input_parquet,
+            output_parquet,
+            quadkey_column_name=quadkey_name,
+            resolution=resolution,
+            use_centroid=use_centroid,
+            remove_quadkey_column=remove_quadkey_column,
+            verbose=verbose,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            geoparquet_version=geoparquet_version,
+            overwrite=overwrite,
+        )
 
 
 @cli.group()
@@ -3660,7 +3698,9 @@ def add_country_codes(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_bbox(
+    ctx,
     input_parquet,
     output_parquet,
     bbox_name,
@@ -3704,46 +3744,48 @@ def add_bbox(
         # Force replace existing bbox
         gpio add bbox input.parquet output.parquet --force
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    from geoparquet_io.core.streaming import StreamingError
+        from geoparquet_io.core.streaming import StreamingError
 
-    try:
-        add_bbox_column_impl(
-            input_parquet,
-            output_parquet,
-            bbox_name,
-            dry_run,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            force,
-            geoparquet_version,
-            overwrite=overwrite,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            add_bbox_column_impl(
+                input_parquet,
+                output_parquet,
+                bbox_name,
+                dry_run,
+                verbose,
+                compression.upper(),
+                compression_level,
+                row_group_mb,
+                row_group_size,
+                None,
+                force,
+                geoparquet_version,
+                overwrite=overwrite,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 @add.command(name="bbox-metadata", cls=SingleFileCommand)
 @click.argument("parquet_file")
 @verbose_option
-def add_bbox_metadata_cmd(parquet_file, verbose):
+@click.pass_context
+def add_bbox_metadata_cmd(ctx, parquet_file, verbose):
     """Add bbox covering metadata for an existing bbox column.
 
     Use this when you have a file with a bbox column but no covering metadata.
@@ -3751,15 +3793,16 @@ def add_bbox_metadata_cmd(parquet_file, verbose):
 
     If you need to add both the bbox column and metadata, use 'add bbox' instead.
     """
-    from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
+    with _activate_s3(ctx):
+        from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
 
-    # Validate profile is only used with S3
-    validate_profile_for_urls(None, parquet_file)
+        # Validate profile is only used with S3
+        validate_profile_for_urls(None, parquet_file)
 
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(None, parquet_file)
+        # Setup AWS profile if needed
+        setup_aws_profile_if_needed(None, parquet_file)
 
-    add_bbox_metadata_impl(parquet_file, verbose)
+        add_bbox_metadata_impl(parquet_file, verbose)
 
 
 @add.command(name="h3", cls=SingleFileCommand)
@@ -3779,7 +3822,9 @@ def add_bbox_metadata_cmd(parquet_file, verbose):
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_h3(
+    ctx,
     input_parquet,
     output_parquet,
     h3_name,
@@ -3807,38 +3852,39 @@ def add_h3(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        add_h3_column_impl(
-            input_parquet,
-            output_parquet,
-            h3_name,
-            resolution,
-            dry_run,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            geoparquet_version,
-            overwrite=overwrite,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            add_h3_column_impl(
+                input_parquet,
+                output_parquet,
+                h3_name,
+                resolution,
+                dry_run,
+                verbose,
+                compression.upper(),
+                compression_level,
+                row_group_mb,
+                row_group_size,
+                None,
+                geoparquet_version,
+                overwrite=overwrite,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 @add.command(name="a5", cls=SingleFileCommand)
@@ -3858,7 +3904,9 @@ def add_h3(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_a5(
+    ctx,
     input_parquet,
     output_parquet,
     a5_name,
@@ -3886,38 +3934,39 @@ def add_a5(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        add_a5_column_impl(
-            input_parquet,
-            output_parquet,
-            a5_name,
-            resolution,
-            dry_run,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            geoparquet_version,
-            overwrite=overwrite,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            add_a5_column_impl(
+                input_parquet,
+                output_parquet,
+                a5_name,
+                resolution,
+                dry_run,
+                verbose,
+                compression.upper(),
+                compression_level,
+                row_group_mb,
+                row_group_size,
+                None,
+                geoparquet_version,
+                overwrite=overwrite,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 @add.command(name="s2", cls=SingleFileCommand)
@@ -3937,7 +3986,9 @@ def add_a5(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_s2(
+    ctx,
     input_parquet,
     output_parquet,
     s2_name,
@@ -3965,38 +4016,39 @@ def add_s2(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        add_s2_column_impl(
-            input_parquet,
-            output_parquet,
-            s2_name,
-            level,
-            dry_run,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            geoparquet_version,
-            overwrite=overwrite,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            add_s2_column_impl(
+                input_parquet,
+                output_parquet,
+                s2_name,
+                level,
+                dry_run,
+                verbose,
+                compression.upper(),
+                compression_level,
+                row_group_mb,
+                row_group_size,
+                None,
+                geoparquet_version,
+                overwrite=overwrite,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 @add.command(name="kdtree", cls=SingleFileCommand)
@@ -4042,7 +4094,9 @@ def add_s2(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_kdtree(
+    ctx,
     input_parquet,
     output_parquet,
     kdtree_name,
@@ -4078,66 +4132,69 @@ def add_kdtree(
 
     Use --verbose to track progress with iteration-by-iteration updates.
     """
-    import math
+    with _activate_s3(ctx):
+        import math
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Validate mutually exclusive options
-    if sum([partitions is not None, auto is not None]) > 1:
-        raise click.UsageError("--partitions and --auto are mutually exclusive")
+        # Validate mutually exclusive options
+        if sum([partitions is not None, auto is not None]) > 1:
+            raise click.UsageError("--partitions and --auto are mutually exclusive")
 
-    # Set defaults
-    if partitions is None and auto is None:
-        auto = 120000  # Default: auto-select targeting 120k rows/partition
-        partitions = None
-    elif auto is not None:
-        # Auto mode: will compute partitions below
-        partitions = None
+        # Set defaults
+        if partitions is None and auto is None:
+            auto = 120000  # Default: auto-select targeting 120k rows/partition
+            partitions = None
+        elif auto is not None:
+            # Auto mode: will compute partitions below
+            partitions = None
 
-    # Validate partitions if specified
-    if partitions is not None and (partitions < 2 or (partitions & (partitions - 1)) != 0):
-        raise click.UsageError(f"Partitions must be a power of 2 (2, 4, 8, ...), got {partitions}")
+        # Validate partitions if specified
+        if partitions is not None and (partitions < 2 or (partitions & (partitions - 1)) != 0):
+            raise click.UsageError(
+                f"Partitions must be a power of 2 (2, 4, 8, ...), got {partitions}"
+            )
 
-    # Validate mutually exclusive options for approx/exact
-    if exact and approx != 100000:
-        raise click.UsageError("--approx and --exact are mutually exclusive")
+        # Validate mutually exclusive options for approx/exact
+        if exact and approx != 100000:
+            raise click.UsageError("--approx and --exact are mutually exclusive")
 
-    # Determine sample size
-    sample_size = None if exact else approx
+        # Determine sample size
+        sample_size = None if exact else approx
 
-    # If auto mode, compute optimal partitions
-    if auto is not None:
-        # Pass None for iterations, let implementation compute
-        iterations = None
-        target_rows = auto if auto > 0 else 120000
-        auto_target = ("rows", target_rows)
-    else:
-        # Convert partitions to iterations
-        iterations = int(math.log2(partitions))
-        auto_target = None
+        # If auto mode, compute optimal partitions
+        if auto is not None:
+            # Pass None for iterations, let implementation compute
+            iterations = None
+            target_rows = auto if auto > 0 else 120000
+            auto_target = ("rows", target_rows)
+        else:
+            # Convert partitions to iterations
+            iterations = int(math.log2(partitions))
+            auto_target = None
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    add_kdtree_column_impl(
-        input_parquet,
-        output_parquet,
-        kdtree_name,
-        iterations,
-        dry_run,
-        verbose,
-        compression.upper(),
-        compression_level,
-        row_group_mb,
-        row_group_size,
-        force,
-        sample_size,
-        auto_target,
-        None,
-        geoparquet_version,
-        overwrite=overwrite,
-    )
+        add_kdtree_column_impl(
+            input_parquet,
+            output_parquet,
+            kdtree_name,
+            iterations,
+            dry_run,
+            verbose,
+            compression.upper(),
+            compression_level,
+            row_group_mb,
+            row_group_size,
+            force,
+            sample_size,
+            auto_target,
+            None,
+            geoparquet_version,
+            overwrite=overwrite,
+        )
 
 
 @add.command(name="quadkey", cls=SingleFileCommand)
@@ -4166,7 +4223,9 @@ def add_kdtree(
 @verbose_option
 @any_extension_option
 @show_sql_option
+@click.pass_context
 def add_quadkey(
+    ctx,
     input_parquet,
     output_parquet,
     quadkey_name,
@@ -4195,38 +4254,39 @@ def add_quadkey(
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """
-    # Validate output early - provides helpful error if no output and not piping
-    from geoparquet_io.core.streaming import StreamingError, validate_output
+    with _activate_s3(ctx):
+        # Validate output early - provides helpful error if no output and not piping
+        from geoparquet_io.core.streaming import StreamingError, validate_output
 
-    try:
-        validate_output(output_parquet)
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_parquet, any_extension)
+        # Validate .parquet extension
+        validate_parquet_extension(output_parquet, any_extension)
 
-    # Parse row group options
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Parse row group options
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        add_quadkey_column_impl(
-            input_parquet,
-            output_parquet,
-            quadkey_column_name=quadkey_name,
-            resolution=resolution,
-            use_centroid=use_centroid,
-            dry_run=dry_run,
-            verbose=verbose,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            add_quadkey_column_impl(
+                input_parquet,
+                output_parquet,
+                quadkey_column_name=quadkey_name,
+                resolution=resolution,
+                use_centroid=use_centroid,
+                dry_run=dry_run,
+                verbose=verbose,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 # Partition commands group
@@ -4261,7 +4321,9 @@ def partition(ctx):
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_admin(
+    ctx,
     input_parquet,
     output_folder,
     dataset,
@@ -4318,37 +4380,38 @@ def partition_admin(
     Requires internet connection. Input data must have valid geometries in WGS84 or
     compatible CRS.
     """
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+    with _activate_s3(ctx):
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Parse levels
-    level_list = [level.strip() for level in levels.split(",")]
+        # Parse levels
+        level_list = [level.strip() for level in levels.split(",")]
 
-    # Use hierarchical partitioning (spatial join + partition)
-    partition_admin_hierarchical_impl(
-        input_parquet,
-        output_folder,
-        dataset_name=dataset,
-        levels=level_list,
-        hive=hive,
-        overwrite=overwrite,
-        preview=preview,
-        preview_limit=preview_limit,
-        verbose=verbose,
-        force=force,
-        skip_analysis=skip_analysis,
-        filename_prefix=prefix,
-        geoparquet_version=geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-    )
+        # Use hierarchical partitioning (spatial join + partition)
+        partition_admin_hierarchical_impl(
+            input_parquet,
+            output_folder,
+            dataset_name=dataset,
+            levels=level_list,
+            hive=hive,
+            overwrite=overwrite,
+            preview=preview,
+            preview_limit=preview_limit,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            filename_prefix=prefix,
+            geoparquet_version=geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+        )
 
 
 @partition.command(name="string", cls=SingleFileCommand)
@@ -4361,7 +4424,9 @@ def partition_admin(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_string(
+    ctx,
     input_parquet,
     output_folder,
     column,
@@ -4403,39 +4468,40 @@ def partition_string(
         # Use Hive-style partitioning
         gpio partition string input.parquet output/ --column region --hive
     """
-    from geoparquet_io.core.streaming import StreamingError
+    with _activate_s3(ctx):
+        from geoparquet_io.core.streaming import StreamingError
 
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    try:
-        partition_by_string_impl(
-            input_parquet,
-            output_folder,
-            column,
-            chars,
-            hive,
-            overwrite,
-            preview,
-            preview_limit,
-            verbose,
-            force,
-            skip_analysis,
-            prefix,
-            None,
-            geoparquet_version,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            memory_limit=write_memory,
-        )
-    except StreamingError as e:
-        raise click.ClickException(str(e)) from None
+        try:
+            partition_by_string_impl(
+                input_parquet,
+                output_folder,
+                column,
+                chars,
+                hive,
+                overwrite,
+                preview,
+                preview_limit,
+                verbose,
+                force,
+                skip_analysis,
+                prefix,
+                None,
+                geoparquet_version,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                memory_limit=write_memory,
+            )
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
 
 
 @partition.command(name="h3", cls=SingleFileCommand)
@@ -4479,7 +4545,9 @@ def partition_string(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_h3(
+    ctx,
     input_parquet,
     output_folder,
     h3_name,
@@ -4544,63 +4612,64 @@ def partition_h3(
         # Sub-partition all files over 100MB in a directory
         gpio partition h3 /data/partitions/ --min-size 100MB --resolution 4 --in-place
     """
-    # Handle directory input with --min-size
-    if handle_directory_sub_partition(
-        input_parquet=input_parquet,
-        partition_type="h3",
-        min_size=min_size,
-        resolution=resolution,
-        in_place=in_place,
-        hive=hive,
-        overwrite=overwrite,
-        verbose=verbose,
-        force=force,
-        skip_analysis=skip_analysis,
-        compression=compression,
-        compression_level=compression_level,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    ):
-        return
+    with _activate_s3(ctx):
+        # Handle directory input with --min-size
+        if handle_directory_sub_partition(
+            input_parquet=input_parquet,
+            partition_type="h3",
+            min_size=min_size,
+            resolution=resolution,
+            in_place=in_place,
+            hive=hive,
+            overwrite=overwrite,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            compression=compression,
+            compression_level=compression_level,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        ):
+            return
 
-    # Existing single-file logic continues below...
+        # Existing single-file logic continues below...
 
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Convert flag to None if not explicitly set, so implementation can determine default
-    keep_h3_col = True if keep_h3_column else None
+        # Convert flag to None if not explicitly set, so implementation can determine default
+        keep_h3_col = True if keep_h3_column else None
 
-    partition_by_h3_impl(
-        input_parquet,
-        output_folder,
-        h3_name,
-        resolution,
-        hive,
-        overwrite,
-        preview,
-        preview_limit,
-        verbose,
-        keep_h3_col,
-        force,
-        skip_analysis,
-        prefix,
-        None,
-        geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    )
+        partition_by_h3_impl(
+            input_parquet,
+            output_folder,
+            h3_name,
+            resolution,
+            hive,
+            overwrite,
+            preview,
+            preview_limit,
+            verbose,
+            keep_h3_col,
+            force,
+            skip_analysis,
+            prefix,
+            None,
+            geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        )
 
 
 @partition.command(name="s2", cls=SingleFileCommand)
@@ -4644,7 +4713,9 @@ def partition_h3(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_s2(
+    ctx,
     input_parquet,
     output_folder,
     s2_name,
@@ -4713,61 +4784,62 @@ def partition_s2(
         # Sub-partition all files over 100MB in a directory
         gpio partition s2 /data/partitions/ --min-size 100MB --level 10 --in-place
     """
-    # Handle directory input with --min-size
-    if handle_directory_sub_partition(
-        input_parquet=input_parquet,
-        partition_type="s2",
-        min_size=min_size,
-        level=level,  # S2 uses "level" not "resolution"
-        in_place=in_place,
-        hive=hive,
-        overwrite=overwrite,
-        verbose=verbose,
-        force=force,
-        skip_analysis=skip_analysis,
-        compression=compression,
-        compression_level=compression_level,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    ):
-        return
+    with _activate_s3(ctx):
+        # Handle directory input with --min-size
+        if handle_directory_sub_partition(
+            input_parquet=input_parquet,
+            partition_type="s2",
+            min_size=min_size,
+            level=level,  # S2 uses "level" not "resolution"
+            in_place=in_place,
+            hive=hive,
+            overwrite=overwrite,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            compression=compression,
+            compression_level=compression_level,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        ):
+            return
 
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Convert flag to None if not explicitly set, so implementation can determine default
-    keep_s2_col = True if keep_s2_column else None
+        # Convert flag to None if not explicitly set, so implementation can determine default
+        keep_s2_col = True if keep_s2_column else None
 
-    partition_by_s2_impl(
-        input_parquet,
-        output_folder,
-        s2_name,
-        level,
-        hive,
-        overwrite,
-        preview,
-        preview_limit,
-        verbose,
-        keep_s2_col,
-        force,
-        skip_analysis,
-        prefix,
-        None,
-        geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    )
+        partition_by_s2_impl(
+            input_parquet,
+            output_folder,
+            s2_name,
+            level,
+            hive,
+            overwrite,
+            preview,
+            preview_limit,
+            verbose,
+            keep_s2_col,
+            force,
+            skip_analysis,
+            prefix,
+            None,
+            geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        )
 
 
 @partition.command(name="a5", cls=SingleFileCommand)
@@ -4811,7 +4883,9 @@ def partition_s2(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_a5(
+    ctx,
     input_parquet,
     output_folder,
     a5_name,
@@ -4871,41 +4945,42 @@ def partition_a5(
         # Use Hive-style partitioning (A5 column included by default)
         gpio partition a5 input.parquet output/ --auto --hive
     """
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+    with _activate_s3(ctx):
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Convert flag to None if not explicitly set, so implementation can determine default
-    keep_a5_col = True if keep_a5_column else None
+        # Convert flag to None if not explicitly set, so implementation can determine default
+        keep_a5_col = True if keep_a5_column else None
 
-    partition_by_a5_impl(
-        input_parquet,
-        output_folder,
-        a5_name,
-        resolution,
-        hive,
-        overwrite,
-        preview,
-        preview_limit,
-        verbose,
-        keep_a5_col,
-        force,
-        skip_analysis,
-        prefix,
-        None,
-        geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    )
+        partition_by_a5_impl(
+            input_parquet,
+            output_folder,
+            a5_name,
+            resolution,
+            hive,
+            overwrite,
+            preview,
+            preview_limit,
+            verbose,
+            keep_a5_col,
+            force,
+            skip_analysis,
+            prefix,
+            None,
+            geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        )
 
 
 @partition.command(name="kdtree", cls=SingleFileCommand)
@@ -4949,7 +5024,9 @@ def partition_a5(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_kdtree(
+    ctx,
     input_parquet,
     output_folder,
     kdtree_name,
@@ -5001,74 +5078,75 @@ def partition_kdtree(
         # Partition with custom sample size
         gpio partition kdtree input.parquet output/ --approx 200000
     """
-    # Validate mutually exclusive options
-    import math
+    with _activate_s3(ctx):
+        # Validate mutually exclusive options
+        import math
 
-    if sum([partitions is not None, auto is not None]) > 1:
-        raise click.UsageError("--partitions and --auto are mutually exclusive")
+        if sum([partitions is not None, auto is not None]) > 1:
+            raise click.UsageError("--partitions and --auto are mutually exclusive")
 
-    # Set defaults
-    if partitions is None and auto is None:
-        auto = 120000  # Default: auto-select targeting 120k rows/partition
+        # Set defaults
+        if partitions is None and auto is None:
+            auto = 120000  # Default: auto-select targeting 120k rows/partition
 
-    # Validate partitions if specified
-    if partitions is not None:
-        if partitions < 2 or (partitions & (partitions - 1)) != 0:
-            raise click.UsageError(
-                f"Partitions must be a power of 2 (2, 4, 8, ...), got {partitions}"
-            )
-        iterations = int(math.log2(partitions))
-    else:
-        iterations = None  # Will be computed in auto mode
+        # Validate partitions if specified
+        if partitions is not None:
+            if partitions < 2 or (partitions & (partitions - 1)) != 0:
+                raise click.UsageError(
+                    f"Partitions must be a power of 2 (2, 4, 8, ...), got {partitions}"
+                )
+            iterations = int(math.log2(partitions))
+        else:
+            iterations = None  # Will be computed in auto mode
 
-    # Validate mutually exclusive options for approx/exact
-    if exact and approx != 100000:
-        raise click.UsageError("--approx and --exact are mutually exclusive")
+        # Validate mutually exclusive options for approx/exact
+        if exact and approx != 100000:
+            raise click.UsageError("--approx and --exact are mutually exclusive")
 
-    # Determine sample size
-    sample_size = None if exact else approx
+        # Determine sample size
+        sample_size = None if exact else approx
 
-    # Prepare auto_target if in auto mode
-    if auto is not None:
-        target_rows = auto if auto > 0 else 120000
-        auto_target = ("rows", target_rows)
-    else:
-        auto_target = None
+        # Prepare auto_target if in auto mode
+        if auto is not None:
+            target_rows = auto if auto > 0 else 120000
+            auto_target = ("rows", target_rows)
+        else:
+            auto_target = None
 
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Convert flag to None if not explicitly set, so implementation can determine default
-    keep_kdtree_col = True if keep_kdtree_column else None
+        # Convert flag to None if not explicitly set, so implementation can determine default
+        keep_kdtree_col = True if keep_kdtree_column else None
 
-    partition_by_kdtree_impl(
-        input_parquet,
-        output_folder,
-        kdtree_name,
-        iterations,
-        hive,
-        overwrite,
-        preview,
-        preview_limit,
-        verbose,
-        keep_kdtree_col,
-        force,
-        skip_analysis,
-        sample_size,
-        auto_target,
-        prefix,
-        None,
-        geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-    )
+        partition_by_kdtree_impl(
+            input_parquet,
+            output_folder,
+            kdtree_name,
+            iterations,
+            hive,
+            overwrite,
+            preview,
+            preview_limit,
+            verbose,
+            keep_kdtree_col,
+            force,
+            skip_analysis,
+            sample_size,
+            auto_target,
+            prefix,
+            None,
+            geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+        )
 
 
 @partition.command(name="quadkey", cls=SingleFileCommand)
@@ -5123,7 +5201,9 @@ def partition_kdtree(
 @verbose_option
 @geoparquet_version_option
 @show_sql_option
+@click.pass_context
 def partition_quadkey(
+    ctx,
     input_parquet,
     output_folder,
     quadkey_column,
@@ -5195,62 +5275,63 @@ def partition_quadkey(
         # Sub-partition all files over 100MB in a directory
         gpio partition quadkey /data/partitions/ --min-size 100MB --auto --in-place
     """
-    # Handle directory input with --min-size
-    if handle_directory_sub_partition(
-        input_parquet=input_parquet,
-        partition_type="quadkey",
-        min_size=min_size,
-        resolution=resolution,
-        in_place=in_place,
-        hive=hive,
-        overwrite=overwrite,
-        verbose=verbose,
-        force=force,
-        skip_analysis=skip_analysis,
-        compression=compression,
-        compression_level=compression_level,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    ):
-        return
+    with _activate_s3(ctx):
+        # Handle directory input with --min-size
+        if handle_directory_sub_partition(
+            input_parquet=input_parquet,
+            partition_type="quadkey",
+            min_size=min_size,
+            resolution=resolution,
+            in_place=in_place,
+            hive=hive,
+            overwrite=overwrite,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            compression=compression,
+            compression_level=compression_level,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        ):
+            return
 
-    # If preview mode, output_folder is not required
-    if not preview and not output_folder:
-        raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
+        # If preview mode, output_folder is not required
+        if not preview and not output_folder:
+            raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
 
-    # Validate mutual exclusivity of row group options and get MB value
-    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        # Validate mutual exclusivity of row group options and get MB value
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-    # Convert flag to None if not explicitly set, so implementation can determine default
-    keep_quadkey_col = True if keep_quadkey_column else None
+        # Convert flag to None if not explicitly set, so implementation can determine default
+        keep_quadkey_col = True if keep_quadkey_column else None
 
-    partition_by_quadkey_impl(
-        input_parquet,
-        output_folder,
-        quadkey_column_name=quadkey_column,
-        resolution=resolution,
-        partition_resolution=partition_resolution,
-        use_centroid=use_centroid,
-        hive=hive,
-        overwrite=overwrite,
-        preview=preview,
-        preview_limit=preview_limit,
-        verbose=verbose,
-        keep_quadkey_column=keep_quadkey_col,
-        force=force,
-        skip_analysis=skip_analysis,
-        filename_prefix=prefix,
-        geoparquet_version=geoparquet_version,
-        compression=compression.upper(),
-        compression_level=compression_level,
-        row_group_size_mb=row_group_mb,
-        row_group_rows=row_group_size,
-        memory_limit=write_memory,
-        auto=auto,
-        target_rows=target_rows,
-        max_partitions=max_partitions,
-    )
+        partition_by_quadkey_impl(
+            input_parquet,
+            output_folder,
+            quadkey_column_name=quadkey_column,
+            resolution=resolution,
+            partition_resolution=partition_resolution,
+            use_centroid=use_centroid,
+            hive=hive,
+            overwrite=overwrite,
+            preview=preview,
+            preview_limit=preview_limit,
+            verbose=verbose,
+            keep_quadkey_column=keep_quadkey_col,
+            force=force,
+            skip_analysis=skip_analysis,
+            filename_prefix=prefix,
+            geoparquet_version=geoparquet_version,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            memory_limit=write_memory,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        )
 
 
 # STAC commands
@@ -5593,7 +5674,8 @@ def publish_upload(
 @handle_geoparquet_errors
 @click.argument("stac_file")
 @verbose_option
-def check_stac_cmd(stac_file, verbose):
+@click.pass_context
+def check_stac_cmd(ctx, stac_file, verbose):
     """
     Validate STAC Item or Collection JSON.
 
@@ -5612,16 +5694,17 @@ def check_stac_cmd(stac_file, verbose):
       \b
       gpio check stac output.json
     """
-    from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
-    from geoparquet_io.core.stac_check import check_stac
+    with _activate_s3(ctx):
+        from geoparquet_io.core.remote import setup_aws_profile_if_needed, validate_profile_for_urls
+        from geoparquet_io.core.stac_check import check_stac
 
-    # Validate profile is only used with S3
-    validate_profile_for_urls(None, stac_file)
+        # Validate profile is only used with S3
+        validate_profile_for_urls(None, stac_file)
 
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(None, stac_file)
+        # Setup AWS profile if needed
+        setup_aws_profile_if_needed(None, stac_file)
 
-    check_stac(stac_file, verbose)
+        check_stac(stac_file, verbose)
 
 
 @check.command(name="spec", cls=GlobAwareCommand)
@@ -5651,7 +5734,9 @@ def check_stac_cmd(stac_file, verbose):
     help="Number of rows to sample for data validation (0 = all rows)",
 )
 @verbose_option
+@click.pass_context
 def check_spec(
+    ctx,
     parquet_file,
     geoparquet_version,
     json_output,
@@ -5707,36 +5792,39 @@ def check_spec(
 
     configure_verbose(verbose)
 
-    # Validate profile is only used with S3
-    validate_profile_for_urls(None, parquet_file)
-    setup_aws_profile_if_needed(None, parquet_file)
+    with _activate_s3(ctx):
+        # Validate profile is only used with S3
+        validate_profile_for_urls(None, parquet_file)
+        setup_aws_profile_if_needed(None, parquet_file)
 
-    result = validate_geoparquet(
-        parquet_file,
-        target_version=geoparquet_version,
-        validate_data=not skip_data_validation,
-        sample_size=sample_size,
-        verbose=verbose,
-    )
+        result = validate_geoparquet(
+            parquet_file,
+            target_version=geoparquet_version,
+            validate_data=not skip_data_validation,
+            sample_size=sample_size,
+            verbose=verbose,
+        )
 
-    if json_output:
-        click.echo(format_json(result))
-    else:
-        format_terminal(result)
+        if json_output:
+            click.echo(format_json(result))
+        else:
+            format_terminal(result)
 
-    # Exit codes: 0=passed, 1=failed, 2=warnings only
-    if result.failed_count > 0:
-        raise click.exceptions.Exit(1)
-    elif result.warning_count > 0:
-        raise click.exceptions.Exit(2)
-    # Exit 0 is implicit when no exception is raised
+        # Exit codes: 0=passed, 1=failed, 2=warnings only
+        if result.failed_count > 0:
+            raise click.exceptions.Exit(1)
+        elif result.warning_count > 0:
+            raise click.exceptions.Exit(2)
+        # Exit 0 is implicit when no exception is raised
 
 
 @check.command(name="optimization", cls=GlobAwareCommand)
 @click.argument("parquet_file")
 @click.option("--verbose", is_flag=True, help="Print detailed diagnostics")
 @check_partition_options
+@click.pass_context
 def check_optimization_cmd(
+    ctx,
     parquet_file,
     verbose,
     check_all_files,
@@ -5769,32 +5857,33 @@ def check_optimization_cmd(
 
     configure_verbose(verbose)
 
-    files_to_check, notice = get_files_to_check(
-        parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
-    )
-
-    if notice:
-        click.echo(click.style(f"\U0001f4c1 {notice}", fg="cyan"))
-
-    if not files_to_check:
-        click.echo(click.style("No parquet files found", fg="red"))
-        return
-
-    runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
-
-    for file_path in files_to_check:
-        runner.start_file(file_path)
-
-        show_output = runner.verbose or not runner.is_multi_file
-        quiet = not show_output
-
-        result = check_optimization(
-            file_path, verbose=verbose and show_output, return_results=True, quiet=quiet
+    with _activate_s3(ctx):
+        files_to_check, notice = get_files_to_check(
+            parquet_file, check_all=check_all_files, check_sample=check_sample, verbose=verbose
         )
 
-        runner.record_result(file_path, result)
+        if notice:
+            click.echo(click.style(f"\U0001f4c1 {notice}", fg="cyan"))
 
-    runner.print_summary()
+        if not files_to_check:
+            click.echo(click.style("No parquet files found", fg="red"))
+            return
+
+        runner = MultiFileCheckRunner(files_to_check, verbose=verbose)
+
+        for file_path in files_to_check:
+            runner.start_file(file_path)
+
+            show_output = runner.verbose or not runner.is_multi_file
+            quiet = not show_output
+
+            result = check_optimization(
+                file_path, verbose=verbose and show_output, return_results=True, quiet=quiet
+            )
+
+            runner.record_result(file_path, result)
+
+        runner.print_summary()
 
 
 # Skills command (for LLM integration)
