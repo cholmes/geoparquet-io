@@ -7,6 +7,7 @@ with appropriate extensions loaded for GeoParquet operations.
 
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import duckdb
 
@@ -17,22 +18,24 @@ _s3_buckets_needing_auth: set[str] = set()
 
 # Ambient S3 config — set once at CLI/API boundary via s3_config_scope(),
 # automatically picked up by get_duckdb_connection().
-_active_s3_config: dict = {}
-_s3_config_lock = threading.Lock()
+# Uses ContextVar for proper isolation across concurrent async/threaded scopes.
+_active_s3_config: ContextVar[dict | None] = ContextVar("_active_s3_config", default=None)
 
 
 @contextmanager
 def s3_config_scope(s3_config: dict):
-    """Set ambient S3 config for all get_duckdb_connection() calls within this scope."""
-    global _active_s3_config
-    with _s3_config_lock:
-        previous = _active_s3_config.copy()
-        _active_s3_config.update(s3_config)
+    """Set ambient S3 config for all get_duckdb_connection() calls within this scope.
+
+    Thread-safe and async-safe via contextvars. Nested scopes merge configs,
+    with inner scopes taking precedence. Config is automatically restored on exit.
+    """
+    current = _active_s3_config.get() or {}
+    merged = {**current, **s3_config}
+    token = _active_s3_config.set(merged)
     try:
         yield
     finally:
-        with _s3_config_lock:
-            _active_s3_config = previous
+        _active_s3_config.reset(token)
 
 
 def _extract_bucket_name(path: str) -> str:
@@ -185,9 +188,10 @@ def get_duckdb_connection(
             """)
 
     # Apply S3 config: explicit kwargs override ambient config
-    eff_endpoint = s3_endpoint if s3_endpoint is not None else _active_s3_config.get("s3_endpoint")
-    eff_region = s3_region if s3_region is not None else _active_s3_config.get("s3_region")
-    eff_use_ssl = s3_use_ssl if s3_use_ssl is not None else _active_s3_config.get("s3_use_ssl")
+    ambient = _active_s3_config.get() or {}
+    eff_endpoint = s3_endpoint if s3_endpoint is not None else ambient.get("s3_endpoint")
+    eff_region = s3_region if s3_region is not None else ambient.get("s3_region")
+    eff_use_ssl = s3_use_ssl if s3_use_ssl is not None else ambient.get("s3_use_ssl")
 
     if eff_endpoint:
         safe_endpoint = _escape_sql_string(eff_endpoint)

@@ -115,7 +115,10 @@ class OptionalIntCommand(GlobAwareCommand):
 
 @contextmanager
 def _activate_s3(ctx, aws_profile=None, s3_endpoint=None, s3_region=None, s3_no_ssl=False):
-    """Resolve and activate S3 config from ctx + per-command overrides."""
+    """Resolve and activate S3 config from ctx + per-command overrides.
+
+    Properly saves/restores AWS_PROFILE env var to avoid credential leaks.
+    """
     from geoparquet_io.core.duckdb_utils import s3_config_scope
     from geoparquet_io.core.remote import resolve_s3_config
 
@@ -125,10 +128,17 @@ def _activate_s3(ctx, aws_profile=None, s3_endpoint=None, s3_region=None, s3_no_
         s3_no_ssl=s3_no_ssl or ctx.obj.get("s3_no_ssl", False),
         aws_profile=aws_profile or ctx.obj.get("aws_profile"),
     )
-    if config["profile"]:
-        os.environ["AWS_PROFILE"] = config["profile"]
-    with s3_config_scope(config):
-        yield config
+    previous_profile = os.environ.get("AWS_PROFILE")
+    try:
+        if config["profile"]:
+            os.environ["AWS_PROFILE"] = config["profile"]
+        with s3_config_scope(config):
+            yield config
+    finally:
+        if previous_profile is None:
+            os.environ.pop("AWS_PROFILE", None)
+        else:
+            os.environ["AWS_PROFILE"] = previous_profile
 
 
 @with_plugins(entry_points(group="gpio.plugins"))
@@ -2078,12 +2088,14 @@ def _inspect_stats_impl(parquet_file, json_output, markdown_output):
     help="For partitioned data: aggregate info from all files",
 )
 @verbose_option
-def inspect_summary(parquet_file, json_output, markdown_output, check_all_files, verbose):
+@click.pass_context
+def inspect_summary(ctx, parquet_file, json_output, markdown_output, check_all_files, verbose):
     """Show quick metadata summary (default).
 
     Displays file size, row count, columns, geometry type, CRS, and bounding box.
     """
-    _inspect_summary_impl(parquet_file, json_output, markdown_output, check_all_files)
+    with _activate_s3(ctx):
+        _inspect_summary_impl(parquet_file, json_output, markdown_output, check_all_files)
 
 
 @inspect.command(name="head", cls=GlobAwareCommand)
@@ -2094,7 +2106,8 @@ def inspect_summary(parquet_file, json_output, markdown_output, check_all_files,
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
 @verbose_option
-def inspect_head(parquet_file, count, json_output, markdown_output, verbose):
+@click.pass_context
+def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose):
     """Show first N rows of data (default: 10).
 
     Examples:
@@ -2103,7 +2116,8 @@ def inspect_head(parquet_file, count, json_output, markdown_output, verbose):
         gpio inspect head data.parquet        # First 10 rows
         gpio inspect head data.parquet 20     # First 20 rows
     """
-    _inspect_preview_impl(parquet_file, count, "head", json_output, markdown_output)
+    with _activate_s3(ctx):
+        _inspect_preview_impl(parquet_file, count, "head", json_output, markdown_output)
 
 
 @inspect.command(name="tail", cls=GlobAwareCommand)
@@ -2114,7 +2128,8 @@ def inspect_head(parquet_file, count, json_output, markdown_output, verbose):
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
 @verbose_option
-def inspect_tail(parquet_file, count, json_output, markdown_output, verbose):
+@click.pass_context
+def inspect_tail(ctx, parquet_file, count, json_output, markdown_output, verbose):
     """Show last N rows of data (default: 10).
 
     Examples:
@@ -2123,7 +2138,8 @@ def inspect_tail(parquet_file, count, json_output, markdown_output, verbose):
         gpio inspect tail data.parquet        # Last 10 rows
         gpio inspect tail data.parquet 5      # Last 5 rows
     """
-    _inspect_preview_impl(parquet_file, count, "tail", json_output, markdown_output)
+    with _activate_s3(ctx):
+        _inspect_preview_impl(parquet_file, count, "tail", json_output, markdown_output)
 
 
 @inspect.command(name="stats", cls=GlobAwareCommand)
@@ -2133,9 +2149,11 @@ def inspect_tail(parquet_file, count, json_output, markdown_output, verbose):
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
 @verbose_option
-def inspect_stats(parquet_file, json_output, markdown_output, verbose):
+@click.pass_context
+def inspect_stats(ctx, parquet_file, json_output, markdown_output, verbose):
     """Show column statistics (nulls, min/max, unique counts)."""
-    _inspect_stats_impl(parquet_file, json_output, markdown_output)
+    with _activate_s3(ctx):
+        _inspect_stats_impl(parquet_file, json_output, markdown_output)
 
 
 @inspect.command(name="meta", cls=GlobAwareCommand)
@@ -2160,7 +2178,9 @@ def inspect_stats(parquet_file, json_output, markdown_output, verbose):
 )
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting")
 @verbose_option
+@click.pass_context
 def inspect_meta(
+    ctx,
     parquet_file,
     meta_geoparquet,
     meta_parquet,
@@ -2181,34 +2201,29 @@ def inspect_meta(
         gpio inspect meta data.parquet --row-groups 5 # Show 5 row groups
         gpio inspect meta data.parquet --geo-stats    # Per-row-group bbox stats
     """
-    from geoparquet_io.core.remote import (
-        setup_aws_profile_if_needed,
-        validate_profile_for_urls,
-    )
-
     _validate_parquet_input(parquet_file)
-    validate_profile_for_urls(None, parquet_file)
-    setup_aws_profile_if_needed(None, parquet_file)
 
-    try:
-        _handle_meta_display(
-            parquet_file,
-            meta_parquet,
-            meta_geoparquet,
-            meta_parquet_geo,
-            meta_row_groups,
-            json_output,
-            meta_geo_stats,
-        )
-    except Exception as e:
-        raise _friendly_parquet_error(e, parquet_file) from e
+    with _activate_s3(ctx):
+        try:
+            _handle_meta_display(
+                parquet_file,
+                meta_parquet,
+                meta_geoparquet,
+                meta_parquet_geo,
+                meta_row_groups,
+                json_output,
+                meta_geo_stats,
+            )
+        except Exception as e:
+            raise _friendly_parquet_error(e, parquet_file) from e
 
 
 @inspect.command(name="layers", cls=GlobAwareCommand)
 @click.argument("input_file")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON for scripting")
 @verbose_option
-def inspect_layers(input_file, json_output, verbose):
+@click.pass_context
+def inspect_layers(ctx, input_file, json_output, verbose):
     """List layers in multi-layer formats (GeoPackage, FileGDB).
 
     Returns layer names for files with 2+ layers. Single-layer files
@@ -2225,14 +2240,15 @@ def inspect_layers(input_file, json_output, verbose):
 
     from geoparquet_io.core.layers import list_layers
 
-    try:
-        layers = list_layers(input_file)
-    except FileNotFoundError as e:
-        raise click.ClickException(str(e)) from e
-    except ValueError as e:
-        raise click.ClickException(str(e)) from e
-    except RuntimeError as e:
-        raise click.ClickException(str(e)) from e
+    with _activate_s3(ctx):
+        try:
+            layers = list_layers(input_file)
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e)) from e
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        except RuntimeError as e:
+            raise click.ClickException(str(e)) from e
 
     if layers is None:
         if json_output:

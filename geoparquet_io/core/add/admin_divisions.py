@@ -508,69 +508,69 @@ def add_admin_divisions_multi(
 
     with s3_config_scope(dataset.get_s3_config()):
         con = _setup_duckdb_connection()
+        try:
+            # Get total input count (skip in dry-run)
+            if not dry_run:
+                total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+                progress(f"Processing {total_count:,} input features...")
 
-        # Get total input count (skip in dry-run)
-        if not dry_run:
-            total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
-            progress(f"Processing {total_count:,} input features...")
+            # Build query components (use cached admin_source from _setup_dataset_and_columns)
+            query, admin_source = _build_query_components(
+                con,
+                dataset,
+                levels,
+                partition_columns,
+                input_url,
+                admin_source,
+                admin_geom_col,
+                admin_bbox_col,
+                input_geom_col,
+                input_bbox_col,
+                verbose,
+                dry_run,
+                prefix=prefix,
+            )
 
-        # Build query components (use cached admin_source from _setup_dataset_and_columns)
-        query, admin_source = _build_query_components(
-            con,
-            dataset,
-            levels,
-            partition_columns,
-            input_url,
-            admin_source,
-            admin_geom_col,
-            admin_bbox_col,
-            input_geom_col,
-            input_bbox_col,
-            verbose,
-            dry_run,
-            prefix=prefix,
-        )
+            # Handle dry-run mode
+            if _handle_dry_run_mode(
+                dry_run,
+                input_url,
+                admin_source,
+                output_parquet,
+                input_geom_col,
+                admin_geom_col,
+                input_bbox_col,
+                admin_bbox_col,
+                query,
+                compression,
+                compression_level,
+            ):
+                return
 
-        # Handle dry-run mode
-        if _handle_dry_run_mode(
-            dry_run,
-            input_url,
-            admin_source,
-            output_parquet,
-            input_geom_col,
-            admin_geom_col,
-            input_bbox_col,
-            admin_bbox_col,
-            query,
-            compression,
-            compression_level,
-        ):
+            # Execute the query using the common write method
+            if verbose:
+                debug("Performing spatial join with admin boundaries...")
+
+            write_parquet_with_metadata(
+                con,
+                query,
+                output_parquet,
+                original_metadata=metadata,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                verbose=verbose,
+                profile=profile,
+                geoparquet_version=geoparquet_version,
+            )
+
+            # Get statistics about the results
+            total_features, features_with_admin, unique_counts = _get_result_stats(
+                con, output_parquet, dataset, levels, verbose
+            )
+        finally:
             con.close()
-            return
-
-        # Execute the query using the common write method
-        if verbose:
-            debug("Performing spatial join with admin boundaries...")
-
-        write_parquet_with_metadata(
-            con,
-            query,
-            output_parquet,
-            original_metadata=metadata,
-            compression=compression,
-            compression_level=compression_level,
-            row_group_size_mb=row_group_size_mb,
-            row_group_rows=row_group_rows,
-            verbose=verbose,
-            profile=profile,
-            geoparquet_version=geoparquet_version,
-        )
-
-        # Get statistics about the results
-        total_features, features_with_admin, unique_counts = _get_result_stats(
-            con, output_parquet, dataset, levels, verbose
-        )
-        con.close()
 
     progress("\nResults:")
     progress(
