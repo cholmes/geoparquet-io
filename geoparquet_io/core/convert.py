@@ -198,7 +198,7 @@ def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
     return result
 
 
-def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
+def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False, encoding="WKB"):
     """Calculate dataset bounds from input file."""
     if verbose:
         debug("Calculating dataset bounds...")
@@ -212,14 +212,28 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False):
     # Quote column name to handle special characters, spaces, and reserved words
     quoted_geom = quote_identifier(geom_column)
 
-    bounds_query = f"""
-        SELECT
-            MIN(ST_XMin({quoted_geom})) as xmin,
-            MIN(ST_YMin({quoted_geom})) as ymin,
-            MAX(ST_XMax({quoted_geom})) as xmax,
-            MAX(ST_YMax({quoted_geom})) as ymax
-        FROM {table_expr}
-    """
+    # GeoArrow native encodings store geometry as nested structs/arrays that
+    # DuckDB cannot pass to ST_XMin directly. Use UNNEST to extract x/y coords.
+    geoarrow_native = encoding.lower() not in {"wkb", "wkt"}
+    if geoarrow_native:
+        bounds_query = f"""
+            SELECT
+                MIN(x) as xmin,
+                MIN(y) as ymin,
+                MAX(x) as xmax,
+                MAX(y) as ymax
+            FROM (SELECT UNNEST({quoted_geom}, recursive := true) FROM {table_expr})
+            WHERE NOT isnan(x) AND NOT isnan(y)
+        """
+    else:
+        bounds_query = f"""
+            SELECT
+                MIN(ST_XMin({quoted_geom})) as xmin,
+                MIN(ST_YMin({quoted_geom})) as ymin,
+                MAX(ST_XMax({quoted_geom})) as xmax,
+                MAX(ST_YMax({quoted_geom})) as ymax
+            FROM {table_expr}
+        """
     bounds_result = con.execute(bounds_query).fetchone()
 
     if not bounds_result or any(v is None for v in bounds_result):
@@ -760,6 +774,48 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
     return f"SELECT * FROM ST_Read('{input_file}')"
 
 
+_GEOARROW_FLATTEN_DEPTH = {
+    "point": -1,  # plain struct, no list
+    "linestring": 0,
+    "multipoint": 0,
+    "polygon": 1,
+    "multilinestring": 1,
+    "multipolygon": 2,
+}
+
+
+def _geoarrow_coord_exprs(quoted_geom, encoding):
+    """Return (xmin, ymin, xmax, ymax, centroid_x, centroid_y) SQL expressions
+    for a GeoArrow native geometry column, suitable for per-row use in SELECT.
+
+    GeoArrow native types are nested struct/array types that DuckDB cannot pass
+    to ST_XMin/ST_Hilbert directly. We use list_transform + flatten to extract
+    coordinates, then list_min/list_max/list_avg for bbox and centroid.
+    """
+    depth = _GEOARROW_FLATTEN_DEPTH.get(encoding.lower(), 0)
+
+    if depth == -1:
+        # point: plain struct with .x and .y fields
+        x = f"{quoted_geom}.x"
+        y = f"{quoted_geom}.y"
+        return x, y, x, y, x, y
+
+    flat = quoted_geom
+    for _ in range(depth):
+        flat = f"flatten({flat})"
+
+    x_arr = f"list_transform({flat}, p -> p.x)"
+    y_arr = f"list_transform({flat}, p -> p.y)"
+    return (
+        f"list_min({x_arr})",
+        f"list_min({y_arr})",
+        f"list_max({x_arr})",
+        f"list_max({y_arr})",
+        f"list_avg({x_arr})",
+        f"list_avg({y_arr})",
+    )
+
+
 def _build_conversion_query(
     input_file,
     geom_column,
@@ -770,6 +826,7 @@ def _build_conversion_query(
     skip_bbox=False,
     existing_bbox_col=None,
     preserve_existing_bbox=False,
+    encoding="WKB",
 ):
     """Build SQL query for conversion with optional Hilbert ordering.
 
@@ -783,6 +840,7 @@ def _build_conversion_query(
         skip_bbox: Skip adding bbox column (for 2.0/parquet-geo-only)
         existing_bbox_col: Name of existing bbox column to remove (for parquet input)
         preserve_existing_bbox: If True, keep existing bbox column instead of adding new one
+        encoding: GeoParquet geometry encoding (e.g. "WKB", "multipolygon")
     """
     # For parquet files, read directly; for other formats use ST_Read
     if is_parquet:
@@ -796,6 +854,15 @@ def _build_conversion_query(
     # Quote column names to handle special characters, spaces, and reserved words
     quoted_geom = quote_identifier(geom_column)
     quoted_bbox = quote_identifier(existing_bbox_col) if existing_bbox_col else None
+
+    geoarrow_native = encoding.lower() not in {"wkb", "wkt"}
+    if geoarrow_native:
+        xmin_e, ymin_e, xmax_e, ymax_e, cx_e, cy_e = _geoarrow_coord_exprs(quoted_geom, encoding)
+    else:
+        xmin_e = f"ST_XMin({quoted_geom})"
+        ymin_e = f"ST_YMin({quoted_geom})"
+        xmax_e = f"ST_XMax({quoted_geom})"
+        ymax_e = f"ST_YMax({quoted_geom})"
 
     exclude_cols = []
     if existing_bbox_col and skip_bbox:
@@ -829,10 +896,10 @@ def _build_conversion_query(
             base_select = f"""
                 SELECT * EXCLUDE ({quoted_bbox}),
                     STRUCT_PACK(
-                        xmin := ST_XMin({quoted_geom}),
-                        ymin := ST_YMin({quoted_geom}),
-                        xmax := ST_XMax({quoted_geom}),
-                        ymax := ST_YMax({quoted_geom})
+                        xmin := {xmin_e},
+                        ymin := {ymin_e},
+                        xmax := {xmax_e},
+                        ymax := {ymax_e}
                     ) AS bbox
                 FROM {table_expr}
             """
@@ -840,10 +907,10 @@ def _build_conversion_query(
             base_select = f"""
                 SELECT *,
                     STRUCT_PACK(
-                        xmin := ST_XMin({quoted_geom}),
-                        ymin := ST_YMin({quoted_geom}),
-                        xmax := ST_XMax({quoted_geom}),
-                        ymax := ST_YMax({quoted_geom})
+                        xmin := {xmin_e},
+                        ymin := {ymin_e},
+                        xmax := {xmax_e},
+                        ymax := {ymax_e}
                     ) AS bbox
                 FROM {table_expr}
             """
@@ -852,11 +919,13 @@ def _build_conversion_query(
         return base_select
 
     xmin, ymin, xmax, ymax = bounds
+    bounds_box = f"ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
+    if geoarrow_native:
+        hilbert_expr = f"ST_Hilbert({cx_e}, {cy_e}, {bounds_box})"
+    else:
+        hilbert_expr = f"ST_Hilbert({quoted_geom}, {bounds_box})"
     return f"""{base_select}
-        ORDER BY ST_Hilbert(
-            {quoted_geom},
-            ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))
-        )
+        ORDER BY {hilbert_expr}
     """
 
 
@@ -996,10 +1065,13 @@ def _convert_spatial_path(
                 if verbose:
                     debug(f"Preserving existing bbox column: {existing_bbox_col}")
 
+    geom_encoding = geom_info["metadata"].get(geom_column, {}).get("encoding", "WKB")
     bounds = (
         None
         if skip_hilbert
-        else _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=is_parquet)
+        else _calculate_bounds(
+            con, input_file, geom_column, verbose, is_parquet=is_parquet, encoding=geom_encoding
+        )
     )
 
     if verbose:
@@ -1029,6 +1101,7 @@ def _convert_spatial_path(
         skip_bbox=skip_bbox,
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
+        encoding=geom_encoding,
     )
 
     return query, geom_info

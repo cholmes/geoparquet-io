@@ -305,6 +305,18 @@ def _get_query_columns(con, query: str) -> list[str]:
     return [row[0] for row in result]
 
 
+def _get_query_column_type(con, query: str, column_name: str) -> str | None:
+    """Return the DuckDB type string for a named column in a query, or None."""
+    try:
+        rows = con.execute(f"DESCRIBE ({query})").fetchall()
+        for row in rows:
+            if row[0] == column_name:
+                return row[1]
+    except Exception:
+        pass
+    return None
+
+
 def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) -> str:
     """
     Wrap a query to convert geometry column to WKB format.
@@ -364,6 +376,14 @@ def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None)
         except Exception:
             # If check fails, try the conversion anyway
             pass
+
+        # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) are already stored
+        # as their native Parquet encoding — ST_AsWKB doesn't support them.
+        # Keep the column as-is; DuckDB will write the struct/array to Parquet directly,
+        # which is valid for GeoParquet v1.x native encodings.
+        col_type = _get_query_column_type(con, query, geometry_column) or ""
+        if "STRUCT" in col_type:
+            return query
 
     # Quote column name to handle special characters
     quoted_geom = geometry_column.replace('"', '""')
