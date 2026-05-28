@@ -74,7 +74,7 @@ def should_skip_bbox(geoparquet_version):
     Returns:
         bool: True if bbox should be skipped, False if bbox should be added
     """
-    return geoparquet_version in ("2.0", "parquet-geo-only")
+    return geoparquet_version in ("2.0", "parquet-geo-only", "1.1-geoarrow")
 
 
 # LRU cache for detect_geoparquet_file_type results

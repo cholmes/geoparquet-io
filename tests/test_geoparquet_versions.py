@@ -1263,3 +1263,96 @@ class TestPartitionGeoParquetVersion:
         partition_file = os.path.join(temp_output_dir, parquet_files[0])
         assert get_geoparquet_version(partition_file) == "2.0.0"
         assert has_native_geo_types(partition_file)
+
+
+class TestGeoParquet11GeoArrow:
+    """Tests for --geoparquet-version 1.1-geoarrow output.
+
+    This version writes GeoParquet 1.1 metadata but skips the bbox column,
+    keeping the geometry in its native Arrow encoding (no WKB blob conversion).
+    Useful for GeoArrow-native parquet files that don't benefit from bbox columns.
+    """
+
+    def test_version_constant_exists(self):
+        """1.1-geoarrow must be a registered version."""
+        assert "1.1-geoarrow" in GEOPARQUET_VERSIONS
+
+    def test_version_constant_structure(self):
+        """1.1-geoarrow config must have the required keys."""
+        config = GEOPARQUET_VERSIONS["1.1-geoarrow"]
+        assert config["metadata_version"] == "1.1.0"
+        assert "duckdb_param" in config
+        assert "rewrite_metadata" in config
+
+    def test_should_skip_bbox(self):
+        """should_skip_bbox must return True for 1.1-geoarrow."""
+        from geoparquet_io.core.common import should_skip_bbox
+
+        assert should_skip_bbox("1.1-geoarrow") is True
+
+    def test_cli_accepts_version(self, geojson_input, temp_output_file):
+        """CLI must accept --geoparquet-version 1.1-geoarrow without error."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["convert", geojson_input, temp_output_file, "--geoparquet-version", "1.1-geoarrow"],
+        )
+        assert result.exit_code == 0, f"CLI rejected 1.1-geoarrow: {result.output}"
+
+    def test_output_has_1_1_metadata(self, geojson_input, temp_output_file):
+        """Output must carry GeoParquet 1.1.0 version in the geo metadata."""
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+        assert get_geoparquet_version(temp_output_file) == "1.1.0"
+
+    def test_output_has_no_bbox_column(self, geojson_input, temp_output_file):
+        """Output must not have a bbox column (the key benefit over plain 1.1)."""
+        from geoparquet_io.core.common import check_bbox_structure
+
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+        bbox_info = check_bbox_structure(temp_output_file)
+        assert not bbox_info["has_bbox_column"]
+
+    def test_plain_1_1_has_bbox_column(self, geojson_input, temp_output_file):
+        """Sanity check: plain 1.1 DOES add a bbox column."""
+        from geoparquet_io.core.common import check_bbox_structure
+
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1", verbose=False
+        )
+        bbox_info = check_bbox_structure(temp_output_file)
+        assert bbox_info["has_bbox_column"]
+
+    def test_native_input_preserves_encoding(self, test_data_dir, tmp_path):
+        """Converting a native-encoded file with 1.1-geoarrow keeps native geometry."""
+        import pyarrow.parquet as pq
+
+        input_file = str(test_data_dir / "data-multipolygon-encoding_native.parquet")
+        output_file = str(tmp_path / "output.parquet")
+
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        schema = pq.read_schema(output_file)
+        geom_field = schema.field("geometry")
+        # Native geometry should NOT be a plain binary blob
+        assert str(geom_field.type) != "binary", "geometry should remain native, not WKB blob"
+
+    def test_native_input_metadata_encoding_preserved(self, test_data_dir, tmp_path):
+        """GeoParquet metadata must record the actual native encoding, not WKB."""
+        input_file = str(test_data_dir / "data-multipolygon-encoding_native.parquet")
+        output_file = str(tmp_path / "output.parquet")
+
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        encoding = geo_meta["columns"]["geometry"]["encoding"]
+        assert encoding == "multipolygon", (
+            f"Expected 'multipolygon' encoding in metadata, got '{encoding}'"
+        )
