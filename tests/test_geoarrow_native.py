@@ -7,6 +7,8 @@ types, which are incompatible with ST_XMin/ST_YMin/etc. without conversion.
 
 import os
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from geoparquet_io.core.convert import convert_to_geoparquet
@@ -54,3 +56,12 @@ class TestConvertGeoArrowNative:
 
         assert os.path.exists(output_file)
         assert os.path.getsize(output_file) > 0
+        schema = pq.read_schema(output_file)
+        # v2.0 uses native Arrow geometry (struct/list), not WKB binary; no top-level "geo" key
+        assert schema.metadata is None or b"geo" not in schema.metadata
+        geom_type = schema.field("geometry").type
+        assert (
+            pa.types.is_struct(geom_type)
+            or pa.types.is_list(geom_type)
+            or pa.types.is_large_list(geom_type)
+        )

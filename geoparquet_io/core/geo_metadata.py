@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import duckdb
 
+from geoparquet_io.core.duckdb_utils import _get_query_column_type
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -291,18 +292,6 @@ def _get_query_columns(con, query: str) -> list[str]:
     describe_query = f"SELECT * FROM ({query}) AS __subq LIMIT 0"
     result = con.execute(describe_query)
     return [col[0] for col in result.description]
-
-
-def _get_query_column_type(con, query: str, column_name: str) -> str | None:
-    """Return the DuckDB type string for a named column in a query, or None."""
-    try:
-        rows = con.execute(f"DESCRIBE SELECT * FROM ({query}) LIMIT 0").fetchall()
-        for row in rows:
-            if row[0] == column_name:
-                return row[1]
-    except Exception:
-        pass
-    return None
 
 
 def compute_bbox_via_sql(
