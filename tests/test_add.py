@@ -683,3 +683,133 @@ class TestAddBboxMetadataPreservesFileProperties:
         col_meta = geo_meta.get("columns", {}).get(primary_col, {})
         covering = col_meta.get("covering", {})
         assert "bbox" in covering, "covering.bbox should exist in geo metadata"
+
+    def test_preserves_existing_kv_metadata(self, tmp_path):
+        """Test that add bbox-metadata preserves non-geo KV metadata.
+
+        Regression test: DuckDB KV_METADATA replaces all metadata, so we must
+        explicitly preserve existing keys like 'pandas', 'ARROW:schema', and
+        custom application metadata.
+        """
+        import json
+
+        test_file = str(tmp_path / "test_with_custom_metadata.parquet")
+
+        # Create a GeoParquet file with custom metadata using DuckDB
+        # Use GEOPARQUET_VERSION to handle geometry encoding properly
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+
+        # First create with GEOPARQUET_VERSION to get proper geo metadata
+        conn.execute(f"""
+            COPY (
+                SELECT
+                    'test' AS name,
+                    STRUCT_PACK(
+                        xmin := -1.0::FLOAT,
+                        ymin := -1.0::FLOAT,
+                        xmax := 1.0::FLOAT,
+                        ymax := 1.0::FLOAT
+                    ) AS bbox,
+                    ST_Point(0, 0) AS geometry
+            ) TO '{test_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'V1')
+        """)
+
+        # Read the geo metadata that DuckDB created
+        geo_meta_row = conn.execute(
+            f"SELECT value FROM parquet_kv_metadata('{test_file}') WHERE key = 'geo'"
+        ).fetchone()
+        geo_meta_value = geo_meta_row[0].decode("utf-8") if geo_meta_row else "{}"
+
+        # Now rewrite with additional custom metadata
+        temp_file = str(tmp_path / "temp_with_meta.parquet")
+        escaped_geo = geo_meta_value.replace("'", "''")
+        conn.execute(f"""
+            COPY (SELECT * FROM '{test_file}')
+            TO '{temp_file}' (
+                FORMAT PARQUET,
+                KV_METADATA {{
+                    geo: '{escaped_geo}',
+                    pandas: '{{"index_columns": [], "columns": []}}',
+                    custom_app: 'important_value_123',
+                    another_key: 'should_be_preserved'
+                }}
+            )
+        """)
+        conn.close()
+
+        # Use the file with custom metadata
+        import shutil
+
+        shutil.move(temp_file, test_file)
+
+        # BEFORE: Verify custom metadata exists
+        conn = duckdb.connect()
+        before_kv = conn.execute(
+            f"SELECT key, value FROM parquet_kv_metadata('{test_file}')"
+        ).fetchall()
+        conn.close()
+
+        before_keys = {k.decode("utf-8") if isinstance(k, bytes) else k for k, _ in before_kv}
+        assert "pandas" in before_keys, "BEFORE: Expected 'pandas' metadata"
+        assert "custom_app" in before_keys, "BEFORE: Expected 'custom_app' metadata"
+        assert "another_key" in before_keys, "BEFORE: Expected 'another_key' metadata"
+
+        # Run add bbox-metadata
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox-metadata", test_file, "--verbose"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert "Added bbox covering metadata" in result.output
+
+        # AFTER: Verify all metadata keys are preserved
+        conn = duckdb.connect()
+        after_kv = conn.execute(
+            f"SELECT key, value FROM parquet_kv_metadata('{test_file}')"
+        ).fetchall()
+        conn.close()
+
+        after_dict = {
+            (k.decode("utf-8") if isinstance(k, bytes) else k): (
+                v.decode("utf-8") if isinstance(v, bytes) else v
+            )
+            for k, v in after_kv
+        }
+
+        # Verify all original keys are preserved
+        assert "pandas" in after_dict, "AFTER: 'pandas' metadata was destroyed!"
+        assert "custom_app" in after_dict, "AFTER: 'custom_app' metadata was destroyed!"
+        assert "another_key" in after_dict, "AFTER: 'another_key' metadata was destroyed!"
+
+        # Verify values are preserved correctly
+        assert after_dict["custom_app"] == "important_value_123", (
+            f"AFTER: 'custom_app' value changed: {after_dict['custom_app']}"
+        )
+        assert after_dict["another_key"] == "should_be_preserved", (
+            f"AFTER: 'another_key' value changed: {after_dict['another_key']}"
+        )
+
+        # Verify geo metadata was updated with covering
+        geo_meta = json.loads(after_dict["geo"])
+        primary_col = geo_meta.get("primary_column", "geometry")
+        covering = geo_meta.get("columns", {}).get(primary_col, {}).get("covering", {})
+        assert "bbox" in covering, "covering.bbox should exist in updated geo metadata"
+
+    def test_rejects_remote_urls(self, tmp_path):
+        """Test that add bbox-metadata rejects remote URLs with clear error."""
+        from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        # Test various remote URL formats
+        remote_urls = [
+            "s3://bucket/file.parquet",
+            "gs://bucket/file.parquet",
+            "az://container/file.parquet",
+            "https://example.com/file.parquet",
+        ]
+
+        for url in remote_urls:
+            with pytest.raises(GeoParquetError) as exc_info:
+                add_bbox_metadata(url)
+            assert "Remote URLs are not supported" in str(exc_info.value), (
+                f"Expected clear error for {url}, got: {exc_info.value}"
+            )
