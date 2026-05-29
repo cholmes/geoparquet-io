@@ -317,6 +317,48 @@ def _get_query_column_type(con, query: str, column_name: str) -> str | None:
     return None
 
 
+# Maps GeoArrow encoding name → number of flatten() calls needed to reach list[struct].
+# bracket_depth in DuckDB type string = flatten_depth + 1 for non-point types.
+_GEOARROW_FLATTEN_DEPTH = {
+    "point": -1,  # plain STRUCT(x, y), no list wrapper
+    "linestring": 0,
+    "multipoint": 0,
+    "polygon": 1,
+    "multilinestring": 1,
+    "multipolygon": 2,
+}
+
+
+def _geoarrow_coord_exprs(quoted_geom: str, encoding: str) -> tuple:
+    """Return (xmin, ymin, xmax, ymax, centroid_x, centroid_y) SQL expressions
+    for a GeoArrow native geometry column, for per-row use in a SELECT list.
+
+    Uses list_transform + flatten to extract coordinates, then list_min/max/avg.
+    Unknown encodings fall back to depth 0 (linestring-style, no flatten).
+    """
+    depth = _GEOARROW_FLATTEN_DEPTH.get(encoding.lower(), 0)
+
+    if depth == -1:
+        x = f"{quoted_geom}.x"
+        y = f"{quoted_geom}.y"
+        return x, y, x, y, x, y
+
+    flat = quoted_geom
+    for _ in range(depth):
+        flat = f"flatten({flat})"
+
+    x_arr = f"list_transform({flat}, p -> p.x)"
+    y_arr = f"list_transform({flat}, p -> p.y)"
+    return (
+        f"list_min({x_arr})",
+        f"list_min({y_arr})",
+        f"list_max({x_arr})",
+        f"list_max({y_arr})",
+        f"list_avg({x_arr})",
+        f"list_avg({y_arr})",
+    )
+
+
 def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) -> str:
     """
     Wrap a query to convert geometry column to WKB format.
@@ -369,21 +411,14 @@ def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None)
     # If connection provided, check if geometry column exists in query output
     if con is not None:
         try:
-            schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-            if geometry_column not in schema_result.schema.names:
-                # Geometry column was excluded, return original query
+            rows = con.execute(f"DESCRIBE ({query})").fetchall()
+            col_info = {row[0]: row[1] for row in rows}
+            if geometry_column not in col_info:
+                return query
+            if "STRUCT" in col_info.get(geometry_column, ""):
                 return query
         except Exception:
-            # If check fails, try the conversion anyway
             pass
-
-        # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) are already stored
-        # as their native Parquet encoding — ST_AsWKB doesn't support them.
-        # Keep the column as-is; DuckDB will write the struct/array to Parquet directly,
-        # which is valid for GeoParquet v1.x native encodings.
-        col_type = _get_query_column_type(con, query, geometry_column) or ""
-        if "STRUCT" in col_type:
-            return query
 
     # Quote column name to handle special characters
     quoted_geom = geometry_column.replace('"', '""')

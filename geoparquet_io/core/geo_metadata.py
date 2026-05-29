@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import duckdb
 
-from geoparquet_io.core.duckdb_utils import _get_query_column_type
+from geoparquet_io.core.duckdb_utils import _geoarrow_coord_exprs, _get_query_column_type
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -331,13 +331,12 @@ def compute_bbox_via_sql(
     # ST_XMin directly. Detect at runtime and use UNNEST to extract coordinates.
     col_type = _get_query_column_type(con, query, geometry_column) or ""
     if "STRUCT" in col_type:
-        from geoparquet_io.core.convert import _geoarrow_coord_exprs
-
-        # Infer encoding from nesting depth in the type string
-        depth = col_type.count("[]")
-        encoding_by_depth = {0: "point", 1: "linestring", 2: "polygon", 3: "multipolygon"}
-        encoding = encoding_by_depth.get(depth, "linestring")
-        xmin_e, ymin_e, xmax_e, ymax_e, _, _ = _geoarrow_coord_exprs(quoted_geom, encoding)
+        # bracket_depth = col_type.count("[]"): 0=point, 1=linestring/multipoint,
+        # 2=polygon/multilinestring, 3=multipolygon. Maps directly to _GEOARROW_FLATTEN_DEPTH
+        # (flatten_count = bracket_depth - 1 for non-point).
+        _depth_to_encoding = {0: "point", 1: "linestring", 2: "polygon", 3: "multipolygon"}
+        enc = _depth_to_encoding.get(col_type.count("[]"), "linestring")
+        xmin_e, ymin_e, xmax_e, ymax_e, _, _ = _geoarrow_coord_exprs(quoted_geom, enc)
         bbox_query = f"""
             SELECT
                 MIN({xmin_e}) as xmin,

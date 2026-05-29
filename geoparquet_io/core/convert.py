@@ -16,6 +16,7 @@ from geoparquet_io.core.crs_utils import (
 )
 from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
+    _geoarrow_coord_exprs,
     get_duckdb_connection,
     quote_identifier,
 )
@@ -213,7 +214,8 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False, e
     quoted_geom = quote_identifier(geom_column)
 
     # GeoArrow native encodings store geometry as nested structs/arrays that
-    # DuckDB cannot pass to ST_XMin directly. Use UNNEST to extract x/y coords.
+    # DuckDB cannot pass to ST_XMin directly. Use UNNEST to extract x/y coords;
+    # the WHERE filter excludes NaN coordinates (e.g. empty-geometry sentinels).
     geoarrow_native = encoding.lower() not in {"wkb", "wkt"}
     if geoarrow_native:
         bounds_query = f"""
@@ -772,48 +774,6 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
         return f"SELECT * FROM {csv_read}"
     # Spatial formats (GeoJSON, Shapefile, GeoPackage, etc.) - use ST_Read
     return f"SELECT * FROM ST_Read('{input_file}')"
-
-
-_GEOARROW_FLATTEN_DEPTH = {
-    "point": -1,  # plain struct, no list
-    "linestring": 0,
-    "multipoint": 0,
-    "polygon": 1,
-    "multilinestring": 1,
-    "multipolygon": 2,
-}
-
-
-def _geoarrow_coord_exprs(quoted_geom, encoding):
-    """Return (xmin, ymin, xmax, ymax, centroid_x, centroid_y) SQL expressions
-    for a GeoArrow native geometry column, suitable for per-row use in SELECT.
-
-    GeoArrow native types are nested struct/array types that DuckDB cannot pass
-    to ST_XMin/ST_Hilbert directly. We use list_transform + flatten to extract
-    coordinates, then list_min/list_max/list_avg for bbox and centroid.
-    """
-    depth = _GEOARROW_FLATTEN_DEPTH.get(encoding.lower(), 0)
-
-    if depth == -1:
-        # point: plain struct with .x and .y fields
-        x = f"{quoted_geom}.x"
-        y = f"{quoted_geom}.y"
-        return x, y, x, y, x, y
-
-    flat = quoted_geom
-    for _ in range(depth):
-        flat = f"flatten({flat})"
-
-    x_arr = f"list_transform({flat}, p -> p.x)"
-    y_arr = f"list_transform({flat}, p -> p.y)"
-    return (
-        f"list_min({x_arr})",
-        f"list_min({y_arr})",
-        f"list_max({x_arr})",
-        f"list_max({y_arr})",
-        f"list_avg({x_arr})",
-        f"list_avg({y_arr})",
-    )
 
 
 def _build_conversion_query(
