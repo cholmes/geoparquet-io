@@ -1356,3 +1356,59 @@ class TestGeoParquet11GeoArrow:
         assert encoding == "multipolygon", (
             f"Expected 'multipolygon' encoding in metadata, got '{encoding}'"
         )
+
+    def test_wkb_input_writes_binary_geometry(self, geojson_input, temp_output_file):
+        """WKB-encoded input (GeoJSON) with 1.1-geoarrow must write binary WKB, not native type."""
+        import pyarrow.parquet as pq
+
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(temp_output_file)
+        geom_col = geo_meta["primary_column"]
+        schema = pq.read_schema(temp_output_file)
+        geom_field = schema.field(geom_col)
+        assert str(geom_field.type) == "binary", (
+            f"WKB input should remain binary blob, got {geom_field.type}"
+        )
+
+    def test_wkb_input_metadata_encoding_is_wkb(self, geojson_input, temp_output_file):
+        """WKB-encoded input with 1.1-geoarrow must record 'WKB' in geo metadata."""
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(temp_output_file)
+        geom_col = geo_meta["primary_column"]
+        encoding = geo_meta["columns"][geom_col]["encoding"]
+        assert encoding == "WKB", (
+            f"Expected 'WKB' encoding in metadata for WKB input, got '{encoding}'"
+        )
+
+    @pytest.mark.parametrize(
+        "geom_type",
+        ["point", "linestring", "polygon", "multipoint", "multilinestring", "multipolygon"],
+    )
+    def test_all_native_types_preserve_encoding(self, geom_type, test_data_dir, tmp_path):
+        """All 6 native geometry types must preserve their encoding through 1.1-geoarrow."""
+        import pyarrow.parquet as pq
+
+        input_file = str(test_data_dir / f"data-{geom_type}-encoding_native.parquet")
+        output_file = str(tmp_path / f"output_{geom_type}.parquet")
+
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        schema = pq.read_schema(output_file)
+        geom_field = schema.field("geometry")
+        assert str(geom_field.type) != "binary", (
+            f"{geom_type}: geometry should remain native, not WKB blob"
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        encoding = geo_meta["columns"]["geometry"]["encoding"]
+        assert encoding == geom_type, (
+            f"Expected '{geom_type}' encoding in metadata, got '{encoding}'"
+        )

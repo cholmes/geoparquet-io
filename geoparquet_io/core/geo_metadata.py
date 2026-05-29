@@ -345,6 +345,7 @@ def compute_bbox_via_sql(
                 MAX({xmax_e}) as xmax,
                 MAX({ymax_e}) as ymax
             FROM ({query})
+            WHERE NOT isnan({xmax_e}) AND NOT isnan({ymax_e})
         """
     else:
         bbox_query = f"""
