@@ -272,9 +272,11 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 !!! note "Bbox and Hilbert Ordering"
     Bbox computation and Hilbert spatial ordering use the **primary geometry column only**. Secondary geometry columns are preserved but do not influence spatial indexing.
 
-### Custom Geometry Column Names
+### Geometry Column Detection
 
-GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:
+The geometry column is auto-detected — you don't need to name it `geometry`. Detection is case-insensitive and recognizes the standard names `geometry`, `geom`, `wkb_geometry`, `shape`, and `the_geom`. For GeoParquet input, whatever name is recorded in the file's `primary_column` metadata is used (so any name works).
+
+For GeoParquet → GeoParquet conversion, the original geometry column name is preserved on output:
 
 === "CLI"
 
@@ -292,10 +294,6 @@ GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `
     # Input has primary_column: "the_geom"
     # Output preserves "the_geom" (not renamed to "geometry")
     gpio.convert('input.parquet').write('output.parquet')
-
-    # Custom geometry column names are automatically detected
-    # For files without GeoParquet metadata, specify the column:
-    gpio.convert('input.parquet', geometry_column='the_geom').write('output.parquet')
     ```
 
 ## Remote Files

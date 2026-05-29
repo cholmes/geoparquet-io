@@ -1087,6 +1087,11 @@ def read_spatial_to_arrow(
     This is the core reading function used by both the Python API and CLI.
     Does NOT apply Hilbert sorting or bbox column - those are chainable operations.
 
+    The input geometry column is auto-detected from standard names
+    (`geometry`, `geom`, `wkb_geometry`, `shape`, `the_geom`, case-insensitive)
+    or, for GeoParquet input, from the `primary_column` metadata. For CSV/TSV,
+    pass `wkt_column` or `lat_column`/`lon_column` to identify the geometry source.
+
     Args:
         input_file: Path to input file (GeoPackage, GeoJSON, Shapefile, CSV/TSV, etc.)
         verbose: Print detailed progress
@@ -1097,7 +1102,9 @@ def read_spatial_to_arrow(
         crs: CRS for CSV geometry data (default: EPSG:4326/WGS84)
         skip_invalid: Skip rows with invalid geometries instead of failing
         profile: AWS profile name for S3 operations
-        geometry_column: Name for output geometry column (default: 'geometry')
+        geometry_column: Label returned as the third tuple element. Does NOT
+            influence input detection (input is always auto-detected) and does NOT
+            rename the underlying Arrow column.
         layer: Layer name for multi-layer formats (GeoPackage, FileGDB). If not specified,
                reads the first/default layer.
 

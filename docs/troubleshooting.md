@@ -228,11 +228,19 @@ See the [Write Strategies Guide](guide/write-strategies.md) for detailed informa
 
 **Symptom**: Error about missing geometry column.
 
+`gpio convert` auto-detects geometry columns named `geometry`, `geom`,
+`wkb_geometry`, `shape`, or `the_geom` (case-insensitive), and reads the
+`primary_column` from GeoParquet metadata when present. You should only see this
+error if the column has a truly non-standard name.
+
 **Solutions**:
 
-1. Verify file is actually GeoParquet: `gpio inspect file.parquet`
-2. Check if geometry column has a different name
-3. Specify geometry column explicitly if supported
+1. Verify the file is actually spatial: `gpio inspect file.parquet`
+2. Check the column name with `ogrinfo -so` (for OGR formats) or
+   `gpio inspect meta` (for Parquet) — if it matches a standard name, file an issue
+3. For CSV/TSV, pass `--wkt-column` or `--lat-column`/`--lon-column`
+4. For non-CSV inputs with a non-standard column name, rename the column upstream
+   (no `--geometry-column` flag exists for `gpio convert` today)
 
 ### CRS Warning: Coordinates Look Wrong
 

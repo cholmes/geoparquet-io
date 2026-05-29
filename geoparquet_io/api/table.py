@@ -287,9 +287,18 @@ def convert(
     Unlike the CLI convert command, this does NOT apply Hilbert sorting by default.
     Chain .sort_hilbert() explicitly if you want spatial ordering.
 
+    The input geometry column is auto-detected — you do NOT need it to be named
+    `geometry`. Detection is case-insensitive and matches any of:
+    `geometry`, `geom`, `wkb_geometry`, `shape`, `the_geom`. For GeoParquet input,
+    the column recorded in `primary_column` metadata is used (any name works).
+    For CSV/TSV, use `wkt_column` or `lat_column`/`lon_column` instead.
+
     Args:
         path: Path to input file (local or S3 URL)
-        geometry_column: Name for geometry column in output (default: 'geometry')
+        geometry_column: Label used for the returned Table's geometry attribute.
+            Does NOT control input detection (input is auto-detected) and does NOT
+            rename the column in the underlying Arrow data. Most callers should
+            leave this at the default.
         wkt_column: For CSV: column containing WKT geometry
         lat_column: For CSV: latitude column
         lon_column: For CSV: longitude column
