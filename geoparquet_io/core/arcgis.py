@@ -1107,7 +1107,9 @@ def arcgis_to_table(
                 debug(f"Excluded columns: {cols_to_exclude}")
 
         # Add CRS to metadata
-        crs = _extract_crs_from_spatial_reference(layer_info.spatial_reference)
+        # Always use CRS84 (WGS84 lon/lat) because we request f=geojson,
+        # which per RFC 7946 is always WGS84 regardless of the layer's native SR
+        crs = parse_crs_string_to_projjson("OGC:CRS84")
         if crs:
             geo_metadata = {
                 "version": "1.1.0",
