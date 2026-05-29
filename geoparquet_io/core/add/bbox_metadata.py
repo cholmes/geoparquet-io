@@ -18,7 +18,11 @@ import os
 import duckdb
 
 from geoparquet_io.core.check_parquet_structure import get_compression_info, get_row_group_stats
-from geoparquet_io.core.common import check_bbox_structure, get_parquet_metadata
+from geoparquet_io.core.common import (
+    check_bbox_structure,
+    get_duckdb_connection,
+    get_parquet_metadata,
+)
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import parse_geo_metadata
@@ -32,12 +36,15 @@ def _is_remote_url(path: str) -> bool:
     return path.lower().startswith(remote_prefixes)
 
 
-def _detect_native_geometry(conn: duckdb.DuckDBPyConnection, parquet_file: str) -> bool:
+def _detect_native_geometry(
+    conn: duckdb.DuckDBPyConnection, parquet_file: str, geometry_column: str
+) -> bool:
     """Detect if the file uses native GEOMETRY logical type (GeoParquet 2.0).
 
     Args:
         conn: DuckDB connection (reused to avoid repeated INSTALL/LOAD)
         parquet_file: Path to the parquet file
+        geometry_column: Name of the geometry column to check
 
     Returns:
         True if the file has native GEOMETRY type, False otherwise
@@ -45,7 +52,7 @@ def _detect_native_geometry(conn: duckdb.DuckDBPyConnection, parquet_file: str) 
     result = conn.execute(f"""
         SELECT logical_type
         FROM parquet_schema('{parquet_file}')
-        WHERE name = 'geometry'
+        WHERE name = '{geometry_column}'
     """).fetchone()
 
     if result and result[0]:
@@ -198,11 +205,11 @@ def add_bbox_metadata(
     try:
         # Use DuckDB COPY TO with KV_METADATA to preserve file properties
         # This preserves bloom filters and native GEOMETRY logical type (fixes #433)
-        conn = duckdb.connect()
-        conn.execute("INSTALL spatial; LOAD spatial;")
+        conn = get_duckdb_connection()
 
         # Detect if file uses native GEOMETRY type (GeoParquet 2.0)
-        has_native_geometry = _detect_native_geometry(conn, safe_url)
+        # Pass the actual geometry column name - it might not be 'geometry'
+        has_native_geometry = _detect_native_geometry(conn, safe_url, primary_col)
 
         # Read existing KV metadata to preserve non-geo keys
         existing_kv = _get_existing_kv_metadata(conn, safe_url)
