@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import duckdb
 
+from geoparquet_io.core.duckdb_utils import _geoarrow_coord_exprs, _get_query_column_type
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -324,14 +325,35 @@ def compute_bbox_via_sql(
 
     # Escape column name for SQL (double any embedded quotes)
     escaped_col = geometry_column.replace('"', '""')
-    bbox_query = f"""
-        SELECT
-            MIN(ST_XMin("{escaped_col}")) as xmin,
-            MIN(ST_YMin("{escaped_col}")) as ymin,
-            MAX(ST_XMax("{escaped_col}")) as xmax,
-            MAX(ST_YMax("{escaped_col}")) as ymax
-        FROM ({query})
-    """
+    quoted_geom = f'"{escaped_col}"'
+
+    # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) cannot be passed to
+    # ST_XMin directly. Detect at runtime and use UNNEST to extract coordinates.
+    col_type = _get_query_column_type(con, query, geometry_column) or ""
+    if "STRUCT" in col_type:
+        # bracket_depth = col_type.count("[]"): 0=point, 1=linestring/multipoint,
+        # 2=polygon/multilinestring, 3=multipolygon. Maps directly to _GEOARROW_FLATTEN_DEPTH
+        # (flatten_count = bracket_depth - 1 for non-point).
+        _depth_to_encoding = {0: "point", 1: "linestring", 2: "polygon", 3: "multipolygon"}
+        enc = _depth_to_encoding.get(col_type.count("[]"), "linestring")
+        xmin_e, ymin_e, xmax_e, ymax_e, _, _ = _geoarrow_coord_exprs(quoted_geom, enc)
+        bbox_query = f"""
+            SELECT
+                MIN({xmin_e}) as xmin,
+                MIN({ymin_e}) as ymin,
+                MAX({xmax_e}) as xmax,
+                MAX({ymax_e}) as ymax
+            FROM ({query})
+        """
+    else:
+        bbox_query = f"""
+            SELECT
+                MIN(ST_XMin("{escaped_col}")) as xmin,
+                MIN(ST_YMin("{escaped_col}")) as ymin,
+                MAX(ST_XMax("{escaped_col}")) as xmax,
+                MAX(ST_YMax("{escaped_col}")) as ymax
+            FROM ({query})
+        """
     result = con.execute(bbox_query).fetchone()
 
     if result and all(v is not None for v in result):
@@ -366,6 +388,13 @@ def compute_geometry_types_via_sql(
             return []
     except (duckdb.Error, RuntimeError, ValueError, AttributeError):
         # If we can't determine schema, return empty list rather than failing
+        return []
+
+    # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) can't use ST_GeometryType.
+    # For native encodings, geometry_types is already known from the encoding name;
+    # returning [] here is valid — GeoParquet allows omitting geometry_types.
+    col_type = _get_query_column_type(con, query, geometry_column) or ""
+    if "STRUCT" in col_type:
         return []
 
     # Escape column name for SQL (double any embedded quotes)

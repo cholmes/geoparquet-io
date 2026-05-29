@@ -15,6 +15,7 @@ from geoparquet_io.core.crs_utils import (
 from geoparquet_io.core.duckdb_utils import (
     _DuckDBSchemaWrapper,
     _escape_sql_string,
+    _get_query_column_type,
     _get_query_columns,
     _wrap_query_with_wkb_conversion,
     get_duckdb_connection,
@@ -466,6 +467,12 @@ def compute_geometry_types_via_sql(
             return []
     except (duckdb.Error, RuntimeError, ValueError, AttributeError):
         # If we can't determine schema, return empty list rather than failing
+        return []
+
+    # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) can't use ST_GeometryType.
+    # Returning [] is valid — GeoParquet allows omitting geometry_types.
+    col_type = _get_query_column_type(con, query, geometry_column) or ""
+    if "STRUCT" in col_type:
         return []
 
     # Escape column name for SQL (double any embedded quotes)
