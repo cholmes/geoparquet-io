@@ -194,7 +194,7 @@ def _get_crs_from_file(input_parquet: str, geometry_col: str) -> dict | str | No
             name = col.get("name", "")
             if name != geometry_col:
                 continue
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             # DuckDB returns GeometryType(...) and GeographyType(...) from parquet_schema()
             if logical_type and (
                 logical_type.startswith("GeometryType(")

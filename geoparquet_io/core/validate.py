@@ -1095,7 +1095,7 @@ def _check_native_geo_type_present(schema_info: list, geom_col: str) -> Validati
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             if is_geometry_column(logical_type):
                 geo_type = "GEOMETRY" if "GeometryType" in logical_type else "GEOGRAPHY"
                 return ValidationCheck(
@@ -1125,7 +1125,7 @@ def _check_native_crs_format(schema_info: list, geom_col: str) -> ValidationChec
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
 
             if not parsed:
@@ -1186,7 +1186,7 @@ def _check_geography_edges_valid(schema_info: list, geom_col: str) -> Validation
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
 
             if "GeographyType" not in logical_type:
                 return ValidationCheck(
@@ -1234,7 +1234,7 @@ def _is_geography_column(schema_info: list, geom_col: str) -> bool:
     """Check if a geometry column is a GEOGRAPHY type."""
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             return "GeographyType" in logical_type
     return False
 
@@ -1712,7 +1712,7 @@ def _check_v2_uses_native_types(schema_info: list, geom_col: str) -> ValidationC
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             if is_geometry_column(logical_type):
                 return ValidationCheck(
                     name=f"v2_native_types_{geom_col}",
@@ -1757,7 +1757,7 @@ def _check_v2_crs_in_parquet_type(
     # Find the Parquet schema CRS
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
 
             if parsed and parsed.get("crs"):
@@ -1795,7 +1795,7 @@ def _check_v2_crs_consistency(geo_meta: dict, schema_info: list, geom_col: str) 
     schema_crs = None
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
             if parsed:
                 schema_crs = parsed.get("crs")
@@ -1842,7 +1842,7 @@ def _check_v2_edges_consistency(
     is_geography = False
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             if "GeographyType" in logical_type:
                 is_geography = True
                 parsed = parse_geometry_logical_type(logical_type)
@@ -1891,7 +1891,7 @@ def _check_parquet_geo_only_crs(
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
 
             if not parsed:
@@ -2294,7 +2294,7 @@ def _get_crs_from_schema(schema_info: list, geom_col: str) -> Any:
 
     for col in schema_info:
         if col.get("name") == geom_col:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
             if parsed:
                 return parsed.get("crs")
