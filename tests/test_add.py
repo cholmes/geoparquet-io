@@ -583,3 +583,103 @@ class TestAddBboxCoveringMetadata:
         bbox_covering = covering["bbox"]
         assert bbox_covering.get("xmin") == ["bbox", "xmin"]
         assert bbox_covering.get("ymax") == ["bbox", "ymax"]
+
+
+class TestAddBboxMetadataPreservesFileProperties:
+    """Tests for issue #433: bbox-metadata must preserve bloom filters and GEOMETRY type."""
+
+    def test_preserves_bloom_filters_and_geometry_type(self, tmp_path):
+        """Test that add bbox-metadata preserves bloom filters and native GEOMETRY logical type.
+
+        Regression test for issue #433: gpio add bbox-metadata was using PyArrow
+        read_table/write_table which destroys bloom filters and drops the native
+        GEOMETRY logical type from GeoParquet 2.0 files.
+        """
+        import json
+
+        import pyarrow.parquet as pq
+
+        # Create a GeoParquet 2.0 file with DuckDB
+        # - 5000+ rows triggers bloom filter creation on VARCHAR columns
+        # - GEOPARQUET_VERSION 'V2' writes native GEOMETRY logical type
+        test_file = str(tmp_path / "test_v2_with_bloom.parquet")
+
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        conn.execute(f"""
+            COPY (
+                SELECT
+                    'name_' || (i % 50) AS name,
+                    STRUCT_PACK(
+                        xmin := ST_XMin(geometry)::FLOAT,
+                        ymin := ST_YMin(geometry)::FLOAT,
+                        xmax := ST_XMax(geometry)::FLOAT,
+                        ymax := ST_YMax(geometry)::FLOAT
+                    ) AS bbox,
+                    geometry
+                FROM (
+                    SELECT i, ST_Point(i * 0.001, i * 0.001) AS geometry
+                    FROM range(5000) t(i)
+                )
+            ) TO '{test_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'V2')
+        """)
+        conn.close()
+
+        # BEFORE: Verify bloom filter and GEOMETRY type exist
+        # Check bloom filter on 'name' column
+        conn = duckdb.connect()
+        bloom_before = conn.execute(f"""
+            SELECT bloom_filter_offset IS NOT NULL AS has_bloom
+            FROM parquet_metadata('{test_file}')
+            WHERE path_in_schema = 'name'
+            LIMIT 1
+        """).fetchone()[0]
+
+        # Check GEOMETRY logical type
+        schema_before = conn.execute(f"""
+            SELECT logical_type
+            FROM parquet_schema('{test_file}')
+            WHERE name = 'geometry'
+        """).fetchone()[0]
+        conn.close()
+
+        assert bloom_before, "BEFORE: Expected bloom filter on 'name' column"
+        assert schema_before is not None, "BEFORE: Expected GEOMETRY logical type"
+        assert "Geometry" in str(schema_before), (
+            f"BEFORE: Expected GeometryType, got {schema_before}"
+        )
+
+        # Run add bbox-metadata
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox-metadata", test_file, "--verbose"])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        assert "Added bbox covering metadata" in result.output
+
+        # AFTER: Verify bloom filter and GEOMETRY type are preserved
+        conn = duckdb.connect()
+        bloom_after = conn.execute(f"""
+            SELECT bloom_filter_offset IS NOT NULL AS has_bloom
+            FROM parquet_metadata('{test_file}')
+            WHERE path_in_schema = 'name'
+            LIMIT 1
+        """).fetchone()[0]
+
+        schema_after = conn.execute(f"""
+            SELECT logical_type
+            FROM parquet_schema('{test_file}')
+            WHERE name = 'geometry'
+        """).fetchone()[0]
+        conn.close()
+
+        # These assertions will FAIL on current code (issue #433)
+        assert bloom_after, "AFTER: Bloom filter on 'name' column was destroyed!"
+        assert schema_after is not None, "AFTER: GEOMETRY logical type was dropped!"
+        assert "Geometry" in str(schema_after), f"AFTER: Expected GeometryType, got {schema_after}"
+
+        # Also verify the covering metadata was actually added
+        pf = pq.ParquetFile(test_file)
+        geo_meta = json.loads(pf.schema_arrow.metadata.get(b"geo", b"{}"))
+        primary_col = geo_meta.get("primary_column", "geometry")
+        col_meta = geo_meta.get("columns", {}).get(primary_col, {})
+        covering = col_meta.get("covering", {})
+        assert "bbox" in covering, "covering.bbox should exist in geo metadata"

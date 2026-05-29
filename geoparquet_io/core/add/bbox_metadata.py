@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
+"""Add bbox covering metadata to GeoParquet files.
 
-import gc
+This module adds bbox covering metadata to existing GeoParquet files,
+enabling spatial filtering optimizations in readers that support it.
+
+Uses DuckDB COPY TO with KV_METADATA to preserve file properties including
+bloom filters and native GEOMETRY logical type (fixes #433).
+"""
+
 import json
 import os
 
-import pyarrow.parquet as pq
+import duckdb
 
 from geoparquet_io.core.check_parquet_structure import get_compression_info, get_row_group_stats
 from geoparquet_io.core.common import check_bbox_structure, get_parquet_metadata
@@ -15,16 +22,57 @@ from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, error, success
 
 
-def add_bbox_metadata(parquet_file, verbose=False):
+def _detect_native_geometry(parquet_file: str) -> bool:
+    """Detect if the file uses native GEOMETRY logical type (GeoParquet 2.0).
+
+    Args:
+        parquet_file: Path to the parquet file
+
+    Returns:
+        True if the file has native GEOMETRY type, False otherwise
     """
-    Add bbox covering metadata to a GeoParquet file.
+    conn = duckdb.connect()
+    try:
+        result = conn.execute(f"""
+            SELECT logical_type
+            FROM parquet_schema('{parquet_file}')
+            WHERE name = 'geometry'
+        """).fetchone()
+
+        if result and result[0]:
+            logical_type = str(result[0])
+            return "Geometry" in logical_type or "Geography" in logical_type
+        return False
+    finally:
+        conn.close()
+
+
+def _escape_json_for_duckdb(json_str: str) -> str:
+    """Escape JSON string for use in DuckDB KV_METADATA option.
+
+    Single quotes must be doubled for DuckDB string literals.
+    """
+    return json_str.replace("'", "''")
+
+
+def add_bbox_metadata(
+    parquet_file: str,
+    verbose: bool = False,
+    write_strategy: str = "duckdb-kv",
+) -> None:
+    """Add bbox covering metadata to a GeoParquet file.
 
     Updates the GeoParquet metadata to include bbox covering information,
     which enables spatial filtering optimizations in readers that support it.
 
+    This operation preserves all file properties including bloom filters,
+    native GEOMETRY logical type, compression, and row group structure.
+
     Args:
         parquet_file: Path to the parquet file (will be modified in place)
         verbose: Print verbose output
+        write_strategy: Write strategy (currently only 'duckdb-kv' supported for
+            this operation to preserve file properties)
     """
     safe_url = safe_file_url(parquet_file, verbose)
 
@@ -75,47 +123,55 @@ def add_bbox_metadata(parquet_file, verbose=False):
     # Get original file properties
     row_group_stats = get_row_group_stats(parquet_file)
     compression_info = get_compression_info(parquet_file, primary_col)
-    row_group_size = row_group_stats["avg_rows_per_group"]
+    row_group_size = int(row_group_stats["avg_rows_per_group"])
     compression = compression_info[primary_col]
+
+    # Detect if file uses native GEOMETRY type (GeoParquet 2.0)
+    has_native_geometry = _detect_native_geometry(parquet_file)
 
     if verbose:
         debug("\nPreserving file properties:")
-        debug(f"Row group size: {row_group_size:,.0f} rows")
+        debug(f"Row group size: {row_group_size:,} rows")
         debug(f"Compression: {compression}")
+        debug(f"Native GEOMETRY type: {has_native_geometry}")
 
-    # Create a temporary file for the new metadata
+    # Create a temporary file for the rewrite
     temp_file = parquet_file + ".tmp"
     try:
-        # Read the original file
-        table = pq.read_table(parquet_file)
+        # Use DuckDB COPY TO with KV_METADATA to preserve file properties
+        # This preserves bloom filters and native GEOMETRY logical type (fixes #433)
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
 
-        # Update metadata
-        existing_metadata = table.schema.metadata or {}
-        new_metadata = {
-            k: v for k, v in existing_metadata.items() if not k.decode("utf-8").startswith("geo")
-        }
-        new_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+        # Escape the geo metadata JSON for DuckDB
+        geo_meta_escaped = _escape_json_for_duckdb(json.dumps(geo_meta))
 
-        # Create new table with updated metadata
-        new_table = table.replace_schema_metadata(new_metadata)
+        # Build COPY options
+        # Use GEOPARQUET_VERSION 'V2' if native geometry, 'NONE' otherwise
+        # (NONE means "don't touch the geometry column, just copy as-is with custom metadata")
+        geoparquet_version = "V2" if has_native_geometry else "NONE"
 
-        # Write to temporary file with same properties as original
-        pq.write_table(
-            new_table,
-            temp_file,
-            row_group_size=int(row_group_size),
-            compression=compression,
-            write_statistics=True,
-            use_dictionary=True,
-            version="2.6",
-            write_page_index=False,
-        )
+        copy_options = [
+            "FORMAT PARQUET",
+            f"COMPRESSION {compression}",
+            f"GEOPARQUET_VERSION '{geoparquet_version}'",
+            f"KV_METADATA {{geo: '{geo_meta_escaped}'}}",
+            f"ROW_GROUP_SIZE {row_group_size}",
+        ]
 
-        # Release references before file replace (Windows file locking)
-        del table, new_table
-        gc.collect()
+        copy_sql = f"""
+            COPY (SELECT * FROM '{parquet_file}')
+            TO '{temp_file}'
+            ({", ".join(copy_options)})
+        """
 
-        # Replace original file
+        if verbose:
+            debug(f"\nDuckDB COPY SQL:\n{copy_sql}")
+
+        conn.execute(copy_sql)
+        conn.close()
+
+        # Replace original file atomically
         os.replace(temp_file, parquet_file)
 
         success(f"✓ Added bbox covering metadata for column '{bbox_info['bbox_column_name']}'")
