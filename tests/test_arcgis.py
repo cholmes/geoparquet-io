@@ -5,6 +5,7 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import json
 import tempfile
 import uuid
 from pathlib import Path
@@ -249,6 +250,66 @@ class TestCrsExtraction:
 
         result = _extract_crs_from_spatial_reference({})
         assert result is not None  # Should default to WGS84
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_output_crs_is_wgs84_regardless_of_native_sr(
+        self, mock_get_layer, mock_stream, tmp_path
+    ):
+        """Test that output CRS is always WGS84 even when layer's native SR is 3857 (issue #427).
+
+        ArcGIS f=geojson always returns WGS84 per RFC 7946, so the output metadata
+        must reflect that, not the layer's native spatial reference.
+        """
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        # Layer advertises Web Mercator (EPSG:3857), but f=geojson returns WGS84
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 102100, "latestWkid": 3857},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=3,
+        )
+        mock_get_layer.return_value = layer_info
+
+        # Create a temp parquet with test data that _stream_features_to_parquet would produce
+        temp_parquet = str(tmp_path / "temp.parquet")
+        test_table = pa.table(
+            {
+                "geometry": [
+                    b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+                ],
+                "OBJECTID": [1],
+                "name": ["Test Point"],
+            }
+        )
+        pq.write_table(test_table, temp_parquet)
+
+        def mock_stream_side_effect(*args, **kwargs):
+            # Copy our test parquet to where arcgis_to_table expects it
+            import shutil
+
+            output_path = kwargs.get("output_path") or args[2]
+            shutil.copy(temp_parquet, output_path)
+            return 1
+
+        mock_stream.side_effect = mock_stream_side_effect
+
+        # Call arcgis_to_table which sets CRS metadata
+        result = arcgis_to_table("https://example.com/FeatureServer/0")
+
+        # Verify output CRS is WGS84, not 3857
+        geo_meta = json.loads(result.schema.metadata[b"geo"])
+        crs = geo_meta["columns"]["geometry"]["crs"]
+
+        # CRS84 is WGS84 with lon/lat axis order (matches GeoJSON)
+        assert crs["id"]["authority"] == "OGC"
+        assert crs["id"]["code"] == "CRS84"
 
 
 class TestSchemaBuilding:
