@@ -889,7 +889,7 @@ def _build_geo_columns_info(schema_info: list, geo_columns: dict) -> dict:
     for col in schema_info:
         col_name = col.get("name", "")
         if col_name in geo_columns:
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type) if logical_type else {}
             geo_columns_info[col_name] = {
                 "logical_type": geo_columns.get(col_name),

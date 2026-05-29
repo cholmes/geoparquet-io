@@ -141,7 +141,7 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
 
     schema_info = get_schema_info(safe_url)
     for col in schema_info:
-        logical_type = col.get("logical_type", "")
+        logical_type = col.get("logical_type") or ""
         if logical_type and (
             logical_type.startswith("GeometryType(") or logical_type.startswith("GeographyType(")
         ):

@@ -273,7 +273,7 @@ def extract_geo_info(parquet_file: str, con=None) -> dict[str, Any]:
             geometry_column = col_name
 
             # Parse additional details from logical type
-            logical_type = col.get("logical_type", "")
+            logical_type = col.get("logical_type") or ""
             if logical_type:
                 geom_details = parse_geometry_logical_type(logical_type)
                 if geom_details:
