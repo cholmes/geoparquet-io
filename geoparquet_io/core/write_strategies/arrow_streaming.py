@@ -109,8 +109,16 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         if validated_compression == "UNCOMPRESSED":
             validated_compression = None
 
-        version_config = GEOPARQUET_VERSIONS.get(geoparquet_version, GEOPARQUET_VERSIONS["1.1"])
         batch_size = row_group_rows or DEFAULT_BATCH_SIZE
+
+        # Handle non-geo queries: write plain Parquet without geo metadata
+        if geometry_column is None:
+            self._write_plain_parquet_from_query(
+                con, query, output_path, validated_compression, validated_level, batch_size, verbose
+            )
+            return
+
+        version_config = GEOPARQUET_VERSIONS.get(geoparquet_version, GEOPARQUET_VERSIONS["1.1"])
 
         # Check geometry type and prepare SQL
         _, final_sql = _check_geometry_type(con, query, geometry_column, verbose)
@@ -422,6 +430,15 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         if validated_compression == "UNCOMPRESSED":
             validated_compression = None
 
+        batch_size = row_group_rows or DEFAULT_BATCH_SIZE
+
+        # Handle non-geo tables: write plain Parquet without geo metadata
+        if geometry_column is None:
+            self._write_plain_parquet_from_table(
+                table, output_path, validated_compression, validated_level, batch_size, verbose
+            )
+            return
+
         # Auto-detect version from table schema metadata if not specified
         effective_version = geoparquet_version
         if effective_version is None:
@@ -430,7 +447,6 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         version_config = GEOPARQUET_VERSIONS.get(effective_version, GEOPARQUET_VERSIONS["1.1"])
         metadata_version = version_config["metadata_version"]
 
-        batch_size = row_group_rows or DEFAULT_BATCH_SIZE
         use_native_geometry = effective_version in ("2.0", "parquet-geo-only")
         should_add_geo_metadata = effective_version != "parquet-geo-only"
 
@@ -573,3 +589,86 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 new_columns.append(batch.column(i))
 
         return pa.RecordBatch.from_arrays(new_columns, schema=schema_with_geoarrow)
+
+    def _write_plain_parquet_from_table(
+        self,
+        table: pa.Table,
+        output_path: str,
+        compression: str | None,
+        compression_level: int | None,
+        batch_size: int,
+        verbose: bool,
+    ) -> None:
+        """Write plain Parquet (no geo metadata) from an Arrow table using streaming."""
+        writer_kwargs = {"compression": compression or "NONE"}
+        if compression_level is not None and compression:
+            writer_kwargs["compression_level"] = compression_level
+
+        rows_written = 0
+        batches_written = 0
+
+        if verbose:
+            debug(f"Writing plain Parquet in batches of {batch_size:,}...")
+
+        with pq.ParquetWriter(output_path, table.schema, **writer_kwargs) as writer:
+            for batch in table.to_batches(max_chunksize=batch_size):
+                table_batch = pa.Table.from_batches([batch], schema=table.schema)
+                writer.write_table(table_batch)
+                rows_written += batch.num_rows
+                batches_written += 1
+
+        if verbose:
+            success(f"Wrote {rows_written:,} rows in {batches_written} row groups")
+
+    def _write_plain_parquet_from_query(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        query: str,
+        output_path: str,
+        compression: str | None,
+        compression_level: int | None,
+        batch_size: int,
+        verbose: bool,
+    ) -> None:
+        """Write plain Parquet (no geo metadata) from a query using streaming."""
+        if verbose:
+            debug(f"Executing query with batch size {batch_size:,}...")
+
+        result = con.execute(query)
+        reader = result.fetch_record_batch(rows_per_batch=batch_size)
+        schema = reader.schema
+
+        writer_kwargs = {"compression": compression or "NONE"}
+        if compression_level is not None and compression:
+            writer_kwargs["compression_level"] = compression_level
+
+        rows_written = 0
+        batches_written = 0
+
+        first_batch = None
+        try:
+            first_batch = next(iter(reader))
+        except StopIteration:
+            # Empty result set
+            with pq.ParquetWriter(output_path, schema, **writer_kwargs):
+                pass
+            if verbose:
+                success("Wrote 0 rows (empty result)")
+            return
+
+        with pq.ParquetWriter(output_path, schema, **writer_kwargs) as writer:
+            # Write first batch
+            table_batch = pa.Table.from_batches([first_batch], schema=schema)
+            writer.write_table(table_batch)
+            rows_written += first_batch.num_rows
+            batches_written += 1
+
+            # Write remaining batches
+            for batch in reader:
+                table_batch = pa.Table.from_batches([batch], schema=schema)
+                writer.write_table(table_batch)
+                rows_written += batch.num_rows
+                batches_written += 1
+
+        if verbose:
+            success(f"Wrote {rows_written:,} rows in {batches_written} row groups")
