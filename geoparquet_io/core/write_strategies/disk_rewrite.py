@@ -70,6 +70,13 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         configure_verbose(verbose)
         self._validate_output_path(output_path)
 
+        # Handle non-geo queries: write plain Parquet without geo metadata
+        if geometry_column is None:
+            self._write_plain_parquet_from_query(
+                con, query, output_path, compression, compression_level, verbose
+            )
+            return
+
         compression_map = {
             "zstd": "ZSTD",
             "gzip": "GZIP",
@@ -174,6 +181,13 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         configure_verbose(verbose)
         self._validate_output_path(output_path)
 
+        # Handle non-geo tables: write plain Parquet without geo metadata
+        if geometry_column is None:
+            self._write_plain_parquet_from_table(
+                table, output_path, compression, compression_level, verbose
+            )
+            return
+
         # Auto-detect version from table schema metadata if not specified
         effective_version = geoparquet_version
         if effective_version is None:
@@ -209,6 +223,108 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             )
         finally:
             con.close()
+
+    def _write_plain_parquet_from_table(
+        self,
+        table: pa.Table,
+        output_path: str,
+        compression: str,
+        compression_level: int | None,
+        verbose: bool,
+    ) -> None:
+        """Write plain Parquet (no geo metadata) from an Arrow table."""
+        from geoparquet_io.core.common import validate_compression_settings
+        from geoparquet_io.core.remote import is_remote_url, upload_if_remote
+
+        validated_compression, validated_level, _ = validate_compression_settings(
+            compression, compression_level, verbose
+        )
+
+        pa_compression = validated_compression if validated_compression != "UNCOMPRESSED" else None
+        writer_kwargs = {"compression": pa_compression}
+        if validated_level is not None and pa_compression:
+            writer_kwargs["compression_level"] = validated_level
+
+        is_remote = is_remote_url(output_path)
+        work_dir = tempfile.mkdtemp(prefix="gpio_disk_rewrite_") if is_remote else None
+
+        try:
+            local_path = os.path.join(work_dir, "output.parquet") if is_remote else output_path
+
+            if verbose:
+                debug(f"Writing plain Parquet with {validated_compression} compression...")
+
+            pq.write_table(table, local_path, **writer_kwargs)
+
+            if is_remote:
+                upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
+
+            if verbose:
+                success(f"Wrote {table.num_rows:,} rows to {output_path}")
+        finally:
+            if work_dir and os.path.exists(work_dir):
+                import shutil
+
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _write_plain_parquet_from_query(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        query: str,
+        output_path: str,
+        compression: str,
+        compression_level: int | None,
+        verbose: bool,
+    ) -> None:
+        """Write plain Parquet (no geo metadata) from a query."""
+        from geoparquet_io.core.common import validate_compression_settings
+        from geoparquet_io.core.remote import is_remote_url, upload_if_remote
+
+        compression_map = {
+            "zstd": "ZSTD",
+            "gzip": "GZIP",
+            "snappy": "SNAPPY",
+            "lz4": "LZ4",
+            "none": "UNCOMPRESSED",
+            "uncompressed": "UNCOMPRESSED",
+            "brotli": "BROTLI",
+        }
+        duckdb_compression = compression_map.get(compression.lower(), "ZSTD")
+
+        validated_compression, validated_level, _ = validate_compression_settings(
+            compression, compression_level, verbose
+        )
+
+        is_remote = is_remote_url(output_path)
+        work_dir = tempfile.mkdtemp(prefix="gpio_disk_rewrite_") if is_remote else None
+
+        try:
+            from geoparquet_io.core.duckdb_utils import _escape_sql_string
+
+            local_path = os.path.join(work_dir, "output.parquet") if is_remote else output_path
+            escaped_path = _escape_sql_string(local_path)
+
+            copy_query = f"""
+                COPY ({query})
+                TO '{escaped_path}'
+                (FORMAT PARQUET, COMPRESSION {duckdb_compression})
+            """
+
+            if verbose:
+                debug(f"Writing plain Parquet with {duckdb_compression} compression...")
+            con.execute(copy_query)
+
+            if is_remote:
+                upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
+
+            if verbose:
+                pf = pq.ParquetFile(local_path)
+                success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
+        finally:
+            if work_dir and os.path.exists(work_dir):
+                import shutil
+
+                shutil.rmtree(work_dir, ignore_errors=True)
 
     def _rewrite_with_metadata(
         self,

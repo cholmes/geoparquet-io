@@ -314,3 +314,228 @@ class TestWriteFromQuery:
         assert Path(output_file).exists()
         pf = pq.ParquetFile(output_file)
         assert pf.metadata.num_rows == 3
+
+
+class TestWriteStrategiesNoGeometry:
+    """
+    Tests for write strategies when geometry_column is None.
+
+    Regression tests for issue #440: write strategies should write valid plain
+    Parquet (no geo metadata) when the table has no geometry column.
+    """
+
+    @pytest.fixture
+    def non_geo_table(self):
+        """Create a plain Arrow table with no geometry."""
+        return pa.table(
+            {
+                "id": [1, 2, 3],
+                "name": ["Alice", "Bob", "Charlie"],
+                "value": [100.5, 200.0, 300.75],
+            }
+        )
+
+    @pytest.fixture
+    def non_geo_query(self, duckdb_connection):
+        """Register a non-geo table and return query string."""
+        table = pa.table(
+            {
+                "id": [1, 2, 3],
+                "name": ["Alice", "Bob", "Charlie"],
+                "value": [100.5, 200.0, 300.75],
+            }
+        )
+        duckdb_connection.register("non_geo_data", table)
+        return "SELECT * FROM non_geo_data"
+
+    def _assert_valid_plain_parquet(self, output_path: str):
+        """Assert output is valid plain Parquet with no geo metadata."""
+        pf = pq.ParquetFile(output_path)
+        assert pf.metadata.num_rows == 3
+
+        # Verify no geo metadata key
+        schema_metadata = pf.schema_arrow.metadata or {}
+        assert b"geo" not in schema_metadata, "Plain Parquet should have no 'geo' metadata"
+
+        # Verify data integrity
+        table = pf.read()
+        assert table.column_names == ["id", "name", "value"]
+        assert table["id"].to_pylist() == [1, 2, 3]
+
+    def test_in_memory_strategy_no_geometry(self, non_geo_table, output_file):
+        """in-memory strategy writes valid plain Parquet when geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_MEMORY)
+
+        strategy.write_from_table(
+            table=non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_duckdb_kv_strategy_no_geometry(self, non_geo_table, output_file):
+        """duckdb-kv strategy writes valid plain Parquet when geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
+
+        strategy.write_from_table(
+            table=non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_streaming_strategy_no_geometry(self, non_geo_table, output_file):
+        """streaming strategy writes valid plain Parquet when geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_STREAMING)
+
+        strategy.write_from_table(
+            table=non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_disk_rewrite_strategy_no_geometry(self, non_geo_table, output_file):
+        """disk-rewrite strategy writes valid plain Parquet when geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_table(
+            table=non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_in_memory_query_no_geometry(self, duckdb_connection, non_geo_query, output_file):
+        """in-memory strategy write_from_query handles geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_MEMORY)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=non_geo_query,
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_duckdb_kv_query_no_geometry(self, duckdb_connection, non_geo_query, output_file):
+        """duckdb-kv strategy write_from_query handles geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=non_geo_query,
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_streaming_query_no_geometry(self, duckdb_connection, non_geo_query, output_file):
+        """streaming strategy write_from_query handles geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_STREAMING)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=non_geo_query,
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_disk_rewrite_query_no_geometry(self, duckdb_connection, non_geo_query, output_file):
+        """disk-rewrite strategy write_from_query handles geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=non_geo_query,
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_compression_options_honored_no_geometry(self, non_geo_table, output_file):
+        """Compression options are honored when writing non-geo data."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
+
+        strategy.write_from_table(
+            table=non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="SNAPPY",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        pf = pq.ParquetFile(output_file)
+        # Verify compression was applied (SNAPPY)
+        row_group = pf.metadata.row_group(0)
+        col_meta = row_group.column(0)
+        assert col_meta.compression == "SNAPPY"
