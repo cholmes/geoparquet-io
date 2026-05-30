@@ -5,6 +5,7 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1723,7 +1724,10 @@ class TestAutoPageSingleWorker:
                     page_size=10000,
                 )
 
-    @pytest.mark.xfail(reason="DuckDB resource contention in pytest-xdist workers", strict=False)
+    @pytest.mark.skipif(
+        os.environ.get("PYTEST_XDIST_WORKER") is not None,
+        reason="DuckDB resource contention crashes pytest-xdist workers",
+    )
     def test_startindex_limit_allows_small_datasets(self):
         """When total features fit within the startIndex limit, should proceed."""
         import pyarrow as pa
@@ -1751,7 +1755,10 @@ class TestAutoPageSingleWorker:
 
         assert result.num_rows > 0
 
-    @pytest.mark.xfail(reason="DuckDB resource contention in pytest-xdist workers", strict=False)
+    @pytest.mark.skipif(
+        os.environ.get("PYTEST_XDIST_WORKER") is not None,
+        reason="DuckDB resource contention crashes pytest-xdist workers",
+    )
     def test_no_startindex_limit_proceeds_normally(self):
         """When server has no startIndex limit, pagination should proceed."""
         import pyarrow as pa
