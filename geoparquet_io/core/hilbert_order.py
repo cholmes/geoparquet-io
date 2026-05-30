@@ -49,6 +49,9 @@ def hilbert_order_table(
 
     This is the table-centric version for the Python API.
 
+    Empty or NULL geometries are placed at the end of the result since they
+    have no spatial extent and cannot be assigned a Hilbert curve index.
+
     Args:
         table: Input PyArrow Table
         geometry_column: Geometry column name (auto-detected if None)
@@ -82,7 +85,21 @@ def hilbert_order_table(
         else:
             source_ref = "__input_table"
 
-        # Calculate dataset bounds
+        # Count empty/null geometries to handle them separately
+        # ST_IsEmpty returns TRUE for empty geometries, NULL for NULL geometries
+        empty_count_result = con.execute(f"""
+            SELECT COUNT(*) FROM {source_ref}
+            WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+        """).fetchone()
+        empty_count = empty_count_result[0] if empty_count_result else 0
+
+        if empty_count > 0:
+            warn(
+                f"Found {empty_count} empty/null geometries. "
+                "These will be placed at the end of the sorted output."
+            )
+
+        # Calculate dataset bounds from non-empty geometries only
         bounds_result = con.execute(f"""
             SELECT
                 MIN(ST_XMin("{geom_col}")) as xmin,
@@ -90,10 +107,13 @@ def hilbert_order_table(
                 MAX(ST_XMax("{geom_col}")) as xmax,
                 MAX(ST_YMax("{geom_col}")) as ymax
             FROM {source_ref}
+            WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
         """).fetchone()
 
+        # If all geometries are empty/null, return table unchanged
         if not bounds_result or any(v is None for v in bounds_result):
-            raise ValueError("Could not calculate dataset bounds from table")
+            warn("All geometries are empty or null. Returning table without Hilbert ordering.")
+            return table
 
         xmin, ymin, xmax, ymax = bounds_result
 
@@ -101,22 +121,32 @@ def hilbert_order_table(
         other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
-        # Build Hilbert ordering query with geometry converted back to WKB
+        # Build column selection with WKB conversion
         if select_cols:
-            query = f"""
-                SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}"
-                FROM {source_ref}
-                ORDER BY ST_Hilbert("{geom_col}",
-                    ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
-            """
+            wkb_select = f'{select_cols}, ST_AsWKB("{geom_col}") AS "{geom_col}"'
         else:
-            query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}"
+            wkb_select = f'ST_AsWKB("{geom_col}") AS "{geom_col}"'
+
+        # Build Hilbert ordering query that handles empty geometries:
+        # 1. Non-empty geometries are ordered by Hilbert curve
+        # 2. Empty/null geometries are appended at the end
+        query = f"""
+            WITH non_empty AS (
+                SELECT {wkb_select}
                 FROM {source_ref}
+                WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
                 ORDER BY ST_Hilbert("{geom_col}",
                     ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
-            """
+            ),
+            empty_or_null AS (
+                SELECT {wkb_select}
+                FROM {source_ref}
+                WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+            )
+            SELECT * FROM non_empty
+            UNION ALL
+            SELECT * FROM empty_or_null
+        """
         result = con.execute(query).arrow().read_all()
 
         # Preserve metadata
@@ -290,7 +320,20 @@ def _hilbert_order_streaming(
             debug(f"Using geometry column: {geom_col}")
             debug("Calculating dataset bounds for Hilbert ordering...")
 
-        # Calculate dataset bounds
+        # Count empty/null geometries
+        empty_count_result = con.execute(f"""
+            SELECT COUNT(*) FROM {source}
+            WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+        """).fetchone()
+        empty_count = empty_count_result[0] if empty_count_result else 0
+
+        if empty_count > 0:
+            warn(
+                f"Found {empty_count} empty/null geometries. "
+                "These will be placed at the end of the sorted output."
+            )
+
+        # Calculate dataset bounds from non-empty geometries only
         bounds_result = con.execute(f"""
             SELECT
                 MIN(ST_XMin("{geom_col}")) as xmin,
@@ -298,6 +341,7 @@ def _hilbert_order_streaming(
                 MAX(ST_XMax("{geom_col}")) as xmax,
                 MAX(ST_YMax("{geom_col}")) as ymax
             FROM {source}
+            WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
         """).fetchone()
 
         if not bounds_result or any(v is None for v in bounds_result):
@@ -308,11 +352,22 @@ def _hilbert_order_streaming(
             debug(f"Dataset bounds: ({xmin:.6f}, {ymin:.6f}, {xmax:.6f}, {ymax:.6f})")
             debug("Reordering data using Hilbert curve...")
 
-        # Build Hilbert ordering query
+        # Build Hilbert ordering query with empty geometry handling
+        # Non-empty geometries are ordered by Hilbert curve, empty/null appended at end
         query = f"""
-            SELECT * FROM {source}
-            ORDER BY ST_Hilbert("{geom_col}",
-                ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
+            WITH non_empty AS (
+                SELECT * FROM {source}
+                WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
+                ORDER BY ST_Hilbert("{geom_col}",
+                    ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
+            ),
+            empty_or_null AS (
+                SELECT * FROM {source}
+                WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+            )
+            SELECT * FROM non_empty
+            UNION ALL
+            SELECT * FROM empty_or_null
         """
 
         if verbose:
@@ -380,6 +435,20 @@ def _hilbert_order_file_based(
     if verbose:
         debug("Calculating dataset bounds for Hilbert ordering...")
 
+    # Count empty/null geometries
+    empty_count_result = con.execute(f"""
+        SELECT COUNT(*) FROM '{safe_url}'
+        WHERE {geometry_column} IS NULL OR ST_IsEmpty({geometry_column})
+    """).fetchone()
+    empty_count = empty_count_result[0] if empty_count_result else 0
+
+    if empty_count > 0:
+        warn(
+            f"Found {empty_count} empty/null geometries. "
+            "These will be placed at the end of the sorted output."
+        )
+
+    # Get bounds from non-empty geometries only
     bounds = get_dataset_bounds(working_parquet, geometry_column, verbose=verbose)
     if not bounds:
         raise GeoParquetError("Could not calculate dataset bounds")
@@ -389,10 +458,22 @@ def _hilbert_order_file_based(
         debug(f"Dataset bounds: ({xmin:.6f}, {ymin:.6f}, {xmax:.6f}, {ymax:.6f})")
         debug("Reordering data using Hilbert curve...")
 
+    # Build Hilbert ordering query with empty geometry handling
+    # Non-empty geometries are ordered by Hilbert curve, empty/null appended at end
     order_query = f"""
-        SELECT * FROM '{safe_url}'
-        ORDER BY ST_Hilbert({geometry_column},
-            ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
+        WITH non_empty AS (
+            SELECT * FROM '{safe_url}'
+            WHERE {geometry_column} IS NOT NULL AND NOT ST_IsEmpty({geometry_column})
+            ORDER BY ST_Hilbert({geometry_column},
+                ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
+        ),
+        empty_or_null AS (
+            SELECT * FROM '{safe_url}'
+            WHERE {geometry_column} IS NULL OR ST_IsEmpty({geometry_column})
+        )
+        SELECT * FROM non_empty
+        UNION ALL
+        SELECT * FROM empty_or_null
     """
 
     try:
