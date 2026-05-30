@@ -15,7 +15,7 @@ from geoparquet_io.core.common import (
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
+from geoparquet_io.core.exceptions import RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
 from geoparquet_io.core.geometry_detection import (
@@ -344,8 +344,28 @@ def _hilbert_order_streaming(
             WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
         """).fetchone()
 
+        # If all geometries are empty/null, pass through unchanged
         if not bounds_result or any(v is None for v in bounds_result):
-            raise GeoParquetError("Could not calculate dataset bounds")
+            warn("All geometries are empty or null. Writing file without Hilbert ordering.")
+            # Pass through data unchanged
+            passthrough_query = f"SELECT * FROM {source}"
+            write_output(
+                con,
+                passthrough_query,
+                output_path,
+                original_metadata=metadata,
+                geometry_column=geom_col,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                verbose=verbose,
+                profile=profile,
+                geoparquet_version=geoparquet_version,
+            )
+            if not should_stream_output(output_path):
+                success(f"Wrote data without Hilbert ordering to: {output_path}")
+            return
 
         xmin, ymin, xmax, ymax = bounds_result
         if verbose:
@@ -438,7 +458,7 @@ def _hilbert_order_file_based(
     # Count empty/null geometries
     empty_count_result = con.execute(f"""
         SELECT COUNT(*) FROM '{safe_url}'
-        WHERE {geometry_column} IS NULL OR ST_IsEmpty({geometry_column})
+        WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
     """).fetchone()
     empty_count = empty_count_result[0] if empty_count_result else 0
 
@@ -448,10 +468,31 @@ def _hilbert_order_file_based(
             "These will be placed at the end of the sorted output."
         )
 
-    # Get bounds from non-empty geometries only
+    # Get bounds (empty geometries naturally excluded since ST_XMin returns NULL for them)
     bounds = get_dataset_bounds(working_parquet, geometry_column, verbose=verbose)
+
+    # If all geometries are empty/null, copy file unchanged
     if not bounds:
-        raise GeoParquetError("Could not calculate dataset bounds")
+        warn("All geometries are empty or null. Writing file without Hilbert ordering.")
+        passthrough_query = f"SELECT * FROM '{safe_url}'"
+        write_parquet_with_metadata(
+            con,
+            passthrough_query,
+            output_parquet,
+            original_metadata=metadata,
+            compression=compression,
+            compression_level=compression_level,
+            row_group_size_mb=row_group_size_mb,
+            row_group_rows=row_group_rows,
+            verbose=verbose,
+            profile=profile,
+            geoparquet_version=geoparquet_version,
+        )
+        con.close()
+        if temp_file_created and temp_file:
+            temp_file.cleanup()
+        success(f"Wrote data without Hilbert ordering to: {output_parquet}")
+        return
 
     xmin, ymin, xmax, ymax = bounds
     if verbose:
@@ -463,13 +504,13 @@ def _hilbert_order_file_based(
     order_query = f"""
         WITH non_empty AS (
             SELECT * FROM '{safe_url}'
-            WHERE {geometry_column} IS NOT NULL AND NOT ST_IsEmpty({geometry_column})
-            ORDER BY ST_Hilbert({geometry_column},
+            WHERE "{geometry_column}" IS NOT NULL AND NOT ST_IsEmpty("{geometry_column}")
+            ORDER BY ST_Hilbert("{geometry_column}",
                 ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
         ),
         empty_or_null AS (
             SELECT * FROM '{safe_url}'
-            WHERE {geometry_column} IS NULL OR ST_IsEmpty({geometry_column})
+            WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
         )
         SELECT * FROM non_empty
         UNION ALL

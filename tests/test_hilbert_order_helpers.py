@@ -317,6 +317,117 @@ class TestHilbertOrderTableEmptyGeometries:
         assert result.schema.metadata == metadata
 
 
+class TestHilbertOrderCLIEmptyGeometries:
+    """CLI integration tests for empty/null geometry handling.
+
+    Tests that the CLI paths (_hilbert_order_streaming, _hilbert_order_file_based)
+    handle empty geometries gracefully, matching the Python API behavior.
+    """
+
+    @pytest.fixture
+    def mixed_empty_parquet(self, tmp_path):
+        """Create a GeoParquet file with mixed valid and empty geometries."""
+        import duckdb
+        import pyarrow.parquet as pq
+
+        output_path = tmp_path / "mixed_empty.parquet"
+        con = duckdb.connect()
+        con.install_extension("spatial")
+        con.load_extension("spatial")
+
+        # Create table with WKB geometries
+        arrow_table = (
+            con.execute("""
+                SELECT * FROM (VALUES
+                    (1, ST_AsWKB(ST_GeomFromText('POINT(10 20)'))),
+                    (2, ST_AsWKB(ST_GeomFromText('POINT EMPTY'))),
+                    (3, ST_AsWKB(ST_GeomFromText('POINT(30 40)')))
+                ) t(id, geometry)
+            """)
+            .arrow()
+            .read_all()
+        )
+        con.close()
+
+        # Add GeoParquet metadata so DuckDB recognizes geometry column
+        geo_metadata = b'{"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}}}'
+        table_with_meta = arrow_table.replace_schema_metadata({b"geo": geo_metadata})
+        pq.write_table(table_with_meta, output_path)
+        return str(output_path)
+
+    @pytest.fixture
+    def all_empty_parquet(self, tmp_path):
+        """Create a GeoParquet file with only empty/null geometries."""
+        import duckdb
+        import pyarrow.parquet as pq
+
+        output_path = tmp_path / "all_empty.parquet"
+        con = duckdb.connect()
+        con.install_extension("spatial")
+        con.load_extension("spatial")
+
+        # Create table with empty/null WKB geometries
+        arrow_table = (
+            con.execute("""
+                SELECT * FROM (VALUES
+                    (1, ST_AsWKB(ST_GeomFromText('POINT EMPTY'))),
+                    (2, ST_AsWKB(ST_GeomFromText('LINESTRING EMPTY'))),
+                    (3, NULL)
+                ) t(id, geometry)
+            """)
+            .arrow()
+            .read_all()
+        )
+        con.close()
+
+        # Add GeoParquet metadata so DuckDB recognizes geometry column
+        geo_metadata = b'{"version": "1.0.0", "primary_column": "geometry", "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point", "LineString"]}}}'
+        table_with_meta = arrow_table.replace_schema_metadata({b"geo": geo_metadata})
+        pq.write_table(table_with_meta, output_path)
+        return str(output_path)
+
+    def test_cli_mixed_empty_geometries(self, mixed_empty_parquet, tmp_path):
+        """CLI should handle mixed valid/empty geometries without crashing."""
+        import pyarrow.parquet as pq
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        output_path = str(tmp_path / "output.parquet")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["sort", "hilbert", mixed_empty_parquet, output_path])
+
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert "empty/null geometries" in result.output
+
+        # Verify output exists and has correct row count
+        output_table = pq.read_table(output_path)
+        assert output_table.num_rows == 3
+
+        # Empty geometry (id=2) should be at the end
+        ids = output_table.column("id").to_pylist()
+        assert ids[-1] == 2
+
+    def test_cli_all_empty_geometries_graceful(self, all_empty_parquet, tmp_path):
+        """CLI should handle all-empty geometries gracefully (not crash)."""
+        import pyarrow.parquet as pq
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        output_path = str(tmp_path / "output.parquet")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["sort", "hilbert", all_empty_parquet, output_path])
+
+        # Should succeed, not crash
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert "empty or null" in result.output.lower()
+
+        # Output should exist and preserve all rows
+        output_table = pq.read_table(output_path)
+        assert output_table.num_rows == 3
+
+
 class TestHilbertOrderIntegration:
     """Integration tests for hilbert_order."""
 
