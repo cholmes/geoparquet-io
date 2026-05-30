@@ -1511,6 +1511,40 @@ class TestEmptyProperties:
         assert "geometry" in result.column_names
         assert "value" in result.column_names
 
+    def test_missing_properties_key_returns_geometry_only(self):
+        """Missing properties key (malformed GeoJSON) should return geometry-only table.
+
+        Per RFC 7946, the 'properties' member is required, but we handle
+        malformed GeoJSON gracefully by returning geometry-only results.
+        """
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    # No 'properties' key - malformed per RFC 7946
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert result.column_names == ["geometry"]
+
 
 class TestAutoPageSingleWorker:
     """Test that single-worker mode auto-paginates for large datasets."""
