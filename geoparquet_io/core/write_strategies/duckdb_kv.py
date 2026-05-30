@@ -468,6 +468,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
     ) -> None:
         """Write plain Parquet (no geo metadata) from an Arrow table."""
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         compression_upper = compression.upper()
         if compression_upper not in VALID_COMPRESSIONS:
@@ -475,10 +476,13 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                 f"Invalid compression: {compression}. Valid: {', '.join(VALID_COMPRESSIONS)}"
             )
 
+        is_remote = is_remote_url(output_path)
+        local_path = self._get_local_path(output_path, is_remote)
+
         con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
         try:
             con.register("input_table", table)
-            escaped_path = _escape_sql_string(output_path)
+            escaped_path = _escape_sql_string(local_path)
 
             options = [
                 "FORMAT PARQUET",
@@ -493,11 +497,16 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                 debug(f"Writing plain Parquet with {compression_upper} compression...")
             con.execute(copy_query)
 
+            if is_remote:
+                upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
+
             if verbose:
-                pf = pq.ParquetFile(output_path)
+                pf = pq.ParquetFile(local_path)
                 success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
         finally:
             con.close()
+            if is_remote and Path(local_path).exists():
+                Path(local_path).unlink()
 
     def _write_plain_parquet_from_query(
         self,

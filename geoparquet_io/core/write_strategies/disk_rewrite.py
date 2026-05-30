@@ -273,11 +273,16 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         query: str,
         output_path: str,
         compression: str,
-        compression_level: int | None,
+        compression_level: int | None,  # noqa: ARG002 - DuckDB COPY doesn't support compression_level
         verbose: bool,
     ) -> None:
-        """Write plain Parquet (no geo metadata) from a query."""
-        from geoparquet_io.core.common import validate_compression_settings
+        """Write plain Parquet (no geo metadata) from a query.
+
+        Note: compression_level is accepted for API consistency but not used.
+        DuckDB's COPY TO command doesn't support compression_level for most
+        compression types. For compression_level support, use write_from_table
+        which uses PyArrow directly.
+        """
         from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         compression_map = {
@@ -290,10 +295,6 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             "brotli": "BROTLI",
         }
         duckdb_compression = compression_map.get(compression.lower(), "ZSTD")
-
-        validated_compression, validated_level, _ = validate_compression_settings(
-            compression, compression_level, verbose
-        )
 
         is_remote = is_remote_url(output_path)
         work_dir = tempfile.mkdtemp(prefix="gpio_disk_rewrite_") if is_remote else None

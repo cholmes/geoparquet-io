@@ -539,3 +539,77 @@ class TestWriteStrategiesNoGeometry:
         row_group = pf.metadata.row_group(0)
         col_meta = row_group.column(0)
         assert col_meta.compression == "SNAPPY"
+
+    @pytest.fixture
+    def empty_non_geo_table(self):
+        """Create an empty Arrow table with no geometry."""
+        return pa.table(
+            {
+                "id": pa.array([], type=pa.int64()),
+                "name": pa.array([], type=pa.string()),
+                "value": pa.array([], type=pa.float64()),
+            }
+        )
+
+    @pytest.fixture
+    def empty_non_geo_query(self, duckdb_connection):
+        """Register an empty non-geo table and return query string."""
+        table = pa.table(
+            {
+                "id": pa.array([], type=pa.int64()),
+                "name": pa.array([], type=pa.string()),
+                "value": pa.array([], type=pa.float64()),
+            }
+        )
+        duckdb_connection.register("empty_non_geo_data", table)
+        return "SELECT * FROM empty_non_geo_data"
+
+    def _assert_valid_empty_plain_parquet(self, output_path: str):
+        """Assert output is valid empty plain Parquet with no geo metadata."""
+        pf = pq.ParquetFile(output_path)
+        assert pf.metadata.num_rows == 0
+
+        # Verify no geo metadata key
+        schema_metadata = pf.schema_arrow.metadata or {}
+        assert b"geo" not in schema_metadata, "Plain Parquet should have no 'geo' metadata"
+
+    def test_streaming_empty_table_no_geometry(self, empty_non_geo_table, output_file):
+        """streaming strategy handles empty table with geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_STREAMING)
+
+        strategy.write_from_table(
+            table=empty_non_geo_table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        self._assert_valid_empty_plain_parquet(output_file)
+
+    def test_streaming_empty_query_no_geometry(
+        self, duckdb_connection, empty_non_geo_query, output_file
+    ):
+        """streaming strategy handles empty query result with geometry_column=None."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_STREAMING)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=empty_non_geo_query,
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        self._assert_valid_empty_plain_parquet(output_file)
