@@ -1186,24 +1186,58 @@ def _fetch_wfs_page(
             debug("Empty response, returning empty table")
             return pa.table({"geometry": pa.array([], type=pa.binary())})
 
+        # Detect property type to determine if unnest() will work.
+        # Empty properties ({}) become MAP(VARCHAR, JSON), null properties
+        # become JSON - neither can be unnested. Only STRUCT types work.
+        # See: https://github.com/geoparquet/geoparquet-io/issues/441
+        props_type_result = con.execute(f"""
+            WITH features AS (
+                SELECT unnest(features) AS feature
+                FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
+            )
+            SELECT typeof(feature.properties) AS props_type
+            FROM features
+            LIMIT 1
+        """).fetchone()
+        props_type = props_type_result[0] if props_type_result else "NULL"
+        can_unnest_props = props_type.startswith("STRUCT")
+
         # Extract features with geometry conversion
         fid_col = "feature.id AS _wfs_fid," if extract_fid else ""
         fid_select = "_wfs_fid," if extract_fid else ""
         parse_start = time.time()
-        query = f"""
-            WITH features AS (
-                SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
-            ),
-            extracted AS (
+
+        if can_unnest_props:
+            # Normal path: unnest properties into separate columns
+            query = f"""
+                WITH features AS (
+                    SELECT unnest(features) AS feature
+                    FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
+                ),
+                extracted AS (
+                    SELECT
+                        {fid_col}
+                        ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
+                        feature.properties AS props
+                    FROM features
+                )
+                SELECT {fid_select} geometry, unnest(props) FROM extracted
+            """
+        else:
+            # Fallback: properties are empty/null (MAP or JSON type),
+            # return geometry-only table
+            debug(f"Properties type is {props_type}, cannot unnest - returning geometry-only table")
+            query = f"""
+                WITH features AS (
+                    SELECT unnest(features) AS feature
+                    FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
+                )
                 SELECT
                     {fid_col}
-                    ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
-                    feature.properties AS props
+                    ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry
                 FROM features
-            )
-            SELECT {fid_select} geometry, unnest(props) FROM extracted
-        """
+            """
+
         result = con.execute(query)
         table = result.arrow().read_all()
 
