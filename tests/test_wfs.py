@@ -5,6 +5,7 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1311,6 +1312,241 @@ class TestContentTypeValidation:
             assert result.num_rows == 0
 
 
+class TestEmptyProperties:
+    """Test handling of empty/null properties in GeoJSON features.
+
+    When WFS features have empty properties ({}) or null properties,
+    DuckDB infers MAP(VARCHAR, JSON) or JSON types instead of STRUCT.
+    The unnest() function doesn't support these types, so we fall back
+    to returning geometry-only tables.
+
+    See: https://github.com/geoparquet/geoparquet-io/issues/441
+    """
+
+    def _make_mock_stream(self, geojson_bytes: bytes):
+        """Create a mock httpx stream response."""
+        import httpx
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "application/json"}
+
+                def raise_for_status(self):
+                    pass
+
+                def iter_bytes(self, chunk_size=None):
+                    yield geojson_bytes
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        return patch.object(httpx.Client, "stream", mock_stream)
+
+    def test_empty_properties_returns_geometry_only(self):
+        """Empty properties ({}) should return geometry-only table."""
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                    "properties": {},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert "geometry" in result.column_names
+        # No property columns - only geometry
+        assert result.column_names == ["geometry"]
+
+    def test_null_properties_returns_geometry_only(self):
+        """Null properties should return geometry-only table."""
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": None,
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                    "properties": None,
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert result.column_names == ["geometry"]
+
+    def test_empty_properties_with_extract_fid(self):
+        """Empty properties with extract_fid=True should include _wfs_fid."""
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "line.1",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {},
+                },
+                {
+                    "type": "Feature",
+                    "id": "line.2",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                    "properties": {},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert "_wfs_fid" in result.column_names
+        assert "geometry" in result.column_names
+        assert result.column_names == ["_wfs_fid", "geometry"]
+
+    def test_normal_properties_still_works(self):
+        """Normal properties should still be unnested into columns."""
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {"name": "A", "population": 100},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                    "properties": {"name": "B", "population": 200},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert "geometry" in result.column_names
+        assert "name" in result.column_names
+        assert "population" in result.column_names
+
+    def test_heterogeneous_value_types_still_works(self):
+        """Heterogeneous value types (promoted to JSON) should still work."""
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {"value": 123},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                    "properties": {"value": "text"},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert "geometry" in result.column_names
+        assert "value" in result.column_names
+
+    def test_missing_properties_key_returns_geometry_only(self):
+        """Missing properties key (malformed GeoJSON) should return geometry-only table.
+
+        Per RFC 7946, the 'properties' member is required, but we handle
+        malformed GeoJSON gracefully by returning geometry-only results.
+        """
+        import json
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    # No 'properties' key - malformed per RFC 7946
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [1, 1]},
+                },
+            ],
+        }
+
+        with self._make_mock_stream(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 2
+        assert result.column_names == ["geometry"]
+
+
 class TestAutoPageSingleWorker:
     """Test that single-worker mode auto-paginates for large datasets."""
 
@@ -1488,7 +1724,10 @@ class TestAutoPageSingleWorker:
                     page_size=10000,
                 )
 
-    @pytest.mark.xfail(reason="DuckDB resource contention in pytest-xdist workers", strict=False)
+    @pytest.mark.skipif(
+        os.environ.get("PYTEST_XDIST_WORKER") is not None,
+        reason="DuckDB resource contention crashes pytest-xdist workers",
+    )
     def test_startindex_limit_allows_small_datasets(self):
         """When total features fit within the startIndex limit, should proceed."""
         import pyarrow as pa
@@ -1516,7 +1755,10 @@ class TestAutoPageSingleWorker:
 
         assert result.num_rows > 0
 
-    @pytest.mark.xfail(reason="DuckDB resource contention in pytest-xdist workers", strict=False)
+    @pytest.mark.skipif(
+        os.environ.get("PYTEST_XDIST_WORKER") is not None,
+        reason="DuckDB resource contention crashes pytest-xdist workers",
+    )
     def test_no_startindex_limit_proceeds_normally(self):
         """When server has no startIndex limit, pagination should proceed."""
         import pyarrow as pa

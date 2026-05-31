@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import duckdb
 import pyarrow as pa
 
 # Public API
@@ -1066,6 +1067,97 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
         con.close()
 
 
+def _probe_properties_type(
+    con: duckdb.DuckDBPyConnection, safe_path: str, max_object_size: int
+) -> tuple[str, bool]:
+    """
+    Probe the type of feature.properties to determine if unnest() will work.
+
+    Empty properties ({}) become MAP(VARCHAR, JSON), null properties become JSON,
+    missing properties key raises an error - none can be unnested.
+    Only STRUCT types support unnest().
+
+    Args:
+        con: DuckDB connection with spatial extension loaded
+        safe_path: Path to the GeoJSON file (already escaped for SQL)
+        max_object_size: Maximum JSON object size for read_json_auto
+
+    Returns:
+        Tuple of (props_type string, can_unnest_props bool)
+
+    See: https://github.com/geoparquet/geoparquet-io/issues/441
+    """
+    try:
+        props_type_result = con.execute(f"""
+            WITH features AS (
+                SELECT unnest(features) AS feature
+                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+            )
+            SELECT typeof(feature.properties) AS props_type
+            FROM features
+            LIMIT 1
+        """).fetchone()
+        props_type = props_type_result[0] if props_type_result else "NULL"
+    except duckdb.BinderException as e:
+        # Missing 'properties' key in feature struct (malformed GeoJSON per RFC 7946)
+        if "properties" in str(e):
+            props_type = "MISSING"
+        else:
+            raise
+
+    can_unnest_props = props_type.startswith("STRUCT")
+    return props_type, can_unnest_props
+
+
+def _build_wfs_feature_query(
+    safe_path: str, extract_fid: bool, can_unnest_props: bool, max_object_size: int
+) -> str:
+    """
+    Build SQL query to extract WFS features from GeoJSON.
+
+    Args:
+        safe_path: Path to the GeoJSON file (already escaped for SQL)
+        extract_fid: If True, include feature.id as _wfs_fid column
+        can_unnest_props: If True, unnest properties into columns; otherwise geometry-only
+        max_object_size: Maximum JSON object size for read_json_auto
+
+    Returns:
+        SQL query string
+    """
+    fid_col = "feature.id AS _wfs_fid," if extract_fid else ""
+    fid_select = "_wfs_fid," if extract_fid else ""
+
+    if can_unnest_props:
+        # Normal path: unnest properties into separate columns
+        return f"""
+            WITH features AS (
+                SELECT unnest(features) AS feature
+                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+            ),
+            extracted AS (
+                SELECT
+                    {fid_col}
+                    ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
+                    feature.properties AS props
+                FROM features
+            )
+            SELECT {fid_select} geometry, unnest(props) FROM extracted
+        """
+    else:
+        # Fallback: properties are empty/null/missing (MAP, JSON, or MISSING type),
+        # return geometry-only table
+        return f"""
+            WITH features AS (
+                SELECT unnest(features) AS feature
+                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+            )
+            SELECT
+                {fid_col}
+                ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry
+            FROM features
+        """
+
+
 def _fetch_wfs_page(
     url: str, extract_fid: bool = False, max_retries: int = 3, retry_delay: float = 2.0
 ) -> pa.Table:
@@ -1186,24 +1278,16 @@ def _fetch_wfs_page(
             debug("Empty response, returning empty table")
             return pa.table({"geometry": pa.array([], type=pa.binary())})
 
-        # Extract features with geometry conversion
-        fid_col = "feature.id AS _wfs_fid," if extract_fid else ""
-        fid_select = "_wfs_fid," if extract_fid else ""
+        # Detect property type and build extraction query
+        props_type, can_unnest_props = _probe_properties_type(con, safe_path, _MAX_JSON_OBJECT_SIZE)
+        if not can_unnest_props:
+            debug(f"Properties type is {props_type}, cannot unnest - returning geometry-only table")
+
         parse_start = time.time()
-        query = f"""
-            WITH features AS (
-                SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
-            ),
-            extracted AS (
-                SELECT
-                    {fid_col}
-                    ST_AsWKB(ST_GeomFromGeoJSON(feature.geometry)) AS geometry,
-                    feature.properties AS props
-                FROM features
-            )
-            SELECT {fid_select} geometry, unnest(props) FROM extracted
-        """
+        query = _build_wfs_feature_query(
+            safe_path, extract_fid, can_unnest_props, _MAX_JSON_OBJECT_SIZE
+        )
+
         result = con.execute(query)
         table = result.arrow().read_all()
 
