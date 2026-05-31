@@ -14,7 +14,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
@@ -63,6 +63,7 @@ def hilbert_order_table(
     geom_col = geometry_column or find_geometry_column_from_table(table)
     if not geom_col:
         geom_col = "geometry"
+    quoted_geom = quote_identifier(geom_col)
 
     # Register table and execute query
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
@@ -75,8 +76,8 @@ def hilbert_order_table(
 
         if geom_is_blob and geom_col in table.column_names:
             # Quote column names to handle special characters (colons, spaces, etc.)
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [f"ST_GeomFromWKB({quoted_geom}) AS {quoted_geom}"]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -89,7 +90,7 @@ def hilbert_order_table(
         # ST_IsEmpty returns TRUE for empty geometries, NULL for NULL geometries
         empty_count_result = con.execute(f"""
             SELECT COUNT(*) FROM {source_ref}
-            WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+            WHERE {quoted_geom} IS NULL OR ST_IsEmpty({quoted_geom})
         """).fetchone()
         empty_count = empty_count_result[0] if empty_count_result else 0
 
@@ -102,12 +103,12 @@ def hilbert_order_table(
         # Calculate dataset bounds from non-empty geometries only
         bounds_result = con.execute(f"""
             SELECT
-                MIN(ST_XMin("{geom_col}")) as xmin,
-                MIN(ST_YMin("{geom_col}")) as ymin,
-                MAX(ST_XMax("{geom_col}")) as xmax,
-                MAX(ST_YMax("{geom_col}")) as ymax
+                MIN(ST_XMin({quoted_geom})) as xmin,
+                MIN(ST_YMin({quoted_geom})) as ymin,
+                MAX(ST_XMax({quoted_geom})) as xmax,
+                MAX(ST_YMax({quoted_geom})) as ymax
             FROM {source_ref}
-            WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
+            WHERE {quoted_geom} IS NOT NULL AND NOT ST_IsEmpty({quoted_geom})
         """).fetchone()
 
         # If all geometries are empty/null, return table unchanged
@@ -118,14 +119,14 @@ def hilbert_order_table(
         xmin, ymin, xmax, ymax = bounds_result
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build column selection with WKB conversion
         if select_cols:
-            wkb_select = f'{select_cols}, ST_AsWKB("{geom_col}") AS "{geom_col}"'
+            wkb_select = f"{select_cols}, ST_AsWKB({quoted_geom}) AS {quoted_geom}"
         else:
-            wkb_select = f'ST_AsWKB("{geom_col}") AS "{geom_col}"'
+            wkb_select = f"ST_AsWKB({quoted_geom}) AS {quoted_geom}"
 
         # Build Hilbert ordering query that handles empty geometries:
         # 1. Non-empty geometries are ordered by Hilbert curve
@@ -134,14 +135,14 @@ def hilbert_order_table(
             WITH non_empty AS (
                 SELECT {wkb_select}
                 FROM {source_ref}
-                WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
-                ORDER BY ST_Hilbert("{geom_col}",
+                WHERE {quoted_geom} IS NOT NULL AND NOT ST_IsEmpty({quoted_geom})
+                ORDER BY ST_Hilbert({quoted_geom},
                     ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
             ),
             empty_or_null AS (
                 SELECT {wkb_select}
                 FROM {source_ref}
-                WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+                WHERE {quoted_geom} IS NULL OR ST_IsEmpty({quoted_geom})
             )
             SELECT * FROM non_empty
             UNION ALL
@@ -315,6 +316,7 @@ def _hilbert_order_streaming(
                 if name in col_names:
                     geom_col = name
                     break
+        quoted_geom = quote_identifier(geom_col)
 
         if verbose:
             debug(f"Using geometry column: {geom_col}")
@@ -323,7 +325,7 @@ def _hilbert_order_streaming(
         # Count empty/null geometries
         empty_count_result = con.execute(f"""
             SELECT COUNT(*) FROM {source}
-            WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+            WHERE {quoted_geom} IS NULL OR ST_IsEmpty({quoted_geom})
         """).fetchone()
         empty_count = empty_count_result[0] if empty_count_result else 0
 
@@ -336,12 +338,12 @@ def _hilbert_order_streaming(
         # Calculate dataset bounds from non-empty geometries only
         bounds_result = con.execute(f"""
             SELECT
-                MIN(ST_XMin("{geom_col}")) as xmin,
-                MIN(ST_YMin("{geom_col}")) as ymin,
-                MAX(ST_XMax("{geom_col}")) as xmax,
-                MAX(ST_YMax("{geom_col}")) as ymax
+                MIN(ST_XMin({quoted_geom})) as xmin,
+                MIN(ST_YMin({quoted_geom})) as ymin,
+                MAX(ST_XMax({quoted_geom})) as xmax,
+                MAX(ST_YMax({quoted_geom})) as ymax
             FROM {source}
-            WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
+            WHERE {quoted_geom} IS NOT NULL AND NOT ST_IsEmpty({quoted_geom})
         """).fetchone()
 
         # If all geometries are empty/null, pass through unchanged
@@ -377,13 +379,13 @@ def _hilbert_order_streaming(
         query = f"""
             WITH non_empty AS (
                 SELECT * FROM {source}
-                WHERE "{geom_col}" IS NOT NULL AND NOT ST_IsEmpty("{geom_col}")
-                ORDER BY ST_Hilbert("{geom_col}",
+                WHERE {quoted_geom} IS NOT NULL AND NOT ST_IsEmpty({quoted_geom})
+                ORDER BY ST_Hilbert({quoted_geom},
                     ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
             ),
             empty_or_null AS (
                 SELECT * FROM {source}
-                WHERE "{geom_col}" IS NULL OR ST_IsEmpty("{geom_col}")
+                WHERE {quoted_geom} IS NULL OR ST_IsEmpty({quoted_geom})
             )
             SELECT * FROM non_empty
             UNION ALL
@@ -490,7 +492,7 @@ def _hilbert_order_file_based(
         )
         con.close()
         if temp_file_created and temp_file:
-            temp_file.cleanup()
+            _cleanup_temp_file(temp_file, verbose)
         success(f"Wrote data without Hilbert ordering to: {output_parquet}")
         return
 
