@@ -92,6 +92,56 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Plugin system documentation
 - Dependency updates (actions/checkout v6, astral-sh/setup-uv v7, etc.)
 
+## v1.2.0 (2026-06-02)
+
+### Feat
+
+- **s3**: wire all remaining commands with _activate_s3()
+- **api**: add S3 endpoint kwargs to read_partition()
+- **cli**: wire global S3 config into all commands via ambient config scope
+- **cli**: add global --s3-endpoint, --s3-region, --s3-no-ssl, --aws-profile flags
+- **s3**: add ambient S3 config scope and explicit kwargs to get_duckdb_connection()
+- **s3**: add resolve_s3_config() with env var fallbacks and SSL detection
+- **wfs**: add --auto-tile to bypass server startIndex limits
+
+### Fix
+
+- **sort**: use quote_identifier for SQL identifiers and fix cleanup call
+- **sort**: address adversarial review findings for PR #446
+- **sort**: handle empty/null geometries in Hilbert ordering
+- **test**: skip DuckDB tests that crash xdist workers
+- **wfs**: handle empty/null properties in GeoJSON features
+- **write**: handle remote URLs and clean up dead code in no-geometry path
+- **write**: handle geometry_column=None in all write strategies (#440)
+- **add**: address CodeRabbit review comments
+- **add**: preserve ALL metadata in bbox-metadata operation
+- **add**: preserve bloom filters and GEOMETRY type in bbox-metadata (#433)
+- **convert**: support GeoArrow native-encoded GeoParquet as input
+- **validate**: guard against None logical_type in schema lookups
+- **arcgis**: use CRS84 for metadata when extracting via f=geojson (#427)
+- **cli**: reconfigure stdout/stderr to UTF-8 at CLI entry
+- **tests**: mark flaky WFS test as xfail
+- **s3**: connection leak in admin_datasets + add CLI docs
+- **deps**: update vulnerable dependencies
+- **s3**: address adversarial review findings
+- **deps**: upgrade pip to 26.1 for CVE-2026-6357
+- **wfs**: add retry logic for transient network errors
+- **wfs**: address adversarial review findings
+- **wfs**: adaptive pagination and reliability fixes for auto-tile
+- **wfs**: detect server startIndex limits and improve error messages
+- **wfs**: auto-paginate large datasets and fix parallel worker crash
+- **pmtiles**: address adversarial review of #422
+- **pmtiles**: handle BrokenPipe and surface upstream stderr (#421)
+
+### Refactor
+
+- **wfs**: extract property probe and query builder helpers
+- **geoarrow**: move coord-expr helpers to duckdb_utils, remove circular import
+- **geo_metadata**: deduplicate _get_query_column_type by importing from duckdb_utils
+- **admin**: use s3_config_scope() instead of configure_s3(con)
+- **cli**: hide per-command S3 and profile flags (now global)
+- **wfs**: unify fetch to always use httpx + local parsing
+
 ## v1.1.1 (2026-04-29)
 
 ### Fix
