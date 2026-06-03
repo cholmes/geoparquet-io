@@ -3250,7 +3250,10 @@ def extract_wfs_cmd(
 @overwrite_option
 @verbose_option
 @any_extension_option
+@aws_profile_option
+@click.pass_context
 def extract_carto_cmd(
+    ctx,
     url,
     table_name,
     output_file,
@@ -3270,6 +3273,7 @@ def extract_carto_cmd(
     overwrite,
     verbose,
     any_extension,
+    aws_profile,
 ):
     """
     Extract Carto SQL API table to GeoParquet.
@@ -3337,29 +3341,30 @@ def extract_carto_cmd(
                 "Expected: xmin,ymin,xmax,ymax (e.g., -75.2,39.9,-75.1,40.0)"
             ) from e
 
-    try:
-        convert_carto_to_geoparquet(
-            url=url,
-            table_name=table_name,
-            output_file=output_file,
-            where=where,
-            bbox=bbox_tuple,
-            limit=limit,
-            include_cols=include_cols,
-            exclude_cols=exclude_cols,
-            timeout=float(timeout),
-            skip_hilbert=skip_hilbert,
-            skip_bbox=skip_bbox,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-            verbose=verbose,
-        )
-    except CartoError as e:
-        raise click.ClickException(str(e)) from None
+    with _activate_s3(ctx, aws_profile=aws_profile):
+        try:
+            convert_carto_to_geoparquet(
+                url=url,
+                table_name=table_name,
+                output_file=output_file,
+                where=where,
+                bbox=bbox_tuple,
+                limit=limit,
+                include_cols=include_cols,
+                exclude_cols=exclude_cols,
+                timeout=float(timeout),
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+            )
+        except CartoError as e:
+            raise click.ClickException(str(e)) from None
 
 
 # Meta command - delegates to core.inspect.display_metadata

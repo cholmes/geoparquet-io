@@ -136,6 +136,11 @@ class TestBuildCartoQuery:
         sql = _build_carto_query("my_table", limit=100)
         assert "LIMIT 100" in sql
 
+    def test_with_limit_zero(self):
+        """Query with LIMIT 0 (edge case - should not be falsy)."""
+        sql = _build_carto_query("my_table", limit=0)
+        assert "LIMIT 0" in sql
+
     def test_combined_filters(self):
         """Query with WHERE, bbox, and limit."""
         sql = _build_carto_query(
@@ -310,6 +315,19 @@ class TestCartoToTable:
                 limit=1,
             )
 
+    def test_exclude_cols_cannot_drop_geometry(self):
+        """Excluding geometry column is prevented."""
+        table = carto_to_table(
+            url="https://phl.carto.com/api/v2/sql",
+            table_name="opa_properties_public",
+            exclude_cols="geometry,cartodb_id",
+            limit=5,
+        )
+        # Geometry should still be present (cannot be excluded)
+        assert "geometry" in table.column_names
+        # Other columns should be excluded
+        assert "cartodb_id" not in table.column_names
+
 
 @pytest.mark.network
 class TestCartoCli:
@@ -416,6 +434,7 @@ class TestCartoCli:
         assert "--timeout" in result.output
         assert "--include-cols" in result.output
         assert "--exclude-cols" in result.output
+        # Note: --aws-profile is hidden (global option) so not in help
         assert "CARTO_API_KEY" in result.output
 
     def test_cli_invalid_table_name(self):

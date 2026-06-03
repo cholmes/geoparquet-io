@@ -163,7 +163,7 @@ def _build_carto_query(
     if conditions:
         sql += " WHERE " + " AND ".join(conditions)
 
-    if limit:
+    if limit is not None:
         sql += f" LIMIT {limit}"
 
     return sql
@@ -456,10 +456,14 @@ def carto_to_table(
         cols_to_keep = [c for c in table.column_names if c != "OGC_FID"]
         table = table.select(cols_to_keep)
 
-    # Apply column exclusions
+    # Apply column exclusions (but never exclude geometry)
     if exclude_set:
-        cols_to_keep = [c for c in table.column_names if c not in exclude_set]
-        if cols_to_keep:
+        # Prevent excluding the geometry column - it's required for GeoParquet
+        if "geometry" in exclude_set:
+            exclude_set = exclude_set - {"geometry"}
+            warn("Cannot exclude 'geometry' column - it is required for GeoParquet output")
+        if exclude_set:
+            cols_to_keep = [c for c in table.column_names if c not in exclude_set]
             table = table.select(cols_to_keep)
             debug(f"Excluded columns: {exclude_set}")
 
