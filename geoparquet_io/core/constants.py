@@ -136,12 +136,16 @@ def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
             if os.path.exists(temp_out):
                 os.unlink(temp_out)
 
-    # Fix nullability on id and geometry columns
-    _set_columns_non_nullable(parquet_file, ["id", "geometry"])
+    # Fix schema: nullability on id/geometry, timestamp precision
+    _fix_vecorel_schema(parquet_file, ["id", "geometry"])
 
 
-def _set_columns_non_nullable(parquet_file: str, column_names: list[str]) -> None:
-    """Rewrite a Parquet file with specified columns marked non-nullable.
+def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> None:
+    """Fix Parquet schema for Vecorel compliance.
+
+    - Sets specified columns to non-nullable
+    - Converts timestamp columns with tz=UTC from microseconds to milliseconds
+      (Vecorel spec requires TIMESTAMP_MS)
 
     Preserves all existing Parquet metadata (geo, collection, etc.).
     """
@@ -154,11 +158,18 @@ def _set_columns_non_nullable(parquet_file: str, column_names: list[str]) -> Non
     needs_fix = False
     new_fields = []
     for field in schema:
-        if field.name in column_names and field.nullable:
-            new_fields.append(field.with_nullable(False))
+        new_field = field
+        if field.name in non_nullable_columns and field.nullable:
+            new_field = new_field.with_nullable(False)
             needs_fix = True
-        else:
-            new_fields.append(field)
+        if (
+            pa.types.is_timestamp(field.type)
+            and field.type.tz is not None
+            and field.type.unit != "ms"
+        ):
+            new_field = new_field.with_type(pa.timestamp("ms", tz=field.type.tz))
+            needs_fix = True
+        new_fields.append(new_field)
 
     if not needs_fix:
         return
