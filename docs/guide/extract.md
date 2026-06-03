@@ -1169,6 +1169,130 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 - State GIS portals (varies by state)
 - Municipal open data portals
 
+## Extracting from Carto SQL API
+
+Extract data from Carto SQL API endpoints directly to GeoParquet. Carto's SQL API provides access to PostgreSQL/PostGIS tables via HTTP, commonly used by municipal open data portals.
+
+### Basic Usage
+
+=== "CLI"
+
+    ```bash
+    # Extract entire table
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet
+
+    # Extract with row limit
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet --limit 10000
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    # Extract from Carto
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'opa_properties_public',
+        limit=10000
+    )
+    ```
+
+### Server-Side Filtering
+
+Filters are pushed to the Carto server for efficient querying:
+
+=== "CLI"
+
+    ```bash
+    # WHERE filter (PostgreSQL syntax)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --where "category_code_description = 'SINGLE FAMILY'"
+
+    # Bounding box filter (uses ST_Intersects on server)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --bbox "-75.2,39.9,-75.1,40.0"
+
+    # Select specific columns
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --include-cols "parcel_number,market_value,the_geom"
+
+    # Combined filters
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --bbox "-75.2,39.9,-75.1,40.0" \
+        --where "market_value > 100000" \
+        --limit 5000
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    # With filters
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'opa_properties_public',
+        where="category_code_description = 'SINGLE FAMILY'",
+        bbox=(-75.2, 39.9, -75.1, 40.0),
+        limit=5000
+    )
+    ```
+
+### URL Format
+
+The Carto SQL API URL follows this pattern:
+
+    https://<account>.carto.com/api/v2/sql
+
+You can provide either the full API URL or just the base domain:
+
+```bash
+# Full URL (explicit)
+gpio extract carto https://phl.carto.com/api/v2/sql opa_properties_public output.parquet
+
+# Base domain (api/v2/sql is appended automatically)
+gpio extract carto https://phl.carto.com opa_properties_public output.parquet
+```
+
+### Geometry Column
+
+Carto tables typically have geometry in a column named `the_geom` (WGS84). This is automatically renamed to `geometry` in the output for consistency with other geoparquet-io extractors.
+
+### Output Optimization
+
+By default, Carto extracts include Hilbert spatial ordering and bbox columns:
+
+```bash
+# Skip optimizations for faster extraction
+gpio extract carto https://phl.carto.com/api/v2/sql \
+    opa_properties_public output.parquet \
+    --skip-hilbert \
+    --skip-bbox
+
+# Custom compression
+gpio extract carto https://phl.carto.com/api/v2/sql \
+    opa_properties_public output.parquet \
+    --compression GZIP
+```
+
+### Common Public Carto Endpoints
+
+- **Philadelphia**: `https://phl.carto.com/api/v2/sql`
+  - Tables: `opa_properties_public`, `public_cases_fc`, many more
+- **Chicago**: `https://data.cityofchicago.org` (via Socrata, different API)
+- Other municipal open data portals using Carto
+
+!!! tip "Finding Available Tables"
+    Check the city's open data portal documentation for available table names.
+    For Philadelphia, see [cityofphiladelphia.github.io/carto-api-explorer](https://cityofphiladelphia.github.io/carto-api-explorer/).
+
 ## Working with Partitioned Input Data
 
 The `extract` command can read from partitioned GeoParquet datasets, including directories containing multiple parquet files and hive-style partitions.

@@ -812,6 +812,66 @@ def from_wfs(
     )
 
 
+def from_carto(
+    url: str,
+    table_name: str,
+    where: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    limit: int | None = None,
+    include_cols: str | None = None,
+    exclude_cols: str | None = None,
+) -> pa.Table:
+    """
+    Fetch Carto SQL API table as PyArrow Table.
+
+    Uses DuckDB's ST_Read for efficient GeoJSON parsing from Carto's SQL API.
+    Filters are pushed to the server for optimal performance.
+
+    Args:
+        url: Carto SQL API URL (e.g., 'https://phl.carto.com/api/v2/sql')
+            or base domain (e.g., 'https://phl.carto.com')
+        table_name: Name of the table to query
+        where: SQL WHERE clause for filtering
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84
+        limit: Maximum rows to fetch
+        include_cols: Comma-separated columns to include
+        exclude_cols: Comma-separated columns to exclude
+
+    Returns:
+        PyArrow Table with geometry column named 'geometry'
+
+    Note:
+        The Carto geometry column 'the_geom' is renamed to 'geometry'
+        for consistency with other geoparquet-io extractors.
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> table = ops.from_carto(
+        ...     'https://phl.carto.com/api/v2/sql',
+        ...     'opa_properties_public',
+        ...     limit=100
+        ... )
+        >>> # With filters:
+        >>> table = ops.from_carto(
+        ...     'https://phl.carto.com/api/v2/sql',
+        ...     'opa_properties_public',
+        ...     where="category_code_description = 'SINGLE FAMILY'",
+        ...     bbox=(-75.2, 39.9, -75.1, 40.0)
+        ... )
+    """
+    from geoparquet_io.core.carto import carto_to_table
+
+    return carto_to_table(
+        url=url,
+        table_name=table_name,
+        where=where,
+        bbox=bbox,
+        limit=limit,
+        include_cols=include_cols,
+        exclude_cols=exclude_cols,
+    )
+
+
 def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
     """
     Get per-row-group geo_bbox statistics from a GeoParquet file.
