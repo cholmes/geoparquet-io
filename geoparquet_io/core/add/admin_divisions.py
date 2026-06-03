@@ -7,6 +7,7 @@ This module extends the add_country_codes functionality to support
 multiple admin datasets with hierarchical level support.
 """
 
+from geoparquet_io.core.add.spatial_join import build_bbox_condition
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -76,22 +77,25 @@ def _build_spatial_join_query(
     admin_bbox_col,
     input_geom_col,
     admin_geom_col,
+    input_has_native_geo=False,
 ):
     """Build spatial join query with optional bbox optimization."""
-    if input_bbox_col and admin_bbox_col:
-        bbox_condition = f"""(a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)"""
+    bbox_condition = build_bbox_condition(
+        input_geom_col=input_geom_col,
+        other_bbox_col=admin_bbox_col,
+        input_bbox_col=input_bbox_col,
+        input_has_native_geo=input_has_native_geo,
+    )
 
+    if bbox_condition:
         return f"""
     SELECT
         a.*,
         {admin_select_clause}
     FROM '{input_url}' a
     LEFT JOIN {admin_subquery} b
-    ON {bbox_condition}  -- Fast bbox intersection test
-        AND ST_Intersects(  -- More expensive precise check only on bbox matches
+    ON {bbox_condition}
+        AND ST_Intersects(
             b.{admin_geom_col},
             a.{input_geom_col}
         )
@@ -255,9 +259,10 @@ def _setup_dataset_and_columns(
 
     # Check if we should skip bbox pre-filtering (for native geometry files)
     input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
+    input_has_native_geo = input_bbox_advice.get("has_native_geometry", False)
     if input_bbox_advice["skip_bbox_prefilter"]:
         if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
+            debug("Input has native geometry - will use geometry bounds for bbox pre-filter")
         input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
         input_bbox_col = None
     else:
@@ -276,6 +281,7 @@ def _setup_dataset_and_columns(
         input_bbox_info,
         input_bbox_col,
         admin_bbox_col,
+        input_has_native_geo,
     )
 
 
@@ -328,6 +334,7 @@ def _build_query_components(
     verbose,
     dry_run,
     prefix=None,
+    input_has_native_geo=False,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -366,6 +373,8 @@ def _build_query_components(
 
     if input_bbox_col and admin_bbox_col and verbose and not dry_run:
         debug("Using bbox columns for initial filtering...")
+    elif input_has_native_geo and admin_bbox_col and not dry_run:
+        progress("Using native geometry bounds for bbox pre-filtering...")
     elif not (input_bbox_col and admin_bbox_col) and not dry_run:
         progress("No bbox columns available, using full geometry intersection...")
 
@@ -377,6 +386,7 @@ def _build_query_components(
         admin_bbox_col,
         input_geom_col,
         admin_geom_col,
+        input_has_native_geo=input_has_native_geo,
     )
 
     return query, admin_source
@@ -487,6 +497,7 @@ def add_admin_divisions_multi(
         input_bbox_info,
         input_bbox_col,
         admin_bbox_col,
+        input_has_native_geo,
     ) = _setup_dataset_and_columns(
         input_parquet, dataset_name, dataset_source, levels, verbose, no_cache=no_cache
     )
@@ -529,6 +540,7 @@ def add_admin_divisions_multi(
                 verbose,
                 dry_run,
                 prefix=prefix,
+                input_has_native_geo=input_has_native_geo,
             )
 
             # Handle dry-run mode
