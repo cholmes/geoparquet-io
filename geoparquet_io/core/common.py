@@ -1478,6 +1478,7 @@ def write_parquet_with_metadata(
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
     geometry_info: dict | None = None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -1515,6 +1516,8 @@ def write_parquet_with_metadata(
             - "primary": primary geometry column name
             - "secondary": list of secondary geometry column names
             - "metadata": dict mapping column names to their metadata (crs, encoding, etc.)
+        extra_kv_metadata: Additional Parquet file-level KV metadata as {key: json_string}.
+            Written alongside the 'geo' key (e.g., for Vecorel collection metadata).
 
     Returns:
         None
@@ -1551,6 +1554,29 @@ def write_parquet_with_metadata(
         rewrite_needed = True
         if verbose:
             debug("Forcing metadata rewrite for covering metadata")
+
+    # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa)
+    if original_metadata:
+        preserved_keys = {}
+        for key, value in original_metadata.items():
+            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+            if key_str in ("geo", "ARROW:schema", "pandas"):
+                continue
+            val_str = value.decode("utf-8") if isinstance(value, bytes) else value
+            preserved_keys[key_str] = val_str
+        if preserved_keys:
+            if extra_kv_metadata is None:
+                extra_kv_metadata = {}
+            for k, v in preserved_keys.items():
+                if k not in extra_kv_metadata:
+                    extra_kv_metadata[k] = v
+
+    if extra_kv_metadata:
+        rewrite_needed = True
+        if verbose:
+            debug(
+                f"Forcing metadata rewrite for extra KV metadata: {list(extra_kv_metadata.keys())}"
+            )
 
     if show_sql:
         info("\n-- Query:")
@@ -1610,6 +1636,7 @@ def write_parquet_with_metadata(
                 "verbose": verbose,
                 "custom_metadata": custom_metadata,
                 "geometry_info": geometry_info,
+                "extra_kv_metadata": extra_kv_metadata,
             }
             if strategy_enum == WriteStrategy.DUCKDB_KV:
                 write_kwargs["memory_limit"] = memory_limit
@@ -2201,19 +2228,22 @@ def add_computed_column(
         progress(f"Processing {total_count:,} features...")
 
     # Build the query
+    # Quote column name to handle special characters (e.g., colons in "metrics:area")
+    quoted_col = f'"{column_name}"'
+
     # Use EXCLUDE to drop existing column when replacing
     if replace_column:
         query = f"""
         SELECT
             * EXCLUDE ({replace_column}),
-            {sql_expression} AS {column_name}
+            {sql_expression} AS {quoted_col}
         FROM '{input_url}'
     """
     else:
         query = f"""
         SELECT
             *,
-            {sql_expression} AS {column_name}
+            {sql_expression} AS {quoted_col}
         FROM '{input_url}'
     """
 

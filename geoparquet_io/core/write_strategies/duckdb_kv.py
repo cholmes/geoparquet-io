@@ -133,6 +133,7 @@ def _build_copy_options(
     compression: str,
     row_group_rows: int | None,
     geo_meta_escaped: str | None = None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ) -> list[str]:
     """Build COPY TO options list."""
     options = [
@@ -140,8 +141,15 @@ def _build_copy_options(
         f"COMPRESSION {compression}",
         "GEOPARQUET_VERSION 'NONE'",
     ]
+    kv_pairs = {}
     if geo_meta_escaped:
-        options.append(f"KV_METADATA {{geo: '{geo_meta_escaped}'}}")
+        kv_pairs["geo"] = geo_meta_escaped
+    if extra_kv_metadata:
+        for key, value in extra_kv_metadata.items():
+            kv_pairs[key] = _escape_sql_string(value)
+    if kv_pairs:
+        kv_str = ", ".join(f"'{k}': '{v}'" for k, v in kv_pairs.items())
+        options.append(f"KV_METADATA {{{kv_str}}}")
     if row_group_rows:
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
     return options
@@ -178,6 +186,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
         memory_limit: str | None = None,
         geometry_info: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA."""
         from geoparquet_io.core.remote import is_remote_url, upload_if_remote
@@ -233,6 +242,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                     output_path,
                     verbose,
                     geometry_info,
+                    extra_kv_metadata=extra_kv_metadata,
                 )
 
             if is_remote:
@@ -310,6 +320,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         output_path: str,
         verbose: bool,
         geometry_info: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write with geo metadata (v1.0, v1.1, v2.0)."""
         from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
@@ -338,7 +349,9 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         escaped_path = _escape_sql_string(local_path)
         geo_meta_escaped = _escape_sql_string(json.dumps(geo_meta))
 
-        copy_options = _build_copy_options(compression, row_group_rows, geo_meta_escaped)
+        copy_options = _build_copy_options(
+            compression, row_group_rows, geo_meta_escaped, extra_kv_metadata
+        )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
 
         if verbose:

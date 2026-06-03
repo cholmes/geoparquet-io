@@ -50,6 +50,7 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
         verbose: bool,
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write query results to GeoParquet using in-memory Arrow approach."""
         from geoparquet_io.core.common import (

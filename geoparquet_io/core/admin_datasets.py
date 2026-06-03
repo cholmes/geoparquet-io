@@ -224,7 +224,7 @@ class AdminDataset(ABC):
         Get the version identifier for this dataset.
 
         Returns:
-            Version string (e.g., "2024-12-19" or "2025-10-22.0")
+            Version string (e.g., "2024-12-19" or "2026-05-20.0")
         """
         return self.VERSION
 
@@ -450,6 +450,7 @@ class AdminDataset(ABC):
             level_name: The level name (e.g., "country", "region")
             prefix: Optional prefix for column names. If None, uses get_default_prefix().
                    If "admin", uses colon format (admin:level).
+                   If "vecorel", uses Vecorel-compliant column names.
                    Otherwise uses underscore format (prefix_level).
 
         Returns:
@@ -458,6 +459,7 @@ class AdminDataset(ABC):
         Examples:
             get_output_column_name("country", prefix=None) -> "gaul_country" (for GAUL)
             get_output_column_name("country", prefix="admin") -> "admin:country"
+            get_output_column_name("country", prefix="vecorel") -> "admin:country_code"
             get_output_column_name("country", prefix="mycustom") -> "mycustom_country"
         """
         if prefix is None:
@@ -467,9 +469,19 @@ class AdminDataset(ABC):
         elif prefix == "admin":
             # Special case: use colon format for "admin" prefix
             return f"admin:{level_name}"
+        elif prefix == "vecorel":
+            return self.get_vecorel_column_name(level_name)
         else:
             # Custom prefix with underscore format
             return f"{prefix}_{level_name}"
+
+    def get_vecorel_column_name(self, level_name: str) -> str:
+        """Get Vecorel-compliant output column name for an admin level.
+
+        Subclasses can override for dataset-specific mappings.
+        Default maps to admin:{level_name}.
+        """
+        return f"admin:{level_name}"
 
     def get_s3_config(self) -> dict:
         """Return S3 configuration for this dataset. Override in subclasses."""
@@ -606,7 +618,7 @@ class GAULAdminDataset(AdminDataset):
 
 class OvertureAdminDataset(AdminDataset):
     """
-    Overture Maps Divisions dataset (release 2025-10-22.0).
+    Overture Maps Divisions dataset (release 2026-05-20.0).
 
     Provides hierarchical administrative boundaries at two levels, compliant with
     the Vecorel administrative division extension specification:
@@ -631,7 +643,7 @@ class OvertureAdminDataset(AdminDataset):
     """
 
     # Overture Maps release version (extracted from S3 path)
-    VERSION = "2025-10-22.0"
+    VERSION = "2026-05-20.0"
 
     def get_dataset_name(self) -> str:
         return "Overture Maps Divisions"
@@ -639,7 +651,7 @@ class OvertureAdminDataset(AdminDataset):
     def get_default_source(self) -> str:
         # Latest release with divisions theme and division_area type (polygons)
         return (
-            "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
+            "s3://overturemaps-us-west-2/release/2026-05-20.0/theme=divisions/type=division_area/*"
         )
 
     def get_available_levels(self) -> list[str]:
@@ -692,8 +704,13 @@ class OvertureAdminDataset(AdminDataset):
             return "CASE WHEN region LIKE '%-%' THEN split_part(region, '-', 2) ELSE region END"
         return None
 
-    # Overture now uses the base class implementation
-    # No override needed - base class handles all prefix logic
+    def get_vecorel_column_name(self, level_name: str) -> str:
+        """Map Overture levels to Vecorel admin division column names."""
+        mapping = {
+            "country": "admin:country_code",
+            "region": "admin:subdivision_code",
+        }
+        return mapping.get(level_name, f"admin:{level_name}")
 
     def get_s3_config(self) -> dict:
         return {"s3_region": "us-west-2"}
