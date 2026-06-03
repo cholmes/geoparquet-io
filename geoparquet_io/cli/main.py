@@ -3229,6 +3229,12 @@ def extract_wfs_cmd(
     help="Comma-separated columns to exclude",
 )
 @click.option(
+    "--timeout",
+    type=click.IntRange(1, 3600),
+    default=120,
+    help="Request timeout in seconds (default: 120)",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert curve sorting (faster, but no spatial clustering)",
@@ -3253,6 +3259,7 @@ def extract_carto_cmd(
     limit,
     include_cols,
     exclude_cols,
+    timeout,
     skip_hilbert,
     skip_bbox,
     compression,
@@ -3278,7 +3285,8 @@ def extract_carto_cmd(
     Notes:
         - Geometry column 'the_geom' is renamed to 'geometry' for consistency
         - Filters (--where, --bbox) are pushed to the server for efficiency
-        - Large tables work without pagination (Carto handles it)
+        - For large tables, use --limit or --where to avoid timeouts
+        - Set CARTO_API_KEY env var for authenticated endpoints
 
     \b
     Examples:
@@ -3339,6 +3347,7 @@ def extract_carto_cmd(
             limit=limit,
             include_cols=include_cols,
             exclude_cols=exclude_cols,
+            timeout=float(timeout),
             skip_hilbert=skip_hilbert,
             skip_bbox=skip_bbox,
             compression=compression.upper(),

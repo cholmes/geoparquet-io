@@ -820,6 +820,8 @@ def from_carto(
     limit: int | None = None,
     include_cols: str | None = None,
     exclude_cols: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 120.0,
 ) -> pa.Table:
     """
     Fetch Carto SQL API table as PyArrow Table.
@@ -836,6 +838,8 @@ def from_carto(
         limit: Maximum rows to fetch
         include_cols: Comma-separated columns to include
         exclude_cols: Comma-separated columns to exclude
+        api_key: API key for authenticated requests (or set CARTO_API_KEY env var)
+        timeout: Request timeout in seconds (default: 120)
 
     Returns:
         PyArrow Table with geometry column named 'geometry'
@@ -843,6 +847,9 @@ def from_carto(
     Note:
         The Carto geometry column 'the_geom' is renamed to 'geometry'
         for consistency with other geoparquet-io extractors.
+
+        For authenticated endpoints, either pass api_key or set the
+        CARTO_API_KEY environment variable.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -869,6 +876,8 @@ def from_carto(
         limit=limit,
         include_cols=include_cols,
         exclude_cols=exclude_cols,
+        api_key=api_key,
+        timeout=timeout,
     )
 
 

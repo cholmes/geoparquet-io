@@ -1282,11 +1282,67 @@ gpio extract carto https://phl.carto.com/api/v2/sql \
     --compression GZIP
 ```
 
+### Large Tables and Timeouts
+
+For large tables, Carto's SQL API may time out or return errors. Use filters to reduce the result set:
+
+```bash
+# Use --limit for sampling or testing
+gpio extract carto https://phl.carto.com/api/v2/sql \
+    opa_properties_public output.parquet \
+    --limit 50000
+
+# Use --bbox to extract a geographic subset
+gpio extract carto https://phl.carto.com/api/v2/sql \
+    opa_properties_public output.parquet \
+    --bbox "-75.2,39.9,-75.1,40.0"
+
+# Increase timeout for slower connections (default: 120s)
+gpio extract carto https://phl.carto.com/api/v2/sql \
+    opa_properties_public output.parquet \
+    --timeout 300
+```
+
+!!! warning "Large Table Limitations"
+    Carto's SQL API has response size limits (~4MB by default). For tables with
+    hundreds of thousands of rows, always use `--limit`, `--where`, or `--bbox`
+    to reduce the result set. The extractor includes retry logic for transient
+    failures, but very large unbounded queries will likely fail.
+
+### Authentication
+
+For private Carto tables or enterprise endpoints, set the `CARTO_API_KEY` environment variable:
+
+```bash
+export CARTO_API_KEY="your_api_key_here"
+gpio extract carto https://your-org.carto.com/api/v2/sql \
+    private_table output.parquet
+```
+
+Or in Python:
+
+```python
+import os
+os.environ["CARTO_API_KEY"] = "your_api_key_here"
+
+table = ops.from_carto(
+    'https://your-org.carto.com/api/v2/sql',
+    'private_table'
+)
+
+# Or pass directly:
+table = ops.from_carto(
+    'https://your-org.carto.com/api/v2/sql',
+    'private_table',
+    api_key='your_api_key_here'
+)
+```
+
 ### Common Public Carto Endpoints
 
 - **Philadelphia**: `https://phl.carto.com/api/v2/sql`
   - Tables: `opa_properties_public`, `public_cases_fc`, many more
-- **Chicago**: `https://data.cityofchicago.org` (via Socrata, different API)
+- **Los Angeles**: `https://lahub.maps.arcgis.com` (ArcGIS - use `gpio extract arcgis`)
 - Other municipal open data portals using Carto
 
 !!! tip "Finding Available Tables"
