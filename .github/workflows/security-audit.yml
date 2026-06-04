@@ -1,0 +1,147 @@
+name: Security Audit
+
+# Proactive security scanning - creates issues instead of blocking CI
+# This catches CVEs BEFORE they fail your regular CI
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run pip-audit
+        id: audit
+        continue-on-error: true
+        run: |
+          set +e
+          uv run pip-audit > audit-results.txt 2>&1
+          EXIT_CODE=$?
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+            echo "## Vulnerabilities Found" >> $GITHUB_STEP_SUMMARY
+            cat audit-results.txt >> $GITHUB_STEP_SUMMARY
+          else
+            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
+            echo "## ✅ No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Create or update issue
+        if: steps.audit.outputs.vulnerabilities_found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const auditOutput = fs.readFileSync('audit-results.txt', 'utf-8');
+
+            const title = '🔒 Security: Dependency vulnerabilities detected';
+            const body = [
+              '## Automated Security Audit',
+              '',
+              'This issue was automatically created by the daily security audit workflow.',
+              '',
+              '### Vulnerabilities Found',
+              '',
+              '```',
+              auditOutput,
+              '```',
+              '',
+              '### Recommended Actions',
+              '',
+              '1. **Quick fix**: Run `uv lock --upgrade-package <package>` for the affected package',
+              '2. **Full update**: Run `uv lock --upgrade && uv sync`',
+              '3. **If no fix available**: Add to ignore list in `.github/workflows/tests.yml`',
+              '',
+              '### Audit Details',
+              '',
+              `- **Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              `- **Date**: ${new Date().toISOString().split('T')[0]}`,
+              '',
+              '---',
+              '*This issue will be automatically closed when the vulnerability is resolved.*'
+            ].join('\n');
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,automated',
+              per_page: 100
+            });
+
+            const existingIssue = issues.data.find(i => i.title === title);
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log('Updated issue #' + existingIssue.number);
+            } else {
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['security', 'automated', 'dependencies']
+              });
+              console.log('Created issue #' + newIssue.data.number);
+            }
+
+      - name: Close issue if no vulnerabilities
+        if: steps.audit.outputs.vulnerabilities_found == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🔒 Security: Dependency vulnerabilities detected';
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,automated',
+              per_page: 100
+            });
+
+            const existingIssue = issues.data.find(i => i.title === title);
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: '✅ All vulnerabilities have been resolved. Closing automatically.'
+              });
+
+              console.log('Closed issue #' + existingIssue.number);
+            }
