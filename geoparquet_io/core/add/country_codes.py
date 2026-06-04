@@ -164,6 +164,7 @@ def _build_spatial_join_query(
     input_bbox_col,
     countries_bbox_col,
     input_has_native_geo=False,
+    deduplicate=True,
 ):
     """Build the spatial join query based on bbox availability."""
     bbox_condition = build_bbox_condition(
@@ -174,22 +175,40 @@ def _build_spatial_join_query(
     )
 
     if bbox_condition:
+        join_clause = (
+            f"ON {bbox_condition}\n"
+            f"        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})"
+        )
+    else:
+        join_clause = f"ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})"
+
+    if deduplicate:
         return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON {bbox_condition}
-        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+    WITH _gpio_input AS (
+        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
+        FROM '{input_url}'
+    )
+    SELECT * EXCLUDE (_gpio_row_id) FROM (
+        SELECT
+            a.*,
+            {select_clause}
+        FROM _gpio_input a
+        LEFT JOIN {countries_source} b
+        {join_clause}
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY a._gpio_row_id
+            ORDER BY ST_Area(ST_Intersection(b.{countries_geom_col}, a.{input_geom_col})) DESC NULLS LAST
+        ) = 1
+    )
 """
+
     return f"""
     SELECT
         a.*,
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+    {join_clause}
 """
 
 
