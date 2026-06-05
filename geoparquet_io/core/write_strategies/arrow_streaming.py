@@ -180,6 +180,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             precomputed_geom_types,
             writer_kwargs,
             verbose,
+            extra_kv_metadata=extra_kv_metadata,
         )
 
     def _precompute_metadata(
@@ -282,6 +283,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         precomputed_geom_types: list[str],
         writer_kwargs: dict,
         verbose: bool,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Stream batches from reader to Parquet file."""
         first_batch = None
@@ -297,6 +299,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 input_crs,
                 writer_kwargs,
                 verbose,
+                extra_kv_metadata=extra_kv_metadata,
             )
             return
 
@@ -308,6 +311,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             input_crs=input_crs,
             geom_types=precomputed_geom_types,
             verbose=verbose,
+            extra_kv_metadata=extra_kv_metadata,
         )
 
         geoarrow_type = None
@@ -340,6 +344,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         writer_kwargs: dict,
         verbose: bool,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Handle writing an empty result set."""
         schema_with_meta = self._build_streaming_schema(
@@ -350,6 +355,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             input_crs=input_crs,
             geom_types=[],
             verbose=verbose,
+            extra_kv_metadata=extra_kv_metadata,
         )
         with pq.ParquetWriter(output_path, schema_with_meta, **writer_kwargs):
             pass
@@ -530,6 +536,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         geom_types: list[str],
         verbose: bool,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> pa.Schema:
         """Build the output schema for streaming write."""
         from geoparquet_io.core.crs_utils import is_default_crs
@@ -558,6 +565,12 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             if "geometry_types" not in geo_meta["columns"].get(geometry_column, {}):
                 geo_meta["columns"][geometry_column]["geometry_types"] = geom_types
             schema_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+
+        if extra_kv_metadata:
+            for key, value in extra_kv_metadata.items():
+                bkey = key.encode("utf-8") if isinstance(key, str) else key
+                bval = value.encode("utf-8") if isinstance(value, str) else value
+                schema_metadata[bkey] = bval
 
         return schema.with_metadata(schema_metadata)
 

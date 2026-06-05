@@ -110,6 +110,14 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
                 geometry_info=geometry_info,
             )
 
+        if extra_kv_metadata:
+            existing_meta = dict(table.schema.metadata or {})
+            for key, value in extra_kv_metadata.items():
+                bkey = key.encode("utf-8") if isinstance(key, str) else key
+                bval = value.encode("utf-8") if isinstance(value, str) else value
+                existing_meta[bkey] = bval
+            table = table.replace_schema_metadata(existing_meta)
+
         _write_table_with_settings(
             table,
             output_path,

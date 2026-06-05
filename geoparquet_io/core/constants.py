@@ -155,7 +155,8 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
     - Converts timestamp columns with tz=UTC from microseconds to milliseconds
       (Vecorel spec requires TIMESTAMP_MS)
 
-    Preserves all existing Parquet metadata (geo, collection, etc.).
+    Preserves all existing Parquet metadata, compression, and row group structure.
+    Processes one row group at a time to avoid loading the entire file into memory.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -163,17 +164,30 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
     pf = pq.ParquetFile(parquet_file)
     schema = pf.schema_arrow
 
-    table = pq.read_table(parquet_file)
-
-    # Only mark columns non-nullable if they have no null values
+    # Check nullability per-column using row-group-level statistics to avoid
+    # loading the full file. Fall back to scanning only if stats are missing.
     import pyarrow.compute as pc
 
     safe_non_nullable = set()
     for col_name in non_nullable_columns:
-        if col_name in table.column_names:
-            col = table.column(col_name)
-            if pc.sum(pc.is_null(col)).as_py() == 0:
-                safe_non_nullable.add(col_name)
+        if col_name not in schema.names:
+            continue
+        col_idx = schema.get_field_index(col_name)
+        has_nulls = False
+        stats_available = True
+        for rg_idx in range(pf.metadata.num_row_groups):
+            rg_col_meta = pf.metadata.row_group(rg_idx).column(col_idx)
+            if not rg_col_meta.is_stats_set or rg_col_meta.statistics is None:
+                stats_available = False
+                break
+            if rg_col_meta.statistics.null_count > 0:
+                has_nulls = True
+                break
+        if not stats_available:
+            col = pf.read_row_groups(range(pf.metadata.num_row_groups), columns=[col_name])
+            has_nulls = pc.sum(pc.is_null(col.column(col_name))).as_py() > 0
+        if not has_nulls:
+            safe_non_nullable.add(col_name)
 
     needs_fix = False
     new_fields = []
@@ -195,15 +209,32 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
         return
 
     new_schema = pa.schema(new_fields, metadata=schema.metadata)
-    table = table.cast(new_schema)
 
     import os
     import tempfile
 
+    # Detect compression from the first row group's first column
+    rg0 = pf.metadata.row_group(0)
+    original_compression = rg0.column(0).compression.lower()
+    compression_map = {
+        "snappy": "SNAPPY",
+        "gzip": "GZIP",
+        "brotli": "BROTLI",
+        "lz4": "LZ4",
+        "zstd": "ZSTD",
+        "none": "NONE",
+        "uncompressed": "NONE",
+    }
+    pa_compression = compression_map.get(original_compression, "ZSTD")
+
     fd, temp_out = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
     try:
-        pq.write_table(table, temp_out, compression="ZSTD")
+        with pq.ParquetWriter(temp_out, new_schema, compression=pa_compression) as writer:
+            for rg_idx in range(pf.metadata.num_row_groups):
+                rg_table = pf.read_row_group(rg_idx)
+                rg_table = rg_table.cast(new_schema)
+                writer.write_table(rg_table)
         os.replace(temp_out, parquet_file)
     finally:
         if os.path.exists(temp_out):
