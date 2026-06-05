@@ -79,7 +79,7 @@ def validate(input_file: str, verbose: bool) -> None:
     "--row-group-size",
     type=int,
     default=None,
-    help="Exact number of rows per row group (default: 100000)",
+    help="Exact number of rows per row group (default: 50000)",
 )
 @click.option(
     "--row-group-size-mb",
@@ -119,6 +119,11 @@ def validate(input_file: str, verbose: bool) -> None:
     help="Keep original columns when mapping to fiboa names "
     "(e.g., keep 'time' alongside 'determination:datetime').",
 )
+@click.option(
+    "--skip-hilbert",
+    is_flag=True,
+    help="Skip Hilbert spatial sorting (enabled by default).",
+)
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output file")
 @click.option("-v", "--verbose", is_flag=True, help="Print verbose output")
 def improve(
@@ -136,6 +141,7 @@ def improve(
     determination_method: str | None,
     category: str | None,
     keep_source_columns: bool,
+    skip_hilbert: bool,
     overwrite: bool,
     verbose: bool,
 ) -> None:
@@ -185,6 +191,7 @@ def improve(
         add_metrics=geometry_metrics,
         add_admin=admin,
         add_schemas=schemas,
+        sort_hilbert=not skip_hilbert,
         determination_datetime=determination_datetime,
         determination_method=determination_method,
         category=parsed_categories,

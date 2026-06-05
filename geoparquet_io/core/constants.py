@@ -200,10 +200,12 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
     import os
     import tempfile
 
+    row_group_size = pf.metadata.row_group(0).num_rows if pf.metadata.num_row_groups > 0 else None
+
     fd, temp_out = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
     try:
-        pq.write_table(table, temp_out, compression="ZSTD")
+        pq.write_table(table, temp_out, compression="ZSTD", row_group_size=row_group_size)
         os.replace(temp_out, parquet_file)
     finally:
         if os.path.exists(temp_out):

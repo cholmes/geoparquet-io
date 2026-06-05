@@ -27,6 +27,7 @@ def improve_fiboa(
     add_metrics: bool = False,
     add_admin: bool = False,
     add_schemas: bool = False,
+    sort_hilbert: bool = True,
     determination_datetime: str | None = None,
     determination_method: str | None = None,
     category: list[str] | None = None,
@@ -40,10 +41,14 @@ def improve_fiboa(
     verbose: bool = False,
 ) -> None:
     """Improve a GeoParquet file for fiboa compliance."""
+    if row_group_rows is None and row_group_size_mb is None:
+        row_group_rows = 50_000
+
     has_work = (
         add_metrics
         or add_admin
         or add_schemas
+        or sort_hilbert
         or determination_datetime
         or determination_method
         or category
@@ -73,6 +78,8 @@ def improve_fiboa(
         remaining_steps.append("dt_method")
     if category:
         remaining_steps.append("category")
+    if sort_hilbert:
+        remaining_steps.append("hilbert")
     if add_schemas:
         remaining_steps.append("schemas")
 
@@ -177,6 +184,28 @@ def improve_fiboa(
             current_input = next_output
             success(f"Set category = {category}")
 
+        if sort_hilbert:
+            remaining_steps.remove("hilbert")
+            progress("Sorting by Hilbert space-filling curve...")
+            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+
+            from geoparquet_io.core.hilbert_order import hilbert_order
+
+            hilbert_order(
+                current_input,
+                next_output,
+                add_bbox_flag=True,
+                verbose=verbose,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                geoparquet_version=geoparquet_version,
+                overwrite=True,
+            )
+            current_input = next_output
+            success("Sorted by Hilbert curve for spatial query performance")
+
         if add_schemas:
             remaining_steps.remove("schemas")
             progress("Updating Vecorel schemas metadata...")
@@ -196,7 +225,8 @@ def improve_fiboa(
             success("Updated Vecorel schemas metadata with fiboa URLs")
 
         # Add bbox column if needed (e.g., after 2.0→1.1 downgrade)
-        if need_bbox:
+        # Hilbert sorting already adds bbox via add_bbox_flag=True
+        if need_bbox and not sort_hilbert:
             _ensure_bbox(output_file, verbose)
 
         from geoparquet_io.core.constants import ensure_vecorel_columns
