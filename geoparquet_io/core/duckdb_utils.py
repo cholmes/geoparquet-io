@@ -349,13 +349,17 @@ def _geoarrow_coord_exprs(quoted_geom: str, encoding: str) -> tuple:
 
     x_arr = f"list_transform({flat}, p -> p.x)"
     y_arr = f"list_transform({flat}, p -> p.y)"
+    x_min = f"list_min({x_arr})"
+    x_max = f"list_max({x_arr})"
+    y_min = f"list_min({y_arr})"
+    y_max = f"list_max({y_arr})"
     return (
-        f"list_min({x_arr})",
-        f"list_min({y_arr})",
-        f"list_max({x_arr})",
-        f"list_max({y_arr})",
-        f"list_avg({x_arr})",
-        f"list_avg({y_arr})",
+        x_min,
+        y_min,
+        x_max,
+        y_max,
+        f"({x_min} + {x_max}) / 2.0",
+        f"({y_min} + {y_max}) / 2.0",
     )
 
 
