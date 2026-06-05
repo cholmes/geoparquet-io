@@ -4,9 +4,9 @@ import duckdb
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    detect_geoparquet_file_type,
     get_dataset_bounds,
     get_parquet_metadata,
+    resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
@@ -102,11 +102,18 @@ def find_subdivision_code_column(con, countries_source, is_subquery=False):
 
 
 def _handle_bbox_optimization(file_path, bbox_info, add_bbox_flag, file_label, verbose):
-    """Handle bbox structure warning and optionally add bbox."""
+    """Handle bbox column setup for extent pre-filtering.
+
+    Bbox columns help pre-filter data by spatial extent (WHERE clause).
+    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    """
     if bbox_info["status"] == "optimal":
         return bbox_info
 
-    warn(f"\nWarning: {file_label} could benefit from bbox optimization:\n" + bbox_info["message"])
+    warn(
+        f"\nWarning: {file_label} could benefit from a bbox column for extent filtering:\n"
+        + bbox_info["message"]
+    )
 
     if not add_bbox_flag:
         info(
@@ -152,24 +159,6 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
         subdivision_select = f', b."{subdivision_code_col}" as "admin:subdivision_code"'
 
     return country_select + subdivision_select
-
-
-def _build_spatial_join_query(
-    input_url,
-    countries_source,
-    select_clause,
-    input_geom_col,
-    countries_geom_col,
-):
-    """Build spatial join query using DuckDB's SPATIAL_JOIN operator."""
-    return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
-"""
 
 
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
@@ -398,15 +387,7 @@ def _prepare_bbox_columns(
     not for join optimization — DuckDB's SPATIAL_JOIN operator handles that
     automatically via its R-tree.
     """
-    file_info = detect_geoparquet_file_type(input_parquet, verbose)
-    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
-
-    if has_native_geo:
-        input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
-        input_bbox_col = None
-    else:
-        input_bbox_info = check_bbox_structure(input_parquet, verbose)
-        input_bbox_col = input_bbox_info["bbox_column_name"]
+    input_bbox_info, input_bbox_col = resolve_input_bbox_info(input_parquet, verbose)
 
     if using_default:
         countries_bbox_col = "bbox"
@@ -414,8 +395,8 @@ def _prepare_bbox_columns(
         countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
         countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
-    if not dry_run and not has_native_geo:
-        if not input_bbox_info.get("has_bbox_column") and not input_bbox_col:
+    if not dry_run and input_bbox_info.get("status") != "native":
+        if not input_bbox_col:
             warn("\nWarning: No bbox column found")
             if not add_bbox_flag:
                 info("💡 Tip: Add a bbox column: gpio add bbox <file>")
@@ -483,17 +464,6 @@ def _create_duckdb_connection(using_default):
     if using_default:
         con.execute("SET s3_region='us-west-2';")
     return con
-
-
-def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
-    """Print bbox column status message."""
-    if dry_run:
-        return
-    if verbose:
-        if input_bbox_col:
-            debug(f"Input bbox column: {input_bbox_col}")
-        if countries_bbox_col:
-            debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
 
 
 def add_country_codes(
@@ -568,15 +538,21 @@ def add_country_codes(
     )
 
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run)
 
-    query = _build_spatial_join_query(
-        input_url,
-        countries_source,
-        select_clause,
-        input_geom_col,
-        countries_geom_col,
-    )
+    if not dry_run and verbose:
+        if input_bbox_col:
+            debug(f"Input bbox column: {input_bbox_col}")
+        if countries_bbox_col:
+            debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
+
+    query = f"""
+    SELECT
+        a.*,
+        {select_clause}
+    FROM '{input_url}' a
+    LEFT JOIN {countries_source} b
+    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+"""
 
     if dry_run:
         _print_dry_run_query(

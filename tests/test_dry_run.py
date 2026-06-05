@@ -136,3 +136,20 @@ class TestDryRunCommands:
         # Should use DuckDB's SPATIAL_JOIN operator (pure ST_Intersects, no bbox in ON clause)
         assert "SPATIAL_JOIN operator" in result.output
         assert "ST_Intersects" in result.output
+
+    def test_dry_run_with_native_geometry_input(self, fields_v2_file):
+        """Test dry-run with GeoParquet 2.0 native geometry input."""
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["admin-divisions", fields_v2_file, "output.parquet", "--dry-run", "--no-cache"],
+        )
+
+        assert result.exit_code == 0
+        assert "DRY RUN MODE" in result.output
+        assert "SPATIAL_JOIN operator" in result.output
+        assert "ST_Intersects" in result.output
+        # Input bbox should be 'none' for native geometry files
+        assert "Bbox columns: none (input)" in result.output
+        # No bbox in the JOIN ON clause (only ST_Intersects)
+        assert "ON ST_Intersects" in result.output

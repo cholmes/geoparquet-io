@@ -1131,7 +1131,9 @@ def get_bbox_advice(
     file_info = detect_geoparquet_file_type(parquet_file, verbose)
     bbox_info = check_bbox_structure(parquet_file, verbose)
 
-    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
+    from geoparquet_io.core.common import has_native_geometry
+
+    has_native_geo = has_native_geometry(file_info)
     has_bbox = bbox_info["has_bbox_column"]
 
     result = {
@@ -1143,21 +1145,7 @@ def get_bbox_advice(
         "suggestions": [],
     }
 
-    if operation == "spatial_filtering":
-        if has_native_geo:
-            # Native geometry stats are used automatically - no warning needed
-            if verbose:
-                debug("Using native Parquet geometry statistics for spatial filtering")
-        elif not has_bbox:
-            # 1.x without bbox - warn and suggest options
-            result["needs_warning"] = True
-            result["message"] = "No bbox column found"
-            result["suggestions"] = [
-                "Add a bbox column: gpio add bbox <file>",
-                "Or upgrade to GeoParquet 2.0: gpio convert <file> --geoparquet-version 2.0",
-            ]
-
-    elif operation == "bounds_calculation":
+    if operation == "bounds_calculation":
         # bbox column is still faster for bounds/centroid calculation (pre-computed values)
         if not has_bbox:
             result["needs_warning"] = True
@@ -1165,14 +1153,12 @@ def get_bbox_advice(
             result["suggestions"] = [
                 "Add a bbox column for 3-4x faster bounds/centroid: gpio add bbox <file>"
             ]
-
-    elif operation == "check":
+    else:
+        # spatial_filtering, check, and other operations
         if has_native_geo:
-            # Native geometry - bbox optional but can help with bounds queries
             if not has_bbox and verbose:
-                debug("Native geometry type detected - bbox column optional for spatial queries")
+                debug("Native geometry type detected - bbox column optional")
         elif not has_bbox:
-            # 1.x without bbox
             result["needs_warning"] = True
             result["message"] = "No bbox column found"
             result["suggestions"] = [

@@ -10,8 +10,8 @@ multiple admin datasets with hierarchical level support.
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    detect_geoparquet_file_type,
     get_parquet_metadata,
+    resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
@@ -68,24 +68,6 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     return ", ".join(admin_select_parts)
 
 
-def _build_spatial_join_query(
-    input_url,
-    admin_subquery,
-    admin_select_clause,
-    input_geom_col,
-    admin_geom_col,
-):
-    """Build spatial join query using DuckDB's SPATIAL_JOIN operator."""
-    return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
-"""
-
-
 def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
     """Add bbox extent filter to admin where clauses."""
     if not admin_bbox_col:
@@ -128,14 +110,17 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
 
 
 def _handle_bbox_optimization(input_parquet, input_bbox_info, add_bbox_flag, verbose):
-    """Handle bbox optimization if needed."""
-    # Skip for native geometry files - they use native stats instead of bbox pre-filtering
+    """Handle bbox column setup for extent pre-filtering of admin boundaries.
+
+    Bbox columns help pre-filter admin boundaries by spatial extent (WHERE clause).
+    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    """
     if input_bbox_info.get("status") == "native":
         return input_bbox_info
 
     if input_bbox_info["status"] != "optimal":
         warn(
-            "\nWarning: Input file could benefit from bbox optimization:\n"
+            "\nWarning: Input file could benefit from a bbox column for extent filtering:\n"
             + input_bbox_info["message"]
         )
         if add_bbox_flag and not input_bbox_info["has_bbox_column"]:
@@ -232,14 +217,7 @@ def _setup_dataset_and_columns(
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     admin_geom_col = dataset.get_geometry_column()
 
-    file_info = detect_geoparquet_file_type(input_parquet, verbose)
-    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
-    if has_native_geo:
-        input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
-        input_bbox_col = None
-    else:
-        input_bbox_info = check_bbox_structure(input_parquet, verbose)
-        input_bbox_col = input_bbox_info["bbox_column_name"]
+    input_bbox_info, input_bbox_col = resolve_input_bbox_info(input_parquet, verbose)
 
     admin_bbox_col = dataset.get_bbox_column()
 
@@ -341,13 +319,14 @@ def _build_query_components(
         admin_where_clauses,
     )
 
-    query = _build_spatial_join_query(
-        input_url,
-        admin_subquery,
-        admin_select_clause,
-        input_geom_col,
-        admin_geom_col,
-    )
+    query = f"""
+    SELECT
+        a.*,
+        {admin_select_clause}
+    FROM '{input_url}' a
+    LEFT JOIN {admin_subquery} b
+    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
+"""
 
     return query, admin_source
 
