@@ -181,7 +181,7 @@ def _build_spatial_join_query(
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
     ON {bbox_condition}
-        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+        AND ST_Intersects(b."{countries_geom_col}", a."{input_geom_col}")
 """
     return f"""
     SELECT
@@ -189,7 +189,7 @@ def _build_spatial_join_query(
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+    ON ST_Intersects(b."{countries_geom_col}", a."{input_geom_col}")
 """
 
 
@@ -344,6 +344,7 @@ def _print_dry_run_query(
     using_default,
     input_bbox_col,
     countries_bbox_col,
+    input_has_native_geo=False,
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
@@ -351,6 +352,8 @@ def _print_dry_run_query(
 
     if input_bbox_col and countries_bbox_col:
         info("-- Using bbox columns for optimized spatial join")
+    elif input_has_native_geo and countries_bbox_col:
+        info("-- Using native geometry bounds for bbox pre-filtering")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
 
@@ -438,6 +441,13 @@ def _prepare_bbox_columns(
         countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
         countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
+    # Handle --add-bbox for countries file (needed for both native geo and 1.x paths)
+    if not dry_run and not using_default:
+        countries_bbox_info = _handle_bbox_optimization(
+            countries_parquet, countries_bbox_info, add_bbox_flag, "Countries file", verbose
+        )
+        countries_bbox_col = countries_bbox_info["bbox_column_name"]
+
     # For native geometry files, no input bbox column needed — bounds derived from geometry
     if input_bbox_advice["skip_bbox_prefilter"]:
         if verbose:
@@ -462,13 +472,6 @@ def _prepare_bbox_columns(
                 input_parquet, input_bbox_info, add_bbox_flag, "Input file", verbose
             )
             input_bbox_col = input_bbox_info["bbox_column_name"]
-
-        if not using_default:
-            countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
-            countries_bbox_info = _handle_bbox_optimization(
-                countries_parquet, countries_bbox_info, add_bbox_flag, "Countries file", verbose
-            )
-            countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
     return input_bbox_col, countries_bbox_col, False
 
@@ -519,13 +522,15 @@ def _create_duckdb_connection(using_default):
     return con
 
 
-def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
+def _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run):
     """Print bbox optimization status message."""
     if dry_run:
         return
-    if input_bbox_col and countries_bbox_col and verbose:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and countries_bbox_col):
+    if input_bbox_col and countries_bbox_col:
+        progress("Using bbox columns for initial filtering...")
+    elif input_has_native_geo and countries_bbox_col:
+        progress("Using native geometry bounds for bbox pre-filtering...")
+    else:
         progress("No bbox columns available, using full geometry intersection...")
 
 
@@ -601,7 +606,7 @@ def add_country_codes(
     )
 
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run)
+    _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run)
 
     query = _build_spatial_join_query(
         input_url,
@@ -623,6 +628,7 @@ def add_country_codes(
             using_default,
             input_bbox_col,
             countries_bbox_col,
+            input_has_native_geo=input_has_native_geo,
         )
         return
 

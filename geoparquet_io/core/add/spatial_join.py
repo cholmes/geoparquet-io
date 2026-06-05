@@ -3,7 +3,7 @@
 
 def build_bbox_condition(
     input_geom_col: str,
-    other_bbox_col: str,
+    other_bbox_col: str | None,
     input_bbox_col: str | None = None,
     input_has_native_geo: bool = False,
 ) -> str | None:

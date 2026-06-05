@@ -96,8 +96,8 @@ def _build_spatial_join_query(
     LEFT JOIN {admin_subquery} b
     ON {bbox_condition}
         AND ST_Intersects(
-            b.{admin_geom_col},
-            a.{input_geom_col}
+            b."{admin_geom_col}",
+            a."{input_geom_col}"
         )
 """
     else:
@@ -107,7 +107,7 @@ def _build_spatial_join_query(
         {admin_select_clause}
     FROM '{input_url}' a
     LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
+    ON ST_Intersects(b."{admin_geom_col}", a."{input_geom_col}")
 """
 
 
@@ -371,12 +371,13 @@ def _build_query_components(
         admin_where_clauses,
     )
 
-    if input_bbox_col and admin_bbox_col and verbose and not dry_run:
-        debug("Using bbox columns for initial filtering...")
-    elif input_has_native_geo and admin_bbox_col and not dry_run:
-        progress("Using native geometry bounds for bbox pre-filtering...")
-    elif not (input_bbox_col and admin_bbox_col) and not dry_run:
-        progress("No bbox columns available, using full geometry intersection...")
+    if not dry_run:
+        if input_bbox_col and admin_bbox_col:
+            progress("Using bbox columns for initial filtering...")
+        elif input_has_native_geo and admin_bbox_col:
+            progress("Using native geometry bounds for bbox pre-filtering...")
+        else:
+            progress("No bbox columns available, using full geometry intersection...")
 
     query = _build_spatial_join_query(
         input_url,
@@ -404,6 +405,7 @@ def _handle_dry_run_mode(
     query,
     compression,
     compression_level,
+    input_has_native_geo=False,
 ):
     """Handle dry-run mode output."""
     if not dry_run:
@@ -422,6 +424,8 @@ def _handle_dry_run_mode(
     info("-- Main spatial join query")
     if input_bbox_col and admin_bbox_col:
         info("-- Using bbox columns for optimized spatial join")
+    elif input_has_native_geo and admin_bbox_col:
+        info("-- Using native geometry bounds for bbox pre-filtering")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
 
@@ -556,6 +560,7 @@ def add_admin_divisions_multi(
                 query,
                 compression,
                 compression_level,
+                input_has_native_geo=input_has_native_geo,
             ):
                 return
 
