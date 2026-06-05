@@ -637,9 +637,17 @@ class OvertureAdminDataset(AdminDataset):
         return "Overture Maps Divisions"
 
     def get_version(self) -> str:
+        import re
+
         from geoparquet_io.core.overture import get_latest_overture_release
 
-        return get_latest_overture_release(verbose=self.verbose)
+        release = get_latest_overture_release(verbose=self.verbose)
+        if not re.match(r"^\d{4}-\d{2}-\d{2}\.\d+$", release):
+            from geoparquet_io.core.logging_config import warn
+
+            warn(f"Unexpected Overture release format: {release!r}, using fallback")
+            return self.VERSION
+        return release
 
     def get_default_source(self) -> str:
         from geoparquet_io.core.overture import get_overture_divisions_url

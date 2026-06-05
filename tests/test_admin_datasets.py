@@ -503,15 +503,35 @@ class TestAdminDatasetVersion:
         """Test get_version() method on Overture dataset resolves dynamically."""
         from unittest.mock import patch
 
-        dataset = OvertureAdminDataset()
-        with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
-            mock.return_value = "2099-01-01.0"
-            import geoparquet_io.core.overture as overture_mod
+        import geoparquet_io.core.overture as overture_mod
 
-            overture_mod._cached_release = None
-            version = dataset.get_version()
-            assert version == "2099-01-01.0"
-            overture_mod._cached_release = None
+        original_cached = overture_mod._cached_release
+        try:
+            dataset = OvertureAdminDataset()
+            with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+                mock.return_value = "2099-01-01.0"
+                overture_mod._cached_release = None
+                version = dataset.get_version()
+                assert version == "2099-01-01.0"
+        finally:
+            overture_mod._cached_release = original_cached
+
+    def test_overture_get_version_rejects_malformed(self):
+        """Test get_version() falls back when release format is malformed."""
+        from unittest.mock import patch
+
+        import geoparquet_io.core.overture as overture_mod
+
+        original_cached = overture_mod._cached_release
+        try:
+            dataset = OvertureAdminDataset()
+            with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+                mock.return_value = "malicious-input; DROP TABLE"
+                overture_mod._cached_release = None
+                version = dataset.get_version()
+                assert version == OvertureAdminDataset.VERSION
+        finally:
+            overture_mod._cached_release = original_cached
 
     def test_current_dataset_has_version(self):
         """Test that Current dataset has a VERSION attribute."""
