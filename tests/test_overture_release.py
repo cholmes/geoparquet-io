@@ -26,10 +26,12 @@ class TestGetLatestOvertureRelease:
             assert version == "2026-05-20.0"
 
     def test_falls_back_on_failure(self):
+        from geoparquet_io.core.overture import OVERTURE_FALLBACK_RELEASE
+
         with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
             mock.side_effect = Exception("network error")
             version = get_latest_overture_release()
-            assert version is not None  # should return a fallback
+            assert version == OVERTURE_FALLBACK_RELEASE
 
 
 class TestGetOvertureDivisionsUrl:
