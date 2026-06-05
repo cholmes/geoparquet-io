@@ -68,6 +68,13 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     return ", ".join(admin_select_parts)
 
 
+def _format_input_ref(input_url):
+    """Format input reference for SQL — quote file paths, leave table names bare."""
+    if input_url.startswith("_gpio_"):
+        return input_url
+    return f"'{input_url}'"
+
+
 def _build_spatial_join_query(
     input_url,
     admin_subquery,
@@ -76,34 +83,47 @@ def _build_spatial_join_query(
     admin_bbox_col,
     input_geom_col,
     admin_geom_col,
+    deduplicate=False,
 ):
-    """Build spatial join query with optional bbox optimization."""
+    """Build spatial join query with optional bbox optimization and deduplication."""
+    input_ref = _format_input_ref(input_url)
+
     if input_bbox_col and admin_bbox_col:
-        bbox_condition = f"""(a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
+        join_clause = f"""ON (a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
         a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
         a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)"""
-
-        return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON {bbox_condition}  -- Fast bbox intersection test
-        AND ST_Intersects(  -- More expensive precise check only on bbox matches
-            b.{admin_geom_col},
-            a.{input_geom_col}
-        )
-"""
+        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)
+        AND ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"""
     else:
+        join_clause = f"ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"
+
+    if deduplicate:
         return f"""
+    WITH _gpio_input AS (
+        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
+        FROM {input_ref}
+    )
+    SELECT * EXCLUDE (_gpio_row_id) FROM (
+        SELECT
+            a.*,
+            {admin_select_clause}
+        FROM _gpio_input a
+        LEFT JOIN {admin_subquery} b
+        {join_clause}
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY a._gpio_row_id
+            ORDER BY ST_Contains(b.{admin_geom_col}, ST_Centroid(a.{input_geom_col})) DESC NULLS LAST
+        ) = 1
+    )
+"""
+
+    return f"""
     SELECT
         a.*,
         {admin_select_clause}
-    FROM '{input_url}' a
+    FROM {input_ref} a
     LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
+    {join_clause}
 """
 
 
@@ -112,6 +132,8 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
     if not admin_bbox_col:
         return None
 
+    input_ref = _format_input_ref(input_url)
+
     if input_bbox_col:
         extent_query = f"""
             SELECT
@@ -119,7 +141,7 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
                 MAX({input_bbox_col}.xmax) as xmax,
                 MIN({input_bbox_col}.ymin) as ymin,
                 MAX({input_bbox_col}.ymax) as ymax
-            FROM '{input_url}'
+            FROM {input_ref}
         """
     else:
         extent_query = f"""
@@ -128,7 +150,7 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
                 MAX(ST_XMax("{input_geom_col}")) as xmax,
                 MIN(ST_YMin("{input_geom_col}")) as ymin,
                 MAX(ST_YMax("{input_geom_col}")) as ymax
-            FROM '{input_url}'
+            FROM {input_ref}
         """
 
     extent = con.execute(extent_query).fetchone()
@@ -244,10 +266,13 @@ def _setup_dataset_and_columns(
 
     input_url = safe_file_url(input_parquet, verbose)
 
-    # Use caching for remote admin datasets (unless no_cache is specified)
-    admin_source = get_or_cache_dataset(dataset, no_cache=no_cache, verbose=verbose)
+    # Per-level datasets resolve sources per-level in add_admin_divisions_multi
+    if dataset.supports_per_level_sources():
+        admin_source = None
+    else:
+        admin_source = get_or_cache_dataset(dataset, no_cache=no_cache, verbose=verbose)
 
-    if verbose:
+    if verbose and admin_source:
         debug(f"Data source: {admin_source}")
 
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
@@ -328,6 +353,7 @@ def _build_query_components(
     verbose,
     dry_run,
     prefix=None,
+    deduplicate=False,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -377,6 +403,7 @@ def _build_query_components(
         admin_bbox_col,
         input_geom_col,
         admin_geom_col,
+        deduplicate=deduplicate,
     )
 
     return query, admin_source
@@ -429,6 +456,96 @@ TO '{output_parquet}'
     info(f"\n-- Note: Using {compression_str} compression")
     info("-- Original metadata would also be preserved in the output file")
     return True
+
+
+def _execute_per_level_joins(
+    con,
+    dataset,
+    levels,
+    partition_columns,
+    input_url,
+    admin_geom_col,
+    admin_bbox_col,
+    input_geom_col,
+    input_bbox_col,
+    output_parquet,
+    metadata,
+    dry_run,
+    verbose,
+    compression,
+    compression_level,
+    row_group_size_mb,
+    row_group_rows,
+    profile,
+    geoparquet_version,
+    prefix,
+    no_cache,
+):
+    """Run separate spatial joins per admin level for per-level-source datasets.
+
+    Each level joins against its own cache file, chaining results through
+    DuckDB temp tables so overlapping country/region polygons don't cause
+    row multiplication.
+    """
+    current_source = input_url
+
+    for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
+        level_admin_source = dataset.get_source_for_level(level, no_cache=no_cache)
+        is_last = i == len(levels) - 1
+
+        level_query, _ = _build_query_components(
+            con,
+            dataset,
+            [level],
+            [col],
+            current_source,
+            level_admin_source,
+            admin_geom_col,
+            admin_bbox_col,
+            input_geom_col,
+            input_bbox_col,
+            verbose,
+            dry_run,
+            prefix=prefix,
+            deduplicate=True,
+        )
+
+        if dry_run:
+            output_col = dataset.get_output_column_name(level, prefix)
+            progress(f"\n-- Step {i + 1}: Add {output_col} from {level} boundaries")
+            progress(f"-- Source: {level_admin_source}")
+            progress(level_query)
+            continue
+
+        if verbose:
+            debug(f"Spatial join: adding {level} from {level_admin_source}...")
+
+        if is_last:
+            write_parquet_with_metadata(
+                con,
+                level_query,
+                output_parquet,
+                original_metadata=metadata,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                verbose=verbose,
+                profile=profile,
+                geoparquet_version=geoparquet_version,
+            )
+        else:
+            temp_table = f"_gpio_admin_step_{i}"
+            con.execute(f"CREATE OR REPLACE TEMP TABLE {temp_table} AS {level_query}")
+            current_source = temp_table
+
+    if dry_run:
+        return None, None, None
+
+    total_features, features_with_admin, unique_counts = _get_result_stats(
+        con, output_parquet, dataset, levels, verbose
+    )
+    return total_features, features_with_admin, unique_counts
 
 
 def add_admin_divisions_multi(
@@ -514,61 +631,84 @@ def add_admin_divisions_multi(
                 total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
                 progress(f"Processing {total_count:,} input features...")
 
-            # Build query components (use cached admin_source from _setup_dataset_and_columns)
-            query, admin_source = _build_query_components(
-                con,
-                dataset,
-                levels,
-                partition_columns,
-                input_url,
-                admin_source,
-                admin_geom_col,
-                admin_bbox_col,
-                input_geom_col,
-                input_bbox_col,
-                verbose,
-                dry_run,
-                prefix=prefix,
-            )
+            if dataset.supports_per_level_sources():
+                total_features, features_with_admin, unique_counts = _execute_per_level_joins(
+                    con,
+                    dataset,
+                    levels,
+                    partition_columns,
+                    input_url,
+                    admin_geom_col,
+                    admin_bbox_col,
+                    input_geom_col,
+                    input_bbox_col,
+                    output_parquet,
+                    metadata,
+                    dry_run,
+                    verbose,
+                    compression,
+                    compression_level,
+                    row_group_size_mb,
+                    row_group_rows,
+                    profile,
+                    geoparquet_version,
+                    prefix,
+                    no_cache,
+                )
+                if dry_run:
+                    return
+            else:
+                query, admin_source = _build_query_components(
+                    con,
+                    dataset,
+                    levels,
+                    partition_columns,
+                    input_url,
+                    admin_source,
+                    admin_geom_col,
+                    admin_bbox_col,
+                    input_geom_col,
+                    input_bbox_col,
+                    verbose,
+                    dry_run,
+                    prefix=prefix,
+                )
 
-            # Handle dry-run mode
-            if _handle_dry_run_mode(
-                dry_run,
-                input_url,
-                admin_source,
-                output_parquet,
-                input_geom_col,
-                admin_geom_col,
-                input_bbox_col,
-                admin_bbox_col,
-                query,
-                compression,
-                compression_level,
-            ):
-                return
+                if _handle_dry_run_mode(
+                    dry_run,
+                    input_url,
+                    admin_source,
+                    output_parquet,
+                    input_geom_col,
+                    admin_geom_col,
+                    input_bbox_col,
+                    admin_bbox_col,
+                    query,
+                    compression,
+                    compression_level,
+                ):
+                    return
 
-            # Execute the query using the common write method
-            if verbose:
-                debug("Performing spatial join with admin boundaries...")
+                if verbose:
+                    debug("Performing spatial join with admin boundaries...")
 
-            write_parquet_with_metadata(
-                con,
-                query,
-                output_parquet,
-                original_metadata=metadata,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                verbose=verbose,
-                profile=profile,
-                geoparquet_version=geoparquet_version,
-            )
+                write_parquet_with_metadata(
+                    con,
+                    query,
+                    output_parquet,
+                    original_metadata=metadata,
+                    compression=compression,
+                    compression_level=compression_level,
+                    row_group_size_mb=row_group_size_mb,
+                    row_group_rows=row_group_rows,
+                    verbose=verbose,
+                    profile=profile,
+                    geoparquet_version=geoparquet_version,
+                )
 
-            # Get statistics about the results
-            total_features, features_with_admin, unique_counts = _get_result_stats(
-                con, output_parquet, dataset, levels, verbose
-            )
+                total_features, features_with_admin, unique_counts = _get_result_stats(
+                    con, output_parquet, dataset, levels, verbose
+                )
         finally:
             con.close()
 
