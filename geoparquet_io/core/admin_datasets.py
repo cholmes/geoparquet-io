@@ -707,6 +707,34 @@ class OvertureAdminDataset(AdminDataset):
     # Overture now uses the base class implementation
     # No override needed - base class handles all prefix logic
 
+    def _download_to_cache(self, cache_path: Path) -> Path:
+        """Download only country+region rows with simplified geometries.
+
+        The full Overture divisions dataset is ~4.5GB with 1M+ rows across all
+        admin levels and highly detailed polygon geometries. We filter to only
+        country+region rows (~5K) and simplify geometries to ~11m tolerance,
+        reducing the cache from ~4.5GB to ~165MB. This keeps the spatial join
+        well within DuckDB's default memory limits.
+        """
+        from geoparquet_io.core.duckdb_utils import s3_config_scope
+
+        source = self.get_default_source()
+
+        with s3_config_scope(self.get_s3_config()):
+            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            try:
+                query = (
+                    "SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) as geometry, "
+                    "bbox, country, region, subtype "
+                    f"FROM read_parquet('{source}', hive_partitioning=1) "
+                    "WHERE subtype IN ('country', 'region')"
+                )
+                con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+            finally:
+                con.close()
+
+        return cache_path
+
     def get_s3_config(self) -> dict:
         return {"s3_region": "us-west-2"}
 
