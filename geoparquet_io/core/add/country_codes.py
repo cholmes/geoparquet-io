@@ -289,12 +289,10 @@ def _print_dry_run_header(
 
 def _get_countries_config(countries_parquet, using_default, verbose):
     """Get countries URL, geometry column, and bbox column."""
-    default_countries_url = (
-        "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-    )
-
     if using_default:
-        return default_countries_url, "geometry", "bbox"
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        return get_overture_divisions_url(verbose=verbose), "geometry", "bbox"
 
     countries_url = safe_file_url(countries_parquet, verbose)
     countries_geom_col = find_primary_geometry_column(countries_parquet, verbose)
@@ -480,11 +478,11 @@ def _setup_countries_source(
 ):
     """Setup countries source - either filtered table or direct file reference."""
     countries_table = "filtered_countries"
-    default_countries_url = (
-        "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-    )
 
     if using_default:
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        default_countries_url = get_overture_divisions_url(verbose=verbose)
         _setup_default_countries(
             con,
             input_parquet,

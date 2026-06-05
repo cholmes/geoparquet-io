@@ -630,17 +630,16 @@ class OvertureAdminDataset(AdminDataset):
     See: https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml
     """
 
-    # Overture Maps release version (extracted from S3 path)
-    VERSION = "2025-10-22.0"
+    # Fetched dynamically via get_overture_divisions_url()
+    VERSION = "latest"
 
     def get_dataset_name(self) -> str:
         return "Overture Maps Divisions"
 
     def get_default_source(self) -> str:
-        # Latest release with divisions theme and division_area type (polygons)
-        return (
-            "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-        )
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        return get_overture_divisions_url(verbose=self.verbose)
 
     def get_available_levels(self) -> list[str]:
         return ["country", "region"]
