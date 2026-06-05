@@ -40,6 +40,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
+| `gpio fiboa` | validate, improve, describe | fiboa (Field Boundaries for Agriculture) plugin commands. |
 <!-- END GENERATED: skill-commands -->
 
 ---
@@ -363,6 +364,48 @@ Your approach:
 7. Offer to publish to user's preferred location
 
 Always explain your reasoning and ask for confirmation before large operations.
+
+---
+
+## fiboa Plugin Commands
+
+The `gpio fiboa` plugin provides tools for working with field boundary datasets according to the [fiboa specification](https://fiboa.org). Install: `uv tool install geoparquet-io --with gpio-fiboa`.
+
+### Validate
+
+Check a GeoParquet file against fiboa requirements:
+
+```bash
+gpio fiboa validate fields.parquet
+gpio fiboa validate fields.parquet --verbose
+```
+
+### Improve
+
+Apply fiboa enhancements (metrics, admin divisions, schemas, Hilbert sorting):
+
+```bash
+# Add geometry metrics (area + perimeter)
+gpio fiboa improve input.parquet output.parquet -sz
+
+# Add admin divisions + metrics + schemas (full compliance)
+gpio fiboa improve input.parquet output.parquet -sz -a -s
+
+# Set determination datetime from a column
+gpio fiboa improve input.parquet output.parquet --determination-datetime time
+
+# Set determination method and category
+gpio fiboa improve input.parquet output.parquet -sz --determination-method auto-imagery --category operational
+```
+
+### Describe
+
+Show fiboa column coverage and extension metadata:
+
+```bash
+gpio fiboa describe fields.parquet
+gpio fiboa describe fields.parquet --verbose
+```
 
 ---
 

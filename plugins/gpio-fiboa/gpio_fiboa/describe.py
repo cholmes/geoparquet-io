@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import click
 import pyarrow.parquet as pq
+
+from geoparquet_io.core.logging_config import debug
 
 FIBOA_COLUMNS = {
     "id": "Feature identifier",
@@ -34,7 +37,7 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
     try:
         pf = pq.ParquetFile(input_file)
     except Exception as e:
-        print(f"Cannot read file: {e}")
+        click.echo(click.style(f"Cannot read file: {e}", fg="red"), err=True)
         return
 
     schema = pf.schema_arrow
@@ -42,31 +45,31 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
     metadata = schema.metadata or {}
     num_rows = pf.metadata.num_rows
 
-    print(f"\nfiboa description: {input_file}")
-    print("=" * 60)
-    print(f"Rows: {num_rows:,}")
+    click.echo(f"\nfiboa description: {input_file}")
+    click.echo("=" * 60)
+    click.echo(f"Rows: {num_rows:,}")
 
     # Vecorel metadata
-    print("\nVecorel Metadata:")
+    click.echo("\nVecorel Metadata:")
     collection_meta = metadata.get(b"collection")
     if collection_meta:
         try:
             vecorel = json.loads(collection_meta)
             schema_urls = vecorel.get("schemas", {}).get("default", [])
             if schema_urls:
-                print("  Extensions detected:")
+                click.echo("  Extensions detected:")
                 for url in schema_urls:
                     name = _match_extension_name(url)
-                    print(f"    - {name}: {url}")
+                    click.echo(f"    - {name}: {url}")
             else:
-                print("  No schema URLs found in metadata")
+                click.echo("  No schema URLs found in metadata")
         except json.JSONDecodeError:
-            print("  Invalid JSON in vecorel metadata")
+            click.echo(click.style("  Invalid JSON in vecorel metadata", fg="yellow"))
     else:
-        print("  Not present")
+        click.echo("  Not present")
 
     # fiboa column coverage
-    print("\nfiboa Columns:")
+    click.echo("\nfiboa Columns:")
     present = []
     missing = []
     for col, desc in FIBOA_COLUMNS.items():
@@ -77,58 +80,69 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
 
     if present:
         for col, desc in present:
-            print(f"  + {col:30s} {desc}")
+            click.echo(click.style(f"  + {col:30s} {desc}", fg="green"))
     if missing:
-        print(f"\n  Missing ({len(missing)}):")
+        click.echo(f"\n  Missing ({len(missing)}):")
         for col, desc in missing:
-            print(f"  - {col:30s} {desc}")
+            click.echo(f"  - {col:30s} {desc}")
 
     # Extra columns (not in fiboa spec)
     extra = [c for c in col_names if c not in FIBOA_COLUMNS]
     if extra and verbose:
-        print(f"\n  Additional columns ({len(extra)}):")
+        click.echo(f"\n  Additional columns ({len(extra)}):")
         for col in sorted(extra):
-            print(f"    {col}")
+            click.echo(f"    {col}")
 
-    # Summary stats for key columns
-    if "metrics:area" in col_names or "metrics:perimeter" in col_names:
-        print("\nMetrics Summary (first row group):")
+    # Read first row group once for stats
+    needs_rg = (
+        "metrics:area" in col_names
+        or "metrics:perimeter" in col_names
+        or "admin:country_code" in col_names
+    )
+    rg_table = None
+    if needs_rg:
         try:
-            table = pf.read_row_group(0)
-            import pyarrow.compute as pc
+            rg_table = pf.read_row_group(0)
+        except Exception as e:
+            debug(f"Could not read row group: {e}")
 
+    if rg_table is not None and ("metrics:area" in col_names or "metrics:perimeter" in col_names):
+        import pyarrow.compute as pc
+
+        click.echo("\nMetrics Summary (first row group):")
+        try:
             for col_name in ["metrics:area", "metrics:perimeter"]:
                 if col_name in col_names:
-                    col = table.column(col_name)
+                    col = rg_table.column(col_name)
                     non_null = pc.filter(col, pc.is_valid(col))
                     if len(non_null) > 0:
                         unit = "m²" if "area" in col_name else "m"
                         min_v = pc.min(non_null).as_py()
                         max_v = pc.max(non_null).as_py()
                         mean_v = pc.mean(non_null).as_py()
-                        print(
-                            f"  {col_name}: min={min_v:,.1f}{unit}, max={max_v:,.1f}{unit}, mean={mean_v:,.1f}{unit}"
+                        click.echo(
+                            f"  {col_name}: min={min_v:,.1f}{unit}, "
+                            f"max={max_v:,.1f}{unit}, mean={mean_v:,.1f}{unit}"
                         )
-        except Exception:
-            pass
+        except Exception as e:
+            debug(f"Could not read metrics summary: {e}")
 
-    if "admin:country_code" in col_names:
-        print("\nAdmin Coverage (first row group):")
+    if rg_table is not None and "admin:country_code" in col_names:
+        import pyarrow.compute as pc
+
+        click.echo("\nAdmin Coverage (first row group):")
         try:
-            table = pf.read_row_group(0)
-            import pyarrow.compute as pc
-
-            col = table.column("admin:country_code")
+            col = rg_table.column("admin:country_code")
             non_null = pc.filter(col, pc.is_valid(col))
             unique = pc.unique(non_null)
-            print(f"  Countries: {len(unique)} unique codes")
+            click.echo(f"  Countries: {len(unique)} unique codes")
             if len(unique) <= 10:
                 codes = sorted([str(v) for v in unique])
-                print(f"  Codes: {', '.join(codes)}")
-        except Exception:
-            pass
+                click.echo(f"  Codes: {', '.join(codes)}")
+        except Exception as e:
+            debug(f"Could not read admin coverage: {e}")
 
-    print()
+    click.echo("")
 
 
 def _match_extension_name(url: str) -> str:

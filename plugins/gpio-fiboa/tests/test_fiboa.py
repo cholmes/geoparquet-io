@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -10,20 +11,14 @@ from click.testing import CliRunner
 from gpio_fiboa.cli import fiboa
 from gpio_fiboa.validate import validate_fiboa
 
+TEST_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "data"
+BUILDINGS_TEST_FILE = TEST_DATA_DIR / "buildings_test.parquet"
+
 
 @pytest.fixture
 def buildings_file():
     """Path to buildings test file with polygon geometries."""
-    path = os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "..",
-        "..",
-        "tests",
-        "data",
-        "buildings_test.parquet",
-    )
-    return os.path.normpath(path)
+    return str(BUILDINGS_TEST_FILE)
 
 
 @pytest.fixture
@@ -124,7 +119,9 @@ class TestFiboaImprove:
 
     def test_improve_no_flags_warns(self):
         runner = CliRunner()
-        result = runner.invoke(fiboa, ["improve", "input.parquet", "output.parquet"])
+        result = runner.invoke(
+            fiboa, ["improve", "input.parquet", "output.parquet", "--skip-hilbert"]
+        )
         assert result.exit_code == 0
         assert "No improvements requested" in result.output
 
@@ -194,33 +191,28 @@ class TestFiboaImprove:
 
         import duckdb
 
-        con = duckdb.connect()
-        con.execute("LOAD spatial;")
-        vals = con.execute(
-            f"""SELECT DISTINCT "determination:method" FROM read_parquet('{temp_output}')"""
-        ).fetchall()
-        assert vals == [("auto-imagery",)]
-        con.close()
+        with duckdb.connect() as con:
+            con.execute("LOAD spatial;")
+            vals = con.execute(
+                f"""SELECT DISTINCT "determination:method" FROM read_parquet('{temp_output}')"""
+            ).fetchall()
+            assert vals == [("auto-imagery",)]
 
     def test_improve_datetime_column_removes_source(self, buildings_file, temp_output):
         """When mapping a column, the source column should be removed by default."""
-        # buildings_file has 'id' column - use it as a stand-in for a datetime source
-        # (we're testing column removal, not datetime casting)
         import duckdb
 
-        # Create a file with a 'time' column we can map
         fd, with_time = tempfile.mkstemp(suffix=".parquet")
         os.close(fd)
         os.unlink(with_time)
         try:
-            con = duckdb.connect()
-            con.execute("LOAD spatial;")
-            con.execute(
-                f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
-                f"'{os.path.normpath(buildings_file)}') "
-                f"TO '{with_time}' (FORMAT PARQUET)"
-            )
-            con.close()
+            with duckdb.connect() as con:
+                con.execute("LOAD spatial;")
+                con.execute(
+                    f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
+                    f"'{os.path.normpath(buildings_file)}') "
+                    f"TO '{with_time}' (FORMAT PARQUET)"
+                )
 
             runner = CliRunner()
             result = runner.invoke(
@@ -229,17 +221,16 @@ class TestFiboaImprove:
             )
             assert result.exit_code == 0, result.output
 
-            con = duckdb.connect()
-            con.execute("LOAD spatial;")
-            cols = [
-                c[0]
-                for c in con.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
-                ).fetchall()
-            ]
-            assert "determination:datetime" in cols
-            assert "time" not in cols
-            con.close()
+            with duckdb.connect() as con:
+                con.execute("LOAD spatial;")
+                cols = [
+                    c[0]
+                    for c in con.execute(
+                        f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                    ).fetchall()
+                ]
+                assert "determination:datetime" in cols
+                assert "time" not in cols
         finally:
             if os.path.exists(with_time):
                 os.unlink(with_time)
@@ -252,14 +243,13 @@ class TestFiboaImprove:
         os.close(fd)
         os.unlink(with_time)
         try:
-            con = duckdb.connect()
-            con.execute("LOAD spatial;")
-            con.execute(
-                f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
-                f"'{os.path.normpath(buildings_file)}') "
-                f"TO '{with_time}' (FORMAT PARQUET)"
-            )
-            con.close()
+            with duckdb.connect() as con:
+                con.execute("LOAD spatial;")
+                con.execute(
+                    f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
+                    f"'{os.path.normpath(buildings_file)}') "
+                    f"TO '{with_time}' (FORMAT PARQUET)"
+                )
 
             runner = CliRunner()
             result = runner.invoke(
@@ -275,17 +265,16 @@ class TestFiboaImprove:
             )
             assert result.exit_code == 0, result.output
 
-            con = duckdb.connect()
-            con.execute("LOAD spatial;")
-            cols = [
-                c[0]
-                for c in con.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
-                ).fetchall()
-            ]
-            assert "determination:datetime" in cols
-            assert "time" in cols
-            con.close()
+            with duckdb.connect() as con:
+                con.execute("LOAD spatial;")
+                cols = [
+                    c[0]
+                    for c in con.execute(
+                        f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                    ).fetchall()
+                ]
+                assert "determination:datetime" in cols
+                assert "time" in cols
         finally:
             if os.path.exists(with_time):
                 os.unlink(with_time)
@@ -307,14 +296,15 @@ class TestFiboaImprove:
 
         import duckdb
 
-        con = duckdb.connect()
-        con.execute("LOAD spatial;")
-        cols = [
-            c[0]
-            for c in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')").fetchall()
-        ]
-        assert "determination:datetime" in cols
-        con.close()
+        with duckdb.connect() as con:
+            con.execute("LOAD spatial;")
+            cols = [
+                c[0]
+                for c in con.execute(
+                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                ).fetchall()
+            ]
+            assert "determination:datetime" in cols
 
     def test_improve_with_category(self, buildings_file, temp_output):
         runner = CliRunner()
@@ -326,14 +316,15 @@ class TestFiboaImprove:
 
         import duckdb
 
-        con = duckdb.connect()
-        con.execute("LOAD spatial;")
-        cols = [
-            c[0]
-            for c in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')").fetchall()
-        ]
-        assert "category" in cols
-        con.close()
+        with duckdb.connect() as con:
+            con.execute("LOAD spatial;")
+            cols = [
+                c[0]
+                for c in con.execute(
+                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                ).fetchall()
+            ]
+            assert "category" in cols
 
     def test_improve_invalid_determination_method(self):
         runner = CliRunner()
@@ -357,30 +348,19 @@ class TestFiboaImprove:
         )
         assert result.exit_code != 0
 
-    def test_improve_auto_downgrades_geoparquet_v2(self, temp_output):
+    def test_improve_auto_downgrades_geoparquet_v2(self, buildings_file, temp_output):
         """Native geo type input should auto-downgrade to 1.1 for vecorel compatibility."""
         import duckdb as _duckdb
 
-        # Create a small file with native Parquet geo types (no geo metadata)
         fd, v2_file = tempfile.mkstemp(suffix=".parquet")
         os.close(fd)
         try:
-            con = _duckdb.connect()
-            con.execute("LOAD spatial;")
-            buildings = os.path.join(
-                os.path.dirname(__file__),
-                "..",
-                "..",
-                "..",
-                "tests",
-                "data",
-                "buildings_test.parquet",
-            )
-            con.execute(
-                f"COPY (SELECT * FROM '{os.path.normpath(buildings)}' LIMIT 10) "
-                f"TO '{v2_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE')"
-            )
-            con.close()
+            with _duckdb.connect() as con:
+                con.execute("LOAD spatial;")
+                con.execute(
+                    f"COPY (SELECT * FROM '{buildings_file}' LIMIT 10) "
+                    f"TO '{v2_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE')"
+                )
 
             runner = CliRunner()
             result = runner.invoke(fiboa, ["improve", v2_file, temp_output, "-sz", "-s"])
@@ -391,7 +371,6 @@ class TestFiboaImprove:
             geo = json.loads(meta[b"geo"])
             assert geo["version"] == "1.1.0"
 
-            # Should have a bbox column (added during downgrade)
             col_names = pf.schema_arrow.names
             assert "bbox" in col_names
         finally:

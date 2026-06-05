@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import click
 
+from geoparquet_io.cli.decorators import (
+    compression_options,
+    geoparquet_version_option,
+    handle_geoparquet_errors,
+    overwrite_option,
+    row_group_options,
+    verbose_option,
+)
+
 
 @click.group()
 def fiboa():
@@ -16,7 +25,8 @@ def fiboa():
 
 @fiboa.command()
 @click.argument("input_file")
-@click.option("-v", "--verbose", is_flag=True, help="Print verbose output")
+@verbose_option
+@handle_geoparquet_errors
 def validate(input_file: str, verbose: bool) -> None:
     """Validate a GeoParquet file against the fiboa specification.
 
@@ -36,7 +46,9 @@ def validate(input_file: str, verbose: bool) -> None:
     """
     from gpio_fiboa.validate import validate_fiboa
 
-    validate_fiboa(input_file, verbose)
+    is_valid = validate_fiboa(input_file, verbose)
+    if not is_valid:
+        raise SystemExit(1)
 
 
 @fiboa.command()
@@ -59,38 +71,6 @@ def validate(input_file: str, verbose: bool) -> None:
     "--schemas",
     is_flag=True,
     help="Add/update the Vecorel schemas metadata with fiboa + extension URLs.",
-)
-@click.option(
-    "--compression",
-    type=click.Choice(
-        ["ZSTD", "GZIP", "BROTLI", "LZ4", "SNAPPY", "UNCOMPRESSED"],
-        case_sensitive=False,
-    ),
-    default="ZSTD",
-    help="Compression type for output file (default: ZSTD)",
-)
-@click.option(
-    "--compression-level",
-    type=click.IntRange(1, 22),
-    default=None,
-    help="Compression level - GZIP: 1-9, ZSTD: 1-22, BROTLI: 1-11. Ignored for LZ4/SNAPPY.",
-)
-@click.option(
-    "--row-group-size",
-    type=int,
-    default=None,
-    help="Exact number of rows per row group (default: 50000)",
-)
-@click.option(
-    "--row-group-size-mb",
-    default=None,
-    help="Target row group size (e.g. '256MB', '1GB', '128' assumes MB)",
-)
-@click.option(
-    "--geoparquet-version",
-    type=click.Choice(["1.0", "1.1", "2.0", "parquet-geo-only"]),
-    default=None,
-    help="GeoParquet version to write. Auto-detects from input if not specified.",
 )
 @click.option(
     "--determination-datetime",
@@ -124,8 +104,12 @@ def validate(input_file: str, verbose: bool) -> None:
     is_flag=True,
     help="Skip Hilbert spatial sorting (enabled by default).",
 )
-@click.option("--overwrite", is_flag=True, help="Overwrite existing output file")
-@click.option("-v", "--verbose", is_flag=True, help="Print verbose output")
+@compression_options
+@row_group_options
+@geoparquet_version_option
+@overwrite_option
+@verbose_option
+@handle_geoparquet_errors
 def improve(
     input_file: str,
     output_file: str,
@@ -167,7 +151,6 @@ def improve(
     """
     from gpio_fiboa.improve import VALID_CATEGORIES, improve_fiboa
 
-    # Validate category values
     parsed_categories = None
     if category:
         parsed_categories = [c.strip() for c in category.split(",")]
@@ -178,7 +161,6 @@ def improve(
                 param_hint="--category",
             )
 
-    # Parse row-group-size-mb if provided
     row_group_mb = None
     if row_group_size_mb is not None:
         from geoparquet_io.cli.decorators import parse_row_group_options
@@ -208,7 +190,8 @@ def improve(
 
 @fiboa.command()
 @click.argument("input_file")
-@click.option("-v", "--verbose", is_flag=True, help="Print verbose output")
+@verbose_option
+@handle_geoparquet_errors
 def describe(input_file: str, verbose: bool) -> None:
     """Describe a GeoParquet file's fiboa compliance.
 

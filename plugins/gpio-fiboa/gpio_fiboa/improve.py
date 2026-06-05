@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
+from geoparquet_io.core.constants import (
+    FIBOA_CORE_SCHEMA,
+    VECOREL_ADMIN_SCHEMA,
+    VECOREL_CORE_SCHEMA,
+    VECOREL_METRICS_SCHEMA,
+)
 from geoparquet_io.core.logging_config import progress, success, warn
-
-FIBOA_SCHEMA_URL = "https://fiboa.org/specification/v0.3.0/schema.yaml"
-VECOREL_CORE_URL = "https://vecorel.org/specification/v0.1.0/schema.yaml"
-VECOREL_ADMIN_URL = "https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml"
-VECOREL_METRICS_URL = "https://vecorel.org/geometry-metrics-extension/v0.1.0/schema.yaml"
 
 VALID_CATEGORIES = {
     "conceptual",
@@ -19,6 +21,10 @@ VALID_CATEGORIES = {
     "administrative",
     "other",
 }
+
+DATETIME_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
+)
 
 
 def improve_fiboa(
@@ -48,68 +54,65 @@ def improve_fiboa(
         add_metrics
         or add_admin
         or add_schemas
-        or sort_hilbert
         or determination_datetime
         or determination_method
         or category
     )
-    if not has_work:
+    if not has_work and not sort_hilbert:
         warn("No improvements requested. Use -sz, -a, -s, or column options.")
         return
 
-    # Auto-downgrade GeoParquet 2.0 to 1.1 (vecorel/fiboa don't support 2.0 yet)
     user_requested_version = geoparquet_version is not None
     geoparquet_version, need_bbox = _handle_geoparquet_version(
         input_file, geoparquet_version, user_requested_version, verbose
     )
 
+    write_opts = {
+        "compression": compression,
+        "compression_level": compression_level,
+        "row_group_size_mb": row_group_size_mb,
+        "row_group_rows": row_group_rows,
+        "geoparquet_version": geoparquet_version,
+    }
+
     current_input = input_file
     temp_files: list[str] = []
 
-    # Track remaining steps for temp file routing
-    remaining_steps = []
-    if add_metrics:
-        remaining_steps.append("metrics")
-    if add_admin:
-        remaining_steps.append("admin")
-    if determination_datetime:
-        remaining_steps.append("dt_datetime")
-    if determination_method:
-        remaining_steps.append("dt_method")
-    if category:
-        remaining_steps.append("category")
-    if sort_hilbert:
-        remaining_steps.append("hilbert")
-    if add_schemas:
-        remaining_steps.append("schemas")
+    steps_remaining = sum(
+        [
+            add_metrics,
+            add_admin,
+            bool(determination_datetime),
+            bool(determination_method),
+            bool(category),
+            sort_hilbert,
+            add_schemas,
+        ]
+    )
 
     try:
         if add_metrics:
-            remaining_steps.remove("metrics")
+            steps_remaining -= 1
             progress("Adding geometry metrics (area + perimeter)...")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
 
             from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
 
             add_geometry_metrics(
                 current_input,
                 next_output,
-                vecorel=True,
+                vecorel=False,
                 verbose=verbose,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                **write_opts,
             )
             current_input = next_output
             success("Added metrics:area and metrics:perimeter")
 
         if add_admin:
-            remaining_steps.remove("admin")
+            steps_remaining -= 1
             progress("Adding admin divisions (country_code + subdivision_code)...")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
 
             from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
 
@@ -118,76 +121,66 @@ def improve_fiboa(
                 next_output,
                 dataset_name="overture",
                 levels=["country", "region"],
-                vecorel=True,
+                vecorel=False,
                 verbose=verbose,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                geoparquet_version=geoparquet_version,
                 overwrite=True,
+                **write_opts,
             )
             current_input = next_output
             success("Added admin:country_code and admin:subdivision_code")
 
         if determination_datetime:
-            remaining_steps.remove("dt_datetime")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+            steps_remaining -= 1
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
             _add_determination_datetime(
                 current_input,
                 next_output,
                 determination_datetime,
                 verbose,
-                compression,
-                compression_level,
-                row_group_size_mb,
-                row_group_rows,
-                geoparquet_version,
                 keep_source=keep_source_columns,
+                **write_opts,
             )
             current_input = next_output
 
         if determination_method:
-            remaining_steps.remove("dt_method")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
-            _add_literal_column(
+            steps_remaining -= 1
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
+
+            from geoparquet_io.core.common import add_computed_column
+
+            add_computed_column(
                 current_input,
                 next_output,
-                "determination:method",
-                f"'{determination_method}'",
-                verbose,
-                compression,
-                compression_level,
-                row_group_size_mb,
-                row_group_rows,
-                geoparquet_version,
+                column_name="determination:method",
+                sql_expression=f"'{determination_method}'",
+                verbose=verbose,
+                **write_opts,
             )
             current_input = next_output
             success(f"Set determination:method = '{determination_method}'")
 
         if category:
-            remaining_steps.remove("category")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+            steps_remaining -= 1
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
+
+            from geoparquet_io.core.common import add_computed_column
+
             values_str = ", ".join(f"'{c}'" for c in category)
-            _add_literal_column(
+            add_computed_column(
                 current_input,
                 next_output,
-                "category",
-                f"[{values_str}]",
-                verbose,
-                compression,
-                compression_level,
-                row_group_size_mb,
-                row_group_rows,
-                geoparquet_version,
+                column_name="category",
+                sql_expression=f"[{values_str}]",
+                verbose=verbose,
+                **write_opts,
             )
             current_input = next_output
             success(f"Set category = {category}")
 
         if sort_hilbert:
-            remaining_steps.remove("hilbert")
+            steps_remaining -= 1
             progress("Sorting by Hilbert space-filling curve...")
-            next_output = _get_next_output(output_file, bool(remaining_steps), temp_files)
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
 
             from geoparquet_io.core.hilbert_order import hilbert_order
 
@@ -196,36 +189,26 @@ def improve_fiboa(
                 next_output,
                 add_bbox_flag=True,
                 verbose=verbose,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                geoparquet_version=geoparquet_version,
                 overwrite=True,
+                **write_opts,
             )
             current_input = next_output
             success("Sorted by Hilbert curve for spatial query performance")
 
         if add_schemas:
-            remaining_steps.remove("schemas")
+            steps_remaining -= 1
             progress("Updating Vecorel schemas metadata...")
             _add_schemas_metadata(
                 current_input,
                 output_file if current_input != output_file else None,
                 add_metrics,
                 add_admin,
-                compression,
-                compression_level,
-                row_group_size_mb,
-                row_group_rows,
-                geoparquet_version,
-                overwrite,
-                verbose,
+                overwrite=overwrite,
+                verbose=verbose,
+                **write_opts,
             )
             success("Updated Vecorel schemas metadata with fiboa URLs")
 
-        # Add bbox column if needed (e.g., after 2.0→1.1 downgrade)
-        # Hilbert sorting already adds bbox via add_bbox_flag=True
         if need_bbox and not sort_hilbert:
             _ensure_bbox(output_file, verbose)
 
@@ -246,16 +229,13 @@ def _add_determination_datetime(
     output_file,
     value,
     verbose,
-    compression,
-    compression_level,
-    row_group_size_mb,
-    row_group_rows,
-    geoparquet_version,
     keep_source: bool = False,
+    **write_opts,
 ) -> None:
     """Add determination:datetime column from a source column or literal."""
     from geoparquet_io.core.common import add_computed_column
     from geoparquet_io.core.duckdb_metadata import get_column_names
+    from geoparquet_io.core.duckdb_utils import quote_identifier
     from geoparquet_io.core.file_utils import safe_file_url
 
     url = safe_file_url(input_file, verbose=False)
@@ -263,13 +243,15 @@ def _add_determination_datetime(
     replace_col = None
 
     if value in columns:
-        sql_expr = f"CAST(\"{value}\" AS TIMESTAMP) AT TIME ZONE 'UTC'"
+        sql_expr = f"CAST({quote_identifier(value)} AS TIMESTAMP) AT TIME ZONE 'UTC'"
         if keep_source:
-            progress(f"Mapping column '{value}' → determination:datetime (keeping '{value}')")
+            progress(f"Mapping column '{value}' -> determination:datetime (keeping '{value}')")
         else:
-            progress(f"Mapping column '{value}' → determination:datetime (removing '{value}')")
+            progress(f"Mapping column '{value}' -> determination:datetime (removing '{value}')")
             replace_col = value
     else:
+        if not DATETIME_PATTERN.match(value):
+            raise ValueError(f"Invalid datetime literal: {value}")
         sql_expr = f"TIMESTAMP '{value}' AT TIME ZONE 'UTC'"
         progress(f"Setting determination:datetime = '{value}'")
 
@@ -280,42 +262,9 @@ def _add_determination_datetime(
         sql_expression=sql_expr,
         replace_column=replace_col,
         verbose=verbose,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        geoparquet_version=geoparquet_version,
+        **write_opts,
     )
     success("Added determination:datetime")
-
-
-def _add_literal_column(
-    input_file,
-    output_file,
-    column_name,
-    sql_value,
-    verbose,
-    compression,
-    compression_level,
-    row_group_size_mb,
-    row_group_rows,
-    geoparquet_version,
-) -> None:
-    """Add a column with a literal value for all rows."""
-    from geoparquet_io.core.common import add_computed_column
-
-    add_computed_column(
-        input_file,
-        output_file,
-        column_name=column_name,
-        sql_expression=sql_value,
-        verbose=verbose,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        geoparquet_version=geoparquet_version,
-    )
 
 
 def _get_next_output(final_output: str, more_steps: bool, temp_files: list[str]) -> str:
@@ -334,26 +283,27 @@ def _add_schemas_metadata(
     output_file,
     has_metrics,
     has_admin,
-    compression,
-    compression_level,
-    row_group_size_mb,
-    row_group_rows,
-    geoparquet_version,
-    overwrite,
-    verbose,
+    **kwargs,
 ) -> None:
     """Add/update Vecorel schemas metadata with all applicable fiboa URLs."""
     from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
     from geoparquet_io.core.constants import build_collection_metadata
+    from geoparquet_io.core.duckdb_metadata import get_column_names
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
     from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.remote import needs_httpfs
 
-    schemas = [FIBOA_SCHEMA_URL, VECOREL_CORE_URL]
-    if has_metrics:
-        schemas.append(VECOREL_METRICS_URL)
-    if has_admin:
-        schemas.append(VECOREL_ADMIN_URL)
+    kwargs.pop("overwrite", None)
+    verbose = kwargs.pop("verbose", False)
+
+    url = safe_file_url(input_file, verbose=False)
+    columns = get_column_names(url)
+
+    schemas = [FIBOA_CORE_SCHEMA, VECOREL_CORE_SCHEMA]
+    if has_metrics or "metrics:area" in columns:
+        schemas.append(VECOREL_METRICS_SCHEMA)
+    if has_admin or "admin:country_code" in columns:
+        schemas.append(VECOREL_ADMIN_SCHEMA)
 
     metadata, _ = get_parquet_metadata(input_file, verbose)
     extra_kv = build_collection_metadata(schemas, metadata)
@@ -369,13 +319,9 @@ def _add_schemas_metadata(
         query,
         actual_output,
         original_metadata=metadata,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        geoparquet_version=geoparquet_version,
         verbose=verbose,
         extra_kv_metadata=extra_kv,
+        **kwargs,
     )
 
 
