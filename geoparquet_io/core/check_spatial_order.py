@@ -170,41 +170,6 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
     if verbose:
         debug(f"Analyzing {len(row_group_bboxes)} row groups")
 
-    # Detect if this looks like Hilbert ordering with large row groups
-    # (row groups with ~100k rows each AND high spatial overlap is expected)
-    likely_hilbert_with_large_groups = False
-    if len(row_group_bboxes) >= 5:  # Needs multiple row groups to be meaningful
-        # Check average rows per group from parquet metadata
-        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-        from geoparquet_io.core.remote import needs_httpfs
-
-        con = get_duckdb_connection(load_spatial=False, load_httpfs=needs_httpfs(parquet_file))
-        try:
-            result = con.execute(f"""
-                SELECT num_rows::DOUBLE / num_row_groups as avg_rows
-                FROM parquet_file_metadata('{safe_url}')
-            """).fetchone()
-            avg_rows = result[0] if result else 0
-            # Require BOTH correct row count AND high spatial overlap
-            # (Hilbert curves with large row groups inherently have high bbox overlap)
-            if 80000 <= avg_rows <= 120000:
-                # Calculate overlap ratio to confirm spatial characteristic
-                prelim_overlap_count = 0
-                for i in range(len(row_group_bboxes) - 1):
-                    if _bboxes_overlap(row_group_bboxes[i], row_group_bboxes[i + 1]):
-                        prelim_overlap_count += 1
-                prelim_ratio = prelim_overlap_count / (len(row_group_bboxes) - 1)
-
-                # High overlap (>70%) + correct row count = likely Hilbert
-                if prelim_ratio > 0.7:
-                    likely_hilbert_with_large_groups = True
-                    if verbose:
-                        debug(
-                            f"Detected likely Hilbert ordering (avg {avg_rows:.0f} rows/group, {prelim_ratio:.0%} overlap)"
-                        )
-        finally:
-            con.close()
-
     # Handle edge cases
     if len(row_group_bboxes) <= 1:
         # Can't meaningfully check ordering with 0 or 1 row groups
@@ -232,8 +197,28 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
         if verbose:
             debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
 
-    # Pass if < 30% overlap, OR if Hilbert-ordered with large groups (expected behavior)
-    passed = ratio < 0.3 or likely_hilbert_with_large_groups
+    # Primary check: pass if < 30% consecutive overlap
+    passed = ratio < 0.3
+    avg_area_ratio = 0.0
+    avg_skip_rate = 0.0
+
+    # Secondary check: when overlap is high, measure actual spatial locality.
+    # Hilbert-sorted data often has overlapping consecutive row group bboxes
+    # but each bbox covers only a small fraction of the total extent.
+    if not passed and len(row_group_bboxes) >= 3:
+        extent = _compute_data_extent(row_group_bboxes)
+        avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
+        samples = _generate_sample_query_bboxes(extent, num_samples=20, query_fraction=0.1, seed=42)
+        skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
+        avg_skip_rate = sum(skip_rates) / len(skip_rates)
+
+        if verbose:
+            debug(
+                f"Secondary locality check: area_ratio={avg_area_ratio:.4f}, skip_rate={avg_skip_rate:.2%}"
+            )
+
+        if avg_area_ratio < 0.25 and avg_skip_rate >= 0.5:
+            passed = True
 
     # Build results dict
     issues = []
@@ -242,7 +227,6 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
         issues.append(f"Poor spatial ordering (overlap ratio: {ratio:.2f})")
         recommendations.append("Apply Hilbert spatial ordering for better query performance")
 
-    # Print standalone results if not quiet and not return_results
     if not quiet and not return_results and not verbose:
         _print_bbox_stats_results(ratio, overlap_count, total_pairs)
 
@@ -255,8 +239,9 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
             "method": "bbox_stats",
             "issues": issues,
             "recommendations": recommendations,
-            # Don't offer fix if already Hilbert-ordered with large groups
-            "fix_available": not passed and not likely_hilbert_with_large_groups,
+            "fix_available": not passed,
+            "estimated_skip_rate": avg_skip_rate,
+            "avg_bbox_area_ratio": avg_area_ratio,
         }
 
     return ratio
@@ -303,6 +288,23 @@ def _check_spatial_order_from_row_group_bboxes(
             debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
 
     passed = ratio < 0.3
+    avg_area_ratio = 0.0
+    avg_skip_rate = 0.0
+
+    if not passed and len(row_group_bboxes) >= 3:
+        extent = _compute_data_extent(row_group_bboxes)
+        avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
+        samples = _generate_sample_query_bboxes(extent, num_samples=20, query_fraction=0.1, seed=42)
+        skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
+        avg_skip_rate = sum(skip_rates) / len(skip_rates)
+
+        if verbose:
+            debug(
+                f"Secondary locality check: area_ratio={avg_area_ratio:.4f}, skip_rate={avg_skip_rate:.2%}"
+            )
+
+        if avg_area_ratio < 0.25 and avg_skip_rate >= 0.5:
+            passed = True
 
     issues = []
     recommendations = []
@@ -323,6 +325,8 @@ def _check_spatial_order_from_row_group_bboxes(
             "issues": issues,
             "recommendations": recommendations,
             "fix_available": not passed,
+            "estimated_skip_rate": avg_skip_rate,
+            "avg_bbox_area_ratio": avg_area_ratio,
         }
 
     return ratio
