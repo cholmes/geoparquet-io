@@ -33,6 +33,13 @@ class TestGetLatestOvertureRelease:
             version = get_latest_overture_release()
             assert version == OVERTURE_FALLBACK_RELEASE
 
+    def test_caches_fallback_to_avoid_repeated_timeouts(self):
+        with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+            mock.side_effect = Exception("network error")
+            get_latest_overture_release()
+            get_latest_overture_release()
+            assert mock.call_count == 1
+
 
 class TestGetOvertureDivisionsUrl:
     """Test building the Overture divisions URL."""

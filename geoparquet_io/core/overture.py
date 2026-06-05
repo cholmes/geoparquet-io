@@ -40,6 +40,7 @@ def get_latest_overture_release(verbose: bool = False) -> str:
             f"Could not fetch latest Overture release ({e}), "
             f"using fallback: {OVERTURE_FALLBACK_RELEASE}"
         )
+        _cached_release = OVERTURE_FALLBACK_RELEASE
         return OVERTURE_FALLBACK_RELEASE
 
 
