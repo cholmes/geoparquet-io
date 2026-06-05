@@ -124,6 +124,117 @@ class TestVecorelMetadataPreservation:
                 os.unlink(intermediate)
 
 
+class TestVecorelSchemaPreservedThroughOperations:
+    """Test that vecorel schema compliance survives subsequent gpio operations."""
+
+    def test_add_column_preserves_nullability(self, buildings_test_file, temp_output_file):
+        """A vecorel-compliant file should stay compliant after add_computed_column."""
+        import os
+        import tempfile
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+        from geoparquet_io.core.common import add_computed_column
+
+        # Step 1: create vecorel-compliant file
+        fd, intermediate = tempfile.mkstemp(suffix=".parquet")
+        os.close(fd)
+        os.unlink(intermediate)
+        try:
+            add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
+
+            # Verify it's compliant
+            pf = pq.ParquetFile(intermediate)
+            assert pf.schema_arrow.field("id").nullable is False
+            assert pf.schema_arrow.field("geometry").nullable is False
+
+            # Step 2: add another column (simulating a non-vecorel operation)
+            add_computed_column(
+                intermediate,
+                temp_output_file,
+                column_name="test_col",
+                sql_expression="'hello'",
+            )
+
+            # Step 3: verify compliance is preserved
+            pf2 = pq.ParquetFile(temp_output_file)
+            assert pf2.schema_arrow.field("id").nullable is False
+            assert pf2.schema_arrow.field("geometry").nullable is False
+            assert b"collection" in pf2.schema_arrow.metadata
+        finally:
+            if os.path.exists(intermediate):
+                os.unlink(intermediate)
+
+
+class TestVecorelAdminNullHandling:
+    """Test that vecorel admin columns use 'ZZ' instead of NULL."""
+
+    def test_vecorel_admin_select_coalesces_nulls(self):
+        """The admin select clause should wrap values with COALESCE for vecorel."""
+        from geoparquet_io.core.add.admin_divisions import _build_admin_select_clause
+        from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+
+        dataset = OvertureAdminDataset()
+        levels = ["country", "region"]
+        partition_columns = dataset.get_partition_columns(levels)
+
+        clause = _build_admin_select_clause(dataset, levels, partition_columns, prefix="vecorel")
+        assert "COALESCE" in clause
+        assert "'ZZ'" in clause
+
+    def test_vecorel_admin_select_no_coalesce_without_vecorel(self):
+        """Non-vecorel mode should NOT coalesce nulls."""
+        from geoparquet_io.core.add.admin_divisions import _build_admin_select_clause
+        from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+
+        dataset = OvertureAdminDataset()
+        levels = ["country", "region"]
+        partition_columns = dataset.get_partition_columns(levels)
+
+        clause = _build_admin_select_clause(dataset, levels, partition_columns, prefix=None)
+        assert "COALESCE" not in clause
+
+
+class TestVecorelSchemaAutoFix:
+    """Test that vecorel schema compliance is automatically maintained."""
+
+    def test_add_column_preserves_nullability(self, buildings_test_file, temp_output_file):
+        """A vecorel-compliant file should stay compliant after add_computed_column."""
+        import os
+        import tempfile
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+        from geoparquet_io.core.common import add_computed_column
+
+        fd, intermediate = tempfile.mkstemp(suffix=".parquet")
+        os.close(fd)
+        os.unlink(intermediate)
+        try:
+            add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
+
+            pf = pq.ParquetFile(intermediate)
+            assert pf.schema_arrow.field("id").nullable is False
+            assert pf.schema_arrow.field("geometry").nullable is False
+
+            add_computed_column(
+                intermediate,
+                temp_output_file,
+                column_name="test_col",
+                sql_expression="'hello'",
+            )
+
+            pf2 = pq.ParquetFile(temp_output_file)
+            assert pf2.schema_arrow.field("id").nullable is False
+            assert pf2.schema_arrow.field("geometry").nullable is False
+            assert b"collection" in pf2.schema_arrow.metadata
+        finally:
+            if os.path.exists(intermediate):
+                os.unlink(intermediate)
+
+
 class TestExtraKvMetadata:
     """Test extra_kv_metadata plumbing through write pipeline."""
 

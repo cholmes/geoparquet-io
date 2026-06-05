@@ -1643,6 +1643,10 @@ def write_parquet_with_metadata(
 
             strategy.write_from_query(**write_kwargs)
 
+        # Auto-fix vecorel schema compliance when collection metadata is present
+        if not is_remote:
+            _auto_fix_vecorel_if_needed(actual_output, extra_kv_metadata, original_metadata)
+
         if is_remote:
             upload_if_remote(
                 actual_output,
@@ -1651,6 +1655,31 @@ def write_parquet_with_metadata(
                 is_directory=False,
                 verbose=verbose,
             )
+
+
+def _auto_fix_vecorel_if_needed(
+    output_path: str,
+    extra_kv_metadata: dict | None,
+    original_metadata: dict | None,
+) -> None:
+    """Fix vecorel schema compliance if the output has collection metadata."""
+    has_collection = False
+    if extra_kv_metadata and "collection" in extra_kv_metadata:
+        has_collection = True
+    elif original_metadata:
+        if "collection" in original_metadata or b"collection" in original_metadata:
+            has_collection = True
+
+    if has_collection:
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.constants import VECOREL_NON_NULLABLE, _fix_vecorel_schema
+
+        pf = pq.ParquetFile(output_path)
+        columns = set(pf.schema_arrow.names)
+        non_nullable = [c for c in VECOREL_NON_NULLABLE if c in columns]
+        if non_nullable:
+            _fix_vecorel_schema(output_path, non_nullable)
 
 
 def write_geoparquet_table(
