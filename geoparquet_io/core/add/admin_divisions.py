@@ -10,7 +10,7 @@ multiple admin datasets with hierarchical level support.
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    get_bbox_advice,
+    detect_geoparquet_file_type,
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
@@ -72,32 +72,11 @@ def _build_spatial_join_query(
     input_url,
     admin_subquery,
     admin_select_clause,
-    input_bbox_col,
-    admin_bbox_col,
     input_geom_col,
     admin_geom_col,
 ):
-    """Build spatial join query with optional bbox optimization."""
-    if input_bbox_col and admin_bbox_col:
-        bbox_condition = f"""(a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)"""
-
-        return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON {bbox_condition}  -- Fast bbox intersection test
-        AND ST_Intersects(  -- More expensive precise check only on bbox matches
-            b.{admin_geom_col},
-            a.{input_geom_col}
-        )
-"""
-    else:
-        return f"""
+    """Build spatial join query using DuckDB's SPATIAL_JOIN operator."""
+    return f"""
     SELECT
         a.*,
         {admin_select_clause}
@@ -253,11 +232,9 @@ def _setup_dataset_and_columns(
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     admin_geom_col = dataset.get_geometry_column()
 
-    # Check if we should skip bbox pre-filtering (for native geometry files)
-    input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
-    if input_bbox_advice["skip_bbox_prefilter"]:
-        if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
+    file_info = detect_geoparquet_file_type(input_parquet, verbose)
+    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
+    if has_native_geo:
         input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
         input_bbox_col = None
     else:
@@ -364,17 +341,10 @@ def _build_query_components(
         admin_where_clauses,
     )
 
-    if input_bbox_col and admin_bbox_col and verbose and not dry_run:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and admin_bbox_col) and not dry_run:
-        progress("No bbox columns available, using full geometry intersection...")
-
     query = _build_spatial_join_query(
         input_url,
         admin_subquery,
         admin_select_clause,
-        input_bbox_col,
-        admin_bbox_col,
         input_geom_col,
         admin_geom_col,
     )
@@ -409,11 +379,7 @@ def _handle_dry_run_mode(
         admin_bbox_col,
     )
 
-    info("-- Main spatial join query")
-    if input_bbox_col and admin_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    info("-- Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
 
     if compression in ["GZIP", "ZSTD", "BROTLI"]:
         compression_str = f"{compression}:{compression_level}"

@@ -133,8 +133,6 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        # Should use bbox column for spatial join optimization
-        assert "bbox.xmin" in result.output
-        assert "Using bbox columns for optimized spatial join" in result.output
-        # Should show spatial join query
+        # Should use DuckDB's SPATIAL_JOIN operator (pure ST_Intersects, no bbox in ON clause)
+        assert "SPATIAL_JOIN operator" in result.output
         assert "ST_Intersects" in result.output

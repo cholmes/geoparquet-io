@@ -4,7 +4,7 @@ import duckdb
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    get_bbox_advice,
+    detect_geoparquet_file_type,
     get_dataset_bounds,
     get_parquet_metadata,
     write_parquet_with_metadata,
@@ -160,23 +160,8 @@ def _build_spatial_join_query(
     select_clause,
     input_geom_col,
     countries_geom_col,
-    input_bbox_col,
-    countries_bbox_col,
 ):
-    """Build the spatial join query based on bbox availability."""
-    if input_bbox_col and countries_bbox_col:
-        return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON (a.{input_bbox_col}.xmin <= b.{countries_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{countries_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{countries_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{countries_bbox_col}.ymin)
-        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
-"""
+    """Build spatial join query using DuckDB's SPATIAL_JOIN operator."""
     return f"""
     SELECT
         a.*,
@@ -334,17 +319,10 @@ def _print_dry_run_query(
     compression,
     compression_level,
     using_default,
-    input_bbox_col,
-    countries_bbox_col,
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
-    info(f"-- Step {final_step}: Main spatial join query")
-
-    if input_bbox_col and countries_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    info(f"-- Step {final_step}: Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
 
     compression_str = (
         f"{compression}:{compression_level}"
@@ -414,24 +392,21 @@ def _setup_default_countries(
 def _prepare_bbox_columns(
     input_parquet, countries_parquet, using_default, add_bbox_flag, dry_run, verbose
 ):
-    """Prepare and optionally optimize bbox columns for input and countries files.
+    """Prepare bbox columns for extent filtering of countries data.
 
-    For GeoParquet 2.0 / parquet-geo files with native geometry types,
-    skip bbox pre-filtering entirely as native geometry row group statistics
-    are faster than manual bbox filtering.
+    Bbox columns are used to pre-filter countries by spatial extent (WHERE clause),
+    not for join optimization — DuckDB's SPATIAL_JOIN operator handles that
+    automatically via its R-tree.
     """
-    # Check if input file has native geometry (2.0 / parquet-geo)
-    input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
+    file_info = detect_geoparquet_file_type(input_parquet, verbose)
+    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
 
-    # For native geometry files, skip bbox pre-filtering
-    if input_bbox_advice["skip_bbox_prefilter"]:
-        if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
-        return None, None
-
-    # For 1.x files, use bbox optimization if available
-    input_bbox_info = check_bbox_structure(input_parquet, verbose)
-    input_bbox_col = input_bbox_info["bbox_column_name"]
+    if has_native_geo:
+        input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
+        input_bbox_col = None
+    else:
+        input_bbox_info = check_bbox_structure(input_parquet, verbose)
+        input_bbox_col = input_bbox_info["bbox_column_name"]
 
     if using_default:
         countries_bbox_col = "bbox"
@@ -439,16 +414,16 @@ def _prepare_bbox_columns(
         countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
         countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
-    if not dry_run:
-        # Show warning and suggest options for 1.x files without bbox
-        if input_bbox_advice["needs_warning"]:
-            warn(f"\nWarning: {input_bbox_advice['message']}")
+    if not dry_run and not has_native_geo:
+        if not input_bbox_info.get("has_bbox_column") and not input_bbox_col:
+            warn("\nWarning: No bbox column found")
             if not add_bbox_flag:
-                for suggestion in input_bbox_advice["suggestions"]:
-                    info(f"💡 Tip: {suggestion}")
+                info("💡 Tip: Add a bbox column: gpio add bbox <file>")
+                info(
+                    "💡 Tip: Or upgrade to GeoParquet 2.0: gpio convert <file> --geoparquet-version 2.0"
+                )
 
-        # Handle bbox optimization if --add-bbox flag is used
-        if add_bbox_flag and not input_bbox_info["has_bbox_column"]:
+        if add_bbox_flag and not input_bbox_info.get("has_bbox_column"):
             input_bbox_info = _handle_bbox_optimization(
                 input_parquet, input_bbox_info, add_bbox_flag, "Input file", verbose
             )
@@ -511,13 +486,14 @@ def _create_duckdb_connection(using_default):
 
 
 def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
-    """Print bbox optimization status message."""
+    """Print bbox column status message."""
     if dry_run:
         return
-    if input_bbox_col and countries_bbox_col and verbose:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and countries_bbox_col):
-        progress("No bbox columns available, using full geometry intersection...")
+    if verbose:
+        if input_bbox_col:
+            debug(f"Input bbox column: {input_bbox_col}")
+        if countries_bbox_col:
+            debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
 
 
 def add_country_codes(
@@ -600,8 +576,6 @@ def add_country_codes(
         select_clause,
         input_geom_col,
         countries_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
     )
 
     if dry_run:
@@ -611,8 +585,6 @@ def add_country_codes(
             compression,
             compression_level,
             using_default,
-            input_bbox_col,
-            countries_bbox_col,
         )
         return
 
