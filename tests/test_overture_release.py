@@ -2,7 +2,18 @@
 
 from unittest.mock import patch
 
+import pytest
+
+import geoparquet_io.core.overture as overture_mod
 from geoparquet_io.core.overture import get_latest_overture_release, get_overture_divisions_url
+
+
+@pytest.fixture(autouse=True)
+def _clear_overture_cache():
+    """Clear the module-level release cache between tests."""
+    overture_mod._cached_release = None
+    yield
+    overture_mod._cached_release = None
 
 
 class TestGetLatestOvertureRelease:
@@ -31,11 +42,7 @@ class TestGetOvertureDivisionsUrl:
         assert "type=division_area" in url
 
     def test_url_uses_latest_by_default(self):
-        import geoparquet_io.core.overture as overture_mod
-
-        overture_mod._cached_release = None
         with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
             mock.return_value = "2099-01-01.0"
             url = get_overture_divisions_url()
             assert "2099-01-01.0" in url
-        overture_mod._cached_release = None

@@ -21,6 +21,7 @@ from geoparquet_io.core.exceptions import (
     InvalidParameterError,
 )
 from geoparquet_io.core.logging_config import debug, info, warn
+from geoparquet_io.core.overture import OVERTURE_FALLBACK_RELEASE
 
 # =============================================================================
 # Cache Configuration
@@ -630,11 +631,15 @@ class OvertureAdminDataset(AdminDataset):
     See: https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml
     """
 
-    # Fetched dynamically via get_overture_divisions_url()
-    VERSION = "latest"
+    VERSION = OVERTURE_FALLBACK_RELEASE
 
     def get_dataset_name(self) -> str:
         return "Overture Maps Divisions"
+
+    def get_version(self) -> str:
+        from geoparquet_io.core.overture import get_latest_overture_release
+
+        return get_latest_overture_release(verbose=self.verbose)
 
     def get_default_source(self) -> str:
         from geoparquet_io.core.overture import get_overture_divisions_url

@@ -18,9 +18,9 @@ def _fetch_latest_release() -> str:
     import json
     import urllib.request
 
-    with urllib.request.urlopen(OVERTURE_RELEASES_URL, timeout=5) as resp:
+    with urllib.request.urlopen(OVERTURE_RELEASES_URL, timeout=5) as resp:  # nosec B310
         data = json.loads(resp.read())
-    return data["latest"]
+    return str(data["latest"])
 
 
 def get_latest_overture_release(verbose: bool = False) -> str:

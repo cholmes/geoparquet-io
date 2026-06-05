@@ -490,8 +490,8 @@ class TestAdminDatasetVersion:
         """Test that Overture dataset has a VERSION class attribute."""
         assert hasattr(OvertureAdminDataset, "VERSION")
         assert isinstance(OvertureAdminDataset.VERSION, str)
-        # Version should match release format like "2025-10-22.0"
-        assert "." in OvertureAdminDataset.VERSION or "-" in OvertureAdminDataset.VERSION
+        # VERSION is the fallback release; should match date format like "2026-05-20.0"
+        assert "." in OvertureAdminDataset.VERSION and "-" in OvertureAdminDataset.VERSION
 
     def test_gaul_get_version(self):
         """Test get_version() method on GAUL dataset."""
@@ -500,10 +500,18 @@ class TestAdminDatasetVersion:
         assert version == GAULAdminDataset.VERSION
 
     def test_overture_get_version(self):
-        """Test get_version() method on Overture dataset."""
+        """Test get_version() method on Overture dataset resolves dynamically."""
+        from unittest.mock import patch
+
         dataset = OvertureAdminDataset()
-        version = dataset.get_version()
-        assert version == OvertureAdminDataset.VERSION
+        with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+            mock.return_value = "2099-01-01.0"
+            import geoparquet_io.core.overture as overture_mod
+
+            overture_mod._cached_release = None
+            version = dataset.get_version()
+            assert version == "2099-01-01.0"
+            overture_mod._cached_release = None
 
     def test_current_dataset_has_version(self):
         """Test that Current dataset has a VERSION attribute."""
