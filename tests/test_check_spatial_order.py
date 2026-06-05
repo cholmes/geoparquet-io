@@ -490,6 +490,53 @@ class TestSpatialLocalitySecondaryCheck:
             "Should fail because bboxes cover nearly the entire extent"
         )
 
+    def test_two_row_groups_skips_secondary_check(self):
+        """With only 2 row groups, secondary locality check is skipped."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 10.0, "ymax": 10.0},
+            {"row_group_id": 1, "xmin": 5.0, "ymin": 5.0, "xmax": 15.0, "ymax": 15.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_two_rg.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert result["ratio"] == 1.0, "Both groups overlap"
+        assert result["passed"] is False, "Secondary check not applied with < 3 row groups"
+        assert result["estimated_skip_rate"] == 0.0
+        assert result["avg_bbox_area_ratio"] == 0.0
+
+    def test_return_ratio_when_return_results_false(self):
+        """_check_spatial_order_from_row_group_bboxes returns float when return_results=False."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 10.0, "ymax": 10.0},
+            {"row_group_id": 1, "xmin": 20.0, "ymin": 20.0, "xmax": 30.0, "ymax": 30.0},
+            {"row_group_id": 2, "xmin": 40.0, "ymin": 40.0, "xmax": 50.0, "ymax": 50.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_ratio.parquet",
+            verbose=False,
+            return_results=False,
+            quiet=True,
+        )
+
+        assert isinstance(result, float)
+        assert result == 0.0
+
     def test_secondary_metrics_included_in_bbox_stats_result(self, places_test_file):
         """check_spatial_order_bbox_stats should include locality metrics."""
         result = check_spatial_order_bbox_stats(

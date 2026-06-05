@@ -2,12 +2,20 @@
 
 
 import random as _random
+from statistics import mean
 
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress
 from geoparquet_io.core.remote import needs_httpfs
+
+_OVERLAP_RATIO_THRESHOLD = 0.3
+_AREA_RATIO_THRESHOLD = 0.25
+_SKIP_RATE_THRESHOLD = 0.5
+_DEFAULT_NUM_SAMPLES = 20
+_DEFAULT_QUERY_FRACTION = 0.1
+_DEFAULT_SEED = 42
 
 
 def _bboxes_overlap(bbox1: dict, bbox2: dict) -> bool:
@@ -124,13 +132,18 @@ def _print_bbox_stats_results(ratio, overlap_count, total_pairs):
     debug(f"Overlapping pairs: {overlap_count}")
     progress(f"Overlap ratio: {ratio:.2f}")
 
-    if ratio < 0.3:
+    if ratio < _OVERLAP_RATIO_THRESHOLD:
         progress("=> Data appears well spatially ordered (low row group overlap).")
     else:
         progress("=> Data may benefit from spatial ordering (high row group overlap).")
 
 
-def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=False, quiet=False):
+def check_spatial_order_bbox_stats(
+    parquet_file: str,
+    verbose: bool = False,
+    return_results: bool = False,
+    quiet: bool = False,
+) -> float | dict:
     """Check spatial ordering using row group bbox statistics.
 
     This method is faster than sampling because it only reads row group metadata
@@ -153,7 +166,6 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
 
     safe_url = safe_file_url(parquet_file, verbose)
 
-    # Check for bbox column
     has_bbox, bbox_col_name = has_bbox_column(safe_url)
     if not has_bbox or not bbox_col_name:
         raise ValueError(
@@ -164,93 +176,25 @@ def check_spatial_order_bbox_stats(parquet_file, verbose=False, return_results=F
     if verbose:
         debug(f"Using bbox column: {bbox_col_name}")
 
-    # Get bbox stats per row group
     row_group_bboxes = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
 
     if verbose:
         debug(f"Analyzing {len(row_group_bboxes)} row groups")
 
-    # Handle edge cases
-    if len(row_group_bboxes) <= 1:
-        # Can't meaningfully check ordering with 0 or 1 row groups
-        # (need at least 2 groups to compare consecutive pairs).
-        # Return ratio=0.0 (perfect ordering) since there's no evidence of poor ordering.
-        if verbose:
-            debug("Only one or zero row groups - assuming well ordered")
-        ratio = 0.0
-        overlap_count = 0
-        total_pairs = 0
-    else:
-        # Count overlaps in consecutive row group pairs
-        overlap_count = 0
-        for i in range(len(row_group_bboxes) - 1):
-            bbox1 = row_group_bboxes[i]
-            bbox2 = row_group_bboxes[i + 1]
-            if _bboxes_overlap(bbox1, bbox2):
-                overlap_count += 1
-                if verbose:
-                    debug(f"Row groups {bbox1['row_group_id']} and {bbox2['row_group_id']} overlap")
-
-        total_pairs = len(row_group_bboxes) - 1
-        ratio = overlap_count / total_pairs if total_pairs > 0 else 0.0
-
-        if verbose:
-            debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
-
-    # Primary check: pass if < 30% consecutive overlap
-    passed = ratio < 0.3
-    avg_area_ratio = 0.0
-    avg_skip_rate = 0.0
-
-    # Secondary check: when overlap is high, measure actual spatial locality.
-    # Hilbert-sorted data often has overlapping consecutive row group bboxes
-    # but each bbox covers only a small fraction of the total extent.
-    if not passed and len(row_group_bboxes) >= 3:
-        extent = _compute_data_extent(row_group_bboxes)
-        avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
-        samples = _generate_sample_query_bboxes(extent, num_samples=20, query_fraction=0.1, seed=42)
-        skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
-        avg_skip_rate = sum(skip_rates) / len(skip_rates)
-
-        if verbose:
-            debug(
-                f"Secondary locality check: area_ratio={avg_area_ratio:.4f}, skip_rate={avg_skip_rate:.2%}"
-            )
-
-        if avg_area_ratio < 0.25 and avg_skip_rate >= 0.5:
-            passed = True
-
-    # Build results dict
-    issues = []
-    recommendations = []
-    if not passed:
-        issues.append(f"Poor spatial ordering (overlap ratio: {ratio:.2f})")
-        recommendations.append("Apply Hilbert spatial ordering for better query performance")
-
-    if not quiet and not return_results and not verbose:
-        _print_bbox_stats_results(ratio, overlap_count, total_pairs)
-
-    if return_results:
-        return {
-            "passed": passed,
-            "ratio": ratio,
-            "overlap_count": overlap_count,
-            "total_pairs": total_pairs,
-            "method": "bbox_stats",
-            "issues": issues,
-            "recommendations": recommendations,
-            "fix_available": not passed,
-            "estimated_skip_rate": avg_skip_rate,
-            "avg_bbox_area_ratio": avg_area_ratio,
-        }
-
-    return ratio
+    return _check_spatial_order_from_row_group_bboxes(
+        row_group_bboxes, parquet_file, verbose, return_results, quiet, method="bbox_stats"
+    )
 
 
 def _check_spatial_order_from_row_group_bboxes(
-    row_group_bboxes, parquet_file, verbose=False, return_results=False, quiet=False
-):
-    """Check spatial ordering from row group bboxes (native geo_bbox stats).
+    row_group_bboxes: list[dict],
+    parquet_file: str,
+    verbose: bool = False,
+    return_results: bool = False,
+    quiet: bool = False,
+    method: str = "native_geo_bbox",
+) -> float | dict:
+    """Check spatial ordering from row group bboxes.
 
     Shared logic for checking spatial order from pre-fetched row group bboxes.
     Used by both bbox column method and native geo_bbox stats method.
@@ -261,6 +205,7 @@ def _check_spatial_order_from_row_group_bboxes(
         verbose: Print additional information
         return_results: If True, return structured results dict
         quiet: If True, suppress all output
+        method: Method label for results dict ("bbox_stats" or "native_geo_bbox")
 
     Returns:
         ratio (float) if return_results=False, or dict if return_results=True
@@ -287,23 +232,31 @@ def _check_spatial_order_from_row_group_bboxes(
         if verbose:
             debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
 
-    passed = ratio < 0.3
+    passed = ratio < _OVERLAP_RATIO_THRESHOLD
     avg_area_ratio = 0.0
     avg_skip_rate = 0.0
 
+    # Secondary check: when overlap is high, measure actual spatial locality.
+    # Hilbert-sorted data often has overlapping consecutive row group bboxes
+    # but each bbox covers only a small fraction of the total extent.
     if not passed and len(row_group_bboxes) >= 3:
         extent = _compute_data_extent(row_group_bboxes)
         avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
-        samples = _generate_sample_query_bboxes(extent, num_samples=20, query_fraction=0.1, seed=42)
+        samples = _generate_sample_query_bboxes(
+            extent,
+            num_samples=_DEFAULT_NUM_SAMPLES,
+            query_fraction=_DEFAULT_QUERY_FRACTION,
+            seed=_DEFAULT_SEED,
+        )
         skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
-        avg_skip_rate = sum(skip_rates) / len(skip_rates)
+        avg_skip_rate = mean(skip_rates)
 
         if verbose:
             debug(
                 f"Secondary locality check: area_ratio={avg_area_ratio:.4f}, skip_rate={avg_skip_rate:.2%}"
             )
 
-        if avg_area_ratio < 0.25 and avg_skip_rate >= 0.5:
+        if avg_area_ratio < _AREA_RATIO_THRESHOLD and avg_skip_rate >= _SKIP_RATE_THRESHOLD:
             passed = True
 
     issues = []
@@ -321,7 +274,7 @@ def _check_spatial_order_from_row_group_bboxes(
             "ratio": ratio,
             "overlap_count": overlap_count,
             "total_pairs": total_pairs,
-            "method": "native_geo_bbox",
+            "method": method,
             "issues": issues,
             "recommendations": recommendations,
             "fix_available": not passed,
@@ -333,8 +286,13 @@ def _check_spatial_order_from_row_group_bboxes(
 
 
 def check_spatial_order(
-    parquet_file, random_sample_size, limit_rows, verbose, return_results=False, quiet=False
-):
+    parquet_file: str,
+    random_sample_size: int,
+    limit_rows: int,
+    verbose: bool,
+    return_results: bool = False,
+    quiet: bool = False,
+) -> float | dict | None:
     """Check if a GeoParquet file is spatially ordered.
 
     Automatically detects if the file has a bbox column (GeoParquet 2.0+) and uses
@@ -521,21 +479,21 @@ def _compute_avg_bbox_area_ratio(row_group_bboxes: list[dict], extent: dict) -> 
         Average area ratio (0.0 to 1.0). Returns 0.0 if extent area is zero.
     """
     extent_area = (extent["xmax"] - extent["xmin"]) * (extent["ymax"] - extent["ymin"])
-    if extent_area <= 0:
+    if extent_area <= 0 or not row_group_bboxes:
         return 0.0
-    ratios = []
-    for rg in row_group_bboxes:
-        rg_area = (rg["xmax"] - rg["xmin"]) * (rg["ymax"] - rg["ymin"])
-        ratios.append(rg_area / extent_area)
-    return sum(ratios) / len(ratios) if ratios else 0.0
+    ratios = [
+        (rg["xmax"] - rg["xmin"]) * (rg["ymax"] - rg["ymin"]) / extent_area
+        for rg in row_group_bboxes
+    ]
+    return mean(ratios)
 
 
 def check_spatial_pushdown_readiness(
     parquet_file: str,
     verbose: bool = False,
-    num_samples: int = 20,
-    query_fraction: float = 0.1,
-    seed: int = 42,
+    num_samples: int = _DEFAULT_NUM_SAMPLES,
+    query_fraction: float = _DEFAULT_QUERY_FRACTION,
+    seed: int = _DEFAULT_SEED,
 ) -> dict:
     """Check how well a file supports spatial filter pushdown.
 
@@ -623,12 +581,12 @@ def check_spatial_pushdown_readiness(
         extent, num_samples=num_samples, query_fraction=query_fraction, seed=seed
     )
     skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in sample_bboxes]
-    avg_skip_rate = sum(skip_rates) / len(skip_rates)
+    avg_skip_rate = mean(skip_rates)
 
     if verbose:
         debug(f"Estimated average skip rate: {avg_skip_rate:.2%}")
 
-    passed = avg_skip_rate >= 0.5
+    passed = avg_skip_rate >= _SKIP_RATE_THRESHOLD
 
     if not passed:
         issues.append(
