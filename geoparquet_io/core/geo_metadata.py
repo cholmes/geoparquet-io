@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 GEOPARQUET_VERSIONS = {
     "1.0": {"duckdb_param": "V1", "metadata_version": "1.0.0", "rewrite_metadata": True},
     "1.1": {"duckdb_param": "V1", "metadata_version": "1.1.0", "rewrite_metadata": True},
+    "1.1-geoarrow": {"duckdb_param": "V1", "metadata_version": "1.1.0", "rewrite_metadata": True},
     "2.0": {"duckdb_param": "V2", "metadata_version": "2.0.0", "rewrite_metadata": False},
     "parquet-geo-only": {
         "duckdb_param": "NONE",
@@ -344,6 +345,7 @@ def compute_bbox_via_sql(
                 MAX({xmax_e}) as xmax,
                 MAX({ymax_e}) as ymax
             FROM ({query})
+            WHERE NOT isnan({xmax_e}) AND NOT isnan({ymax_e})
         """
     else:
         bbox_query = f"""

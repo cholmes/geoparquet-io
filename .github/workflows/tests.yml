@@ -64,6 +64,9 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    # On scheduled runs, don't fail the workflow for new CVEs - the security-audit
+    # workflow handles those proactively. On PRs, we want to block vulnerable code.
+    continue-on-error: ${{ github.event_name == 'schedule' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -223,13 +226,19 @@ jobs:
       - name: Run slow and network tests (parallel)
         shell: bash
         run: |
+          # On scheduled runs, skip security tests (handled by dedicated security job)
+          IGNORE_SECURITY=""
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            IGNORE_SECURITY="--ignore=tests/test_security.py"
+          fi
+
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 --dist=loadfile -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 3 -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           else
-            uv run pytest -n 4 -m "slow or network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           fi
 
       - name: Upload slow test coverage to Codecov
