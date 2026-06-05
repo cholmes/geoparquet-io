@@ -3,14 +3,19 @@
 import duckdb
 import pytest
 
-from geoparquet_io.core.add.admin_divisions import _build_spatial_join_query
+from geoparquet_io.core.add.admin_divisions import (
+    _build_spatial_join_query as admin_build_query,
+)
+from geoparquet_io.core.add.country_codes import (
+    _build_spatial_join_query as country_build_query,
+)
 
 
 class TestBuildSpatialJoinQueryDedup:
     """Test that _build_spatial_join_query generates dedup SQL by default."""
 
     def _build_simple_query(self, deduplicate=True):
-        return _build_spatial_join_query(
+        return admin_build_query(
             input_url="input.parquet",
             admin_subquery="(SELECT * FROM admin) b_sub",
             admin_select_clause='b."country" as "gaul_country"',
@@ -28,26 +33,26 @@ class TestBuildSpatialJoinQueryDedup:
         assert "QUALIFY" in query
         assert "ST_Area" in query
         assert "ST_Intersection" in query
-        assert "_gpio_row_id" in query
+        assert "__gpio_dedup_rownum__" in query
 
     def test_all_matches_query_has_no_dedup(self):
         """With deduplicate=False, query should not contain dedup logic."""
         query = self._build_simple_query(deduplicate=False)
         assert "ROW_NUMBER()" not in query
         assert "QUALIFY" not in query
-        assert "_gpio_row_id" not in query
+        assert "__gpio_dedup_rownum__" not in query
         # Should still have the spatial join
         assert "ST_Intersects" in query
 
     def test_dedup_query_excludes_internal_columns(self):
-        """Dedup query should not expose _gpio_row_id in final output."""
+        """Dedup query should not expose __gpio_dedup_rownum__ in final output."""
         query = self._build_simple_query(deduplicate=True)
         assert "EXCLUDE" in query
-        assert "_gpio_row_id" in query
+        assert "__gpio_dedup_rownum__" in query
 
     def test_dedup_with_bbox_optimization(self):
         """Dedup should work alongside bbox pre-filtering."""
-        query = _build_spatial_join_query(
+        query = admin_build_query(
             input_url="input.parquet",
             admin_subquery="(SELECT * FROM admin) b_sub",
             admin_select_clause='b."country" as "gaul_country"',
@@ -60,6 +65,56 @@ class TestBuildSpatialJoinQueryDedup:
         assert "ROW_NUMBER()" in query
         assert "QUALIFY" in query
         assert "bbox" in query
+        assert "ST_Intersects" in query
+
+
+class TestCountryCodesBuildSpatialJoinQueryDedup:
+    """Test that country_codes._build_spatial_join_query generates dedup SQL by default."""
+
+    def _build_simple_query(self, deduplicate=True):
+        return country_build_query(
+            input_url="input.parquet",
+            countries_source="filtered_countries",
+            select_clause='b."country" as "admin:country_code"',
+            input_geom_col="geometry",
+            countries_geom_col="geometry",
+            input_bbox_col=None,
+            countries_bbox_col=None,
+            deduplicate=deduplicate,
+        )
+
+    def test_default_query_contains_dedup(self):
+        """Default query should deduplicate border-straddling features."""
+        query = self._build_simple_query(deduplicate=True)
+        assert "ROW_NUMBER()" in query
+        assert "QUALIFY" in query
+        assert "ST_Area" in query
+        assert "__gpio_dedup_rownum__" in query
+
+    def test_all_matches_query_has_no_dedup(self):
+        """With deduplicate=False, query should not contain dedup logic."""
+        query = self._build_simple_query(deduplicate=False)
+        assert "ROW_NUMBER()" not in query
+        assert "QUALIFY" not in query
+        assert "__gpio_dedup_rownum__" not in query
+        assert "ST_Intersects" in query
+
+    def test_dedup_with_native_geo(self):
+        """Dedup should work alongside native geometry bbox pre-filtering."""
+        query = country_build_query(
+            input_url="input.parquet",
+            countries_source="filtered_countries",
+            select_clause='b."country" as "admin:country_code"',
+            input_geom_col="geometry",
+            countries_geom_col="geometry",
+            input_bbox_col=None,
+            countries_bbox_col="bbox",
+            input_has_native_geo=True,
+            deduplicate=True,
+        )
+        assert "ROW_NUMBER()" in query
+        assert "QUALIFY" in query
+        assert "ST_XMin" in query
         assert "ST_Intersects" in query
 
 
@@ -129,10 +184,10 @@ class TestSpatialJoinDedupExecution:
         con = setup_test_data
         result = con.execute("""
             WITH _gpio_input AS (
-                SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
+                SELECT *, ROW_NUMBER() OVER () AS __gpio_dedup_rownum__
                 FROM input_features
             )
-            SELECT * EXCLUDE (_gpio_row_id) FROM (
+            SELECT * EXCLUDE (__gpio_dedup_rownum__) FROM (
                 SELECT
                     a.*,
                     b.country
@@ -140,7 +195,7 @@ class TestSpatialJoinDedupExecution:
                 LEFT JOIN admin_boundaries b
                 ON ST_Intersects(b.geometry, a.geometry)
                 QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY a._gpio_row_id
+                    PARTITION BY a.__gpio_dedup_rownum__
                     ORDER BY ST_Area(ST_Intersection(b.geometry, a.geometry)) DESC NULLS LAST
                 ) = 1
             )
@@ -165,10 +220,10 @@ class TestSpatialJoinDedupExecution:
 
         result = con.execute("""
             WITH _gpio_input AS (
-                SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
+                SELECT *, ROW_NUMBER() OVER () AS __gpio_dedup_rownum__
                 FROM input_features
             )
-            SELECT * EXCLUDE (_gpio_row_id) FROM (
+            SELECT * EXCLUDE (__gpio_dedup_rownum__) FROM (
                 SELECT
                     a.*,
                     b.country
@@ -176,7 +231,7 @@ class TestSpatialJoinDedupExecution:
                 LEFT JOIN admin_boundaries b
                 ON ST_Intersects(b.geometry, a.geometry)
                 QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY a._gpio_row_id
+                    PARTITION BY a.__gpio_dedup_rownum__
                     ORDER BY ST_Area(ST_Intersection(b.geometry, a.geometry)) DESC NULLS LAST
                 ) = 1
             )

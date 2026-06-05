@@ -7,7 +7,7 @@ This module extends the add_country_codes functionality to support
 multiple admin datasets with hierarchical level support.
 """
 
-from geoparquet_io.core.add.spatial_join import build_bbox_condition
+from geoparquet_io.core.add.spatial_join import build_spatial_join_query
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -81,52 +81,17 @@ def _build_spatial_join_query(
     deduplicate=True,
 ):
     """Build spatial join query with optional bbox optimization and deduplication."""
-    bbox_condition = build_bbox_condition(
+    return build_spatial_join_query(
+        input_url=input_url,
+        other_subquery=admin_subquery,
+        select_clause=admin_select_clause,
         input_geom_col=input_geom_col,
-        other_bbox_col=admin_bbox_col,
+        other_geom_col=admin_geom_col,
         input_bbox_col=input_bbox_col,
+        other_bbox_col=admin_bbox_col,
         input_has_native_geo=input_has_native_geo,
+        deduplicate=deduplicate,
     )
-
-    if bbox_condition:
-        join_clause = (
-            f"ON {bbox_condition}\n"
-            f"        AND ST_Intersects(\n"
-            f"            b.{admin_geom_col},\n"
-            f"            a.{input_geom_col}\n"
-            f"        )"
-        )
-    else:
-        join_clause = f"ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"
-
-    if deduplicate:
-        return f"""
-    WITH _gpio_input AS (
-        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
-        FROM '{input_url}'
-    )
-    SELECT * EXCLUDE (_gpio_row_id) FROM (
-        SELECT
-            a.*,
-            {admin_select_clause}
-        FROM _gpio_input a
-        LEFT JOIN {admin_subquery} b
-        {join_clause}
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY a._gpio_row_id
-            ORDER BY ST_Area(ST_Intersection(b.{admin_geom_col}, a.{input_geom_col})) DESC NULLS LAST
-        ) = 1
-    )
-"""
-
-    return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    {join_clause}
-"""
 
 
 def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
@@ -424,6 +389,7 @@ def _handle_dry_run_mode(
     query,
     compression,
     compression_level,
+    input_has_native_geo=False,
 ):
     """Handle dry-run mode output."""
     if not dry_run:
@@ -442,6 +408,8 @@ def _handle_dry_run_mode(
     info("-- Main spatial join query")
     if input_bbox_col and admin_bbox_col:
         info("-- Using bbox columns for optimized spatial join")
+    elif input_has_native_geo and admin_bbox_col:
+        info("-- Using native geometry bounds for optimized spatial join")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
 
@@ -579,6 +547,7 @@ def add_admin_divisions_multi(
                 query,
                 compression,
                 compression_level,
+                input_has_native_geo=input_has_native_geo,
             ):
                 return
 

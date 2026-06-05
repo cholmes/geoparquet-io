@@ -2,7 +2,7 @@
 
 import duckdb
 
-from geoparquet_io.core.add.spatial_join import build_bbox_condition
+from geoparquet_io.core.add.spatial_join import build_spatial_join_query
 from geoparquet_io.core.common import (
     check_bbox_structure,
     get_bbox_advice,
@@ -167,49 +167,17 @@ def _build_spatial_join_query(
     deduplicate=True,
 ):
     """Build the spatial join query based on bbox availability."""
-    bbox_condition = build_bbox_condition(
+    return build_spatial_join_query(
+        input_url=input_url,
+        other_subquery=countries_source,
+        select_clause=select_clause,
         input_geom_col=input_geom_col,
-        other_bbox_col=countries_bbox_col,
+        other_geom_col=countries_geom_col,
         input_bbox_col=input_bbox_col,
+        other_bbox_col=countries_bbox_col,
         input_has_native_geo=input_has_native_geo,
+        deduplicate=deduplicate,
     )
-
-    if bbox_condition:
-        join_clause = (
-            f"ON {bbox_condition}\n"
-            f"        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})"
-        )
-    else:
-        join_clause = f"ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})"
-
-    if deduplicate:
-        return f"""
-    WITH _gpio_input AS (
-        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
-        FROM '{input_url}'
-    )
-    SELECT * EXCLUDE (_gpio_row_id) FROM (
-        SELECT
-            a.*,
-            {select_clause}
-        FROM _gpio_input a
-        LEFT JOIN {countries_source} b
-        {join_clause}
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY a._gpio_row_id
-            ORDER BY ST_Area(ST_Intersection(b.{countries_geom_col}, a.{input_geom_col})) DESC NULLS LAST
-        ) = 1
-    )
-"""
-
-    return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    {join_clause}
-"""
 
 
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
@@ -363,6 +331,7 @@ def _print_dry_run_query(
     using_default,
     input_bbox_col,
     countries_bbox_col,
+    input_has_native_geo=False,
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
@@ -370,6 +339,8 @@ def _print_dry_run_query(
 
     if input_bbox_col and countries_bbox_col:
         info("-- Using bbox columns for optimized spatial join")
+    elif input_has_native_geo and countries_bbox_col:
+        info("-- Using native geometry bounds for optimized spatial join")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
 
@@ -538,12 +509,14 @@ def _create_duckdb_connection(using_default):
     return con
 
 
-def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
+def _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run):
     """Print bbox optimization status message."""
     if dry_run:
         return
     if input_bbox_col and countries_bbox_col and verbose:
         debug("Using bbox columns for initial filtering...")
+    elif input_has_native_geo and countries_bbox_col:
+        progress("Using native geometry bounds for bbox pre-filtering...")
     elif not (input_bbox_col and countries_bbox_col):
         progress("No bbox columns available, using full geometry intersection...")
 
@@ -559,6 +532,7 @@ def add_country_codes(
     compression_level=None,
     row_group_size_mb=None,
     row_group_rows=None,
+    all_matches=False,
 ):
     """Add country ISO codes to a GeoParquet file based on spatial intersection."""
     input_url = safe_file_url(input_parquet, verbose)
@@ -620,7 +594,7 @@ def add_country_codes(
     )
 
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run)
+    _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run)
 
     query = _build_spatial_join_query(
         input_url,
@@ -631,6 +605,7 @@ def add_country_codes(
         input_bbox_col,
         countries_bbox_col,
         input_has_native_geo=input_has_native_geo,
+        deduplicate=not all_matches,
     )
 
     if dry_run:
@@ -642,6 +617,7 @@ def add_country_codes(
             using_default,
             input_bbox_col,
             countries_bbox_col,
+            input_has_native_geo=input_has_native_geo,
         )
         return
 
