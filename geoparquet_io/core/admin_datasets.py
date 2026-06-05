@@ -21,6 +21,7 @@ from geoparquet_io.core.exceptions import (
     InvalidParameterError,
 )
 from geoparquet_io.core.logging_config import debug, info, warn
+from geoparquet_io.core.overture import OVERTURE_FALLBACK_RELEASE
 
 # =============================================================================
 # Cache Configuration
@@ -630,17 +631,28 @@ class OvertureAdminDataset(AdminDataset):
     See: https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml
     """
 
-    # Overture Maps release version (extracted from S3 path)
-    VERSION = "2025-10-22.0"
+    VERSION = OVERTURE_FALLBACK_RELEASE
 
     def get_dataset_name(self) -> str:
         return "Overture Maps Divisions"
 
+    def get_version(self) -> str:
+        import re
+
+        from geoparquet_io.core.overture import get_latest_overture_release
+
+        release = get_latest_overture_release(verbose=self.verbose)
+        if not re.match(r"^\d{4}-\d{2}-\d{2}\.\d+$", release):
+            from geoparquet_io.core.logging_config import warn
+
+            warn(f"Unexpected Overture release format: {release!r}, using fallback")
+            return self.VERSION
+        return release
+
     def get_default_source(self) -> str:
-        # Latest release with divisions theme and division_area type (polygons)
-        return (
-            "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-        )
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        return get_overture_divisions_url(verbose=self.verbose)
 
     def get_available_levels(self) -> list[str]:
         return ["country", "region"]
