@@ -235,6 +235,40 @@ class TestVecorelSchemaAutoFix:
                 os.unlink(intermediate)
 
 
+class TestReprojectPreservesVecorel:
+    """Test that reproject preserves Vecorel metadata."""
+
+    def test_reproject_preserves_collection_metadata(self, buildings_test_file, temp_output_file):
+        """Reprojecting a vecorel file should preserve collection KV metadata."""
+        import os
+        import tempfile
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+        from geoparquet_io.core.reproject import reproject_impl
+
+        fd, intermediate = tempfile.mkstemp(suffix=".parquet")
+        os.close(fd)
+        os.unlink(intermediate)
+        try:
+            add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
+
+            pf = pq.ParquetFile(intermediate)
+            assert b"collection" in pf.schema_arrow.metadata
+
+            reproject_impl(intermediate, temp_output_file, target_crs="EPSG:4326")
+
+            pf2 = pq.ParquetFile(temp_output_file)
+            meta = pf2.schema_arrow.metadata
+            assert b"collection" in meta
+            vecorel = json.loads(meta[b"collection"])
+            assert VECOREL_METRICS_SCHEMA in vecorel["schemas"]["default"]
+        finally:
+            if os.path.exists(intermediate):
+                os.unlink(intermediate)
+
+
 class TestExtraKvMetadata:
     """Test extra_kv_metadata plumbing through write pipeline."""
 
