@@ -148,7 +148,7 @@ def _build_copy_options(
         for key, value in extra_kv_metadata.items():
             kv_pairs[key] = _escape_sql_string(value)
     if kv_pairs:
-        kv_str = ", ".join(f"'{k}': '{v}'" for k, v in kv_pairs.items())
+        kv_str = ", ".join(f"'{_escape_sql_string(k)}': '{v}'" for k, v in kv_pairs.items())
         options.append(f"KV_METADATA {{{kv_str}}}")
     if row_group_rows:
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
@@ -225,6 +225,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                     input_crs,
                     output_path,
                     verbose,
+                    extra_kv_metadata=extra_kv_metadata,
                 )
             else:
                 self._write_with_geo_metadata(
@@ -285,6 +286,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         output_path: str,
         verbose: bool,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write parquet-geo-only format (no geo metadata)."""
         if verbose:
@@ -296,7 +298,9 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
         escaped_path = _escape_sql_string(local_path)
 
-        copy_options = _build_copy_options(compression, row_group_rows)
+        copy_options = _build_copy_options(
+            compression, row_group_rows, extra_kv_metadata=extra_kv_metadata
+        )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
         con.execute(copy_query)
 
