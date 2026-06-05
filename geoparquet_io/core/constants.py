@@ -101,11 +101,16 @@ def build_collection_metadata(
     return {"collection": json.dumps(collection_obj)}
 
 
+# Vecorel-required non-nullable columns
+VECOREL_NON_NULLABLE = {"id", "geometry", "admin:country_code"}
+
+
 def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
     """Ensure a Parquet file has Vecorel-required columns with correct schema.
 
     - Adds a row-number 'id' column if one doesn't exist.
-    - Sets 'id' and 'geometry' columns to non-nullable in the Parquet schema.
+    - Sets required columns to non-nullable in the Parquet schema.
+    - Converts UTC timestamps to millisecond precision.
 
     Rewrites the file in place.
     """
@@ -136,8 +141,11 @@ def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
             if os.path.exists(temp_out):
                 os.unlink(temp_out)
 
-    # Fix schema: nullability on id/geometry, timestamp precision
-    _fix_vecorel_schema(parquet_file, ["id", "geometry"])
+    # Fix schema: nullability + timestamp precision
+    # Only mark columns non-nullable if they actually exist in the file
+    columns = get_column_names(safe_file_url(parquet_file, verbose=False))
+    non_nullable = [c for c in VECOREL_NON_NULLABLE if c in columns]
+    _fix_vecorel_schema(parquet_file, non_nullable)
 
 
 def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> None:
@@ -155,11 +163,23 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
     pf = pq.ParquetFile(parquet_file)
     schema = pf.schema_arrow
 
+    table = pq.read_table(parquet_file)
+
+    # Only mark columns non-nullable if they have no null values
+    import pyarrow.compute as pc
+
+    safe_non_nullable = set()
+    for col_name in non_nullable_columns:
+        if col_name in table.column_names:
+            col = table.column(col_name)
+            if pc.sum(pc.is_null(col)).as_py() == 0:
+                safe_non_nullable.add(col_name)
+
     needs_fix = False
     new_fields = []
     for field in schema:
         new_field = field
-        if field.name in non_nullable_columns and field.nullable:
+        if field.name in safe_non_nullable and field.nullable:
             new_field = new_field.with_nullable(False)
             needs_fix = True
         if (
@@ -175,7 +195,6 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
         return
 
     new_schema = pa.schema(new_fields, metadata=schema.metadata)
-    table = pq.read_table(parquet_file)
     table = table.cast(new_schema)
 
     import os

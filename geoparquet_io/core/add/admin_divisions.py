@@ -53,17 +53,23 @@ def _build_admin_subquery(
 
 def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     """Build SELECT clause for admin columns with transformations."""
+    use_coalesce = prefix == "vecorel"
     admin_select_parts = []
     for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
         output_col_name = dataset.get_output_column_name(level, prefix=prefix)
         col_transform = dataset.get_column_transform(level)
 
         if col_transform:
-            admin_select_parts.append(f'{col_transform} as "{output_col_name}"')
+            expr = col_transform
         elif "[" in col or "(" in col:
-            admin_select_parts.append(f'b._col_{i} as "{output_col_name}"')
+            expr = f"b._col_{i}"
         else:
-            admin_select_parts.append(f'b."{col}" as "{output_col_name}"')
+            expr = f'b."{col}"'
+
+        if use_coalesce:
+            expr = f"COALESCE({expr}, 'ZZ')"
+
+        admin_select_parts.append(f'{expr} as "{output_col_name}"')
 
     return ", ".join(admin_select_parts)
 
