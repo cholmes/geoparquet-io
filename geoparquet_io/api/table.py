@@ -2345,6 +2345,7 @@ class Table:
         *,
         dataset: str = "overture",
         levels: list[str] | None = None,
+        all_matches: bool = False,
     ) -> Table:
         """
         Add administrative division columns via spatial join.
@@ -2355,6 +2356,8 @@ class Table:
         Args:
             dataset: Boundaries dataset ("overture", "gaul", or custom URL)
             levels: Admin levels to add (e.g., ["country", "admin1"])
+            all_matches: Keep all matching boundaries per feature instead of
+                deduplicating to the one with the largest overlap area
 
         Returns:
             Table with admin division columns added
@@ -2369,6 +2372,7 @@ class Table:
             add_admin_divisions_multi,
             dataset_name=dataset,
             levels=levels or ["country"],
+            all_matches=all_matches,
             verbose=False,
         )
         return Table(result_table, self._geometry_column)

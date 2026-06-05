@@ -14,6 +14,7 @@ import os
 
 import duckdb
 
+from geoparquet_io.core.add.spatial_join import build_bbox_condition, build_join_clause
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -52,42 +53,32 @@ def _build_enrichment_query(
             subquery_cols.append(f'"{col}"')
     subquery_cols_str = ", ".join(subquery_cols)
 
-    if input_bbox_col and admin_bbox_col:
-        bbox_filter = f"""
-            (a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
-             a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
-             a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-             a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)
-        """
+    bbox_condition = build_bbox_condition(
+        input_geom_col=input_geom_col,
+        other_bbox_col=admin_bbox_col,
+        input_bbox_col=input_bbox_col,
+    )
+    join_clause = build_join_clause(bbox_condition, admin_geom_col, input_geom_col)
 
-        return f"""
-            CREATE TEMP TABLE {enriched_table} AS
-            SELECT
-                a.*,
-                {admin_select_clause}
-            FROM '{input_url}' a
-            LEFT JOIN (
-                SELECT {admin_geom_col}, {admin_bbox_col}, {subquery_cols_str}
-                FROM {admin_table_ref}
-                {admin_where_clause}
-            ) b
-            ON {bbox_filter}
-                AND ST_Intersects(b.{admin_geom_col}, a."{input_geom_col}")
-        """
-    else:
-        return f"""
-            CREATE TEMP TABLE {enriched_table} AS
-            SELECT
-                a.*,
-                {admin_select_clause}
-            FROM '{input_url}' a
-            LEFT JOIN (
-                SELECT {admin_geom_col}, {subquery_cols_str}
-                FROM {admin_table_ref}
-                {admin_where_clause}
-            ) b
-            ON ST_Intersects(b.{admin_geom_col}, a."{input_geom_col}")
-        """
+    subquery_select = (
+        f"{admin_geom_col}, {admin_bbox_col}, {subquery_cols_str}"
+        if admin_bbox_col
+        else f"{admin_geom_col}, {subquery_cols_str}"
+    )
+
+    return f"""
+        CREATE TEMP TABLE {enriched_table} AS
+        SELECT
+            a.*,
+            {admin_select_clause}
+        FROM '{input_url}' a
+        LEFT JOIN (
+            SELECT {subquery_select}
+            FROM {admin_table_ref}
+            {admin_where_clause}
+        ) b
+        {join_clause}
+    """
 
 
 def _build_admin_where_clause(

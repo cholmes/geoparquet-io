@@ -1,7 +1,29 @@
 """Shared spatial join query construction for admin divisions and country codes."""
 
+from geoparquet_io.core.logging_config import debug, info, progress
+
 # Internal column name uses dunder prefix to avoid collision with user data
 _DEDUP_ROW_COL = "__gpio_dedup_rownum__"
+
+
+def log_bbox_status(
+    input_bbox_col, other_bbox_col, input_has_native_geo, *, dry_run=False, verbose=False
+):
+    """Log bbox optimization status for spatial join."""
+    if dry_run:
+        if input_bbox_col and other_bbox_col:
+            info("-- Using bbox columns for optimized spatial join")
+        elif input_has_native_geo and other_bbox_col:
+            info("-- Using native geometry bounds for optimized spatial join")
+        else:
+            info("-- Using full geometry intersection (no bbox optimization)")
+    else:
+        if input_bbox_col and other_bbox_col and verbose:
+            debug("Using bbox columns for initial filtering...")
+        elif input_has_native_geo and other_bbox_col:
+            progress("Using native geometry bounds for bbox pre-filtering...")
+        elif not (input_bbox_col and other_bbox_col):
+            progress("No bbox columns available, using full geometry intersection...")
 
 
 def build_bbox_condition(

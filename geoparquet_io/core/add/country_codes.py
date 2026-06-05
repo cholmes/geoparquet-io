@@ -2,7 +2,7 @@
 
 import duckdb
 
-from geoparquet_io.core.add.spatial_join import build_spatial_join_query
+from geoparquet_io.core.add.spatial_join import build_spatial_join_query, log_bbox_status
 from geoparquet_io.core.common import (
     check_bbox_structure,
     get_bbox_advice,
@@ -153,31 +153,6 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
         subdivision_select = f', b."{subdivision_code_col}" as "admin:subdivision_code"'
 
     return country_select + subdivision_select
-
-
-def _build_spatial_join_query(
-    input_url,
-    countries_source,
-    select_clause,
-    input_geom_col,
-    countries_geom_col,
-    input_bbox_col,
-    countries_bbox_col,
-    input_has_native_geo=False,
-    deduplicate=True,
-):
-    """Build the spatial join query based on bbox availability."""
-    return build_spatial_join_query(
-        input_url=input_url,
-        other_subquery=countries_source,
-        select_clause=select_clause,
-        input_geom_col=input_geom_col,
-        other_geom_col=countries_geom_col,
-        input_bbox_col=input_bbox_col,
-        other_bbox_col=countries_bbox_col,
-        input_has_native_geo=input_has_native_geo,
-        deduplicate=deduplicate,
-    )
 
 
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
@@ -337,12 +312,7 @@ def _print_dry_run_query(
     final_step = "3" if using_default else "1"
     info(f"-- Step {final_step}: Main spatial join query")
 
-    if input_bbox_col and countries_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    elif input_has_native_geo and countries_bbox_col:
-        info("-- Using native geometry bounds for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    log_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, dry_run=True)
 
     compression_str = (
         f"{compression}:{compression_level}"
@@ -511,14 +481,8 @@ def _create_duckdb_connection(using_default):
 
 def _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run):
     """Print bbox optimization status message."""
-    if dry_run:
-        return
-    if input_bbox_col and countries_bbox_col and verbose:
-        debug("Using bbox columns for initial filtering...")
-    elif input_has_native_geo and countries_bbox_col:
-        progress("Using native geometry bounds for bbox pre-filtering...")
-    elif not (input_bbox_col and countries_bbox_col):
-        progress("No bbox columns available, using full geometry intersection...")
+    if not dry_run:
+        log_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose=verbose)
 
 
 def add_country_codes(
@@ -596,14 +560,14 @@ def add_country_codes(
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
     _print_bbox_status(input_bbox_col, countries_bbox_col, input_has_native_geo, verbose, dry_run)
 
-    query = _build_spatial_join_query(
-        input_url,
-        countries_source,
-        select_clause,
-        input_geom_col,
-        countries_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
+    query = build_spatial_join_query(
+        input_url=input_url,
+        other_subquery=countries_source,
+        select_clause=select_clause,
+        input_geom_col=input_geom_col,
+        other_geom_col=countries_geom_col,
+        input_bbox_col=input_bbox_col,
+        other_bbox_col=countries_bbox_col,
         input_has_native_geo=input_has_native_geo,
         deduplicate=not all_matches,
     )

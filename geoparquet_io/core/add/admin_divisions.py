@@ -7,7 +7,7 @@ This module extends the add_country_codes functionality to support
 multiple admin datasets with hierarchical level support.
 """
 
-from geoparquet_io.core.add.spatial_join import build_spatial_join_query
+from geoparquet_io.core.add.spatial_join import build_spatial_join_query, log_bbox_status
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -67,31 +67,6 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
             admin_select_parts.append(f'b."{col}" as "{output_col_name}"')
 
     return ", ".join(admin_select_parts)
-
-
-def _build_spatial_join_query(
-    input_url,
-    admin_subquery,
-    admin_select_clause,
-    input_bbox_col,
-    admin_bbox_col,
-    input_geom_col,
-    admin_geom_col,
-    input_has_native_geo=False,
-    deduplicate=True,
-):
-    """Build spatial join query with optional bbox optimization and deduplication."""
-    return build_spatial_join_query(
-        input_url=input_url,
-        other_subquery=admin_subquery,
-        select_clause=admin_select_clause,
-        input_geom_col=input_geom_col,
-        other_geom_col=admin_geom_col,
-        input_bbox_col=input_bbox_col,
-        other_bbox_col=admin_bbox_col,
-        input_has_native_geo=input_has_native_geo,
-        deduplicate=deduplicate,
-    )
 
 
 def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
@@ -355,21 +330,17 @@ def _build_query_components(
         admin_where_clauses,
     )
 
-    if input_bbox_col and admin_bbox_col and verbose and not dry_run:
-        debug("Using bbox columns for initial filtering...")
-    elif input_has_native_geo and admin_bbox_col and not dry_run:
-        progress("Using native geometry bounds for bbox pre-filtering...")
-    elif not (input_bbox_col and admin_bbox_col) and not dry_run:
-        progress("No bbox columns available, using full geometry intersection...")
+    if not dry_run:
+        log_bbox_status(input_bbox_col, admin_bbox_col, input_has_native_geo, verbose=verbose)
 
-    query = _build_spatial_join_query(
-        input_url,
-        admin_subquery,
-        admin_select_clause,
-        input_bbox_col,
-        admin_bbox_col,
-        input_geom_col,
-        admin_geom_col,
+    query = build_spatial_join_query(
+        input_url=input_url,
+        other_subquery=admin_subquery,
+        select_clause=admin_select_clause,
+        input_geom_col=input_geom_col,
+        other_geom_col=admin_geom_col,
+        input_bbox_col=input_bbox_col,
+        other_bbox_col=admin_bbox_col,
         input_has_native_geo=input_has_native_geo,
         deduplicate=deduplicate,
     )
@@ -406,12 +377,7 @@ def _handle_dry_run_mode(
     )
 
     info("-- Main spatial join query")
-    if input_bbox_col and admin_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    elif input_has_native_geo and admin_bbox_col:
-        info("-- Using native geometry bounds for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    log_bbox_status(input_bbox_col, admin_bbox_col, input_has_native_geo, dry_run=True)
 
     if compression in ["GZIP", "ZSTD", "BROTLI"]:
         compression_str = f"{compression}:{compression_level}"

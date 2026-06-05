@@ -3,26 +3,19 @@
 import duckdb
 import pytest
 
-from geoparquet_io.core.add.admin_divisions import (
-    _build_spatial_join_query as admin_build_query,
-)
-from geoparquet_io.core.add.country_codes import (
-    _build_spatial_join_query as country_build_query,
-)
+from geoparquet_io.core.add.spatial_join import build_spatial_join_query
 
 
 class TestBuildSpatialJoinQueryDedup:
-    """Test that _build_spatial_join_query generates dedup SQL by default."""
+    """Test that build_spatial_join_query generates dedup SQL by default."""
 
     def _build_simple_query(self, deduplicate=True):
-        return admin_build_query(
+        return build_spatial_join_query(
             input_url="input.parquet",
-            admin_subquery="(SELECT * FROM admin) b_sub",
-            admin_select_clause='b."country" as "gaul_country"',
-            input_bbox_col=None,
-            admin_bbox_col=None,
+            other_subquery="(SELECT * FROM admin) b_sub",
+            select_clause='b."country" as "gaul_country"',
             input_geom_col="geometry",
-            admin_geom_col="geometry",
+            other_geom_col="geometry",
             deduplicate=deduplicate,
         )
 
@@ -52,14 +45,14 @@ class TestBuildSpatialJoinQueryDedup:
 
     def test_dedup_with_bbox_optimization(self):
         """Dedup should work alongside bbox pre-filtering."""
-        query = admin_build_query(
+        query = build_spatial_join_query(
             input_url="input.parquet",
-            admin_subquery="(SELECT * FROM admin) b_sub",
-            admin_select_clause='b."country" as "gaul_country"',
-            input_bbox_col="bbox",
-            admin_bbox_col="geometry_bbox",
+            other_subquery="(SELECT * FROM admin) b_sub",
+            select_clause='b."country" as "gaul_country"',
             input_geom_col="geometry",
-            admin_geom_col="geometry",
+            other_geom_col="geometry",
+            input_bbox_col="bbox",
+            other_bbox_col="geometry_bbox",
             deduplicate=True,
         )
         assert "ROW_NUMBER()" in query
@@ -67,48 +60,15 @@ class TestBuildSpatialJoinQueryDedup:
         assert "bbox" in query
         assert "ST_Intersects" in query
 
-
-class TestCountryCodesBuildSpatialJoinQueryDedup:
-    """Test that country_codes._build_spatial_join_query generates dedup SQL by default."""
-
-    def _build_simple_query(self, deduplicate=True):
-        return country_build_query(
-            input_url="input.parquet",
-            countries_source="filtered_countries",
-            select_clause='b."country" as "admin:country_code"',
-            input_geom_col="geometry",
-            countries_geom_col="geometry",
-            input_bbox_col=None,
-            countries_bbox_col=None,
-            deduplicate=deduplicate,
-        )
-
-    def test_default_query_contains_dedup(self):
-        """Default query should deduplicate border-straddling features."""
-        query = self._build_simple_query(deduplicate=True)
-        assert "ROW_NUMBER()" in query
-        assert "QUALIFY" in query
-        assert "ST_Area" in query
-        assert "__gpio_dedup_rownum__" in query
-
-    def test_all_matches_query_has_no_dedup(self):
-        """With deduplicate=False, query should not contain dedup logic."""
-        query = self._build_simple_query(deduplicate=False)
-        assert "ROW_NUMBER()" not in query
-        assert "QUALIFY" not in query
-        assert "__gpio_dedup_rownum__" not in query
-        assert "ST_Intersects" in query
-
     def test_dedup_with_native_geo(self):
         """Dedup should work alongside native geometry bbox pre-filtering."""
-        query = country_build_query(
+        query = build_spatial_join_query(
             input_url="input.parquet",
-            countries_source="filtered_countries",
+            other_subquery="filtered_countries",
             select_clause='b."country" as "admin:country_code"',
             input_geom_col="geometry",
-            countries_geom_col="geometry",
-            input_bbox_col=None,
-            countries_bbox_col="bbox",
+            other_geom_col="geometry",
+            other_bbox_col="bbox",
             input_has_native_geo=True,
             deduplicate=True,
         )
@@ -242,6 +202,121 @@ class TestSpatialJoinDedupExecution:
         # Columns: id, geometry (WKB bytes), country
         assert result[3][0] == 4  # Feature 4 present
         assert result[3][2] is None  # No country match
+
+
+class TestSpatialJoinDedupEdgeCases:
+    """Test dedup edge cases: point geometry, NULL geometry."""
+
+    @pytest.fixture
+    def con(self):
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        return conn
+
+    def test_point_geometry_dedup_is_deterministic(self, con):
+        """Point features touching multiple admin boundaries get deterministic assignment.
+
+        Points have zero area, so ST_Area(ST_Intersection()) returns 0 for all
+        matches. The HASH tiebreaker ensures deterministic (not random) selection.
+        """
+        con.execute("""
+            CREATE TABLE admin AS
+            SELECT 'A' as country, ST_GeomFromText('POLYGON((0 0, 5 0, 5 10, 0 10, 0 0))') as geometry
+            UNION ALL
+            SELECT 'B', ST_GeomFromText('POLYGON((5 0, 10 0, 10 10, 5 10, 5 0))')
+        """)
+        # Point exactly on the border at x=5 intersects both polygons
+        con.execute("""
+            CREATE TABLE points AS
+            SELECT 1 as id, ST_GeomFromText('POINT(5 5)') as geometry
+            UNION ALL
+            SELECT 2, ST_GeomFromText('POINT(2 2)')
+        """)
+
+        result = con.execute("""
+            WITH _gpio_input AS (
+                SELECT *, ROW_NUMBER() OVER () AS __gpio_dedup_rownum__
+                FROM points
+            )
+            SELECT * EXCLUDE (__gpio_dedup_rownum__) FROM (
+                SELECT a.*, b.country
+                FROM _gpio_input a
+                LEFT JOIN admin b
+                ON ST_Intersects(b.geometry, a.geometry)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY a.__gpio_dedup_rownum__
+                    ORDER BY ST_Area(ST_Intersection(b.geometry, a.geometry)) DESC NULLS LAST,
+                        HASH(b.geometry)
+                ) = 1
+            )
+            ORDER BY id
+        """).fetchall()
+
+        assert len(result) == 2
+        # Point 1 (on border) should get exactly one country (deterministic)
+        assert result[0][2] is not None
+        # Point 2 (inside A) should get Country A
+        assert result[1][2] == "A"
+
+        # Run again to verify determinism
+        result2 = con.execute("""
+            WITH _gpio_input AS (
+                SELECT *, ROW_NUMBER() OVER () AS __gpio_dedup_rownum__
+                FROM points
+            )
+            SELECT * EXCLUDE (__gpio_dedup_rownum__) FROM (
+                SELECT a.*, b.country
+                FROM _gpio_input a
+                LEFT JOIN admin b
+                ON ST_Intersects(b.geometry, a.geometry)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY a.__gpio_dedup_rownum__
+                    ORDER BY ST_Area(ST_Intersection(b.geometry, a.geometry)) DESC NULLS LAST,
+                        HASH(b.geometry)
+                ) = 1
+            )
+            ORDER BY id
+        """).fetchall()
+
+        assert result[0][2] == result2[0][2]
+
+    def test_null_geometry_preserved(self, con):
+        """Features with NULL geometry should be preserved with NULL admin values."""
+        con.execute("""
+            CREATE TABLE admin AS
+            SELECT 'A' as country, ST_GeomFromText('POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))') as geometry
+        """)
+        con.execute("""
+            CREATE TABLE features AS
+            SELECT 1 as id, ST_GeomFromText('POINT(5 5)') as geometry
+            UNION ALL
+            SELECT 2, NULL::GEOMETRY
+        """)
+
+        result = con.execute("""
+            WITH _gpio_input AS (
+                SELECT *, ROW_NUMBER() OVER () AS __gpio_dedup_rownum__
+                FROM features
+            )
+            SELECT * EXCLUDE (__gpio_dedup_rownum__) FROM (
+                SELECT a.*, b.country
+                FROM _gpio_input a
+                LEFT JOIN admin b
+                ON ST_Intersects(b.geometry, a.geometry)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY a.__gpio_dedup_rownum__
+                    ORDER BY ST_Area(ST_Intersection(b.geometry, a.geometry)) DESC NULLS LAST,
+                        HASH(b.geometry)
+                ) = 1
+            )
+            ORDER BY id
+        """).fetchall()
+
+        assert len(result) == 2
+        assert result[0][0] == 1
+        assert result[0][2] == "A"
+        assert result[1][0] == 2
+        assert result[1][2] is None  # NULL geometry → no match
 
 
 class TestDryRunDedup:
