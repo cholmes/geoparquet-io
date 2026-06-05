@@ -2,6 +2,7 @@
 
 import duckdb
 
+from geoparquet_io.core.add.spatial_join import build_bbox_condition
 from geoparquet_io.core.common import (
     check_bbox_structure,
     get_bbox_advice,
@@ -162,19 +163,24 @@ def _build_spatial_join_query(
     countries_geom_col,
     input_bbox_col,
     countries_bbox_col,
+    input_has_native_geo=False,
 ):
     """Build the spatial join query based on bbox availability."""
-    if input_bbox_col and countries_bbox_col:
+    bbox_condition = build_bbox_condition(
+        input_geom_col=input_geom_col,
+        other_bbox_col=countries_bbox_col,
+        input_bbox_col=input_bbox_col,
+        input_has_native_geo=input_has_native_geo,
+    )
+
+    if bbox_condition:
         return f"""
     SELECT
         a.*,
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON (a.{input_bbox_col}.xmin <= b.{countries_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{countries_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{countries_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{countries_bbox_col}.ymin)
+    ON {bbox_condition}
         AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
 """
     return f"""
@@ -425,21 +431,22 @@ def _prepare_bbox_columns(
     # Check if input file has native geometry (2.0 / parquet-geo)
     input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
 
-    # For native geometry files, skip bbox pre-filtering
-    if input_bbox_advice["skip_bbox_prefilter"]:
-        if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
-        return None, None
-
-    # For 1.x files, use bbox optimization if available
-    input_bbox_info = check_bbox_structure(input_parquet, verbose)
-    input_bbox_col = input_bbox_info["bbox_column_name"]
-
+    # Determine countries bbox column (needed for both native geo and bbox pre-filter)
     if using_default:
         countries_bbox_col = "bbox"
     else:
         countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
         countries_bbox_col = countries_bbox_info["bbox_column_name"]
+
+    # For native geometry files, no input bbox column needed — bounds derived from geometry
+    if input_bbox_advice["skip_bbox_prefilter"]:
+        if verbose:
+            debug("Input has native geometry - will use geometry bounds for bbox pre-filter")
+        return None, countries_bbox_col, True
+
+    # For 1.x files, use bbox optimization if available
+    input_bbox_info = check_bbox_structure(input_parquet, verbose)
+    input_bbox_col = input_bbox_info["bbox_column_name"]
 
     if not dry_run:
         # Show warning and suggest options for 1.x files without bbox
@@ -463,7 +470,7 @@ def _prepare_bbox_columns(
             )
             countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
-    return input_bbox_col, countries_bbox_col
+    return input_bbox_col, countries_bbox_col, False
 
 
 def _setup_countries_source(
@@ -549,7 +556,7 @@ def add_country_codes(
         )
 
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
-    input_bbox_col, countries_bbox_col = _prepare_bbox_columns(
+    input_bbox_col, countries_bbox_col, input_has_native_geo = _prepare_bbox_columns(
         input_parquet, countries_parquet, using_default, add_bbox_flag, dry_run, verbose
     )
 
@@ -604,6 +611,7 @@ def add_country_codes(
         countries_geom_col,
         input_bbox_col,
         countries_bbox_col,
+        input_has_native_geo=input_has_native_geo,
     )
 
     if dry_run:

@@ -3202,6 +3202,171 @@ def extract_wfs_cmd(
         raise click.ClickException(str(e)) from None
 
 
+@extract.command(name="carto")
+@handle_geoparquet_errors
+@click.argument("url")
+@click.argument("table_name")
+@click.argument("output_file", type=click.Path())
+@click.option(
+    "--where",
+    help="SQL WHERE clause for filtering (e.g., \"status = 'active'\")",
+)
+@click.option(
+    "--bbox",
+    help="Bounding box filter: xmin,ymin,xmax,ymax in WGS84",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(0, None),
+    help="Maximum number of rows to extract",
+)
+@click.option(
+    "--include-cols",
+    help="Comma-separated columns to include (default: all)",
+)
+@click.option(
+    "--exclude-cols",
+    help="Comma-separated columns to exclude",
+)
+@click.option(
+    "--timeout",
+    type=click.IntRange(1, 3600),
+    default=120,
+    help="Request timeout in seconds (default: 120)",
+)
+@click.option(
+    "--skip-hilbert",
+    is_flag=True,
+    help="Skip Hilbert curve sorting (faster, but no spatial clustering)",
+)
+@click.option(
+    "--skip-bbox",
+    is_flag=True,
+    help="Skip adding bbox column (faster, but no per-geometry bbox)",
+)
+@compression_options
+@row_group_options
+@geoparquet_version_option
+@overwrite_option
+@verbose_option
+@any_extension_option
+@aws_profile_option
+@click.pass_context
+def extract_carto_cmd(
+    ctx,
+    url,
+    table_name,
+    output_file,
+    where,
+    bbox,
+    limit,
+    include_cols,
+    exclude_cols,
+    timeout,
+    skip_hilbert,
+    skip_bbox,
+    compression,
+    compression_level,
+    row_group_size,
+    row_group_size_mb,
+    geoparquet_version,
+    overwrite,
+    verbose,
+    any_extension,
+    aws_profile,
+):
+    """
+    Extract Carto SQL API table to GeoParquet.
+
+    URL is the Carto SQL API endpoint (e.g., https://phl.carto.com/api/v2/sql).
+    You can also provide just the base domain (e.g., https://phl.carto.com).
+
+    TABLE_NAME is the table to extract (e.g., 'opa_properties_public').
+
+    OUTPUT_FILE is the output GeoParquet file path.
+
+    \b
+    Notes:
+        - Geometry column 'the_geom' is renamed to 'geometry' for consistency
+        - Filters (--where, --bbox) are pushed to the server for efficiency
+        - For large tables, use --limit or --where to avoid timeouts
+        - Set CARTO_API_KEY env var for authenticated endpoints
+
+    \b
+    Examples:
+
+        \b
+        # Extract entire table
+        gpio extract carto https://phl.carto.com/api/v2/sql \\
+            opa_properties_public output.parquet
+
+        \b
+        # With WHERE filter
+        gpio extract carto https://phl.carto.com/api/v2/sql \\
+            opa_properties_public output.parquet \\
+            --where "category_code_description LIKE 'LAND%'"
+
+        \b
+        # With bbox filter
+        gpio extract carto https://phl.carto.com/api/v2/sql \\
+            opa_properties_public output.parquet \\
+            --bbox "-75.2,39.9,-75.1,40.0"
+
+        \b
+        # Select specific columns and limit rows
+        gpio extract carto https://phl.carto.com/api/v2/sql \\
+            opa_properties_public output.parquet \\
+            --include-cols "parcel_number,market_value,the_geom" \\
+            --limit 10000
+    """
+    from geoparquet_io.core.carto import CartoError, convert_carto_to_geoparquet
+
+    # Validate .parquet extension
+    validate_parquet_extension(output_file, any_extension)
+
+    # Parse row group options
+    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+
+    # Parse bbox if provided
+    bbox_tuple = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) != 4:
+                raise ValueError("Expected 4 values")
+            bbox_tuple = tuple(parts)
+        except ValueError as e:
+            raise click.ClickException(
+                f"Invalid bbox format: {bbox}\n"
+                "Expected: xmin,ymin,xmax,ymax (e.g., -75.2,39.9,-75.1,40.0)"
+            ) from e
+
+    with _activate_s3(ctx, aws_profile=aws_profile):
+        try:
+            convert_carto_to_geoparquet(
+                url=url,
+                table_name=table_name,
+                output_file=output_file,
+                where=where,
+                bbox=bbox_tuple,
+                limit=limit,
+                include_cols=include_cols,
+                exclude_cols=exclude_cols,
+                timeout=float(timeout),
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+            )
+        except CartoError as e:
+            raise click.ClickException(str(e)) from None
+
+
 # Meta command - delegates to core.inspect.display_metadata
 def _handle_meta_display(
     parquet_file: str,

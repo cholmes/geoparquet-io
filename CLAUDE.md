@@ -59,8 +59,7 @@ geoparquet_io/
 | `gpio benchmark` | compare, explain, report, suite | Benchmark GeoParquet performance |
 | `gpio check` | all, bbox, compression, optimization, row-group, spatial, spec, stac | Check GeoParquet files for best practices |
 | `gpio convert` | csv, flatgeobuf, geojson, geopackage, geoparquet, reproject, shapefile | Convert between formats and coordinate systems |
-| `gpio extract` | arcgis, bigquery, geoparquet, wfs | Extract data from files and services to GeoParquet |
-| `gpio fiboa` | describe, improve, validate | fiboa (Field Boundaries for Agriculture) commands |
+| `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or statistics |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files |
 | `gpio pmtiles` | create | PMTiles generation commands |
