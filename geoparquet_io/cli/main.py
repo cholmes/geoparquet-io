@@ -3678,6 +3678,12 @@ def add(ctx):
     help="Delete all cached admin datasets before running. "
     "Shows size of deleted files and prompts for confirmation.",
 )
+@click.option(
+    "--all-matches",
+    is_flag=True,
+    help="Keep all matching boundaries when a feature intersects multiple divisions. "
+    "Default: keep only the match with the largest overlap area.",
+)
 @output_format_options
 @geoparquet_version_option
 @overwrite_option
@@ -3695,6 +3701,7 @@ def add_country_codes(
     prefix,
     no_cache,
     clear_cache,
+    all_matches,
     compression,
     compression_level,
     row_group_size,
@@ -3872,6 +3879,7 @@ def add_country_codes(
         prefix=prefix,
         no_cache=no_cache,
         vecorel=vecorel,
+        all_matches=all_matches,
     )
 
 

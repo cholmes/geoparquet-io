@@ -78,8 +78,9 @@ def _build_spatial_join_query(
     input_geom_col,
     admin_geom_col,
     input_has_native_geo=False,
+    deduplicate=True,
 ):
-    """Build spatial join query with optional bbox optimization."""
+    """Build spatial join query with optional bbox optimization and deduplication."""
     bbox_condition = build_bbox_condition(
         input_geom_col=input_geom_col,
         other_bbox_col=admin_bbox_col,
@@ -88,26 +89,43 @@ def _build_spatial_join_query(
     )
 
     if bbox_condition:
-        return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON {bbox_condition}
-        AND ST_Intersects(
-            b.{admin_geom_col},
-            a.{input_geom_col}
+        join_clause = (
+            f"ON {bbox_condition}\n"
+            f"        AND ST_Intersects(\n"
+            f"            b.{admin_geom_col},\n"
+            f"            a.{input_geom_col}\n"
+            f"        )"
         )
-"""
     else:
+        join_clause = f"ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"
+
+    if deduplicate:
         return f"""
+    WITH _gpio_input AS (
+        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
+        FROM '{input_url}'
+    )
+    SELECT * EXCLUDE (_gpio_row_id) FROM (
+        SELECT
+            a.*,
+            {admin_select_clause}
+        FROM _gpio_input a
+        LEFT JOIN {admin_subquery} b
+        {join_clause}
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY a._gpio_row_id
+            ORDER BY ST_Area(ST_Intersection(b.{admin_geom_col}, a.{input_geom_col})) DESC NULLS LAST
+        ) = 1
+    )
+"""
+
+    return f"""
     SELECT
         a.*,
         {admin_select_clause}
     FROM '{input_url}' a
     LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
+    {join_clause}
 """
 
 
@@ -335,6 +353,7 @@ def _build_query_components(
     dry_run,
     prefix=None,
     input_has_native_geo=False,
+    deduplicate=True,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -387,6 +406,7 @@ def _build_query_components(
         input_geom_col,
         admin_geom_col,
         input_has_native_geo=input_has_native_geo,
+        deduplicate=deduplicate,
     )
 
     return query, admin_source
@@ -460,6 +480,7 @@ def add_admin_divisions_multi(
     prefix: str | None = None,
     no_cache: bool = False,
     vecorel: bool = False,
+    all_matches: bool = False,
 ):
     """
     Add admin division columns from a multi-level admin dataset.
@@ -480,6 +501,7 @@ def add_admin_divisions_multi(
         profile: AWS profile name (S3 only, optional)
         prefix: Optional column name prefix (default: dataset name, use "admin" for admin: format)
         no_cache: Skip local cache and use remote dataset directly
+        all_matches: Keep all matching boundaries per feature (default: deduplicate by largest overlap)
     """
     # When vecorel mode is active, override prefix to use Vecorel column names
     effective_prefix = "vecorel" if vecorel else prefix
@@ -545,6 +567,7 @@ def add_admin_divisions_multi(
                 dry_run,
                 prefix=effective_prefix,
                 input_has_native_geo=input_has_native_geo,
+                deduplicate=not all_matches,
             )
 
             # Handle dry-run mode
