@@ -4426,10 +4426,19 @@ def partition(ctx):
 )
 @click.option(
     "--levels",
-    required=True,
+    required=False,
+    default=None,
     help="Comma-separated hierarchical levels to partition by. "
     "GAUL levels: continent,country,department. "
-    "Overture levels: country,region.",
+    "Overture levels: country,region. "
+    "Not required when --vecorel is used.",
+)
+@click.option(
+    "--vecorel",
+    is_flag=True,
+    help="Output Vecorel-compliant admin columns (admin:country_code, "
+    "admin:subdivision_code) in each partition with schema metadata. "
+    "Automatically uses the Overture dataset with country,region levels.",
 )
 @partition_options_base
 @output_format_options
@@ -4443,6 +4452,7 @@ def partition_admin(
     output_folder,
     dataset,
     levels,
+    vecorel,
     hive,
     overwrite,
     preview,
@@ -4491,6 +4501,10 @@ def partition_admin(
     gpio partition admin input.parquet output/ --dataset overture --levels country,region
 
     \b
+    # Vecorel-compliant partitions (forces Overture country,region)
+    gpio partition admin input.parquet output/ --vecorel
+
+    \b
     **Note:** This command fetches remote boundaries and performs spatial intersection.
     Requires internet connection. Input data must have valid geometries in WGS84 or
     compatible CRS.
@@ -4503,8 +4517,20 @@ def partition_admin(
         # Validate mutual exclusivity of row group options and get MB value
         row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-        # Parse levels
-        level_list = [level.strip() for level in levels.split(",")]
+        # Handle --vecorel: force Overture dataset with country,region levels
+        if vecorel:
+            from geoparquet_io.core.logging_config import warn as log_warn
+
+            if dataset != "overture":
+                log_warn(f"--vecorel overrides --dataset {dataset} to 'overture'")
+            dataset = "overture"
+            if levels:
+                log_warn("--vecorel overrides --levels to 'country,region'")
+            level_list = ["country", "region"]
+        elif levels:
+            level_list = [level.strip() for level in levels.split(",")]
+        else:
+            raise click.UsageError("Either --levels or --vecorel is required")
 
         # Use hierarchical partitioning (spatial join + partition)
         partition_admin_hierarchical_impl(
@@ -4512,6 +4538,7 @@ def partition_admin(
             output_folder,
             dataset_name=dataset,
             levels=level_list,
+            vecorel=vecorel,
             hive=hive,
             overwrite=overwrite,
             preview=preview,

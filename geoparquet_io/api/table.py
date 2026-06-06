@@ -2598,6 +2598,7 @@ class Table:
         levels: list[str] | None = None,
         hive: bool = True,
         overwrite: bool = False,
+        vecorel: bool = False,
         compression: str = "ZSTD",
         compression_level: int = 15,
     ) -> dict:
@@ -2613,6 +2614,10 @@ class Table:
             levels: Admin levels to partition by (e.g., ["country", "admin1"])
             hive: Use Hive-style partitioning
             overwrite: Overwrite existing files
+            vecorel: Output Vecorel-compliant admin columns
+                (admin:country_code, admin:subdivision_code) in each partition
+                with schema metadata. Forces the Overture dataset with
+                country,region levels. (default: False)
             compression: Compression codec
             compression_level: Compression level
 
@@ -2631,6 +2636,10 @@ class Table:
             partition_by_admin_hierarchical,
         )
 
+        if vecorel:
+            dataset = "overture"
+            levels = ["country", "region"]
+
         return _run_partition_with_temp_file(
             self._table,
             self._geometry_column,
@@ -2638,10 +2647,11 @@ class Table:
             output_dir,
             temp_prefix="gpio_part_adm",
             core_kwargs={
-                "dataset": dataset,
+                "dataset_name": dataset,
                 "levels": levels or ["country"],
                 "hive": hive,
                 "overwrite": overwrite,
+                "vecorel": vecorel,
             },
             compression=compression,
             compression_level=compression_level,

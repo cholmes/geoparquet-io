@@ -726,9 +726,13 @@ stats = table.partition_by_kdtree('output/')
 stats = table.partition_by_kdtree('output/', iterations=6)
 ```
 
-#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False)`
+#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False, vecorel=False)`
 
 Partition by administrative boundaries.
+
+Set `vecorel=True` to write Vecorel-compliant admin columns
+(`admin:country_code`, `admin:subdivision_code`) with schema metadata into each
+partition. This forces the Overture dataset with `country,region` levels.
 
 ```python
 # Partition by country using GAUL dataset
@@ -741,6 +745,9 @@ stats = table.partition_by_admin(
     levels=['continent', 'country', 'department'],
     hive=True
 )
+
+# Vecorel-compliant partitions (forces Overture country,region)
+stats = table.partition_by_admin('output/', vecorel=True)
 ```
 
 ### Sub-Partitioning Utilities
