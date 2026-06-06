@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import os
 import re
 from pathlib import Path
+from typing import Literal, TypedDict
 
 import duckdb
 import pyarrow.parquet as pq
@@ -205,6 +208,40 @@ def detect_geoparquet_file_type_cache_clear():
 
 # Add cache_clear method to the function for compatibility
 detect_geoparquet_file_type.cache_clear = detect_geoparquet_file_type_cache_clear
+
+
+class BboxInfo(TypedDict, total=False):
+    """Bbox structure information returned by check_bbox_structure and resolve_input_bbox_info."""
+
+    has_bbox_column: bool
+    bbox_column_name: str | None
+    has_bbox_metadata: bool
+    status: Literal["optimal", "suboptimal", "poor", "native"]
+    message: str
+
+
+def has_native_geometry(file_info):
+    """Check if a file type detection result indicates native Parquet geometry types.
+
+    Delegates to the has_native_geo_types field set by detect_geoparquet_file_type(),
+    which inspects the actual Parquet schema for GEOMETRY/GEOGRAPHY logical types.
+    This correctly handles all native geometry cases including 1.1-geoarrow.
+    """
+    return file_info.get("has_native_geo_types", False)
+
+
+def resolve_input_bbox_info(input_parquet, verbose=False) -> tuple[BboxInfo, str | None]:
+    """Resolve bbox info for an input file, handling native geometry detection.
+
+    Returns (input_bbox_info, input_bbox_col) tuple. For native geometry files,
+    returns a bbox_info with status="native" and bbox_col=None since
+    DuckDB uses Parquet row group statistics automatically.
+    """
+    file_info = detect_geoparquet_file_type(input_parquet, verbose)
+    if has_native_geometry(file_info):
+        return BboxInfo(status="native", bbox_column_name=None, has_bbox_column=False), None
+    bbox_info = check_bbox_structure(input_parquet, verbose)
+    return bbox_info, bbox_info["bbox_column_name"]
 
 
 def get_parquet_metadata(parquet_file, verbose=False):
@@ -1851,18 +1888,8 @@ def _determine_bbox_status(has_bbox_column, bbox_column_name, has_bbox_metadata)
         return "poor", "❌ No valid bbox column found"
 
 
-def check_bbox_structure(parquet_file, verbose=False):
-    """
-    Check bbox structure and metadata coverage in a GeoParquet file.
-
-    Returns:
-        dict: Results including:
-            - has_bbox_column (bool): Whether a valid bbox struct column exists
-            - bbox_column_name (str): Name of the bbox column if found
-            - has_bbox_metadata (bool): Whether bbox covering is specified in metadata
-            - status (str): "optimal", "suboptimal", or "poor"
-            - message (str): Human readable description
-    """
+def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
+    """Check bbox structure and metadata coverage in a GeoParquet file."""
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata, get_schema_info
 
     safe_url = safe_file_url(parquet_file, verbose=False)
@@ -1930,10 +1957,6 @@ def get_bbox_advice(
     Returns:
         dict with:
             - needs_warning: bool - Whether to show a warning to the user
-            - skip_bbox_prefilter: bool - Whether to skip bbox pre-filtering in queries.
-              Only True for spatial_filtering with native geometry (where Parquet stats
-              are used automatically). For bounds_calculation, always False since bbox
-              column provides pre-computed values that are faster than geometry stats.
             - has_native_geometry: bool - Whether file uses native Parquet geometry types
             - message: str - User-facing message (if needs_warning)
             - suggestions: list[str] - Suggested actions for the user
@@ -1941,16 +1964,11 @@ def get_bbox_advice(
     file_info = detect_geoparquet_file_type(parquet_file, verbose)
     bbox_info = check_bbox_structure(parquet_file, verbose)
 
-    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
+    has_native_geo = has_native_geometry(file_info)
     has_bbox = bbox_info["has_bbox_column"]
-
-    # Only skip bbox pre-filtering for spatial_filtering operations with native geometry.
-    # For bounds_calculation, bbox column provides pre-computed values that are faster.
-    skip_bbox = has_native_geo and operation == "spatial_filtering"
 
     result = {
         "needs_warning": False,
-        "skip_bbox_prefilter": skip_bbox,
         "has_native_geometry": has_native_geo,
         "has_bbox_column": has_bbox,
         "bbox_column_name": bbox_info.get("bbox_column_name"),
@@ -1958,21 +1976,7 @@ def get_bbox_advice(
         "suggestions": [],
     }
 
-    if operation == "spatial_filtering":
-        if has_native_geo:
-            # Native geometry stats are used automatically - no warning needed
-            if verbose:
-                debug("Using native Parquet geometry statistics for spatial filtering")
-        elif not has_bbox:
-            # 1.x without bbox - warn and suggest options
-            result["needs_warning"] = True
-            result["message"] = "No bbox column found"
-            result["suggestions"] = [
-                "Add a bbox column: gpio add bbox <file>",
-                "Or upgrade to GeoParquet 2.0: gpio convert <file> --geoparquet-version 2.0",
-            ]
-
-    elif operation == "bounds_calculation":
+    if operation == "bounds_calculation":
         # bbox column is still faster for bounds/centroid calculation (pre-computed values)
         if not has_bbox:
             result["needs_warning"] = True
@@ -1980,14 +1984,12 @@ def get_bbox_advice(
             result["suggestions"] = [
                 "Add a bbox column for 3-4x faster bounds/centroid: gpio add bbox <file>"
             ]
-
-    elif operation == "check":
+    else:
+        # spatial_filtering, check, and other operations
         if has_native_geo:
-            # Native geometry - bbox optional but can help with bounds queries
             if not has_bbox and verbose:
-                debug("Native geometry type detected - bbox column optional for spatial queries")
+                debug("Native geometry type detected - bbox column optional")
         elif not has_bbox:
-            # 1.x without bbox
             result["needs_warning"] = True
             result["message"] = "No bbox column found"
             result["suggestions"] = [

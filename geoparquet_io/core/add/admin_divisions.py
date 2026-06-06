@@ -10,10 +10,11 @@ multiple admin datasets with hierarchical level support.
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    get_bbox_advice,
     get_parquet_metadata,
+    resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -44,8 +45,10 @@ def _build_admin_subquery(
             subquery_cols.append(f'"{col}"')
     subquery_cols_str = ", ".join(subquery_cols)
 
+    q_geom = quote_identifier(admin_geom_col)
+    q_bbox = quote_identifier(admin_bbox_col) if admin_bbox_col else q_geom
     return f"""(
-        SELECT {admin_geom_col}, {admin_bbox_col if admin_bbox_col else admin_geom_col}, {subquery_cols_str}
+        SELECT {q_geom}, {q_bbox}, {subquery_cols_str}
         FROM {admin_table_ref}
         {admin_where_clause}
     )"""
@@ -68,66 +71,30 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     return ", ".join(admin_select_parts)
 
 
-def _build_spatial_join_query(
-    input_url,
-    admin_subquery,
-    admin_select_clause,
-    input_bbox_col,
-    admin_bbox_col,
-    input_geom_col,
-    admin_geom_col,
-):
-    """Build spatial join query with optional bbox optimization."""
-    if input_bbox_col and admin_bbox_col:
-        bbox_condition = f"""(a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)"""
-
-        return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON {bbox_condition}  -- Fast bbox intersection test
-        AND ST_Intersects(  -- More expensive precise check only on bbox matches
-            b.{admin_geom_col},
-            a.{input_geom_col}
-        )
-"""
-    else:
-        return f"""
-    SELECT
-        a.*,
-        {admin_select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
-"""
-
-
 def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
     """Add bbox extent filter to admin where clauses."""
     if not admin_bbox_col:
         return None
 
+    q_admin_bbox = quote_identifier(admin_bbox_col)
     if input_bbox_col:
+        q_input_bbox = quote_identifier(input_bbox_col)
         extent_query = f"""
             SELECT
-                MIN({input_bbox_col}.xmin) as xmin,
-                MAX({input_bbox_col}.xmax) as xmax,
-                MIN({input_bbox_col}.ymin) as ymin,
-                MAX({input_bbox_col}.ymax) as ymax
+                MIN({q_input_bbox}.xmin) as xmin,
+                MAX({q_input_bbox}.xmax) as xmax,
+                MIN({q_input_bbox}.ymin) as ymin,
+                MAX({q_input_bbox}.ymax) as ymax
             FROM '{input_url}'
         """
     else:
+        q_input_geom = quote_identifier(input_geom_col)
         extent_query = f"""
             SELECT
-                MIN(ST_XMin("{input_geom_col}")) as xmin,
-                MAX(ST_XMax("{input_geom_col}")) as xmax,
-                MIN(ST_YMin("{input_geom_col}")) as ymin,
-                MAX(ST_YMax("{input_geom_col}")) as ymax
+                MIN(ST_XMin({q_input_geom})) as xmin,
+                MAX(ST_XMax({q_input_geom})) as xmax,
+                MIN(ST_YMin({q_input_geom})) as ymin,
+                MAX(ST_YMax({q_input_geom})) as ymax
             FROM '{input_url}'
         """
 
@@ -135,10 +102,10 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
     if extent and all(v is not None for v in extent):
         xmin, xmax, ymin, ymax = extent
         extent_filter = f"""
-            ({admin_bbox_col}.xmin <= {xmax} AND
-             {admin_bbox_col}.xmax >= {xmin} AND
-             {admin_bbox_col}.ymin <= {ymax} AND
-             {admin_bbox_col}.ymax >= {ymin})
+            ({q_admin_bbox}.xmin <= {xmax} AND
+             {q_admin_bbox}.xmax >= {xmin} AND
+             {q_admin_bbox}.ymin <= {ymax} AND
+             {q_admin_bbox}.ymax >= {ymin})
         """
         if verbose:
             debug(
@@ -149,14 +116,17 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
 
 
 def _handle_bbox_optimization(input_parquet, input_bbox_info, add_bbox_flag, verbose):
-    """Handle bbox optimization if needed."""
-    # Skip for native geometry files - they use native stats instead of bbox pre-filtering
+    """Handle bbox column setup for extent pre-filtering of admin boundaries.
+
+    Bbox columns help pre-filter admin boundaries by spatial extent (WHERE clause).
+    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    """
     if input_bbox_info.get("status") == "native":
         return input_bbox_info
 
     if input_bbox_info["status"] != "optimal":
         warn(
-            "\nWarning: Input file could benefit from bbox optimization:\n"
+            "\nWarning: Input file could benefit from a bbox column for extent filtering:\n"
             + input_bbox_info["message"]
         )
         if add_bbox_flag and not input_bbox_info["has_bbox_column"]:
@@ -253,16 +223,7 @@ def _setup_dataset_and_columns(
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     admin_geom_col = dataset.get_geometry_column()
 
-    # Check if we should skip bbox pre-filtering (for native geometry files)
-    input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
-    if input_bbox_advice["skip_bbox_prefilter"]:
-        if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
-        input_bbox_info = {"status": "native", "bbox_column_name": None, "has_bbox_column": False}
-        input_bbox_col = None
-    else:
-        input_bbox_info = check_bbox_structure(input_parquet, verbose)
-        input_bbox_col = input_bbox_info["bbox_column_name"]
+    input_bbox_info, input_bbox_col = resolve_input_bbox_info(input_parquet, verbose)
 
     admin_bbox_col = dataset.get_bbox_column()
 
@@ -364,20 +325,14 @@ def _build_query_components(
         admin_where_clauses,
     )
 
-    if input_bbox_col and admin_bbox_col and verbose and not dry_run:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and admin_bbox_col) and not dry_run:
-        progress("No bbox columns available, using full geometry intersection...")
-
-    query = _build_spatial_join_query(
-        input_url,
-        admin_subquery,
-        admin_select_clause,
-        input_bbox_col,
-        admin_bbox_col,
-        input_geom_col,
-        admin_geom_col,
-    )
+    query = f"""
+    SELECT
+        a.*,
+        {admin_select_clause}
+    FROM '{input_url}' a
+    LEFT JOIN {admin_subquery} b
+    ON ST_Intersects(b.{quote_identifier(admin_geom_col)}, a.{quote_identifier(input_geom_col)})
+"""
 
     return query, admin_source
 
@@ -409,11 +364,7 @@ def _handle_dry_run_mode(
         admin_bbox_col,
     )
 
-    info("-- Main spatial join query")
-    if input_bbox_col and admin_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    info("-- Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
 
     if compression in ["GZIP", "ZSTD", "BROTLI"]:
         compression_str = f"{compression}:{compression_level}"

@@ -4,11 +4,12 @@ import duckdb
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
-    get_bbox_advice,
     get_dataset_bounds,
     get_parquet_metadata,
+    resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -102,11 +103,18 @@ def find_subdivision_code_column(con, countries_source, is_subquery=False):
 
 
 def _handle_bbox_optimization(file_path, bbox_info, add_bbox_flag, file_label, verbose):
-    """Handle bbox structure warning and optionally add bbox."""
+    """Handle bbox column setup for extent pre-filtering.
+
+    Bbox columns help pre-filter data by spatial extent (WHERE clause).
+    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    """
     if bbox_info["status"] == "optimal":
         return bbox_info
 
-    warn(f"\nWarning: {file_label} could benefit from bbox optimization:\n" + bbox_info["message"])
+    warn(
+        f"\nWarning: {file_label} could benefit from a bbox column for extent filtering:\n"
+        + bbox_info["message"]
+    )
 
     if not add_bbox_flag:
         info(
@@ -154,64 +162,34 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
     return country_select + subdivision_select
 
 
-def _build_spatial_join_query(
-    input_url,
-    countries_source,
-    select_clause,
-    input_geom_col,
-    countries_geom_col,
-    input_bbox_col,
-    countries_bbox_col,
-):
-    """Build the spatial join query based on bbox availability."""
-    if input_bbox_col and countries_bbox_col:
-        return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON (a.{input_bbox_col}.xmin <= b.{countries_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{countries_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{countries_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{countries_bbox_col}.ymin)
-        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
-"""
-    return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
-"""
-
-
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
     """Build SQL to create filtered countries table from bounds."""
     xmin, ymin, xmax, ymax = bounds
+    q_bbox = quote_identifier(bbox_col)
     if isinstance(xmin, str):  # placeholder values
         return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax}
-  AND {bbox_col}.xmax >= {xmin}
-  AND {bbox_col}.ymin <= {ymax}
-  AND {bbox_col}.ymax >= {ymin};"""
+WHERE {q_bbox}.xmin <= {xmax}
+  AND {q_bbox}.xmax >= {xmin}
+  AND {q_bbox}.ymin <= {ymax}
+  AND {q_bbox}.ymax >= {ymin};"""
     return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax:.6f}
-  AND {bbox_col}.xmax >= {xmin:.6f}
-  AND {bbox_col}.ymin <= {ymax:.6f}
-  AND {bbox_col}.ymax >= {ymin:.6f};"""
+WHERE {q_bbox}.xmin <= {xmax:.6f}
+  AND {q_bbox}.xmax >= {xmin:.6f}
+  AND {q_bbox}.ymin <= {ymax:.6f}
+  AND {q_bbox}.ymax >= {ymin:.6f};"""
 
 
 def _print_dry_run_bounds_info(input_bbox_col, input_url, input_geom_col):
     """Print dry-run info for bounds calculation step."""
     info("-- Step 1: Calculate bounding box of input data to filter remote countries")
     if input_bbox_col:
-        bounds_sql = f"SELECT MIN({input_bbox_col}.xmin) as xmin, ... FROM '{input_url}';"
+        bounds_sql = (
+            f"SELECT MIN({quote_identifier(input_bbox_col)}.xmin) as xmin, ... FROM '{input_url}';"
+        )
     else:
-        bounds_sql = f"SELECT MIN(ST_XMin({input_geom_col})) as xmin, ... FROM '{input_url}';"
+        bounds_sql = f"SELECT MIN(ST_XMin({quote_identifier(input_geom_col)})) as xmin, ... FROM '{input_url}';"
     progress(bounds_sql)
     progress("")
     warn("-- Calculating actual bounds...")
@@ -334,17 +312,10 @@ def _print_dry_run_query(
     compression,
     compression_level,
     using_default,
-    input_bbox_col,
-    countries_bbox_col,
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
-    info(f"-- Step {final_step}: Main spatial join query")
-
-    if input_bbox_col and countries_bbox_col:
-        info("-- Using bbox columns for optimized spatial join")
-    else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+    info(f"-- Step {final_step}: Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
 
     compression_str = (
         f"{compression}:{compression_level}"
@@ -414,24 +385,13 @@ def _setup_default_countries(
 def _prepare_bbox_columns(
     input_parquet, countries_parquet, using_default, add_bbox_flag, dry_run, verbose
 ):
-    """Prepare and optionally optimize bbox columns for input and countries files.
+    """Prepare bbox columns for extent filtering of countries data.
 
-    For GeoParquet 2.0 / parquet-geo files with native geometry types,
-    skip bbox pre-filtering entirely as native geometry row group statistics
-    are faster than manual bbox filtering.
+    Bbox columns are used to pre-filter countries by spatial extent (WHERE clause),
+    not for join optimization — DuckDB's SPATIAL_JOIN operator handles that
+    automatically via its R-tree.
     """
-    # Check if input file has native geometry (2.0 / parquet-geo)
-    input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
-
-    # For native geometry files, skip bbox pre-filtering
-    if input_bbox_advice["skip_bbox_prefilter"]:
-        if verbose:
-            debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
-        return None, None
-
-    # For 1.x files, use bbox optimization if available
-    input_bbox_info = check_bbox_structure(input_parquet, verbose)
-    input_bbox_col = input_bbox_info["bbox_column_name"]
+    input_bbox_info, input_bbox_col = resolve_input_bbox_info(input_parquet, verbose)
 
     if using_default:
         countries_bbox_col = "bbox"
@@ -439,16 +399,16 @@ def _prepare_bbox_columns(
         countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
         countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
-    if not dry_run:
-        # Show warning and suggest options for 1.x files without bbox
-        if input_bbox_advice["needs_warning"]:
-            warn(f"\nWarning: {input_bbox_advice['message']}")
+    if not dry_run and input_bbox_info.get("status") != "native":
+        if not input_bbox_col:
+            warn("\nWarning: No bbox column found")
             if not add_bbox_flag:
-                for suggestion in input_bbox_advice["suggestions"]:
-                    info(f"💡 Tip: {suggestion}")
+                info("💡 Tip: Add a bbox column: gpio add bbox <file>")
+                info(
+                    "💡 Tip: Or upgrade to GeoParquet 2.0: gpio convert <file> --geoparquet-version 2.0"
+                )
 
-        # Handle bbox optimization if --add-bbox flag is used
-        if add_bbox_flag and not input_bbox_info["has_bbox_column"]:
+        if add_bbox_flag and not input_bbox_info.get("has_bbox_column"):
             input_bbox_info = _handle_bbox_optimization(
                 input_parquet, input_bbox_info, add_bbox_flag, "Input file", verbose
             )
@@ -508,16 +468,6 @@ def _create_duckdb_connection(using_default):
     if using_default:
         con.execute("SET s3_region='us-west-2';")
     return con
-
-
-def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
-    """Print bbox optimization status message."""
-    if dry_run:
-        return
-    if input_bbox_col and countries_bbox_col and verbose:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and countries_bbox_col):
-        progress("No bbox columns available, using full geometry intersection...")
 
 
 def add_country_codes(
@@ -592,17 +542,21 @@ def add_country_codes(
     )
 
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run)
 
-    query = _build_spatial_join_query(
-        input_url,
-        countries_source,
-        select_clause,
-        input_geom_col,
-        countries_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
-    )
+    if not dry_run and verbose:
+        if input_bbox_col:
+            debug(f"Input bbox column: {input_bbox_col}")
+        if countries_bbox_col:
+            debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
+
+    query = f"""
+    SELECT
+        a.*,
+        {select_clause}
+    FROM '{input_url}' a
+    LEFT JOIN {countries_source} b
+    ON ST_Intersects(b.{quote_identifier(countries_geom_col)}, a.{quote_identifier(input_geom_col)})
+"""
 
     if dry_run:
         _print_dry_run_query(
@@ -611,8 +565,6 @@ def add_country_codes(
             compression,
             compression_level,
             using_default,
-            input_bbox_col,
-            countries_bbox_col,
         )
         return
 
