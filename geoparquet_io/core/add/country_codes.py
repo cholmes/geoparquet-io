@@ -549,13 +549,27 @@ def add_country_codes(
         if countries_bbox_col:
             debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
 
+    q_input_geom = quote_identifier(input_geom_col)
+    q_countries_geom = quote_identifier(countries_geom_col)
+
+    if input_bbox_col and countries_bbox_col:
+        q_input_bbox = quote_identifier(input_bbox_col)
+        q_countries_bbox = quote_identifier(countries_bbox_col)
+        join_condition = f"""(a.{q_input_bbox}.xmin <= b.{q_countries_bbox}.xmax AND
+        a.{q_input_bbox}.xmax >= b.{q_countries_bbox}.xmin AND
+        a.{q_input_bbox}.ymin <= b.{q_countries_bbox}.ymax AND
+        a.{q_input_bbox}.ymax >= b.{q_countries_bbox}.ymin)
+        AND ST_Intersects(b.{q_countries_geom}, a.{q_input_geom})"""
+    else:
+        join_condition = f"ST_Intersects(b.{q_countries_geom}, a.{q_input_geom})"
+
     query = f"""
     SELECT
         a.*,
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{quote_identifier(countries_geom_col)}, a.{quote_identifier(input_geom_col)})
+    ON {join_condition}
 """
 
     if dry_run:
