@@ -61,8 +61,11 @@ def _build_admin_subquery(
 
     q_geom = quote_identifier(admin_geom_col)
     q_bbox = quote_identifier(admin_bbox_col) if admin_bbox_col else q_geom
+    # _gpio_admin_rid gives each admin row a stable id for deterministic
+    # tiebreaking in deduplication (base-table rowid isn't exposed on a subquery).
     return f"""(
-        SELECT {q_geom}, {q_bbox}, {subquery_cols_str}
+        SELECT {q_geom}, {q_bbox}, {subquery_cols_str},
+               ROW_NUMBER() OVER () AS _gpio_admin_rid
         FROM {admin_table_ref}
         {admin_where_clause}
     )"""
@@ -135,7 +138,7 @@ def _build_spatial_join_query(
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY a._gpio_row_id
             ORDER BY ST_Contains(b.{q_admin_geom}, a._gpio_centroid) DESC NULLS LAST,
-                     b.rowid
+                     b._gpio_admin_rid
         ) = 1
     )
 """

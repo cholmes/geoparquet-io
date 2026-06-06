@@ -1,10 +1,24 @@
 """Tests for admin_divisions query building functions."""
 
+import duckdb
+import pytest
+
 from geoparquet_io.core.add.admin_divisions import (
+    _build_admin_subquery,
     _build_spatial_join_query,
     _format_input_ref,
     _WriteConfig,
 )
+
+
+class _FakeDataset:
+    """Minimal dataset stub for query-building tests."""
+
+    def get_output_column_name(self, level, prefix=None):
+        return f"overture_{level}"
+
+    def get_column_transform(self, level):
+        return None
 
 
 class TestFormatInputRef:
@@ -75,7 +89,7 @@ class TestBuildSpatialJoinQuery:
             "geometry",
             deduplicate=True,
         )
-        assert "b.rowid" in query
+        assert "b._gpio_admin_rid" in query
 
     def test_temp_table_input_is_bare(self):
         query = _build_spatial_join_query(
@@ -121,3 +135,69 @@ class TestWriteConfig:
         assert config.compression == "GZIP"
         assert config.compression_level == 6
         assert config.row_group_size_mb == 128.0
+
+
+@pytest.fixture
+def spatial_con():
+    """In-memory DuckDB connection with spatial loaded and test tables."""
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute(
+        """CREATE TABLE _gpio_input_src AS
+        SELECT ST_Point(0.5, 0.5) AS geometry,
+               {'xmin': 0.5, 'xmax': 0.5, 'ymin': 0.5, 'ymax': 0.5}::
+                   STRUCT(xmin DOUBLE, xmax DOUBLE, ymin DOUBLE, ymax DOUBLE) AS bbox,
+               1 AS id"""
+    )
+    # Two identical overlapping polygons that both contain the point: forces
+    # the deduplication tiebreaker to run.
+    con.execute(
+        """CREATE TABLE admin_src AS
+        SELECT ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))') AS geometry,
+               {'xmin':0.0,'xmax':1.0,'ymin':0.0,'ymax':1.0}::
+                   STRUCT(xmin DOUBLE,xmax DOUBLE,ymin DOUBLE,ymax DOUBLE) AS bbox,
+               'AA' AS country
+        UNION ALL
+        SELECT ST_GeomFromText('POLYGON((0 0,1 0,1 1,0 1,0 0))'),
+               {'xmin':0.0,'xmax':1.0,'ymin':0.0,'ymax':1.0}::
+                   STRUCT(xmin DOUBLE,xmax DOUBLE,ymin DOUBLE,ymax DOUBLE),
+               'BB'"""
+    )
+    yield con
+    con.close()
+
+
+class TestSpatialJoinQueryExecution:
+    """Execute generated SQL to catch binder/runtime errors string checks miss."""
+
+    def _build(self, deduplicate):
+        sub = _build_admin_subquery(
+            _FakeDataset(), ["country"], ["country"], "admin_src", "geometry", "bbox", []
+        )
+        return _build_spatial_join_query(
+            "_gpio_input_src",
+            sub,
+            'b."country" as "overture_country"',
+            "geometry",
+            "geometry",
+            input_bbox_col="bbox",
+            admin_bbox_col="bbox",
+            deduplicate=deduplicate,
+        )
+
+    def test_dedup_query_binds_and_collapses(self, spatial_con):
+        """Dedup query must bind (b._gpio_admin_rid exists) and yield one row."""
+        query = self._build(deduplicate=True)
+        count, country = spatial_con.execute(
+            f"SELECT COUNT(*), MIN(overture_country) FROM ({query})"
+        ).fetchone()
+        assert count == 1
+        # Deterministic: lowest _gpio_admin_rid wins the tie.
+        assert country == "AA"
+
+    def test_non_dedup_query_binds(self, spatial_con):
+        """Non-dedup query must bind and run against real tables."""
+        query = self._build(deduplicate=False)
+        count = spatial_con.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0]
+        # Point matches both polygons; without dedup both rows are returned.
+        assert count == 2
