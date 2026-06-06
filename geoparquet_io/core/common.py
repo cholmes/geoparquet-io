@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import os
 import re
 from pathlib import Path
+from typing import Literal, TypedDict
 
 import duckdb
 import pyarrow.parquet as pq
@@ -207,21 +210,36 @@ def detect_geoparquet_file_type_cache_clear():
 detect_geoparquet_file_type.cache_clear = detect_geoparquet_file_type_cache_clear
 
 
+class BboxInfo(TypedDict, total=False):
+    """Bbox structure information returned by check_bbox_structure and resolve_input_bbox_info."""
+
+    has_bbox_column: bool
+    bbox_column_name: str | None
+    has_bbox_metadata: bool
+    status: Literal["optimal", "suboptimal", "poor", "native"]
+    message: str
+
+
 def has_native_geometry(file_info):
-    """Check if a file type detection result indicates native Parquet geometry types."""
-    return file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
+    """Check if a file type detection result indicates native Parquet geometry types.
+
+    Delegates to the has_native_geo_types field set by detect_geoparquet_file_type(),
+    which inspects the actual Parquet schema for GEOMETRY/GEOGRAPHY logical types.
+    This correctly handles all native geometry cases including 1.1-geoarrow.
+    """
+    return file_info.get("has_native_geo_types", False)
 
 
-def resolve_input_bbox_info(input_parquet, verbose=False):
+def resolve_input_bbox_info(input_parquet, verbose=False) -> tuple[BboxInfo, str | None]:
     """Resolve bbox info for an input file, handling native geometry detection.
 
     Returns (input_bbox_info, input_bbox_col) tuple. For native geometry files,
-    returns a synthetic bbox_info with status="native" and bbox_col=None since
+    returns a bbox_info with status="native" and bbox_col=None since
     DuckDB uses Parquet row group statistics automatically.
     """
     file_info = detect_geoparquet_file_type(input_parquet, verbose)
     if has_native_geometry(file_info):
-        return {"status": "native", "bbox_column_name": None, "has_bbox_column": False}, None
+        return BboxInfo(status="native", bbox_column_name=None, has_bbox_column=False), None
     bbox_info = check_bbox_structure(input_parquet, verbose)
     return bbox_info, bbox_info["bbox_column_name"]
 
@@ -1870,18 +1888,8 @@ def _determine_bbox_status(has_bbox_column, bbox_column_name, has_bbox_metadata)
         return "poor", "❌ No valid bbox column found"
 
 
-def check_bbox_structure(parquet_file, verbose=False):
-    """
-    Check bbox structure and metadata coverage in a GeoParquet file.
-
-    Returns:
-        dict: Results including:
-            - has_bbox_column (bool): Whether a valid bbox struct column exists
-            - bbox_column_name (str): Name of the bbox column if found
-            - has_bbox_metadata (bool): Whether bbox covering is specified in metadata
-            - status (str): "optimal", "suboptimal", or "poor"
-            - message (str): Human readable description
-    """
+def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
+    """Check bbox structure and metadata coverage in a GeoParquet file."""
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata, get_schema_info
 
     safe_url = safe_file_url(parquet_file, verbose=False)

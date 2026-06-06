@@ -14,6 +14,7 @@ from geoparquet_io.core.common import (
     resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -44,8 +45,10 @@ def _build_admin_subquery(
             subquery_cols.append(f'"{col}"')
     subquery_cols_str = ", ".join(subquery_cols)
 
+    q_geom = quote_identifier(admin_geom_col)
+    q_bbox = quote_identifier(admin_bbox_col) if admin_bbox_col else q_geom
     return f"""(
-        SELECT {admin_geom_col}, {admin_bbox_col if admin_bbox_col else admin_geom_col}, {subquery_cols_str}
+        SELECT {q_geom}, {q_bbox}, {subquery_cols_str}
         FROM {admin_table_ref}
         {admin_where_clause}
     )"""
@@ -73,22 +76,25 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
     if not admin_bbox_col:
         return None
 
+    q_admin_bbox = quote_identifier(admin_bbox_col)
     if input_bbox_col:
+        q_input_bbox = quote_identifier(input_bbox_col)
         extent_query = f"""
             SELECT
-                MIN({input_bbox_col}.xmin) as xmin,
-                MAX({input_bbox_col}.xmax) as xmax,
-                MIN({input_bbox_col}.ymin) as ymin,
-                MAX({input_bbox_col}.ymax) as ymax
+                MIN({q_input_bbox}.xmin) as xmin,
+                MAX({q_input_bbox}.xmax) as xmax,
+                MIN({q_input_bbox}.ymin) as ymin,
+                MAX({q_input_bbox}.ymax) as ymax
             FROM '{input_url}'
         """
     else:
+        q_input_geom = quote_identifier(input_geom_col)
         extent_query = f"""
             SELECT
-                MIN(ST_XMin("{input_geom_col}")) as xmin,
-                MAX(ST_XMax("{input_geom_col}")) as xmax,
-                MIN(ST_YMin("{input_geom_col}")) as ymin,
-                MAX(ST_YMax("{input_geom_col}")) as ymax
+                MIN(ST_XMin({q_input_geom})) as xmin,
+                MAX(ST_XMax({q_input_geom})) as xmax,
+                MIN(ST_YMin({q_input_geom})) as ymin,
+                MAX(ST_YMax({q_input_geom})) as ymax
             FROM '{input_url}'
         """
 
@@ -96,10 +102,10 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
     if extent and all(v is not None for v in extent):
         xmin, xmax, ymin, ymax = extent
         extent_filter = f"""
-            ({admin_bbox_col}.xmin <= {xmax} AND
-             {admin_bbox_col}.xmax >= {xmin} AND
-             {admin_bbox_col}.ymin <= {ymax} AND
-             {admin_bbox_col}.ymax >= {ymin})
+            ({q_admin_bbox}.xmin <= {xmax} AND
+             {q_admin_bbox}.xmax >= {xmin} AND
+             {q_admin_bbox}.ymin <= {ymax} AND
+             {q_admin_bbox}.ymax >= {ymin})
         """
         if verbose:
             debug(
@@ -325,7 +331,7 @@ def _build_query_components(
         {admin_select_clause}
     FROM '{input_url}' a
     LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})
+    ON ST_Intersects(b.{quote_identifier(admin_geom_col)}, a.{quote_identifier(input_geom_col)})
 """
 
     return query, admin_source

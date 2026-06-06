@@ -9,6 +9,7 @@ from geoparquet_io.core.common import (
     resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -164,28 +165,31 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
     """Build SQL to create filtered countries table from bounds."""
     xmin, ymin, xmax, ymax = bounds
+    q_bbox = quote_identifier(bbox_col)
     if isinstance(xmin, str):  # placeholder values
         return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax}
-  AND {bbox_col}.xmax >= {xmin}
-  AND {bbox_col}.ymin <= {ymax}
-  AND {bbox_col}.ymax >= {ymin};"""
+WHERE {q_bbox}.xmin <= {xmax}
+  AND {q_bbox}.xmax >= {xmin}
+  AND {q_bbox}.ymin <= {ymax}
+  AND {q_bbox}.ymax >= {ymin};"""
     return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax:.6f}
-  AND {bbox_col}.xmax >= {xmin:.6f}
-  AND {bbox_col}.ymin <= {ymax:.6f}
-  AND {bbox_col}.ymax >= {ymin:.6f};"""
+WHERE {q_bbox}.xmin <= {xmax:.6f}
+  AND {q_bbox}.xmax >= {xmin:.6f}
+  AND {q_bbox}.ymin <= {ymax:.6f}
+  AND {q_bbox}.ymax >= {ymin:.6f};"""
 
 
 def _print_dry_run_bounds_info(input_bbox_col, input_url, input_geom_col):
     """Print dry-run info for bounds calculation step."""
     info("-- Step 1: Calculate bounding box of input data to filter remote countries")
     if input_bbox_col:
-        bounds_sql = f"SELECT MIN({input_bbox_col}.xmin) as xmin, ... FROM '{input_url}';"
+        bounds_sql = (
+            f"SELECT MIN({quote_identifier(input_bbox_col)}.xmin) as xmin, ... FROM '{input_url}';"
+        )
     else:
-        bounds_sql = f"SELECT MIN(ST_XMin({input_geom_col})) as xmin, ... FROM '{input_url}';"
+        bounds_sql = f"SELECT MIN(ST_XMin({quote_identifier(input_geom_col)})) as xmin, ... FROM '{input_url}';"
     progress(bounds_sql)
     progress("")
     warn("-- Calculating actual bounds...")
@@ -551,7 +555,7 @@ def add_country_codes(
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+    ON ST_Intersects(b.{quote_identifier(countries_geom_col)}, a.{quote_identifier(input_geom_col)})
 """
 
     if dry_run:
