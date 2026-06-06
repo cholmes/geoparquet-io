@@ -7,6 +7,8 @@ This module extends the add_country_codes functionality to support
 multiple admin datasets with hierarchical level support.
 """
 
+from dataclasses import dataclass
+
 from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -20,6 +22,18 @@ from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
+
+_TEMP_TABLE_PREFIX = "_gpio_"
+
+
+@dataclass
+class _WriteConfig:
+    compression: str = "ZSTD"
+    compression_level: int | None = None
+    row_group_size_mb: float | None = None
+    row_group_rows: int | None = None
+    profile: str | None = None
+    geoparquet_version: str | None = None
 
 
 def _build_admin_subquery(
@@ -73,7 +87,7 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
 
 def _format_input_ref(input_url):
     """Format input reference for SQL — quote file paths, leave table names bare."""
-    if input_url.startswith("_gpio_"):
+    if input_url.startswith(_TEMP_TABLE_PREFIX):
         return input_url
     return f"'{input_url}'"
 
@@ -120,7 +134,8 @@ def _build_spatial_join_query(
         {join_clause}
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY a._gpio_row_id
-            ORDER BY ST_Contains(b.{q_admin_geom}, a._gpio_centroid) DESC NULLS LAST
+            ORDER BY ST_Contains(b.{q_admin_geom}, a._gpio_centroid) DESC NULLS LAST,
+                     b.rowid
         ) = 1
     )
 """
@@ -133,7 +148,6 @@ def _build_spatial_join_query(
     LEFT JOIN {admin_subquery} b
     {join_clause}
 """
-
 
 
 def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
@@ -472,12 +486,7 @@ def _execute_per_level_joins(
     metadata,
     dry_run,
     verbose,
-    compression,
-    compression_level,
-    row_group_size_mb,
-    row_group_rows,
-    profile,
-    geoparquet_version,
+    write_config,
     prefix,
     no_cache,
 ):
@@ -526,16 +535,16 @@ def _execute_per_level_joins(
                 level_query,
                 output_parquet,
                 original_metadata=metadata,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
+                compression=write_config.compression,
+                compression_level=write_config.compression_level,
+                row_group_size_mb=write_config.row_group_size_mb,
+                row_group_rows=write_config.row_group_rows,
                 verbose=verbose,
-                profile=profile,
-                geoparquet_version=geoparquet_version,
+                profile=write_config.profile,
+                geoparquet_version=write_config.geoparquet_version,
             )
         else:
-            temp_table = f"_gpio_admin_step_{i}"
+            temp_table = f"{_TEMP_TABLE_PREFIX}admin_step_{i}"
             con.execute(f"CREATE OR REPLACE TEMP TABLE {temp_table} AS {level_query}")
             current_source = temp_table
 
@@ -620,6 +629,15 @@ def add_admin_divisions_multi(
         if verbose:
             debug(f"Using geometry columns: {input_geom_col} (input), {admin_geom_col} (admin)")
 
+    write_config = _WriteConfig(
+        compression=compression,
+        compression_level=compression_level,
+        row_group_size_mb=row_group_size_mb,
+        row_group_rows=row_group_rows,
+        profile=profile,
+        geoparquet_version=geoparquet_version,
+    )
+
     # Create DuckDB connection with ambient S3 config from dataset
     from geoparquet_io.core.duckdb_utils import s3_config_scope
 
@@ -646,12 +664,7 @@ def add_admin_divisions_multi(
                     metadata,
                     dry_run,
                     verbose,
-                    compression,
-                    compression_level,
-                    row_group_size_mb,
-                    row_group_rows,
-                    profile,
-                    geoparquet_version,
+                    write_config,
                     prefix,
                     no_cache,
                 )
@@ -697,13 +710,13 @@ def add_admin_divisions_multi(
                     query,
                     output_parquet,
                     original_metadata=metadata,
-                    compression=compression,
-                    compression_level=compression_level,
-                    row_group_size_mb=row_group_size_mb,
-                    row_group_rows=row_group_rows,
+                    compression=write_config.compression,
+                    compression_level=write_config.compression_level,
+                    row_group_size_mb=write_config.row_group_size_mb,
+                    row_group_rows=write_config.row_group_rows,
                     verbose=verbose,
-                    profile=profile,
-                    geoparquet_version=geoparquet_version,
+                    profile=write_config.profile,
+                    geoparquet_version=write_config.geoparquet_version,
                 )
 
                 total_features, features_with_admin, unique_counts = _get_result_stats(

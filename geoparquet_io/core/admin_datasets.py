@@ -119,6 +119,49 @@ def clear_cache(confirm: bool = False) -> dict | None:
     return {"files_deleted": files_deleted, "bytes_freed": bytes_freed}
 
 
+def _validate_cache_file(cache_path: Path) -> bool:
+    """Check if a cache file is a valid Parquet file."""
+    try:
+        con = get_duckdb_connection()
+        try:
+            con.execute(f"SELECT COUNT(*) FROM read_parquet('{cache_path}') LIMIT 1")
+            return True
+        except Exception:
+            return False
+        finally:
+            con.close()
+    except Exception:
+        return False
+
+
+def _resolve_cached_file(
+    cache_path: Path, download_fn, fallback_source: str, verbose: bool = False
+) -> str:
+    """Check cache, validate, download on miss, fall back to remote on error."""
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        if not _validate_cache_file(cache_path):
+            warn(f"Cached file is corrupt, re-downloading: {cache_path}")
+            cache_path.unlink()
+        else:
+            age_warning = check_cache_age(cache_path)
+            if age_warning:
+                warn(age_warning)
+            if verbose:
+                debug(f"Using cached dataset: {cache_path}")
+            return str(cache_path)
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        download_fn()
+        return str(cache_path)
+    except PermissionError:
+        warn("Cannot create cache directory. Using remote source directly.")
+        return fallback_source
+    except Exception as e:
+        warn(f"Failed to cache dataset: {e}. Using remote source directly.")
+        return fallback_source
+
+
 def get_or_cache_dataset(
     dataset: "AdminDataset",
     no_cache: bool = False,
@@ -159,42 +202,15 @@ def get_or_cache_dataset(
             debug("Cache disabled, using remote source directly")
         return dataset.get_default_source()
 
-    # Check for cached version
     cached_path = get_cached_path(dataset)
 
-    # Check if cache exists and is valid (non-empty)
-    if cached_path.exists() and cached_path.stat().st_size > 0:
-        # Check and warn about old cache
-        age_warning = check_cache_age(cached_path)
-        if age_warning:
-            warn(age_warning)
-
-        if verbose:
-            debug(f"Using cached dataset: {cached_path}")
-
-        return str(cached_path)
-
-    # Cache miss - need to download
-    try:
-        # Ensure cache directory exists
-        cache_dir = get_cache_dir()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
+    def _download():
         info(f"Downloading {dataset.get_dataset_name()} to local cache...")
         info("This is a one-time download. Future runs will use the cached version.")
+        dataset._download_to_cache(cached_path)
+        info(f"Cached dataset at: {cached_path}")
 
-        # Download to cache
-        result_path = dataset._download_to_cache(cached_path)
-
-        info(f"Cached dataset at: {result_path}")
-        return str(result_path)
-
-    except PermissionError:
-        warn("Cannot create cache directory. Using remote source directly.")
-        return dataset.get_default_source()
-    except Exception as e:
-        warn(f"Failed to cache dataset: {e}. Using remote source directly.")
-        return dataset.get_default_source()
+    return _resolve_cached_file(cached_path, _download, dataset.get_default_source(), verbose)
 
 
 class AdminDataset(ABC):
@@ -260,8 +276,14 @@ class AdminDataset(ABC):
                 else:
                     query = f"SELECT * FROM read_parquet('{source}')"
 
-                # Write to cache
-                con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
+                # Atomic write: write to temp file, rename on success
+                tmp_path = cache_path.with_suffix(".parquet.tmp")
+                try:
+                    con.execute(f"COPY ({query}) TO '{tmp_path}' (FORMAT PARQUET)")
+                    tmp_path.rename(cache_path)
+                except Exception:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
             finally:
                 con.close()
 
@@ -727,16 +749,9 @@ class OvertureAdminDataset(AdminDataset):
             return self.get_default_source()
 
         cache_path = self.get_cached_path_for_level(level)
-        if cache_path.exists() and cache_path.stat().st_size > 0:
-            age_warning = check_cache_age(cache_path)
-            if age_warning:
-                from geoparquet_io.core.logging_config import warn
-
-                warn(age_warning)
-            return str(cache_path)
-
-        self._download_per_level_caches()
-        return str(cache_path)
+        return _resolve_cached_file(
+            cache_path, self._download_per_level_caches, self.get_default_source(), self.verbose
+        )
 
     def _download_per_level_caches(self) -> None:
         """Download separate country and region cache files.
@@ -745,6 +760,10 @@ class OvertureAdminDataset(AdminDataset):
         into per-level files so spatial joins run against non-overlapping
         polygons, preventing row multiplication. Geometries are simplified to
         ~11m tolerance to keep files small.
+
+        Country-level cache excludes Antarctica (AQ) and disputed/placeholder
+        territories (country codes starting with X). Features in these areas
+        will get NULL country codes. Use --no-cache to bypass this filtering.
         """
         from geoparquet_io.core.duckdb_utils import s3_config_scope
         from geoparquet_io.core.logging_config import info
@@ -762,36 +781,53 @@ class OvertureAdminDataset(AdminDataset):
                 for level in self.get_available_levels():
                     cache_path = self.get_cached_path_for_level(level)
                     if cache_path.exists() and cache_path.stat().st_size > 0:
-                        continue
+                        if _validate_cache_file(cache_path):
+                            continue
+                        warn(f"Cached file is corrupt, re-downloading: {cache_path}")
+                        cache_path.unlink()
 
                     if level == "country":
                         query = (
-                            "SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) as geometry, "
-                            "bbox, country, subtype "
+                            "SELECT geom AS geometry, "
+                            "STRUCT_PACK(xmin := ST_XMin(geom), xmax := ST_XMax(geom), "
+                            "ymin := ST_YMin(geom), ymax := ST_YMax(geom)) AS bbox, "
+                            "country, subtype "
+                            "FROM (SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) AS geom, "
+                            "country, subtype "
                             f"FROM read_parquet('{source}', hive_partitioning=1) "
                             "WHERE subtype = 'country' "
                             "AND country NOT LIKE 'X%' "
-                            "AND country != 'AQ'"
+                            "AND country != 'AQ')"
                         )
                     else:
                         query = (
-                            "SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) as geometry, "
-                            "bbox, country, region, subtype "
+                            "SELECT geom AS geometry, "
+                            "STRUCT_PACK(xmin := ST_XMin(geom), xmax := ST_XMax(geom), "
+                            "ymin := ST_YMin(geom), ymax := ST_YMax(geom)) AS bbox, "
+                            "country, region, subtype "
+                            "FROM (SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) AS geom, "
+                            "country, region, subtype "
                             f"FROM read_parquet('{source}', hive_partitioning=1) "
-                            f"WHERE subtype = '{level}'"
+                            f"WHERE subtype = '{level}')"
                         )
 
-                    con.execute(
-                        f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-                    )
+                    tmp_path = cache_path.with_suffix(".parquet.tmp")
+                    try:
+                        con.execute(
+                            f"COPY ({query}) TO '{tmp_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                        )
+                        tmp_path.rename(cache_path)
+                    except Exception:
+                        tmp_path.unlink(missing_ok=True)
+                        raise
                     info(f"Cached {level} dataset at: {cache_path}")
             finally:
                 con.close()
 
     def _download_to_cache(self, cache_path: Path) -> Path:
-        """Download per-level caches (called by base class fallback)."""
-        self._download_per_level_caches()
-        return cache_path
+        raise NotImplementedError(
+            "OvertureAdminDataset uses per-level caching via get_source_for_level()"
+        )
 
     def get_s3_config(self) -> dict:
         return {"s3_region": "us-west-2"}

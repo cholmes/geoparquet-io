@@ -15,6 +15,7 @@ from geoparquet_io.core.admin_datasets import (
     CurrentAdminDataset,
     GAULAdminDataset,
     OvertureAdminDataset,
+    _validate_cache_file,
     check_cache_age,
     clear_cache,
     get_cache_dir,
@@ -990,3 +991,111 @@ class TestCacheEdgeCases:
         # This is a placeholder for thread-safety testing
         # The implementation should use atomic file operations
         pass
+
+
+class TestValidateCacheFile:
+    """Test _validate_cache_file function."""
+
+    def test_valid_parquet_file(self, tmp_path):
+        """Test that a valid parquet file returns True."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        cache_path = tmp_path / "valid.parquet"
+        con = get_duckdb_connection()
+        try:
+            con.execute(f"COPY (SELECT 1 AS id, 'test' AS name) TO '{cache_path}' (FORMAT PARQUET)")
+        finally:
+            con.close()
+
+        assert _validate_cache_file(cache_path) is True
+
+    def test_corrupt_file_returns_false(self, tmp_path):
+        """Test that a truncated/corrupt file returns False."""
+        cache_path = tmp_path / "corrupt.parquet"
+        cache_path.write_bytes(b"not a parquet file at all")
+
+        assert _validate_cache_file(cache_path) is False
+
+    def test_nonexistent_file_returns_false(self, tmp_path):
+        """Test that a nonexistent file returns False."""
+        cache_path = tmp_path / "nonexistent.parquet"
+        assert _validate_cache_file(cache_path) is False
+
+
+class TestCorruptCacheRecovery:
+    """Test corrupt cache detection and automatic re-download."""
+
+    def test_corrupt_cache_triggers_redownload(self):
+        """Test that a corrupt cache file is deleted and re-downloaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            dataset = GAULAdminDataset()
+            cached_path = cache_dir / f"gaul-{dataset.get_version()}.parquet"
+            cached_path.write_bytes(b"truncated parquet garbage")
+
+            with patch("geoparquet_io.core.admin_datasets.get_cache_dir") as mock_get_cache:
+                mock_get_cache.return_value = cache_dir
+                with patch.object(dataset, "_download_to_cache") as mock_download:
+
+                    def redownload(*args, **kwargs):
+                        cached_path.write_bytes(b"fresh data")
+                        return cached_path
+
+                    mock_download.side_effect = redownload
+
+                    get_or_cache_dataset(dataset)
+                    mock_download.assert_called_once()
+
+    def test_corrupt_cache_is_deleted(self):
+        """Test that the corrupt file is actually unlinked before re-download."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir)
+            dataset = GAULAdminDataset()
+            cached_path = cache_dir / f"gaul-{dataset.get_version()}.parquet"
+            cached_path.write_bytes(b"bad magic bytes")
+
+            with patch("geoparquet_io.core.admin_datasets.get_cache_dir") as mock_get_cache:
+                mock_get_cache.return_value = cache_dir
+                with patch.object(dataset, "_download_to_cache") as mock_download:
+                    mock_download.side_effect = Exception("Network error")
+
+                    result = get_or_cache_dataset(dataset)
+                    assert result == dataset.get_default_source()
+                    assert not cached_path.exists()
+
+
+class TestOverturePerLevelSources:
+    """Test OvertureAdminDataset per-level caching."""
+
+    def test_supports_per_level_sources(self):
+        dataset = OvertureAdminDataset()
+        assert dataset.supports_per_level_sources() is True
+
+    def test_get_cached_path_for_level(self):
+        dataset = OvertureAdminDataset()
+        with patch.object(dataset, "get_version", return_value="2026-01-01.0"):
+            path = dataset.get_cached_path_for_level("country")
+            assert path.name == "overture-2026-01-01.0-country.parquet"
+            assert path.parent == get_cache_dir()
+
+    def test_get_source_for_level_custom_source(self):
+        dataset = OvertureAdminDataset(source_path="/custom/admin.parquet")
+        result = dataset.get_source_for_level("country")
+        assert result == "/custom/admin.parquet"
+
+    def test_get_source_for_level_no_cache(self):
+        dataset = OvertureAdminDataset()
+        result = dataset.get_source_for_level("country", no_cache=True)
+        assert result.startswith("s3://")
+
+    def test_download_to_cache_raises(self):
+        dataset = OvertureAdminDataset()
+        with pytest.raises(NotImplementedError, match="per-level caching"):
+            dataset._download_to_cache(Path("/tmp/test.parquet"))
+
+    def test_base_class_does_not_support_per_level(self):
+        dataset = GAULAdminDataset()
+        assert dataset.supports_per_level_sources() is False
+
+        dataset2 = CurrentAdminDataset()
+        assert dataset2.supports_per_level_sources() is False
