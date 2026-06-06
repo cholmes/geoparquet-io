@@ -9,7 +9,7 @@ from geoparquet_io.core.common import (
     resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -103,10 +103,11 @@ def find_subdivision_code_column(con, countries_source, is_subquery=False):
 
 
 def _handle_bbox_optimization(file_path, bbox_info, add_bbox_flag, file_label, verbose):
-    """Handle bbox column setup for extent pre-filtering.
+    """Handle bbox column setup for spatial pre-filtering.
 
-    Bbox columns help pre-filter data by spatial extent (WHERE clause).
-    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    Bbox columns serve two pre-filters: narrowing countries to the input extent
+    (WHERE clause) and the cheap per-row bbox-overlap test ANDed before
+    ST_Intersects in the join ON clause (see build_spatial_join_condition).
     """
     if bbox_info["status"] == "optimal":
         return bbox_info
@@ -315,7 +316,11 @@ def _print_dry_run_query(
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
-    info(f"-- Step {final_step}: Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
+    if "bbox-overlap pre-filter" in query:
+        detail = "bbox-overlap pre-filter before ST_Intersects"
+    else:
+        detail = "ST_Intersects via DuckDB SPATIAL_JOIN operator"
+    info(f"-- Step {final_step}: Main spatial join query ({detail})")
 
     compression_str = (
         f"{compression}:{compression_level}"
@@ -385,11 +390,11 @@ def _setup_default_countries(
 def _prepare_bbox_columns(
     input_parquet, countries_parquet, using_default, add_bbox_flag, dry_run, verbose
 ):
-    """Prepare bbox columns for extent filtering of countries data.
+    """Prepare bbox columns for spatial pre-filtering of countries data.
 
-    Bbox columns are used to pre-filter countries by spatial extent (WHERE clause),
-    not for join optimization — DuckDB's SPATIAL_JOIN operator handles that
-    automatically via its R-tree.
+    Bbox columns drive two pre-filters: narrowing countries to the input extent
+    (WHERE clause) and the cheap per-row bbox-overlap test ANDed before
+    ST_Intersects in the join ON clause (see build_spatial_join_condition).
     """
     input_bbox_info, input_bbox_col = resolve_input_bbox_info(input_parquet, verbose)
 
@@ -549,13 +554,20 @@ def add_country_codes(
         if countries_bbox_col:
             debug(f"Countries bbox column: {countries_bbox_col} (used for extent filtering)")
 
+    join_condition = build_spatial_join_condition(
+        input_geom_col,
+        countries_geom_col,
+        input_bbox_col=input_bbox_col,
+        target_bbox_col=countries_bbox_col,
+    )
+
     query = f"""
     SELECT
         a.*,
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{quote_identifier(countries_geom_col)}, a.{quote_identifier(input_geom_col)})
+    ON {join_condition}
 """
 
     if dry_run:

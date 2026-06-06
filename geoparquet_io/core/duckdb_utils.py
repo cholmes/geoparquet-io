@@ -106,6 +106,63 @@ def quote_identifier(name: str) -> str:
     return f'"{escaped}"'
 
 
+def build_spatial_join_condition(
+    input_geom_col: str,
+    target_geom_col: str,
+    input_bbox_col: str | None = None,
+    target_bbox_col: str | None = None,
+    input_alias: str = "a",
+    target_alias: str = "b",
+) -> str:
+    """Build the ON-clause condition for a spatial join between two tables.
+
+    The precise predicate is always ``ST_Intersects(target_geom, input_geom)``.
+    When *both* sides expose a bbox covering column, a cheap bounding-box
+    overlap test is ANDed in front of it: DuckDB evaluates the four numeric
+    comparisons first and only runs the expensive geometry intersection on the
+    surviving candidate pairs. Because bbox overlap is a necessary condition for
+    geometry intersection, the result is identical to ST_Intersects alone -- it
+    is purely a performance pre-filter.
+
+    Dropping this pre-filter (as #457 did) makes the Overture remote datasets
+    run a full ST_Intersects against every admin geometry, which effectively
+    hangs. See PR #460.
+
+    Args:
+        input_geom_col: Geometry column on the input (left) table.
+        target_geom_col: Geometry column on the target (right) table.
+        input_bbox_col: Optional bbox covering column on the input table.
+        target_bbox_col: Optional bbox covering column on the target table.
+        input_alias: SQL alias for the input table (default "a").
+        target_alias: SQL alias for the target table (default "b").
+
+    Returns:
+        A SQL boolean expression for use directly after ``ON``.
+    """
+    qi_geom = quote_identifier(input_geom_col)
+    qt_geom = quote_identifier(target_geom_col)
+    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
+
+    # A one-sided bbox cannot form an overlap test, so fall back to the
+    # precise predicate alone.
+    if not (input_bbox_col and target_bbox_col):
+        return intersects
+
+    qi_bbox = quote_identifier(input_bbox_col)
+    qt_bbox = quote_identifier(target_bbox_col)
+    return (
+        "(\n"
+        "        -- Fast bbox-overlap pre-filter (cheap; eliminates most candidate pairs)\n"
+        f"        {input_alias}.{qi_bbox}.xmin <= {target_alias}.{qt_bbox}.xmax AND\n"
+        f"        {input_alias}.{qi_bbox}.xmax >= {target_alias}.{qt_bbox}.xmin AND\n"
+        f"        {input_alias}.{qi_bbox}.ymin <= {target_alias}.{qt_bbox}.ymax AND\n"
+        f"        {input_alias}.{qi_bbox}.ymax >= {target_alias}.{qt_bbox}.ymin\n"
+        "    )\n"
+        "    -- Precise check only runs on the bbox matches\n"
+        f"    AND {intersects}"
+    )
+
+
 def get_duckdb_connection(
     load_spatial=True,
     load_httpfs=None,

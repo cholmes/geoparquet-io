@@ -14,7 +14,7 @@ from geoparquet_io.core.common import (
     resolve_input_bbox_info,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -116,10 +116,11 @@ def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbo
 
 
 def _handle_bbox_optimization(input_parquet, input_bbox_info, add_bbox_flag, verbose):
-    """Handle bbox column setup for extent pre-filtering of admin boundaries.
+    """Handle bbox column setup for spatial pre-filtering of admin boundaries.
 
-    Bbox columns help pre-filter admin boundaries by spatial extent (WHERE clause).
-    DuckDB's SPATIAL_JOIN operator handles join optimization automatically.
+    Bbox columns serve two pre-filters: narrowing admin boundaries to the input
+    extent (WHERE clause) and the cheap per-row bbox-overlap test ANDed before
+    ST_Intersects in the join ON clause (see build_spatial_join_condition).
     """
     if input_bbox_info.get("status") == "native":
         return input_bbox_info
@@ -325,13 +326,20 @@ def _build_query_components(
         admin_where_clauses,
     )
 
+    join_condition = build_spatial_join_condition(
+        input_geom_col,
+        admin_geom_col,
+        input_bbox_col=input_bbox_col,
+        target_bbox_col=admin_bbox_col,
+    )
+
     query = f"""
     SELECT
         a.*,
         {admin_select_clause}
     FROM '{input_url}' a
     LEFT JOIN {admin_subquery} b
-    ON ST_Intersects(b.{quote_identifier(admin_geom_col)}, a.{quote_identifier(input_geom_col)})
+    ON {join_condition}
 """
 
     return query, admin_source
@@ -364,7 +372,10 @@ def _handle_dry_run_mode(
         admin_bbox_col,
     )
 
-    info("-- Main spatial join query (using DuckDB SPATIAL_JOIN operator)")
+    if input_bbox_col and admin_bbox_col:
+        info("-- Main spatial join query (bbox-overlap pre-filter before ST_Intersects)")
+    else:
+        info("-- Main spatial join query (ST_Intersects via DuckDB SPATIAL_JOIN operator)")
 
     if compression in ["GZIP", "ZSTD", "BROTLI"]:
         compression_str = f"{compression}:{compression_level}"
