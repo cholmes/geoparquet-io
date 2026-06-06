@@ -5,6 +5,7 @@ from geoparquet_io.core.duckdb_utils import (
     _bucket_needs_auth,
     _clear_s3_cache,
     _escape_sql_string,
+    build_spatial_join_condition,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
     quote_identifier,
@@ -70,6 +71,57 @@ class TestQuoteIdentifier:
         """SQL reserved words are safely quoted."""
         assert quote_identifier("select") == '"select"'
         assert quote_identifier("from") == '"from"'
+
+
+class TestBuildSpatialJoinCondition:
+    """Tests for the spatial-join ON-clause builder.
+
+    Regression guard for PR #460: the cheap bbox-overlap pre-filter must be
+    emitted whenever both sides have a bbox column. It was silently removed in
+    #457, which made `add admin-divisions --dataset overture` hang.
+    """
+
+    def test_without_bbox_columns_is_plain_intersects(self):
+        """No bbox columns -> bare ST_Intersects, no pre-filter."""
+        cond = build_spatial_join_condition("geometry", "geom")
+        assert cond == 'ST_Intersects(b."geom", a."geometry")'
+
+    def test_with_bbox_columns_adds_prefilter(self):
+        """Both sides have bbox -> four-sided overlap test ANDed before ST_Intersects."""
+        cond = build_spatial_join_condition("geometry", "geom", "bbox", "geom_bbox")
+        assert 'a."bbox".xmin <= b."geom_bbox".xmax' in cond
+        assert 'a."bbox".xmax >= b."geom_bbox".xmin' in cond
+        assert 'a."bbox".ymin <= b."geom_bbox".ymax' in cond
+        assert 'a."bbox".ymax >= b."geom_bbox".ymin' in cond
+        assert 'ST_Intersects(b."geom", a."geometry")' in cond
+        # The cheap bbox test must precede the expensive geometry intersection.
+        assert cond.index("xmin") < cond.index("ST_Intersects")
+        assert " AND " in cond
+
+    def test_one_sided_bbox_falls_back_to_intersects(self):
+        """A bbox on only one side cannot form a safe overlap test -> fall back."""
+        plain = 'ST_Intersects(b."g", a."g")'
+        assert build_spatial_join_condition("g", "g", input_bbox_col="bbox") == plain
+        assert build_spatial_join_condition("g", "g", target_bbox_col="bbox") == plain
+
+    def test_custom_aliases(self):
+        """Table aliases are configurable for both sides."""
+        cond = build_spatial_join_condition(
+            "geometry",
+            "geom",
+            "bbox",
+            "geom_bbox",
+            input_alias="lhs",
+            target_alias="rhs",
+        )
+        assert 'lhs."bbox".xmin <= rhs."geom_bbox".xmax' in cond
+        assert 'ST_Intersects(rhs."geom", lhs."geometry")' in cond
+
+    def test_identifiers_are_quoted(self):
+        """Column names with special characters are safely quoted."""
+        cond = build_spatial_join_condition("geo m", 'g"x', "b b", "q")
+        assert '"geo m"' in cond
+        assert '"g""x"' in cond  # embedded double-quote doubled
 
 
 class TestGetDuckdbConnection:

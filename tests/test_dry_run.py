@@ -125,7 +125,12 @@ class TestDryRunCommands:
         assert not os.path.exists(temp_output_file)
 
     def test_dry_run_with_bbox_column_present(self, places_test_file):
-        """Test dry-run when input has bbox column (for admin-divisions)."""
+        """When input has a bbox column, the ON clause must include the bbox pre-filter.
+
+        Regression guard for PR #460: #457 removed this cheap bbox-overlap test,
+        which made `add admin-divisions --dataset overture` hang. The pre-filter
+        is ANDed before the expensive ST_Intersects.
+        """
         runner = CliRunner()
         result = runner.invoke(
             add, ["admin-divisions", places_test_file, "output.parquet", "--dry-run", "--no-cache"]
@@ -133,9 +138,14 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        # Should use DuckDB's SPATIAL_JOIN operator (pure ST_Intersects, no bbox in ON clause)
-        assert "SPATIAL_JOIN operator" in result.output
         assert "ST_Intersects" in result.output
+        # Both sides expose a bbox column -> the four-sided overlap pre-filter must
+        # appear in the ON clause. These struct comparisons can only come from the
+        # pre-filter, so their presence is unambiguous proof it was emitted.
+        assert 'a."bbox".xmin <= b."geometry_bbox".xmax' in result.output
+        assert 'a."bbox".ymax >= b."geometry_bbox".ymin' in result.output
+        # The header must advertise the pre-filter, not claim a bare SPATIAL_JOIN.
+        assert "bbox-overlap pre-filter" in result.output
 
     def test_dry_run_with_native_geometry_input(self, fields_v2_file):
         """Test dry-run with GeoParquet 2.0 native geometry input."""
