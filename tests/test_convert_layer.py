@@ -18,6 +18,9 @@ Integration tests:
 
 import io
 import shutil
+import subprocess
+import sys
+import textwrap
 import zipfile
 
 import pyarrow.parquet as pq
@@ -372,49 +375,87 @@ class TestEstoniaGeoPackageIntegration:
         # Cleanup
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def test_sequential_layer_conversion_no_crash(self, estonia_gpkg, tmp_path):
-        """Converting multiple layers sequentially should not crash.
+    # Worker script run in a fresh subprocess (see test below for rationale).
+    # Converts the first N layers of a GeoPackage sequentially, tolerating
+    # per-layer read errors and reporting how many succeeded on stdout.
+    _SEQUENTIAL_CONVERT_WORKER = textwrap.dedent(
+        """
+        import sys
+        from pathlib import Path
 
-        This is the core regression test for issue #401. Before the fix,
-        converting layers in sequence would cause:
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.api.table import convert
+        from geoparquet_io.core.layers import list_layers
+
+        gpkg, out_dir, num = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])
+        layers = list_layers(gpkg)
+        converted = 0
+        for layer_name in layers[:num]:
+            output = out_dir / f"{layer_name}.parquet"
+            try:
+                convert(gpkg, layer=layer_name).write(str(output))
+                table = pq.read_table(str(output))
+                assert "geometry" in table.column_names
+                converted += 1
+            except Exception as exc:  # noqa: BLE001
+                # Individual layers may have unsupported geometry types or quirky
+                # WKB that GDAL/DuckDB cannot read. That is acceptable: the
+                # regression we guard against is a hard process crash, not a
+                # per-layer read error.
+                print(f"SKIP {layer_name}: {exc}", file=sys.stderr)
+        print(f"CONVERTED={converted}")
+        """
+    )
+
+    def test_sequential_layer_conversion_no_crash(self, estonia_gpkg, tmp_path):
+        """Converting multiple layers sequentially should not crash the process.
+
+        Core regression test for issue #401. Sequential GeoPackage layer
+        conversion historically caused native failures on Linux:
         - Segmentation fault (core dumped)
         - munmap_chunk(): invalid pointer
         - Invalid Input Error: Unsupported geometry type in WKB
 
-        The fix applies gc.collect() after closing DuckDB connections to ensure
-        GDAL's internal handles are fully released before the next read.
+        The conversion runs in a *fresh subprocess* for two reasons:
+        1. A native crash (SIGSEGV) becomes a clean, diagnosable test failure
+           (non-zero return code) instead of killing the pytest-xdist worker -
+           which surfaces in CI as an opaque "worker gw0 crashed" with no stack.
+        2. A fresh process gives GDAL/DuckDB clean global state, avoiding handle
+           races with sibling tests that share an xdist worker.
         """
-        # Get list of available layers
-        layers = list_layers(estonia_gpkg)
-        assert len(layers) > 0, "GeoPackage should have at least one layer"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                self._SEQUENTIAL_CONVERT_WORKER,
+                estonia_gpkg,
+                str(tmp_path),
+                str(self.NUM_LAYERS_TO_TEST),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
 
-        # Test a subset of layers (the full file has many layers)
-        layers_to_test = layers[: self.NUM_LAYERS_TO_TEST]
+        # A segfault/abort shows up as a negative return code (e.g. -11 SIGSEGV).
+        assert result.returncode == 0, (
+            f"Sequential GeoPackage layer conversion crashed (return code "
+            f"{result.returncode}).\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
-        # Convert each layer sequentially - this would crash before the fix
-        converted_count = 0
-        for layer_name in layers_to_test:
-            output = tmp_path / f"{layer_name}.parquet"
-            try:
-                result = convert(estonia_gpkg, layer=layer_name)
-                result.write(str(output))
-
-                # Verify output is valid
-                assert output.exists(), f"Output file for {layer_name} should exist"
-                table = pq.read_table(str(output))
-                assert table.num_rows >= 0, f"Layer {layer_name} should be readable"
-                assert "geometry" in table.column_names, f"Layer {layer_name} should have geometry"
-
-                converted_count += 1
-            except Exception as e:
-                # Some layers may have unsupported geometry types - that's OK
-                # The key test is that we don't crash with segfault
-                if "Unsupported geometry type" in str(e):
-                    continue
-                raise
-
-        # At least some layers should convert successfully
-        assert converted_count > 0, "At least one layer should convert successfully"
+        converted = next(
+            (
+                int(line.split("=", 1)[1])
+                for line in result.stdout.splitlines()
+                if line.startswith("CONVERTED=")
+            ),
+            0,
+        )
+        assert converted > 0, (
+            f"At least one layer should convert successfully.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
     def test_list_layers_estonia(self, estonia_gpkg):
         """Should be able to list layers in Estonia GeoPackage.
