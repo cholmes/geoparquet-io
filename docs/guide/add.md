@@ -297,9 +297,9 @@ Add administrative division columns via spatial join with remote boundaries data
 
 Performs spatial intersection between your data and remote admin boundaries to add admin division columns. Uses efficient spatial extent filtering to query only relevant boundaries from remote datasets.
 
-For native-geometry inputs (GeoParquet 2.0 and GeoParquet 1.1 with geoarrow encoding), the spatial join relies on native Parquet column statistics to skip irrelevant data, so no bbox pre-filter is needed. For non-native inputs (GeoParquet 1.x that carry a `bbox` column), a cheap bbox-overlap test is applied before `ST_Intersects` to prune candidates.
+For native-geometry inputs (GeoParquet 2.0 and GeoParquet 1.1 with geoarrow encoding), the spatial join relies on native Parquet column statistics to skip irrelevant data, but this is not quite working yet, so expect those to be a bit slower until [#462](https://github.com/geoparquet/geoparquet-io/issues/462) is implemented. For non-native inputs (GeoParquet 1.x that carry a `bbox` column), a cheap bbox-overlap test is applied before `ST_Intersects` to prune candidates, and using it will be 5-10x faster.
 
-The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds of millions of features) with bounded memory. A feature is attributed to the admin polygon(s) it intersects; because the per-level caches are non-overlapping, this is normally exactly one polygon per level. A feature straddling overlapping polygons at a border (a rare artifact of independent boundary simplification — see below) is emitted once per match. De-duplicating such border overlaps is intentionally left to a future dedicated operation rather than folded into this join.
+The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds of millions of features) with bounded memory. A feature is attributed to the admin polygon(s) it intersects; because the per-level caches are non-overlapping, this is normally exactly one polygon per level. A feature straddling overlapping polygons at a border is emitted once per match. De-duplicating such border overlaps is intentionally left to a future dedicated operation rather than folded into this join, as including it greatly degraded performance.
 
 ### Quick Start
 
@@ -374,10 +374,7 @@ Add multiple hierarchical administrative levels:
 !!! note "Overture: per-level cache and simplified boundaries"
     The Overture dataset uses a **per-level cache**: country and region
     boundaries are downloaded and cached as separate files rather than one
-    combined file. This split, together with geometry simplification, keeps
-    memory usage low enough to process large native-geometry inputs (for
-    example, a ~411k-feature file that previously required over 14 GiB and
-    triggered an out-of-memory error).
+    combined file.
 
     Overture boundaries are simplified with `ST_SimplifyPreserveTopology` at a
     tolerance of `0.0001` degrees (roughly 11 m near the equator, ~7 m at
