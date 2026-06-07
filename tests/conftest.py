@@ -88,6 +88,43 @@ def temp_output_file(temp_output_dir):
     return os.path.join(temp_output_dir, "output.parquet")
 
 
+def _write_with_crs_state(source_file, dest_file, crs_state):
+    """Write a copy of source_file with the geometry column's crs key adjusted.
+
+    crs_state: "null" sets crs to None (explicit unknown CRS); "absent" removes
+    the crs key entirely (defaults to OGC:CRS84 per the GeoParquet spec).
+    """
+    table = pq.read_table(source_file)
+    metadata = dict(table.schema.metadata or {})
+    geo = json.loads(metadata[b"geo"].decode("utf-8"))
+    primary = geo.get("primary_column", "geometry")
+    col_meta = geo["columns"][primary]
+    if crs_state == "null":
+        col_meta["crs"] = None
+    elif crs_state == "absent":
+        col_meta.pop("crs", None)
+    metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+    table = table.replace_schema_metadata(metadata)
+    pq.write_table(table, dest_file)
+    return dest_file
+
+
+@pytest.fixture
+def null_crs_parquet(tmp_path):
+    """A GeoParquet file with an explicit ``"crs": null`` (unknown CRS)."""
+    return _write_with_crs_state(
+        str(BUILDINGS_TEST_FILE), str(tmp_path / "null_crs.parquet"), "null"
+    )
+
+
+@pytest.fixture
+def absent_crs_parquet(tmp_path):
+    """A GeoParquet file with the crs key omitted (defaults to OGC:CRS84)."""
+    return _write_with_crs_state(
+        str(BUILDINGS_TEST_FILE), str(tmp_path / "absent_crs.parquet"), "absent"
+    )
+
+
 @contextmanager
 def duckdb_connection():
     """

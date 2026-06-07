@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +19,10 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import (
     _extract_crs_identifier,
+    crs_is_explicitly_null,
     extract_crs_from_parquet,
+    geoparquet_crs_is_null,
+    is_default_crs,
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
@@ -128,6 +132,7 @@ def reproject_table(
     target_crs: str = "EPSG:4326",
     source_crs: str | None = None,
     geometry_column: str | None = None,
+    assume_crs84: bool = False,
 ) -> pa.Table:
     """
     Reproject an Arrow Table to a different CRS.
@@ -139,6 +144,8 @@ def reproject_table(
         target_crs: Target CRS (default: EPSG:4326)
         source_crs: Source CRS. If None, detected from table metadata.
         geometry_column: Geometry column name. If None, detected from metadata.
+        assume_crs84: If True, treat an unknown/null input CRS as OGC:CRS84
+            instead of raising. Useful for fixing files that carry ``crs: null``.
 
     Returns:
         New table with reprojected geometry
@@ -146,8 +153,11 @@ def reproject_table(
     # Detect geometry column
     geom_col = geometry_column or _detect_geometry_column_from_table(table)
 
-    # Detect or use source CRS
+    # Detect or use source CRS. When the input CRS is explicitly null/unknown and
+    # assume_crs84 is set, fall back to CRS84 rather than whatever detection finds.
     effective_source_crs = source_crs or _detect_crs_from_table(table, geom_col)
+    if assume_crs84 and not source_crs:
+        effective_source_crs = "OGC:CRS84"
 
     # Create connection and register table
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
@@ -196,9 +206,14 @@ def reproject_table(
             if b"geo" in new_metadata:
                 try:
                     geo_meta = json.loads(new_metadata[b"geo"].decode("utf-8"))
-                    target_crs_projjson = parse_crs_string_to_projjson(target_crs, con)
-                    if geom_col in geo_meta.get("columns", {}):
-                        geo_meta["columns"][geom_col]["crs"] = target_crs_projjson
+                    columns = geo_meta.get("columns", {})
+                    if geom_col in columns:
+                        if is_default_crs(target_crs):
+                            # Default CRS is signalled by omitting the key, never
+                            # by writing an explicit CRS84 object or null.
+                            columns[geom_col].pop("crs", None)
+                        else:
+                            columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
                     new_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                     result = result.replace_schema_metadata(new_metadata)
                 except (json.JSONDecodeError, KeyError):
@@ -249,6 +264,38 @@ def _get_bbox_column_name(input_url: str, verbose: bool) -> str | None:
     return None
 
 
+def _sanitize_null_crs_file(input_url: str, verbose: bool = False) -> tuple[str, str | None]:
+    """Strip an explicit ``crs: null`` so the file presents as default OGC:CRS84.
+
+    DuckDB's GeoParquet reader rejects ``crs: null`` outright, so for the
+    ``assume_crs84`` path we rewrite the geo metadata (no coordinate change) to
+    a temp file and read from that instead.
+
+    Returns:
+        ``(url_to_read, temp_path_or_None)`` — the second element, when set, is a
+        temp file the caller must delete.
+    """
+    import pyarrow.parquet as pq
+
+    if not geoparquet_crs_is_null(input_url):
+        return input_url, None
+
+    table = pq.read_table(input_url)
+    metadata = dict(table.schema.metadata or {})
+    geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
+    for col in geo_meta.get("columns", {}).values():
+        if crs_is_explicitly_null(col):
+            col.pop("crs", None)
+    metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+    table = table.replace_schema_metadata(metadata)
+
+    temp_path = str(Path(tempfile.gettempdir()) / f"gpio_assume_crs84_{uuid.uuid4()}.parquet")
+    pq.write_table(table, temp_path)
+    if verbose:
+        debug(f"Treating unknown (null) CRS as OGC:CRS84 for {input_url}")
+    return temp_path, temp_path
+
+
 def reproject_impl(
     input_parquet: str,
     output_parquet: str | None = None,
@@ -264,6 +311,7 @@ def reproject_impl(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     memory_limit: str | None = None,
+    assume_crs84: bool = False,
 ) -> ReprojectResult:
     """
     Reproject a GeoParquet file to a different CRS using DuckDB.
@@ -273,6 +321,8 @@ def reproject_impl(
         output_parquet: Path to output file. If None, generates name from input.
         target_crs: Target CRS (default: EPSG:4326)
         source_crs: Override source CRS. If None, detected from metadata.
+        assume_crs84: Treat an unknown/null input CRS as OGC:CRS84 (rewrites the
+            metadata so DuckDB can read the file; no coordinate change).
         overwrite: If True and output_parquet is None, overwrite input file
         compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
         compression_level: Compression level (varies by format)
@@ -308,6 +358,22 @@ def reproject_impl(
     # Get safe URL for input
     input_url = safe_file_url(input_parquet, verbose=verbose)
 
+    # When asked, rewrite an explicit null CRS to the default so DuckDB (which
+    # rejects crs:null) can read the file. The temp copy is read in place of the
+    # original; the geometry column source for detection follows it too.
+    temp_sanitized = None
+    geom_detect_source = input_parquet
+    if assume_crs84:
+        input_url, temp_sanitized = _sanitize_null_crs_file(input_url, verbose=verbose)
+        if temp_sanitized:
+            geom_detect_source = temp_sanitized
+    elif geoparquet_crs_is_null(input_url):
+        raise ValueError(
+            "Input has an explicit null CRS (unknown). DuckDB cannot read it. "
+            "If the coordinates are lon/lat WGS84, re-run with --assume-crs84 to "
+            "treat them as OGC:CRS84 and write the default."
+        )
+
     # Create DuckDB connection with spatial extension
     con = get_duckdb_connection(
         load_spatial=True,
@@ -316,7 +382,7 @@ def reproject_impl(
 
     try:
         # Detect geometry column
-        geom_col = find_primary_geometry_column(input_parquet, verbose=verbose)
+        geom_col = find_primary_geometry_column(geom_detect_source, verbose=verbose)
         log(f"Geometry column: {geom_col}")
 
         # Detect source CRS from metadata
@@ -483,6 +549,8 @@ def reproject_impl(
 
     finally:
         con.close()
+        if temp_sanitized and Path(temp_sanitized).exists():
+            Path(temp_sanitized).unlink()
 
 
 def _reproject_streaming(
@@ -495,6 +563,7 @@ def _reproject_streaming(
     verbose: bool,
     profile: str | None,
     geoparquet_version: str | None,
+    assume_crs84: bool = False,
 ) -> None:
     """Handle streaming input/output for reproject."""
     import os
@@ -506,6 +575,7 @@ def _reproject_streaming(
         verbose = False
 
     temp_input_file = None
+    temp_sanitized = None
 
     try:
         # If reading from stdin, write to temp file first
@@ -522,6 +592,19 @@ def _reproject_streaming(
 
         # Get safe URL
         working_url = safe_file_url(working_file, verbose=False)
+
+        # Rewrite an explicit null CRS to the default so DuckDB can read it.
+        if assume_crs84:
+            sanitized_url, temp_sanitized = _sanitize_null_crs_file(working_url, verbose=verbose)
+            if temp_sanitized:
+                working_file = temp_sanitized
+                working_url = sanitized_url
+        elif geoparquet_crs_is_null(working_url):
+            raise ValueError(
+                "Input has an explicit null CRS (unknown). DuckDB cannot read it. "
+                "If the coordinates are lon/lat WGS84, re-run with --assume-crs84 to "
+                "treat them as OGC:CRS84 and write the default."
+            )
 
         # Create connection
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(working_file))
@@ -584,12 +667,16 @@ def _reproject_streaming(
             metadata, _ = get_parquet_metadata(working_file, verbose=False)
 
             # Update metadata with target CRS
-            target_crs_projjson = parse_crs_string_to_projjson(target_crs, con)
             if metadata and b"geo" in metadata:
                 try:
                     geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-                    if geom_col in geo_meta.get("columns", {}):
-                        geo_meta["columns"][geom_col]["crs"] = target_crs_projjson
+                    columns = geo_meta.get("columns", {})
+                    if geom_col in columns:
+                        if is_default_crs(target_crs):
+                            # Default CRS is signalled by omitting the key.
+                            columns[geom_col].pop("crs", None)
+                        else:
+                            columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                 except (json.JSONDecodeError, KeyError):
                     pass
@@ -614,9 +701,11 @@ def _reproject_streaming(
             con.close()
 
     finally:
-        # Clean up temp input file
+        # Clean up temp input file(s)
         if temp_input_file and os.path.exists(temp_input_file):
             os.remove(temp_input_file)
+        if temp_sanitized and os.path.exists(temp_sanitized):
+            os.remove(temp_sanitized)
 
 
 def reproject(
@@ -634,6 +723,7 @@ def reproject(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     memory_limit: str | None = None,
+    assume_crs84: bool = False,
 ) -> ReprojectResult | None:
     """
     Reproject a GeoParquet file to a different CRS.
@@ -675,6 +765,7 @@ def reproject(
             verbose,
             profile,
             geoparquet_version,
+            assume_crs84=assume_crs84,
         )
         return None
 
@@ -694,4 +785,5 @@ def reproject(
         row_group_size_mb,
         row_group_rows,
         memory_limit,
+        assume_crs84=assume_crs84,
     )

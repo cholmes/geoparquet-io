@@ -1408,6 +1408,7 @@ class Table:
         self,
         target_crs: str = "EPSG:4326",
         source_crs: str | None = None,
+        assume_crs84: bool = False,
     ) -> Table:
         """
         Reproject geometry to a different coordinate reference system.
@@ -1415,6 +1416,8 @@ class Table:
         Args:
             target_crs: Target CRS (default: EPSG:4326)
             source_crs: Source CRS. If None, detected from metadata.
+            assume_crs84: Treat an unknown/null input CRS as OGC:CRS84 instead of
+                whatever detection finds (no coordinate change).
 
         Returns:
             New Table with reprojected geometry
@@ -1426,6 +1429,7 @@ class Table:
             target_crs=target_crs,
             source_crs=source_crs,
             geometry_column=self._geometry_column,
+            assume_crs84=assume_crs84,
         )
         return Table(result, self._geometry_column)
 

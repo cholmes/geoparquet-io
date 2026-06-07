@@ -314,6 +314,7 @@ def reproject(
     target_crs: str = "EPSG:4326",
     source_crs: str | None = None,
     geometry_column: str | None = None,
+    assume_crs84: bool = False,
 ) -> pa.Table:
     """
     Reproject geometry to a different coordinate reference system.
@@ -323,6 +324,8 @@ def reproject(
         target_crs: Target CRS (default: EPSG:4326)
         source_crs: Source CRS. If None, detected from metadata.
         geometry_column: Geometry column name (auto-detected if None)
+        assume_crs84: Treat an unknown/null input CRS as OGC:CRS84 instead of
+            whatever detection finds (no coordinate change).
 
     Returns:
         New table with reprojected geometry
@@ -332,6 +335,7 @@ def reproject(
         target_crs=target_crs,
         source_crs=source_crs,
         geometry_column=geometry_column,
+        assume_crs84=assume_crs84,
     )
 
 

@@ -176,6 +176,22 @@ Reproject a GeoParquet file to a different CRS.
 gpio convert reproject input.parquet output.parquet --dst-crs EPSG:32610
 ```
 
+### Unknown vs default CRS
+
+The GeoParquet spec distinguishes two states for a geometry column's `crs`:
+
+- **omitted** → defaults to OGC:CRS84 (lon/lat WGS84)
+- **`null`** → CRS is *unknown*
+
+A file declaring `crs: null` cannot be read by DuckDB and won't reproject. If the
+coordinates are really lon/lat WGS84, use `--assume-crs84` to treat them as
+OGC:CRS84 and rewrite the file so the `crs` key is omitted (no coordinates are
+changed):
+
+```bash
+gpio convert reproject unknown_crs.parquet fixed.parquet --assume-crs84
+```
+
 See `gpio convert reproject --help` for all options.
 
 ## S3-Compatible Storage

@@ -74,6 +74,49 @@ def is_default_crs(crs):
     return False
 
 
+# Per-process set of inputs we've already warned about, to keep the broad
+# null-CRS warning from firing repeatedly within a single CLI invocation.
+_warned_null_crs_paths: set[str] = set()
+
+#: Shared guidance appended to null-CRS warnings/validation messages.
+NULL_CRS_HINT = (
+    "An explicit null CRS means the CRS is *unknown* (not the OGC:CRS84 default). "
+    "If the coordinates are really lon/lat WGS84, run "
+    "`gpio convert reproject <input> <output> --assume-crs84` to set the default."
+)
+
+
+def crs_is_explicitly_null(col_meta: dict) -> bool:
+    """Return True only when a geometry column's metadata sets ``crs`` to null.
+
+    An explicit ``"crs": null`` means the CRS is unknown, which is different
+    from omitting the key entirely (the omitted case defaults to OGC:CRS84).
+    """
+    return isinstance(col_meta, dict) and "crs" in col_meta and col_meta["crs"] is None
+
+
+def geoparquet_crs_is_null(parquet_file) -> bool:
+    """Return True if the primary geometry column has an explicit ``crs: null``."""
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+    from geoparquet_io.core.file_utils import safe_file_url
+
+    safe_url = safe_file_url(str(parquet_file), verbose=False)
+    geo_meta = get_geo_metadata(safe_url)
+    if not geo_meta:
+        return False
+    primary_col = geo_meta.get("primary_column", "geometry")
+    col_meta = geo_meta.get("columns", {}).get(primary_col, {})
+    return crs_is_explicitly_null(col_meta)
+
+
+def warn_null_crs_once(key: str) -> None:
+    """Emit the null-CRS warning at most once per ``key`` for this process."""
+    if not key or key in _warned_null_crs_paths:
+        return
+    _warned_null_crs_paths.add(key)
+    warn(f"Input has an explicit null CRS (unknown). {NULL_CRS_HINT}")
+
+
 def _validate_projjson(crs: dict) -> bool:
     """Validate that a CRS dict has the expected PROJJSON structure."""
     if not isinstance(crs, dict):
@@ -133,6 +176,8 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
         primary_col = geo_meta.get("primary_column", "geometry")
         columns = geo_meta.get("columns", {})
         if primary_col in columns:
+            if crs_is_explicitly_null(columns[primary_col]):
+                warn_null_crs_once(safe_url)
             crs = columns[primary_col].get("crs")
             if crs and not is_default_crs(crs):
                 if verbose:

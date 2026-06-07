@@ -258,9 +258,14 @@ def get_crs_from_arrow_table(table: pa.Table, geometry_column: str) -> str | Non
         return None
 
     try:
+        from geoparquet_io.core.crs_utils import crs_is_explicitly_null, warn_null_crs_once
+
         geo_meta = json.loads(geo_bytes.decode("utf-8"))
         columns = geo_meta.get("columns", {})
         col_meta = columns.get(geometry_column, {})
+
+        if crs_is_explicitly_null(col_meta):
+            warn_null_crs_once(f"table:{hash(geo_bytes)}")
 
         crs = col_meta.get("crs")
         if crs:
@@ -399,11 +404,16 @@ def extract_crs_from_table(
     # Fall back to geo metadata
     if table.schema.metadata and b"geo" in table.schema.metadata:
         try:
-            geo_meta = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+            from geoparquet_io.core.crs_utils import crs_is_explicitly_null, warn_null_crs_once
+
+            geo_bytes = table.schema.metadata[b"geo"]
+            geo_meta = json.loads(geo_bytes.decode("utf-8"))
             if isinstance(geo_meta, dict):
                 columns = geo_meta.get("columns", {})
                 geom_col_name = geometry_column or geo_meta.get("primary_column", "geometry")
                 if geom_col_name in columns:
+                    if crs_is_explicitly_null(columns[geom_col_name]):
+                        warn_null_crs_once(f"table:{hash(geo_bytes)}")
                     return columns[geom_col_name].get("crs")
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass
