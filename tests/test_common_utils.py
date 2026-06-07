@@ -607,6 +607,28 @@ class TestGetBboxAdvice:
         result = get_bbox_advice(places_test_file, "spatial_filtering", verbose=True)
         assert isinstance(result, dict)
 
+    def test_spatial_filtering_geoarrow_native(self, places_test_file, tmp_path):
+        """1.1-geoarrow files are native geometry despite version 1.1.
+
+        Regression for #461: detection switched to file_type membership, which
+        labels 1.1-geoarrow as geoparquet_v1 (non-native) even though it carries
+        native geometry columns. Native detection must read has_native_geo_types.
+        """
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        geoarrow_file = str(tmp_path / "places_geoarrow.parquet")
+        convert_to_geoparquet(
+            places_test_file,
+            geoarrow_file,
+            skip_hilbert=True,
+            geoparquet_version="1.1-geoarrow",
+        )
+
+        result = get_bbox_advice(geoarrow_file, "spatial_filtering", verbose=False)
+        assert result["has_native_geometry"] is True
+        assert result["skip_bbox_prefilter"] is True
+        assert result["needs_warning"] is False
+
 
 class TestValidateParquetExtension:
     """Tests for validate_parquet_extension function."""

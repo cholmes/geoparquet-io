@@ -196,11 +196,13 @@ class TestOvertureAdminDataset:
         dataset = OvertureAdminDataset()
         transform = dataset.get_column_transform("region")
 
-        # Should return transformation SQL to strip country prefix
+        # Should return transformation SQL to strip country prefix. Column refs
+        # are qualified with the admin alias `b.` (and quoted) so the transform
+        # is unambiguous when the input already has a `region` column (todo 015).
         assert transform is not None
-        assert "CASE WHEN region LIKE '%-%'" in transform
-        assert "split_part(region, '-', 2)" in transform
-        assert "ELSE region END" in transform
+        assert "CASE WHEN b.\"region\" LIKE '%-%'" in transform
+        assert "split_part(b.\"region\", '-', 2)" in transform
+        assert 'ELSE b."region" END' in transform
 
     def test_get_column_transform_country(self):
         """Test that country level returns None (no transformation needed)."""
@@ -490,8 +492,8 @@ class TestAdminDatasetVersion:
         """Test that Overture dataset has a VERSION class attribute."""
         assert hasattr(OvertureAdminDataset, "VERSION")
         assert isinstance(OvertureAdminDataset.VERSION, str)
-        # Version should match release format like "2025-10-22.0"
-        assert "." in OvertureAdminDataset.VERSION or "-" in OvertureAdminDataset.VERSION
+        # VERSION is the fallback release; should match date format like "2026-05-20.0"
+        assert "." in OvertureAdminDataset.VERSION and "-" in OvertureAdminDataset.VERSION
 
     def test_gaul_get_version(self):
         """Test get_version() method on GAUL dataset."""
@@ -500,10 +502,38 @@ class TestAdminDatasetVersion:
         assert version == GAULAdminDataset.VERSION
 
     def test_overture_get_version(self):
-        """Test get_version() method on Overture dataset."""
-        dataset = OvertureAdminDataset()
-        version = dataset.get_version()
-        assert version == OvertureAdminDataset.VERSION
+        """Test get_version() method on Overture dataset resolves dynamically."""
+        from unittest.mock import patch
+
+        import geoparquet_io.core.overture as overture_mod
+
+        original_cached = overture_mod._cached_release
+        try:
+            dataset = OvertureAdminDataset()
+            with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+                mock.return_value = "2099-01-01.0"
+                overture_mod._cached_release = None
+                version = dataset.get_version()
+                assert version == "2099-01-01.0"
+        finally:
+            overture_mod._cached_release = original_cached
+
+    def test_overture_get_version_rejects_malformed(self):
+        """Test get_version() falls back when release format is malformed."""
+        from unittest.mock import patch
+
+        import geoparquet_io.core.overture as overture_mod
+
+        original_cached = overture_mod._cached_release
+        try:
+            dataset = OvertureAdminDataset()
+            with patch("geoparquet_io.core.overture._fetch_latest_release") as mock:
+                mock.return_value = "malicious-input; DROP TABLE"
+                overture_mod._cached_release = None
+                version = dataset.get_version()
+                assert version == OvertureAdminDataset.VERSION
+        finally:
+            overture_mod._cached_release = original_cached
 
     def test_current_dataset_has_version(self):
         """Test that Current dataset has a VERSION attribute."""

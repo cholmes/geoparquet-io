@@ -75,6 +75,29 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- Fix out-of-memory crash in `gpio add admin-divisions --dataset overture` on
+  large inputs (#461)
+  - Overture now uses a **per-level cache** (separate country and region cache
+    files instead of one combined file), with simplified boundaries, to keep
+    memory bounded.
+  - The spatial join is a plain streaming `LEFT JOIN` again (its original
+    design), which spills to disk and scales to multi-million-feature inputs. The
+    interim attempt to de-duplicate overlapping border matches inside the join
+    used a `QUALIFY ROW_NUMBER()` window; DuckDB's window operator cannot spill,
+    so it ran out of memory (~14 GiB) on large files. De-duplication of features
+    that straddle overlapping admin boundaries will return later as a dedicated
+    operation rather than being folded into this join.
+  - Native-geometry inputs (GeoParquet 2.0 and 1.1-geoarrow) use native Parquet
+    column statistics for the join; the bbox pre-filter is retained only for
+    non-native 1.x inputs that carry a `bbox` column.
+  - Admin joins spill to disk via a DuckDB temp directory and run with the
+    memory-control settings (single-threaded, no order preservation) DuckDB
+    needs to spill reliably.
+- Fix out-of-memory crash when writing large results with the default
+  `duckdb-kv` write strategy. The Parquet writer no longer buffers the entire
+  result in memory to preserve row order; it streams row groups to disk instead.
+  Output order is unchanged — single-threaded writes and explicit `ORDER BY`
+  clauses (e.g. `gpio sort hilbert`) are preserved.
 - Fix CRS export for GDAL formats (fixes #189, #190)
   - Projected CRS now correctly roundtrips through FlatGeobuf and GeoPackage
 - Fix crash on non-numeric CRS codes like IGNF:LAMB93 (#193)

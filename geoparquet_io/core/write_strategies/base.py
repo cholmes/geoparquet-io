@@ -71,7 +71,14 @@ def build_geo_metadata(
 
     # Encoding (required by GeoParquet spec)
     if "encoding" not in col_meta:
-        col_meta["encoding"] = "WKB"
+        # For 1.1-geoarrow, preserve the input encoding (native type) from geometry_info.
+        # For all other v1.x versions, geometry is converted to WKB blob before writing.
+        input_encoding = (
+            geometry_info.get("metadata", {}).get(geometry_column, {}).get("encoding")
+            if geometry_info and geoparquet_version == "1.1-geoarrow"
+            else None
+        )
+        col_meta["encoding"] = input_encoding or "WKB"
 
     # Geometry types
     if geometry_types is not None:

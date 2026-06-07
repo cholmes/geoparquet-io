@@ -2,6 +2,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal, TypedDict
 
 import duckdb
 import pyarrow.parquet as pq
@@ -19,6 +20,7 @@ from geoparquet_io.core.duckdb_utils import (
     _get_query_columns,
     _wrap_query_with_wkb_conversion,
     get_duckdb_connection,
+    quote_identifier,
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
@@ -74,7 +76,7 @@ def should_skip_bbox(geoparquet_version):
     Returns:
         bool: True if bbox should be skipped, False if bbox should be added
     """
-    return geoparquet_version in ("2.0", "parquet-geo-only")
+    return geoparquet_version in ("2.0", "parquet-geo-only", "1.1-geoarrow")
 
 
 # LRU cache for detect_geoparquet_file_type results
@@ -1907,7 +1909,17 @@ def _determine_bbox_status(has_bbox_column, bbox_column_name, has_bbox_metadata)
         return "poor", "❌ No valid bbox column found"
 
 
-def check_bbox_structure(parquet_file, verbose=False):
+class BboxInfo(TypedDict, total=False):
+    """Bbox structure information returned by check_bbox_structure."""
+
+    has_bbox_column: bool
+    bbox_column_name: str | None
+    has_bbox_metadata: bool
+    status: Literal["optimal", "suboptimal", "poor", "native"]
+    message: str
+
+
+def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
     """
     Check bbox structure and metadata coverage in a GeoParquet file.
 
@@ -1997,7 +2009,11 @@ def get_bbox_advice(
     file_info = detect_geoparquet_file_type(parquet_file, verbose)
     bbox_info = check_bbox_structure(parquet_file, verbose)
 
-    has_native_geo = file_info["file_type"] in ("geoparquet_v2", "parquet_geo_only")
+    # Read native-geometry capability directly rather than inferring from file_type:
+    # a 1.1-geoarrow file carries native geometry columns but is labelled
+    # "geoparquet_v1" (version starts with "1."), so a file_type membership check
+    # would misclassify it as non-native. .get() also avoids a KeyError.
+    has_native_geo = file_info.get("has_native_geo_types", False)
     has_bbox = bbox_info["has_bbox_column"]
 
     # Only skip bbox pre-filtering for spatial_filtering operations with native geometry.
@@ -2061,12 +2077,13 @@ def _build_bounds_query(safe_url, bbox_info, geometry_column, verbose):
         if verbose:
             debug(f"Using bbox column '{bbox_col}' for fast bounds calculation")
 
+        q_bbox = quote_identifier(bbox_col)
         return f"""
         SELECT
-            MIN({bbox_col}.xmin) as xmin,
-            MIN({bbox_col}.ymin) as ymin,
-            MAX({bbox_col}.xmax) as xmax,
-            MAX({bbox_col}.ymax) as ymax
+            MIN({q_bbox}.xmin) as xmin,
+            MIN({q_bbox}.ymin) as ymin,
+            MAX({q_bbox}.xmax) as xmax,
+            MAX({q_bbox}.ymax) as ymax
         FROM '{safe_url}'
         """
     else:
@@ -2075,12 +2092,13 @@ def _build_bounds_query(safe_url, bbox_info, geometry_column, verbose):
         )
         info("💡 Tip: Add a bbox column for faster operations with 'gpio add bbox'")
 
+        q_geom = quote_identifier(geometry_column)
         return f"""
         SELECT
-            MIN(ST_XMin({geometry_column})) as xmin,
-            MIN(ST_YMin({geometry_column})) as ymin,
-            MAX(ST_XMax({geometry_column})) as xmax,
-            MAX(ST_YMax({geometry_column})) as ymax
+            MIN(ST_XMin({q_geom})) as xmin,
+            MIN(ST_YMin({q_geom})) as ymin,
+            MAX(ST_XMax({q_geom})) as xmax,
+            MAX(ST_YMax({q_geom})) as ymax
         FROM '{safe_url}'
         """
 
