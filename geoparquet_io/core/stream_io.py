@@ -208,6 +208,7 @@ def write_output(
     profile: str | None = None,
     custom_metadata: dict | None = None,
     geoparquet_version: str | None = None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ) -> pa.Table | None:
     """
     Execute query and write result to file or stream.
@@ -256,6 +257,7 @@ def write_output(
             profile,
             custom_metadata,
             geoparquet_version,
+            extra_kv_metadata,
         )
         return None
 
@@ -328,6 +330,7 @@ def _write_file_output(
     profile: str | None,
     custom_metadata: dict | None,
     geoparquet_version: str | None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ) -> None:
     """Write output to Parquet file."""
     # Auto-detect version from input metadata if not explicitly provided
@@ -347,6 +350,7 @@ def _write_file_output(
         verbose=verbose,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        extra_kv_metadata=extra_kv_metadata,
     )
 
 
@@ -363,6 +367,7 @@ def execute_transform(
     profile: str | None = None,
     custom_metadata: dict | None = None,
     geoparquet_version: str | None = None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ) -> pa.Table | None:
     """
     Execute a transformation with unified streaming/file I/O.
@@ -422,4 +427,5 @@ def execute_transform(
             profile=profile,
             custom_metadata=custom_metadata,
             geoparquet_version=geoparquet_version,
+            extra_kv_metadata=extra_kv_metadata,
         )

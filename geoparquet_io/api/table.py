@@ -1321,6 +1321,34 @@ class Table:
         )
         return Table(result, self._geometry_column)
 
+    def add_geometry_metrics(
+        self,
+        vecorel: bool = True,
+    ) -> Table:
+        """
+        Add geodesic area (m²) and perimeter (m) columns.
+
+        Uses WGS84 spheroid-based calculations. Adds metrics:area
+        and metrics:perimeter columns.
+
+        Args:
+            vecorel: Add Vecorel schema metadata (default: True)
+
+        Returns:
+            New Table with geometry metrics added
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> table.add_geometry_metrics().write('output.parquet')
+        """
+        from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+
+        result_table = self._with_temp_io_files(
+            add_geometry_metrics,
+            vecorel=vecorel,
+        )
+        return Table(result_table, self._geometry_column)
+
     def add_kdtree(
         self,
         column_name: str = "kdtree_cell",
@@ -2349,6 +2377,7 @@ class Table:
         *,
         dataset: str = "overture",
         levels: list[str] | None = None,
+        vecorel: bool = False,
     ) -> Table:
         """
         Add administrative division columns via spatial join.
@@ -2359,6 +2388,8 @@ class Table:
         Args:
             dataset: Boundaries dataset ("overture", "gaul", or custom URL)
             levels: Admin levels to add (e.g., ["country", "admin1"])
+            vecorel: Output Vecorel-compliant columns. Forces Overture dataset
+                with country,region levels. (default: False)
 
         Returns:
             Table with admin division columns added
@@ -2366,13 +2397,20 @@ class Table:
         Example:
             >>> table = gpio.read('data.parquet')
             >>> enriched = table.add_admin_divisions(levels=["country", "admin1"])
+            >>> # Vecorel-compliant output
+            >>> enriched = table.add_admin_divisions(vecorel=True)
         """
         from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+
+        if vecorel:
+            dataset = "overture"
+            levels = ["country", "region"]
 
         result_table = self._with_temp_io_files(
             add_admin_divisions_multi,
             dataset_name=dataset,
             levels=levels or ["country"],
+            vecorel=vecorel,
             verbose=False,
         )
         return Table(result_table, self._geometry_column)
@@ -2564,6 +2602,7 @@ class Table:
         levels: list[str] | None = None,
         hive: bool = True,
         overwrite: bool = False,
+        vecorel: bool = False,
         compression: str = "ZSTD",
         compression_level: int = 15,
     ) -> dict:
@@ -2579,6 +2618,10 @@ class Table:
             levels: Admin levels to partition by (e.g., ["country", "admin1"])
             hive: Use Hive-style partitioning
             overwrite: Overwrite existing files
+            vecorel: Output Vecorel-compliant admin columns
+                (admin:country_code, admin:subdivision_code) in each partition
+                with schema metadata. Forces the Overture dataset with
+                country,region levels. (default: False)
             compression: Compression codec
             compression_level: Compression level
 
@@ -2597,6 +2640,10 @@ class Table:
             partition_by_admin_hierarchical,
         )
 
+        if vecorel:
+            dataset = "overture"
+            levels = ["country", "region"]
+
         return _run_partition_with_temp_file(
             self._table,
             self._geometry_column,
@@ -2604,10 +2651,11 @@ class Table:
             output_dir,
             temp_prefix="gpio_part_adm",
             core_kwargs={
-                "dataset": dataset,
+                "dataset_name": dataset,
                 "levels": levels or ["country"],
                 "hive": hive,
                 "overwrite": overwrite,
+                "vecorel": vecorel,
             },
             compression=compression,
             compression_level=compression_level,

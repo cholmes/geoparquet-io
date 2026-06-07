@@ -57,17 +57,23 @@ def _build_admin_subquery(
 
 def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     """Build SELECT clause for admin columns with transformations."""
+    use_coalesce = prefix == "vecorel"
     admin_select_parts = []
     for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
         output_col_name = dataset.get_output_column_name(level, prefix=prefix)
         col_transform = dataset.get_column_transform(level)
 
         if col_transform:
-            admin_select_parts.append(f'{col_transform} as "{output_col_name}"')
+            expr = col_transform
         elif "[" in col or "(" in col:
-            admin_select_parts.append(f'b._col_{i} as "{output_col_name}"')
+            expr = f"b._col_{i}"
         else:
-            admin_select_parts.append(f'b."{col}" as "{output_col_name}"')
+            expr = f'b."{col}"'
+
+        if use_coalesce:
+            expr = f"COALESCE({expr}, 'ZZ')"
+
+        admin_select_parts.append(f'{expr} as "{output_col_name}"')
 
     return ", ".join(admin_select_parts)
 
@@ -227,9 +233,9 @@ def _print_dry_run_header(
     )
 
 
-def _get_result_stats(con, output_parquet, dataset, levels, verbose):
+def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None):
     """Get statistics about the results."""
-    output_col_names = [dataset.get_output_column_name(level) for level in levels]
+    output_col_names = [dataset.get_output_column_name(level, prefix=prefix) for level in levels]
     admin_cols_check = " OR ".join([f'"{col}" IS NOT NULL' for col in output_col_names])
 
     stats_query = f"""
@@ -518,6 +524,7 @@ def _execute_per_level_joins(
     geoparquet_version,
     prefix,
     no_cache,
+    extra_kv=None,
 ):
     """Run separate spatial joins per admin level for per-level-source datasets.
 
@@ -575,6 +582,7 @@ def _execute_per_level_joins(
                 verbose=verbose,
                 profile=profile,
                 geoparquet_version=geoparquet_version,
+                extra_kv_metadata=extra_kv,
             )
         else:
             temp_table = f"_gpio_admin_step_{i}"
@@ -585,7 +593,7 @@ def _execute_per_level_joins(
         return None, None, None
 
     total_features, features_with_admin, unique_counts = _get_result_stats(
-        con, output_parquet, dataset, levels, verbose
+        con, output_parquet, dataset, levels, verbose, prefix=prefix
     )
     return total_features, features_with_admin, unique_counts
 
@@ -608,6 +616,7 @@ def add_admin_divisions_multi(
     overwrite: bool = False,
     prefix: str | None = None,
     no_cache: bool = False,
+    vecorel: bool = False,
 ):
     """
     Add admin division columns from a multi-level admin dataset.
@@ -629,6 +638,9 @@ def add_admin_divisions_multi(
         prefix: Optional column name prefix (default: dataset name, use "admin" for admin: format)
         no_cache: Skip local cache and use remote dataset directly
     """
+    # When vecorel mode is active, override prefix to use Vecorel column names
+    effective_prefix = "vecorel" if vecorel else prefix
+
     # Check if output file exists and handle overwrite (fixes issue #278)
     handle_output_overwrite(output_parquet, overwrite, input_parquet)
 
@@ -673,6 +685,16 @@ def add_admin_divisions_multi(
                 total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
                 progress(f"Processing {total_count:,} input features...")
 
+            # Build Vecorel metadata if requested (applied to whichever write path runs)
+            extra_kv = None
+            if vecorel:
+                from geoparquet_io.core.constants import (
+                    VECOREL_ADMIN_SCHEMA,
+                    build_collection_metadata,
+                )
+
+                extra_kv = build_collection_metadata([VECOREL_ADMIN_SCHEMA], metadata)
+
             if dataset.supports_per_level_sources():
                 total_features, features_with_admin, unique_counts = _execute_per_level_joins(
                     con,
@@ -694,8 +716,9 @@ def add_admin_divisions_multi(
                     row_group_rows,
                     profile,
                     geoparquet_version,
-                    prefix,
+                    effective_prefix,
                     no_cache,
+                    extra_kv=extra_kv,
                 )
                 if dry_run:
                     return
@@ -713,7 +736,7 @@ def add_admin_divisions_multi(
                     input_bbox_col,
                     verbose,
                     dry_run,
-                    prefix=prefix,
+                    prefix=effective_prefix,
                 )
 
                 if _handle_dry_run_mode(
@@ -746,13 +769,20 @@ def add_admin_divisions_multi(
                     verbose=verbose,
                     profile=profile,
                     geoparquet_version=geoparquet_version,
+                    extra_kv_metadata=extra_kv,
                 )
 
                 total_features, features_with_admin, unique_counts = _get_result_stats(
-                    con, output_parquet, dataset, levels, verbose
+                    con, output_parquet, dataset, levels, verbose, prefix=effective_prefix
                 )
         finally:
             con.close()
+
+    # Ensure Vecorel-required id column exists
+    if vecorel:
+        from geoparquet_io.core.constants import ensure_vecorel_columns
+
+        ensure_vecorel_columns(output_parquet, verbose)
 
     progress("\nResults:")
     progress(

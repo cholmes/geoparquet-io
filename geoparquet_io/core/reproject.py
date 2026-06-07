@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
+    get_parquet_metadata,
     validate_compression_settings,
     write_parquet_with_metadata,
 )
@@ -545,6 +546,9 @@ def reproject_impl(
         # Get target CRS as PROJJSON for metadata
         target_crs_projjson = parse_crs_string_to_projjson(target_crs, con)
 
+        # Read original metadata to preserve non-geo KV metadata (e.g., vecorel)
+        original_metadata, _ = get_parquet_metadata(input_parquet, verbose)
+
         # Handle in-place overwrite
         is_overwrite = str(out_path) == str(Path(input_parquet).resolve())
 
@@ -558,7 +562,7 @@ def reproject_impl(
                     con,
                     query,
                     str(tmp_path),
-                    original_metadata=None,
+                    original_metadata=original_metadata,
                     compression=compression,
                     compression_level=compression_level,
                     row_group_size_mb=row_group_size_mb,
@@ -585,7 +589,7 @@ def reproject_impl(
                     con,
                     query,
                     actual_output,
-                    original_metadata=None,
+                    original_metadata=original_metadata,
                     compression=compression,
                     compression_level=compression_level,
                     row_group_size_mb=row_group_size_mb,

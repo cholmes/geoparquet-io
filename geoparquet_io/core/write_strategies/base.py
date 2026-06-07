@@ -241,6 +241,7 @@ class BaseWriteStrategy(ABC):
         verbose: bool,
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """
         Write query results to GeoParquet file.
@@ -260,6 +261,7 @@ class BaseWriteStrategy(ABC):
             verbose: Enable verbose logging
             custom_metadata: Optional dict with custom metadata (e.g., H3 covering info)
             geometry_info: Multi-geometry column info from input file
+            extra_kv_metadata: Additional Parquet KV metadata (e.g., Vecorel collection info)
         """
         ...
 

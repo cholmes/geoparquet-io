@@ -3,8 +3,6 @@
 import subprocess
 from pathlib import Path
 
-import pytest
-
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -56,46 +54,13 @@ class TestSecurityToolAvailability:
         assert result.returncode == 0, f"pip-audit --version failed:\n{result.stderr}"
 
 
-class TestSecurityScanResults:
-    """Run actual security scans and assert they pass.
-
-    Note: test_bandit_passes was removed because bandit already runs
-    in CI's lint job. Running it again here was redundant (~10s overhead).
-    """
-
-    @pytest.mark.network
-    def test_pip_audit_passes(self):
-        """Verify no known vulnerabilities in dependencies.
-
-        Self-expiring CVE ignores: remove once fixed versions are released.
-        """
-        # Check pip version to see if CVE-2026-3219 ignore is still needed
-        pip_version_result = subprocess.run(
-            ["uv", "run", "pip", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-            cwd=_PROJECT_ROOT,
-        )
-        pip_version = pip_version_result.stdout.split()[1]
-        version_parts = pip_version.split(".")[:2]
-        major_minor = (int(version_parts[0]), int(version_parts[1]))
-
-        # CVE-2026-3219: pip tar/ZIP handling (CVSS 4.6). Fix expected in pip 26.1+.
-        cmd = ["uv", "run", "pip-audit"]
-        if major_minor < (26, 1):
-            cmd.extend(["--ignore-vuln", "CVE-2026-3219"])
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_SUBPROCESS_TIMEOUT,
-            cwd=_PROJECT_ROOT,
-        )
-        assert result.returncode == 0, (
-            f"pip-audit found vulnerabilities:\n{result.stdout}\n{result.stderr}"
-        )
+# NOTE: The live dependency audit ("does pip-audit pass?") intentionally does
+# NOT live here as a pytest test. It runs in the dedicated `security` job in
+# .github/workflows/tests.yml, which owns the self-expiring CVE-ignore list,
+# blocks PRs on new vulnerabilities, and is non-blocking on nightly schedules.
+# A duplicate copy used to live here and drifted out of sync with the workflow's
+# ignore list (PYSEC-2026-196), silently breaking `main` on every push. Keep the
+# audit in exactly one place — the workflow.
 
 
 class TestBanditConfiguration:

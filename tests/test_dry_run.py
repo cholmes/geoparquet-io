@@ -39,7 +39,7 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        assert "AS bounds" in result.output
+        assert 'AS "bounds"' in result.output
         assert "-- New column: bounds" in result.output
 
     def test_add_admin_divisions_dry_run(self, buildings_test_file):

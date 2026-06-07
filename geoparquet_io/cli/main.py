@@ -3666,6 +3666,12 @@ def add(ctx):
     help="Admin boundaries dataset: 'gaul' (GAUL L2) or 'overture' (Overture Maps)",
 )
 @click.option(
+    "--vecorel",
+    is_flag=True,
+    help="Output Vecorel-compliant columns (admin:country_code, admin:subdivision_code) "
+    "with schema metadata. Automatically uses Overture dataset with country,region levels.",
+)
+@click.option(
     "--levels",
     help="Comma-separated hierarchical levels to add as columns (e.g., 'continent,country'). "
     "If not specified, adds all available levels for the dataset.",
@@ -3703,6 +3709,7 @@ def add_country_codes(
     input_parquet,
     output_parquet,
     dataset,
+    vecorel,
     levels,
     add_bbox,
     prefix,
@@ -3848,8 +3855,19 @@ def add_country_codes(
     # Use new multi-dataset implementation
     from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
 
-    # Parse levels
-    if levels:
+    # Handle --vecorel flag: force Overture dataset with country,region levels
+    if vecorel:
+        if dataset != "gaul" and dataset != "overture":
+            from geoparquet_io.core.logging_config import warn as log_warn
+
+            log_warn(f"--vecorel overrides --dataset {dataset} to 'overture'")
+        dataset = "overture"
+        if levels:
+            from geoparquet_io.core.logging_config import warn as log_warn
+
+            log_warn("--vecorel overrides --levels to 'country,region'")
+        level_list = ["country", "region"]
+    elif levels:
         level_list = [level.strip() for level in levels.split(",")]
     else:
         # Use all available levels for the dataset
@@ -3873,6 +3891,94 @@ def add_country_codes(
         overwrite=overwrite,
         prefix=prefix,
         no_cache=no_cache,
+        vecorel=vecorel,
+    )
+
+
+@add.command(name="geometry-metrics", cls=SingleFileCommand)
+@click.argument("input_parquet")
+@click.argument("output_parquet", required=False, default=None)
+@click.option(
+    "--no-vecorel",
+    is_flag=True,
+    help="Skip adding Vecorel schema metadata to the output file.",
+)
+@output_format_options
+@geoparquet_version_option
+@overwrite_option
+@dry_run_option
+@verbose_option
+@any_extension_option
+@show_sql_option
+def add_geometry_metrics_cmd(
+    input_parquet,
+    output_parquet,
+    no_vecorel,
+    compression,
+    compression_level,
+    row_group_size,
+    row_group_size_mb,
+    write_memory,
+    geoparquet_version,
+    overwrite,
+    dry_run,
+    verbose,
+    any_extension,
+    show_sql,
+):
+    """Add geometry metrics (area and perimeter in meters) to a GeoParquet file.
+
+    Calculates geodesic area (m²) and perimeter (m) for each geometry using
+    spheroid-based calculations (WGS84). Results are stored as:
+
+    \b
+    - metrics:area — area in square meters (float)
+    - metrics:perimeter — perimeter in meters (float)
+
+    Follows the Vecorel geometry-metrics extension specification by default.
+    Use --no-vecorel to skip adding schema metadata.
+
+    \b
+    **Examples:**
+
+    \b
+    # Add geometry metrics
+    gpio add geometry-metrics input.parquet output.parquet
+
+    \b
+    # Preview SQL before execution
+    gpio add geometry-metrics input.parquet output.parquet --dry-run
+
+    \b
+    # Without Vecorel metadata
+    gpio add geometry-metrics input.parquet output.parquet --no-vecorel
+    """
+    from geoparquet_io.core.streaming import is_stdin, should_stream_output
+
+    # Check for streaming mode
+    if not is_stdin(input_parquet) and not should_stream_output(output_parquet):
+        if output_parquet is None:
+            raise click.UsageError("Missing argument 'OUTPUT_PARQUET'.")
+        validate_parquet_extension(output_parquet, any_extension)
+
+    row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+
+    from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+
+    add_geometry_metrics(
+        input_parquet,
+        output_parquet,
+        vecorel=not no_vecorel,
+        dry_run=dry_run,
+        verbose=verbose,
+        compression=compression.upper(),
+        compression_level=compression_level,
+        row_group_size_mb=row_group_mb,
+        row_group_rows=row_group_size,
+        profile=None,
+        geoparquet_version=geoparquet_version,
+        overwrite=overwrite,
+        show_sql=show_sql,
     )
 
 
@@ -4505,10 +4611,19 @@ def partition(ctx):
 )
 @click.option(
     "--levels",
-    required=True,
+    required=False,
+    default=None,
     help="Comma-separated hierarchical levels to partition by. "
     "GAUL levels: continent,country,department. "
-    "Overture levels: country,region.",
+    "Overture levels: country,region. "
+    "Not required when --vecorel is used.",
+)
+@click.option(
+    "--vecorel",
+    is_flag=True,
+    help="Output Vecorel-compliant admin columns (admin:country_code, "
+    "admin:subdivision_code) in each partition with schema metadata. "
+    "Automatically uses the Overture dataset with country,region levels.",
 )
 @partition_options_base
 @output_format_options
@@ -4522,6 +4637,7 @@ def partition_admin(
     output_folder,
     dataset,
     levels,
+    vecorel,
     hive,
     overwrite,
     preview,
@@ -4570,6 +4686,10 @@ def partition_admin(
     gpio partition admin input.parquet output/ --dataset overture --levels country,region
 
     \b
+    # Vecorel-compliant partitions (forces Overture country,region)
+    gpio partition admin input.parquet output/ --vecorel
+
+    \b
     **Note:** This command fetches remote boundaries and performs spatial intersection.
     Requires internet connection. Input data must have valid geometries in WGS84 or
     compatible CRS.
@@ -4582,8 +4702,20 @@ def partition_admin(
         # Validate mutual exclusivity of row group options and get MB value
         row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
-        # Parse levels
-        level_list = [level.strip() for level in levels.split(",")]
+        # Handle --vecorel: force Overture dataset with country,region levels
+        if vecorel:
+            from geoparquet_io.core.logging_config import warn as log_warn
+
+            if dataset != "overture":
+                log_warn(f"--vecorel overrides --dataset {dataset} to 'overture'")
+            dataset = "overture"
+            if levels:
+                log_warn("--vecorel overrides --levels to 'country,region'")
+            level_list = ["country", "region"]
+        elif levels:
+            level_list = [level.strip() for level in levels.split(",")]
+        else:
+            raise click.UsageError("Either --levels or --vecorel is required")
 
         # Use hierarchical partitioning (spatial join + partition)
         partition_admin_hierarchical_impl(
@@ -4591,6 +4723,7 @@ def partition_admin(
             output_folder,
             dataset_name=dataset,
             levels=level_list,
+            vecorel=vecorel,
             hive=hive,
             overwrite=overwrite,
             preview=preview,

@@ -4,6 +4,9 @@ on:
     branches: [ main, refactor ]
   pull_request:
     branches: [ main ]
+    # 'labeled' lets adding the "run-slow-tests" label trigger the slow suite
+    # on a PR (see the slow-tests job condition) without a new push.
+    types: [ opened, synchronize, reopened, labeled ]
   schedule:
     - cron: '15 2 * * *'  # Run slow tests nightly at 2:15 AM UTC
   workflow_dispatch:  # Allow manual triggering from Actions UI
@@ -121,8 +124,22 @@ jobs:
         run: uv sync --all-extras
 
       - name: Pre-install DuckDB extensions
+        shell: bash
         run: |
-          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
+          # with a transient network error, which broke otherwise-green builds.
+          # Retry with backoff before giving up.
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          for attempt in 1 2 3 4 5; do
+            if uv run python -c "$install"; then
+              echo "DuckDB extensions installed (attempt $attempt)."
+              exit 0
+            fi
+            echo "Extension install failed (attempt $attempt). Retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+          done
+          echo "Failed to install DuckDB extensions after 5 attempts." >&2
+          exit 1
 
       - name: Install tippecanoe
         if: runner.os != 'Windows'
@@ -176,8 +193,15 @@ jobs:
           uv run pytest --nbmake examples/*.ipynb -v --nbmake-timeout=120 --no-cov
 
   slow-tests:
-    # Slow tests run on merge to main, schedule, and manual dispatch (not on PRs)
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Slow tests run on merge to main, schedule, and manual dispatch. They do NOT
+    # run on every PR (too slow), but can be opted in per-PR by adding the
+    # "run-slow-tests" label, so risky changes can be verified before merge.
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-slow-tests'))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -210,8 +234,22 @@ jobs:
         run: uv sync --all-extras
 
       - name: Pre-install DuckDB extensions
+        shell: bash
         run: |
-          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
+          # with a transient network error, which broke otherwise-green builds.
+          # Retry with backoff before giving up.
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          for attempt in 1 2 3 4 5; do
+            if uv run python -c "$install"; then
+              echo "DuckDB extensions installed (attempt $attempt)."
+              exit 0
+            fi
+            echo "Extension install failed (attempt $attempt). Retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+          done
+          echo "Failed to install DuckDB extensions after 5 attempts." >&2
+          exit 1
 
       - name: Install tippecanoe
         if: runner.os != 'Windows'
@@ -226,11 +264,11 @@ jobs:
       - name: Run slow and network tests (parallel)
         shell: bash
         run: |
-          # On scheduled runs, skip security tests (handled by dedicated security job)
-          IGNORE_SECURITY=""
-          if [ "${{ github.event_name }}" == "schedule" ]; then
-            IGNORE_SECURITY="--ignore=tests/test_security.py"
-          fi
+          # Security tests (the live pip-audit) are owned by the dedicated
+          # `security` job, which handles CVE ignores and PR blocking. Never run
+          # them here too — that duplication broke main whenever the two pip-audit
+          # ignore lists drifted apart.
+          IGNORE_SECURITY="--ignore=tests/test_security.py"
 
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
