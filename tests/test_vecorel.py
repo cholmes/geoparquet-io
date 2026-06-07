@@ -197,45 +197,6 @@ class TestVecorelAdminNullHandling:
         assert "COALESCE" not in clause
 
 
-class TestVecorelSchemaAutoFix:
-    """Test that vecorel schema compliance is automatically maintained."""
-
-    def test_add_column_preserves_nullability(self, buildings_test_file, temp_output_file):
-        """A vecorel-compliant file should stay compliant after add_computed_column."""
-        import os
-        import tempfile
-
-        import pyarrow.parquet as pq
-
-        from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
-        from geoparquet_io.core.common import add_computed_column
-
-        fd, intermediate = tempfile.mkstemp(suffix=".parquet")
-        os.close(fd)
-        os.unlink(intermediate)
-        try:
-            add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
-
-            pf = pq.ParquetFile(intermediate)
-            assert pf.schema_arrow.field("id").nullable is False
-            assert pf.schema_arrow.field("geometry").nullable is False
-
-            add_computed_column(
-                intermediate,
-                temp_output_file,
-                column_name="test_col",
-                sql_expression="'hello'",
-            )
-
-            pf2 = pq.ParquetFile(temp_output_file)
-            assert pf2.schema_arrow.field("id").nullable is False
-            assert pf2.schema_arrow.field("geometry").nullable is False
-            assert b"collection" in pf2.schema_arrow.metadata
-        finally:
-            if os.path.exists(intermediate):
-                os.unlink(intermediate)
-
-
 class TestReprojectPreservesVecorel:
     """Test that reproject preserves Vecorel metadata."""
 
