@@ -189,18 +189,36 @@ def _setup_duckdb_extensions(con):
     con.execute("LOAD httpfs;")
 
 
-def _build_admin_select_for_partitioning(levels, boundary_columns):
-    """Build admin SELECT clause for partitioning."""
+def _build_admin_select_for_partitioning(levels, boundary_columns, dataset=None, vecorel=False):
+    """Build admin SELECT clause for partitioning.
+
+    In normal mode the admin columns get temporary internal names
+    (``_admin_<level>``) used only to drive the partition split. In Vecorel
+    mode they are named with Vecorel-compliant column names (e.g.
+    ``admin:country_code``) and any dataset column transform (such as stripping
+    the country prefix from Overture region codes) is applied, so the columns
+    can be written into the output partitions.
+    """
     admin_select_parts = []
     output_column_names = []
     for i, (level, col) in enumerate(zip(levels, boundary_columns, strict=True)):
-        output_col = f"_admin_{level}"  # Temporary internal name
-        output_column_names.append(output_col)
-        # Handle struct field access vs simple column names
-        if "[" in col or "(" in col:
-            admin_select_parts.append(f'b._col_{i} as "{output_col}"')
+        if vecorel:
+            output_col = dataset.get_output_column_name(level, prefix="vecorel")
+            col_transform = dataset.get_column_transform(level)
         else:
-            admin_select_parts.append(f'b."{col}" as "{output_col}"')
+            output_col = f"_admin_{level}"  # Temporary internal name
+            col_transform = None
+        output_column_names.append(output_col)
+
+        # Handle struct field access vs simple column names
+        if col_transform:
+            expr = col_transform
+        elif "[" in col or "(" in col:
+            expr = f"b._col_{i}"
+        else:
+            expr = f'b."{col}"'
+
+        admin_select_parts.append(f'{expr} as "{output_col}"')
 
     return ", ".join(admin_select_parts), output_column_names
 
@@ -305,6 +323,8 @@ def _create_all_partitions(
     row_group_size_mb=None,
     row_group_rows=None,
     memory_limit=None,
+    vecorel=False,
+    extra_kv=None,
 ):
     """Create all partition files."""
     partition_count = 0
@@ -329,6 +349,8 @@ def _create_all_partitions(
             row_group_size_mb,
             row_group_rows,
             memory_limit,
+            vecorel,
+            extra_kv,
         ):
             partition_count += 1
     return partition_count
@@ -354,6 +376,8 @@ def _create_partition_file(
     row_group_size_mb=None,
     row_group_rows=None,
     memory_limit=None,
+    vecorel=False,
+    extra_kv=None,
 ):
     """Create a single partition file."""
     # Build nested folder path
@@ -394,7 +418,11 @@ def _create_partition_file(
     ]
     where_clause = " AND ".join(where_conditions)
 
-    select_cols = ", ".join([f'"{col}"' for col in original_cols])
+    # In Vecorel mode, keep the admin columns (e.g. admin:country_code) in the
+    # output so each partition is Vecorel-compliant. Otherwise they are only
+    # used to drive the split and are dropped from the output.
+    select_col_list = original_cols + output_column_names if vecorel else original_cols
+    select_cols = ", ".join([f'"{col}"' for col in select_col_list])
     partition_query = f"""
         SELECT {select_cols}
         FROM {enriched_table}
@@ -415,7 +443,14 @@ def _create_partition_file(
         profile=profile,
         geoparquet_version=geoparquet_version,
         memory_limit=memory_limit,
+        extra_kv_metadata=extra_kv,
     )
+
+    # Ensure Vecorel schema compliance (id column + non-nullable columns)
+    if vecorel:
+        from geoparquet_io.core.constants import ensure_vecorel_columns
+
+        ensure_vecorel_columns(output_file, verbose)
 
     return True
 
@@ -440,6 +475,7 @@ def partition_by_admin_hierarchical(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     memory_limit: str | None = None,
+    vecorel: bool = False,
 ) -> int:
     """
     Partition a GeoParquet file by administrative boundaries.
@@ -471,6 +507,10 @@ def partition_by_admin_hierarchical(
         row_group_size_mb: Row group size in MB (mutually exclusive with row_group_rows)
         row_group_rows: Row group size in number of rows (mutually exclusive with row_group_size_mb)
         memory_limit: DuckDB memory limit for write operations (e.g., "2GB")
+        vecorel: Output Vecorel-compliant admin columns (admin:country_code,
+            admin:subdivision_code) in each partition along with Vecorel
+            collection metadata. Expects the Overture dataset with
+            country,region levels.
 
     Returns:
         Number of partitions created
@@ -506,7 +546,7 @@ def partition_by_admin_hierarchical(
 
             # Build SELECT clause for admin columns
             admin_select_clause, output_column_names = _build_admin_select_for_partitioning(
-                levels, boundary_columns
+                levels, boundary_columns, dataset=dataset, vecorel=vecorel
             )
 
             # Build admin data source with read_parquet options if needed
@@ -566,6 +606,16 @@ def partition_by_admin_hierarchical(
             # Get metadata from input for preservation
             metadata, _ = get_parquet_metadata(actual_input, verbose)
 
+            # Build Vecorel collection metadata if requested
+            extra_kv = None
+            if vecorel:
+                from geoparquet_io.core.constants import (
+                    VECOREL_ADMIN_SCHEMA,
+                    build_collection_metadata,
+                )
+
+                extra_kv = build_collection_metadata([VECOREL_ADMIN_SCHEMA], metadata)
+
             # Create output directory
             os.makedirs(output_folder, exist_ok=True)
 
@@ -599,6 +649,8 @@ def partition_by_admin_hierarchical(
                 row_group_size_mb,
                 row_group_rows,
                 memory_limit,
+                vecorel,
+                extra_kv,
             )
 
         success(f"\n✓ Created {partition_count} partition(s) in {output_folder}")

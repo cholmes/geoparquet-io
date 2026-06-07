@@ -84,6 +84,75 @@ def add_quadkey(
     )
 
 
+def add_geometry_metrics(
+    table: pa.Table,
+    vecorel: bool = True,
+) -> pa.Table:
+    """
+    Add geodesic area (m²) and perimeter (m) columns.
+
+    Uses WGS84 spheroid-based calculations. Adds metrics:area
+    and metrics:perimeter columns.
+
+    Args:
+        table: Input PyArrow Table
+        vecorel: Add Vecorel schema metadata (default: True)
+
+    Returns:
+        New table with geometry metrics added
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> table = pq.read_table('input.parquet')
+        >>> table = ops.add_geometry_metrics(table)
+    """
+    from geoparquet_io.core.add.geometry_metrics import (
+        add_geometry_metrics as _add_geometry_metrics,
+    )
+
+    return _file_round_trip(table, _add_geometry_metrics, vecorel=vecorel)
+
+
+def add_admin_divisions(
+    table: pa.Table,
+    *,
+    dataset: str = "overture",
+    levels: list[str] | None = None,
+    vecorel: bool = False,
+) -> pa.Table:
+    """
+    Add administrative division columns via spatial join.
+
+    Args:
+        table: Input PyArrow Table
+        dataset: Boundaries dataset ("overture", "gaul")
+        levels: Admin levels to add (e.g., ["country", "region"])
+        vecorel: Output Vecorel-compliant columns (default: False)
+
+    Returns:
+        New table with admin division columns added
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> table = pq.read_table('input.parquet')
+        >>> table = ops.add_admin_divisions(table, vecorel=True)
+    """
+    from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+
+    if vecorel:
+        dataset = "overture"
+        levels = ["country", "region"]
+
+    return _file_round_trip(
+        table,
+        add_admin_divisions_multi,
+        dataset_name=dataset,
+        levels=levels or ["country"],
+        vecorel=vecorel,
+        verbose=False,
+    )
+
+
 def sort_hilbert(
     table: pa.Table,
     geometry_column: str | None = None,
@@ -512,6 +581,41 @@ def convert_to_geojson(
             temp_input.unlink()
 
 
+def _file_round_trip(
+    table: pa.Table,
+    func,
+    **kwargs,
+) -> pa.Table:
+    """
+    Execute an input->output file transformation on an in-memory table.
+
+    Writes table to a temp input file, calls func(input_parquet, output_parquet, **kwargs),
+    reads the output back, and cleans up both temp files.
+    """
+    import tempfile
+    import uuid
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    temp_dir = Path(tempfile.gettempdir())
+    temp_input = temp_dir / f"gpio_in_{uuid.uuid4()}.parquet"
+    temp_output = temp_dir / f"gpio_out_{uuid.uuid4()}.parquet"
+
+    try:
+        pq.write_table(table, str(temp_input))
+        func(
+            input_parquet=str(temp_input),
+            output_parquet=str(temp_output),
+            **kwargs,
+        )
+        return pq.read_table(str(temp_output))
+    finally:
+        for f in (temp_input, temp_output):
+            if f.exists():
+                f.unlink()
+
+
 def _table_to_temp_parquet_and_convert(
     table: pa.Table,
     output_path: str,
@@ -809,6 +913,75 @@ def from_wfs(
         axis_order=axis_order,
         strict_crs=strict_crs,
         auto_tile=auto_tile,
+    )
+
+
+def from_carto(
+    url: str,
+    table_name: str,
+    where: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    limit: int | None = None,
+    include_cols: str | None = None,
+    exclude_cols: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 120.0,
+) -> pa.Table:
+    """
+    Fetch Carto SQL API table as PyArrow Table.
+
+    Uses DuckDB's ST_Read for efficient GeoJSON parsing from Carto's SQL API.
+    Filters are pushed to the server for optimal performance.
+
+    Args:
+        url: Carto SQL API URL (e.g., 'https://phl.carto.com/api/v2/sql')
+            or base domain (e.g., 'https://phl.carto.com')
+        table_name: Name of the table to query
+        where: SQL WHERE clause for filtering
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84
+        limit: Maximum rows to fetch
+        include_cols: Comma-separated columns to include
+        exclude_cols: Comma-separated columns to exclude
+        api_key: API key for authenticated requests (or set CARTO_API_KEY env var)
+        timeout: Request timeout in seconds (default: 120)
+
+    Returns:
+        PyArrow Table with geometry column named 'geometry'
+
+    Note:
+        The Carto geometry column 'the_geom' is renamed to 'geometry'
+        for consistency with other geoparquet-io extractors.
+
+        For authenticated endpoints, either pass api_key or set the
+        CARTO_API_KEY environment variable.
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> table = ops.from_carto(
+        ...     'https://phl.carto.com/api/v2/sql',
+        ...     'opa_properties_public',
+        ...     limit=100
+        ... )
+        >>> # With filters:
+        >>> table = ops.from_carto(
+        ...     'https://phl.carto.com/api/v2/sql',
+        ...     'opa_properties_public',
+        ...     where="category_code_description = 'SINGLE FAMILY'",
+        ...     bbox=(-75.2, 39.9, -75.1, 40.0)
+        ... )
+    """
+    from geoparquet_io.core.carto import carto_to_table
+
+    return carto_to_table(
+        url=url,
+        table_name=table_name,
+        where=where,
+        bbox=bbox,
+        limit=limit,
+        include_cols=include_cols,
+        exclude_cols=exclude_cols,
+        api_key=api_key,
+        timeout=timeout,
     )
 
 

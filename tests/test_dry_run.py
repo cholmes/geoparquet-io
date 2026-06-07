@@ -133,8 +133,31 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        # Should use bbox column for spatial join optimization
-        assert "bbox.xmin" in result.output
+        # Should use bbox column for spatial join optimization. Identifiers are
+        # quoted by build_spatial_join_condition, so the input bbox struct field
+        # renders as `"bbox".xmin` (regression guard for the #460 pre-filter).
+        assert '"bbox".xmin' in result.output
         assert "Using bbox columns for optimized spatial join" in result.output
         # Should show spatial join query
         assert "ST_Intersects" in result.output
+
+    def test_dry_run_with_native_geometry_input(self, fields_v2_file):
+        """Native-geometry (GeoParquet 2.0) input uses no bbox pre-filter.
+
+        Regression for the #461 review: native inputs null the input bbox column,
+        so the ON clause is a bare ST_Intersects (native Parquet stats handle the
+        pre-filter) rather than a bbox-overlap predicate.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["admin-divisions", fields_v2_file, "output.parquet", "--dry-run", "--no-cache"],
+        )
+
+        assert result.exit_code == 0
+        assert "DRY RUN MODE" in result.output
+        assert "ST_Intersects" in result.output
+        # Input bbox should be 'none' for native geometry files
+        assert "Bbox columns: none (input)" in result.output
+        # No bbox pre-filter in the JOIN ON clause (only ST_Intersects)
+        assert "ON ST_Intersects" in result.output

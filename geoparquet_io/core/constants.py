@@ -166,8 +166,6 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
 
     # Check nullability per-column using row-group-level statistics to avoid
     # loading the full file. Fall back to scanning only if stats are missing.
-    import pyarrow.compute as pc
-
     safe_non_nullable = set()
     for col_name in non_nullable_columns:
         if col_name not in schema.names:
@@ -185,7 +183,7 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
                 break
         if not stats_available:
             col = pf.read_row_groups(range(pf.metadata.num_row_groups), columns=[col_name])
-            has_nulls = pc.sum(pc.is_null(col.column(col_name))).as_py() > 0
+            has_nulls = col.column(col_name).null_count > 0
         if not has_nulls:
             safe_non_nullable.add(col_name)
 

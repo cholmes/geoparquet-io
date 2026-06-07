@@ -1,6 +1,6 @@
-# Adding Spatial Indices
+# Adding Spatial Indices & Metadata
 
-The `add` commands enhance GeoParquet files with spatial indices and metadata.
+The `add` commands enhance GeoParquet files with spatial indices, geometry metrics, and administrative metadata.
 
 ## Bounding Boxes
 
@@ -289,6 +289,58 @@ gpio add kdtree input.parquet output.parquet --approx 200000
 gpio add kdtree input.parquet output.parquet --verbose
 ```
 
+## Geometry Metrics
+
+Add geodesic area and perimeter measurements to each feature:
+
+=== "CLI"
+
+    ```bash
+    gpio add geometry-metrics input.parquet output.parquet
+
+    # Preview SQL without executing
+    gpio add geometry-metrics input.parquet output.parquet --dry-run
+
+    # Without Vecorel metadata
+    gpio add geometry-metrics input.parquet output.parquet --no-vecorel
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+    from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+
+    # Add area and perimeter columns
+    add_geometry_metrics('input.parquet', 'output.parquet')
+
+    # Without Vecorel schema metadata
+    add_geometry_metrics('input.parquet', 'output.parquet', vecorel=False)
+    ```
+
+Calculates two columns using WGS84 spheroid-based calculations:
+
+- **`metrics:area`** — geodesic area in square meters (m²)
+- **`metrics:perimeter`** — geodesic perimeter in meters (m)
+
+By default, the output follows the [Vecorel geometry-metrics extension](https://vecorel.org/geometry-metrics-extension/v0.1.0/schema.yaml) specification. This adds `collection` metadata to the Parquet file referencing the schema URL, and ensures required columns (`id`, `geometry`) are present and non-nullable. Use `--no-vecorel` to skip the metadata and just add the raw metric columns.
+
+**Options:**
+
+```bash
+# With compression settings
+gpio add geometry-metrics input.parquet output.parquet --compression ZSTD --compression-level 15
+
+# With row group sizing
+gpio add geometry-metrics input.parquet output.parquet --row-group-size-mb 256MB
+
+# Show generated SQL
+gpio add geometry-metrics input.parquet output.parquet --show-sql
+```
+
+!!! note "Input CRS"
+    The spheroid calculations assume WGS84 (EPSG:4326) input. If your data uses a different CRS, reproject first with `gpio convert reproject`.
+
 ## Administrative Divisions
 
 Add administrative division columns via spatial join with remote boundaries datasets:
@@ -296,6 +348,10 @@ Add administrative division columns via spatial join with remote boundaries data
 ### How It Works
 
 Performs spatial intersection between your data and remote admin boundaries to add admin division columns. Uses efficient spatial extent filtering to query only relevant boundaries from remote datasets.
+
+For native-geometry inputs (GeoParquet 2.0 and GeoParquet 1.1 with geoarrow encoding), the spatial join relies on native Parquet column statistics to skip irrelevant data, but this is not quite working yet, so expect those to be a bit slower until [#462](https://github.com/geoparquet/geoparquet-io/issues/462) is implemented. For non-native inputs (GeoParquet 1.x that carry a `bbox` column), a cheap bbox-overlap test is applied before `ST_Intersects` to prune candidates, and using it will be 5-10x faster.
+
+The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds of millions of features) with bounded memory. A feature is attributed to the admin polygon(s) it intersects; because the per-level caches are non-overlapping, this is normally exactly one polygon per level. A feature straddling overlapping polygons at a border is emitted once per match. De-duplicating such border overlaps is intentionally left to a future dedicated operation rather than folded into this join, as including it greatly degraded performance.
 
 ### Quick Start
 
@@ -363,9 +419,60 @@ Add multiple hierarchical administrative levels:
     )
     ```
 
+### Vecorel-Compliant Output
+
+Use `--vecorel` for output that follows the [Vecorel administrative division extension](https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml):
+
+=== "CLI"
+
+    ```bash
+    # Vecorel-compliant admin columns (uses Overture dataset automatically)
+    gpio add admin-divisions input.parquet output.parquet --vecorel
+
+    # Equivalent to:
+    gpio add admin-divisions input.parquet output.parquet \
+      --dataset overture --levels country,region --prefix admin
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.read('input.parquet')
+    enriched = table.add_admin_divisions(
+        dataset='overture',
+        levels=['country', 'region'],
+        vecorel=True
+    )
+    enriched.write('output.parquet')
+    ```
+
+The `--vecorel` flag:
+
+- Forces the **Overture** dataset (overrides `--dataset`)
+- Sets levels to **country,region** (overrides `--levels`)
+- Adds `admin:country_code` (ISO 3166-1 alpha-2) and `admin:subdivision_code` (ISO 3166-2)
+- Writes `collection` metadata with the Vecorel schema URL
+- Ensures `id` and `geometry` columns are present and non-nullable
+
 ### Datasets
 
 --8<-- "_includes/admin-datasets.md"
+
+!!! note "Overture: per-level cache and simplified boundaries"
+    The Overture dataset uses a **per-level cache**: country and region
+    boundaries are downloaded and cached as separate files rather than one
+    combined file.
+
+    Overture boundaries are simplified with `ST_SimplifyPreserveTopology` at a
+    tolerance of `0.0001` degrees (roughly 11 m near the equator, ~7 m at
+    50°N). Country and region layers are simplified **independently**, so
+    shared borders are not perfectly coincident. As a result, **near-border
+    attribution is approximate**: a feature sitting in a border zone may be
+    attributed to the neighboring region. This is a deliberate
+    accuracy-for-memory tradeoff. If you need exact boundaries near borders,
+    use the `gaul` dataset instead.
 
 ### Caching
 

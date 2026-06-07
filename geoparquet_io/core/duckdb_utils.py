@@ -106,6 +106,66 @@ def quote_identifier(name: str) -> str:
     return f'"{escaped}"'
 
 
+def build_spatial_join_condition(
+    input_geom_col: str,
+    target_geom_col: str,
+    input_bbox_col: str | None = None,
+    target_bbox_col: str | None = None,
+    input_alias: str = "a",
+    target_alias: str = "b",
+) -> str:
+    """Build the ON-clause condition for a spatial join between two tables.
+
+    The precise predicate is always ``ST_Intersects(target_geom, input_geom)``.
+    When *both* sides expose a bbox covering column, a cheap bounding-box
+    overlap test is ANDed in front of it: DuckDB evaluates the four numeric
+    comparisons first and only runs the expensive geometry intersection on the
+    surviving candidate pairs. Because bbox overlap is a necessary condition for
+    geometry intersection, the result is identical to ST_Intersects alone -- it
+    is purely a performance pre-filter.
+
+    Dropping this pre-filter (as #457 did) makes the Overture remote datasets
+    run a full ST_Intersects against every admin geometry, which effectively
+    hangs. See PR #460.
+
+    All identifiers are passed through :func:`quote_identifier`, so column names
+    sourced from untrusted file metadata cannot break out of the predicate.
+
+    Args:
+        input_geom_col: Geometry column on the input (left) table.
+        target_geom_col: Geometry column on the target (right) table.
+        input_bbox_col: Optional bbox covering column on the input table.
+        target_bbox_col: Optional bbox covering column on the target table.
+        input_alias: SQL alias for the input table (default "a").
+        target_alias: SQL alias for the target table (default "b").
+
+    Returns:
+        A SQL boolean expression for use directly after ``ON``.
+    """
+    qi_geom = quote_identifier(input_geom_col)
+    qt_geom = quote_identifier(target_geom_col)
+    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
+
+    # A one-sided bbox cannot form an overlap test, so fall back to the
+    # precise predicate alone.
+    if not (input_bbox_col and target_bbox_col):
+        return intersects
+
+    qi_bbox = quote_identifier(input_bbox_col)
+    qt_bbox = quote_identifier(target_bbox_col)
+    return (
+        "(\n"
+        "        -- Fast bbox-overlap pre-filter (cheap; eliminates most candidate pairs)\n"
+        f"        {input_alias}.{qi_bbox}.xmin <= {target_alias}.{qt_bbox}.xmax AND\n"
+        f"        {input_alias}.{qi_bbox}.xmax >= {target_alias}.{qt_bbox}.xmin AND\n"
+        f"        {input_alias}.{qi_bbox}.ymin <= {target_alias}.{qt_bbox}.ymax AND\n"
+        f"        {input_alias}.{qi_bbox}.ymax >= {target_alias}.{qt_bbox}.ymin\n"
+        "    )\n"
+        "    -- Precise check only runs on the bbox matches\n"
+        f"    AND {intersects}"
+    )
+
+
 def get_duckdb_connection(
     load_spatial=True,
     load_httpfs=None,
@@ -114,6 +174,8 @@ def get_duckdb_connection(
     s3_endpoint=None,
     s3_region=None,
     s3_use_ssl=None,
+    temp_directory=None,
+    memory_limit=None,
 ):
     """
     Create a DuckDB connection with necessary extensions loaded.
@@ -133,6 +195,11 @@ def get_duckdb_connection(
         threads: Number of threads for DuckDB to use (default: None = all cores).
                 Limiting threads is useful for parallel test execution to prevent
                 CPU saturation when multiple pytest workers create connections.
+        temp_directory: Directory for DuckDB to spill intermediate results to disk.
+                    Bounds peak memory on large spatial joins (e.g. admin-divisions
+                    against a 400k-feature input) so they don't OOM.
+        memory_limit: DuckDB memory limit (e.g. "8GB"). When set, DuckDB spills to
+                    temp_directory once this is exceeded rather than crashing.
 
     Returns:
         duckdb.DuckDBPyConnection: Configured connection with extensions loaded
@@ -147,6 +214,14 @@ def get_duckdb_connection(
     # DuckDB fails with "Arrow Appender: The maximum total string size for
     # regular string buffers is 2147483647" errors.
     con.execute("SET arrow_large_buffer_size = true;")
+
+    # Spill-to-disk: bound peak memory on large joins/aggregations.
+    if temp_directory is not None:
+        safe_temp_dir = _escape_sql_string(str(temp_directory))
+        con.execute(f"SET temp_directory = '{safe_temp_dir}';")
+    if memory_limit is not None:
+        safe_memory_limit = _escape_sql_string(str(memory_limit))
+        con.execute(f"SET memory_limit = '{safe_memory_limit}';")
 
     # Always load spatial extension by default (core use case)
     if load_spatial:
@@ -349,13 +424,17 @@ def _geoarrow_coord_exprs(quoted_geom: str, encoding: str) -> tuple:
 
     x_arr = f"list_transform({flat}, p -> p.x)"
     y_arr = f"list_transform({flat}, p -> p.y)"
+    x_min = f"list_min({x_arr})"
+    x_max = f"list_max({x_arr})"
+    y_min = f"list_min({y_arr})"
+    y_max = f"list_max({y_arr})"
     return (
-        f"list_min({x_arr})",
-        f"list_min({y_arr})",
-        f"list_max({x_arr})",
-        f"list_max({y_arr})",
-        f"list_avg({x_arr})",
-        f"list_avg({y_arr})",
+        x_min,
+        y_min,
+        x_max,
+        y_max,
+        f"({x_min} + {x_max}) / 2.0",
+        f"({y_min} + {y_max}) / 2.0",
     )
 
 

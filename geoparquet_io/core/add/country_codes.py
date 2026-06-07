@@ -9,6 +9,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -163,55 +164,53 @@ def _build_spatial_join_query(
     input_bbox_col,
     countries_bbox_col,
 ):
-    """Build the spatial join query based on bbox availability."""
-    if input_bbox_col and countries_bbox_col:
-        return f"""
-    SELECT
-        a.*,
-        {select_clause}
-    FROM '{input_url}' a
-    LEFT JOIN {countries_source} b
-    ON (a.{input_bbox_col}.xmin <= b.{countries_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{countries_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{countries_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{countries_bbox_col}.ymin)
-        AND ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
-"""
+    """Build the spatial join query based on bbox availability.
+
+    Identifiers are quoted via the shared :func:`build_spatial_join_condition`
+    helper, so a maliciously-named geometry/bbox column from an untrusted input
+    or ``--countries-parquet`` cannot inject SQL.
+    """
+    join_condition = build_spatial_join_condition(
+        input_geom_col, countries_geom_col, input_bbox_col, countries_bbox_col
+    )
     return f"""
     SELECT
         a.*,
         {select_clause}
     FROM '{input_url}' a
     LEFT JOIN {countries_source} b
-    ON ST_Intersects(b.{countries_geom_col}, a.{input_geom_col})
+    ON {join_condition}
 """
 
 
 def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
     """Build SQL to create filtered countries table from bounds."""
     xmin, ymin, xmax, ymax = bounds
+    q_bbox = quote_identifier(bbox_col)
     if isinstance(xmin, str):  # placeholder values
         return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax}
-  AND {bbox_col}.xmax >= {xmin}
-  AND {bbox_col}.ymin <= {ymax}
-  AND {bbox_col}.ymax >= {ymin};"""
+WHERE {q_bbox}.xmin <= {xmax}
+  AND {q_bbox}.xmax >= {xmin}
+  AND {q_bbox}.ymin <= {ymax}
+  AND {q_bbox}.ymax >= {ymin};"""
     return f"""CREATE TEMP TABLE {table_name} AS
 SELECT * FROM '{source_url}'
-WHERE {bbox_col}.xmin <= {xmax:.6f}
-  AND {bbox_col}.xmax >= {xmin:.6f}
-  AND {bbox_col}.ymin <= {ymax:.6f}
-  AND {bbox_col}.ymax >= {ymin:.6f};"""
+WHERE {q_bbox}.xmin <= {xmax:.6f}
+  AND {q_bbox}.xmax >= {xmin:.6f}
+  AND {q_bbox}.ymin <= {ymax:.6f}
+  AND {q_bbox}.ymax >= {ymin:.6f};"""
 
 
 def _print_dry_run_bounds_info(input_bbox_col, input_url, input_geom_col):
     """Print dry-run info for bounds calculation step."""
     info("-- Step 1: Calculate bounding box of input data to filter remote countries")
     if input_bbox_col:
-        bounds_sql = f"SELECT MIN({input_bbox_col}.xmin) as xmin, ... FROM '{input_url}';"
+        q_input_bbox = quote_identifier(input_bbox_col)
+        bounds_sql = f"SELECT MIN({q_input_bbox}.xmin) as xmin, ... FROM '{input_url}';"
     else:
-        bounds_sql = f"SELECT MIN(ST_XMin({input_geom_col})) as xmin, ... FROM '{input_url}';"
+        q_input_geom = quote_identifier(input_geom_col)
+        bounds_sql = f"SELECT MIN(ST_XMin({q_input_geom})) as xmin, ... FROM '{input_url}';"
     progress(bounds_sql)
     progress("")
     warn("-- Calculating actual bounds...")
@@ -289,12 +288,10 @@ def _print_dry_run_header(
 
 def _get_countries_config(countries_parquet, using_default, verbose):
     """Get countries URL, geometry column, and bbox column."""
-    default_countries_url = (
-        "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-    )
-
     if using_default:
-        return default_countries_url, "geometry", "bbox"
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        return get_overture_divisions_url(verbose=verbose), "geometry", "bbox"
 
     countries_url = safe_file_url(countries_parquet, verbose)
     countries_geom_col = find_primary_geometry_column(countries_parquet, verbose)
@@ -480,11 +477,11 @@ def _setup_countries_source(
 ):
     """Setup countries source - either filtered table or direct file reference."""
     countries_table = "filtered_countries"
-    default_countries_url = (
-        "s3://overturemaps-us-west-2/release/2025-10-22.0/theme=divisions/type=division_area/*"
-    )
 
     if using_default:
+        from geoparquet_io.core.overture import get_overture_divisions_url
+
+        default_countries_url = get_overture_divisions_url(verbose=verbose)
         _setup_default_countries(
             con,
             input_parquet,

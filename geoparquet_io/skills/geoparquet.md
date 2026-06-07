@@ -33,14 +33,13 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio benchmark` | compare, explain, report, suite | Benchmark GeoParquet performance. Commands for measuring... |
 | `gpio check` | all, bbox, compression, optimization, row-group, spatial, spec, stac | Check GeoParquet files for best practices. By default, runs... |
 | `gpio convert` | csv, flatgeobuf, geojson, geopackage, geoparquet, reproject, shapefile | Convert between formats and coordinate systems.... |
-| `gpio extract` | arcgis, bigquery, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
+| `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
 | `gpio pmtiles` | create | PMTiles generation commands. Generate PMTiles from... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
-| `gpio fiboa` | validate, improve, describe | fiboa (Field Boundaries for Agriculture) plugin commands. |
 <!-- END GENERATED: skill-commands -->
 
 ---

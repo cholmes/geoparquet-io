@@ -550,6 +550,36 @@ Partition by multiple administrative levels:
     )
     ```
 
+### Vecorel-compliant partitions
+
+Use `--vecorel` to write [Vecorel](https://vecorel.org/)-compliant admin columns
+into each partition. This forces the Overture dataset with `country,region`
+levels, names the columns `admin:country_code` and `admin:subdivision_code`,
+marks `admin:country_code` non-nullable, and writes the Vecorel collection
+schema metadata. Unlike the default mode, the admin columns are kept in the
+output files (not just encoded in the folder names).
+
+=== "CLI"
+
+    ```bash
+    # Vecorel partitions (forces Overture country,region)
+    gpio partition admin input.parquet output/ --vecorel
+
+    # Combine with Hive-style layout
+    gpio partition admin input.parquet output/ --vecorel --hive
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    gpio.read('input.parquet').partition_by_admin(
+        'output/',
+        vecorel=True
+    )
+    ```
+
 ### Datasets
 
 --8<-- "_includes/admin-datasets.md"

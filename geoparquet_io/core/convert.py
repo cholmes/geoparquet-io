@@ -214,18 +214,20 @@ def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False, e
     quoted_geom = quote_identifier(geom_column)
 
     # GeoArrow native encodings store geometry as nested structs/arrays that
-    # DuckDB cannot pass to ST_XMin directly. Use UNNEST to extract x/y coords;
-    # the WHERE filter excludes NaN coordinates (e.g. empty-geometry sentinels).
+    # DuckDB cannot pass to ST_XMin directly. Use list_min/list_max via
+    # _geoarrow_coord_exprs — consistent with _build_conversion_query and
+    # avoids UNNEST row explosion for large multipolygon datasets.
     geoarrow_native = encoding.lower() not in {"wkb", "wkt"}
     if geoarrow_native:
+        xmin_e, ymin_e, xmax_e, ymax_e, _, _ = _geoarrow_coord_exprs(quoted_geom, encoding)
         bounds_query = f"""
             SELECT
-                MIN(x) as xmin,
-                MIN(y) as ymin,
-                MAX(x) as xmax,
-                MAX(y) as ymax
-            FROM (SELECT UNNEST({quoted_geom}, recursive := true) FROM {table_expr})
-            WHERE NOT isnan(x) AND NOT isnan(y)
+                MIN({xmin_e}) as xmin,
+                MIN({ymin_e}) as ymin,
+                MAX({xmax_e}) as xmax,
+                MAX({ymax_e}) as ymax
+            FROM {table_expr}
+            WHERE NOT isnan({xmax_e}) AND NOT isnan({ymax_e})
         """
     else:
         bounds_query = f"""
@@ -1436,7 +1438,7 @@ def convert_to_geoparquet(
         skip_invalid: Skip rows with invalid geometries instead of failing
         allow_no_geometry: Allow conversion to plain Parquet if no geometry detected
         profile: AWS profile name for S3 operations
-        geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        geoparquet_version: GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only)
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
