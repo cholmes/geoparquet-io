@@ -122,7 +122,16 @@ jobs:
 
       - name: Pre-install DuckDB extensions
         run: |
-          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          for attempt in 1 2 3; do
+            if uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "DuckDB extension pre-install failed after 3 attempts."
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Install tippecanoe
         if: runner.os != 'Windows'
@@ -211,7 +220,16 @@ jobs:
 
       - name: Pre-install DuckDB extensions
         run: |
-          uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          for attempt in 1 2 3; do
+            if uv run python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "DuckDB extension pre-install failed after 3 attempts."
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Install tippecanoe
         if: runner.os != 'Windows'
