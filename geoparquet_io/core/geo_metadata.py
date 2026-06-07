@@ -9,8 +9,6 @@ Usage in core modules:
     from geoparquet_io.core.geo_metadata import (
         parse_geo_metadata,
         create_geo_metadata,
-        check_bbox_structure,
-        get_bbox_advice,
     )
 
 Note: This module uses lazy imports for functions from other core modules

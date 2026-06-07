@@ -128,6 +128,9 @@ def build_spatial_join_condition(
     run a full ST_Intersects against every admin geometry, which effectively
     hangs. See PR #460.
 
+    All identifiers are passed through :func:`quote_identifier`, so column names
+    sourced from untrusted file metadata cannot break out of the predicate.
+
     Args:
         input_geom_col: Geometry column on the input (left) table.
         target_geom_col: Geometry column on the target (right) table.
@@ -171,6 +174,8 @@ def get_duckdb_connection(
     s3_endpoint=None,
     s3_region=None,
     s3_use_ssl=None,
+    temp_directory=None,
+    memory_limit=None,
 ):
     """
     Create a DuckDB connection with necessary extensions loaded.
@@ -190,6 +195,11 @@ def get_duckdb_connection(
         threads: Number of threads for DuckDB to use (default: None = all cores).
                 Limiting threads is useful for parallel test execution to prevent
                 CPU saturation when multiple pytest workers create connections.
+        temp_directory: Directory for DuckDB to spill intermediate results to disk.
+                    Bounds peak memory on large spatial joins (e.g. admin-divisions
+                    against a 400k-feature input) so they don't OOM.
+        memory_limit: DuckDB memory limit (e.g. "8GB"). When set, DuckDB spills to
+                    temp_directory once this is exceeded rather than crashing.
 
     Returns:
         duckdb.DuckDBPyConnection: Configured connection with extensions loaded
@@ -204,6 +214,14 @@ def get_duckdb_connection(
     # DuckDB fails with "Arrow Appender: The maximum total string size for
     # regular string buffers is 2147483647" errors.
     con.execute("SET arrow_large_buffer_size = true;")
+
+    # Spill-to-disk: bound peak memory on large joins/aggregations.
+    if temp_directory is not None:
+        safe_temp_dir = _escape_sql_string(str(temp_directory))
+        con.execute(f"SET temp_directory = '{safe_temp_dir}';")
+    if memory_limit is not None:
+        safe_memory_limit = _escape_sql_string(str(memory_limit))
+        con.execute(f"SET memory_limit = '{safe_memory_limit}';")
 
     # Always load spatial extension by default (core use case)
     if load_spatial:

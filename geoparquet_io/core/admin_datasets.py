@@ -30,6 +30,13 @@ from geoparquet_io.core.overture import OVERTURE_FALLBACK_RELEASE
 # Cache age threshold in seconds (6 months)
 CACHE_AGE_THRESHOLD_SECONDS = 6 * 30 * 24 * 60 * 60  # ~180 days
 
+# Geometry simplification tolerance (in degrees) applied when building the
+# per-level Overture admin caches. 0.0001° is ~11 m near the equator (~7 m at
+# 50°N). This trades near-border attribution accuracy for much smaller caches
+# and faster ST_Intersects joins. Country and region layers are simplified
+# independently, so shared borders are not perfectly coincident (see todo 016).
+_OVERTURE_SIMPLIFY_TOLERANCE_DEG = 0.0001
+
 
 def get_cache_dir() -> Path:
     """
@@ -248,9 +255,13 @@ class AdminDataset(ABC):
         from geoparquet_io.core.duckdb_utils import s3_config_scope
 
         source = self.get_default_source()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         with s3_config_scope(self.get_s3_config()):
-            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            # Spill to the cache dir to bound memory on the remote scan (todo 013).
+            con = get_duckdb_connection(
+                load_spatial=True, load_httpfs=True, temp_directory=str(cache_path.parent)
+            )
             try:
                 # Get read options
                 read_options = self.get_read_parquet_options()
@@ -382,6 +393,10 @@ class AdminDataset(ABC):
         self.validate_levels(levels)
         mapping = self.get_level_column_mapping()
         return [mapping[level] for level in levels]
+
+    def supports_per_level_sources(self) -> bool:
+        """Whether this dataset provides separate source files per admin level."""
+        return False
 
     def get_read_parquet_options(self) -> dict:
         """
@@ -700,12 +715,104 @@ class OvertureAdminDataset(AdminDataset):
             SQL transformation expression or None if no transform needed
         """
         if level_name == "region":
-            # Strip country prefix for Vecorel compliance
-            return "CASE WHEN region LIKE '%-%' THEN split_part(region, '-', 2) ELSE region END"
+            # Strip country prefix for Vecorel compliance. Qualify with the admin
+            # alias `b.` (and quote) so the ref is unambiguous when the input
+            # already carries a `region` column (a.* forwards it via the join).
+            return (
+                "CASE WHEN b.\"region\" LIKE '%-%' "
+                'THEN split_part(b."region", \'-\', 2) ELSE b."region" END'
+            )
         return None
 
     # Overture now uses the base class implementation
     # No override needed - base class handles all prefix logic
+
+    def supports_per_level_sources(self) -> bool:
+        return True
+
+    def get_cached_path_for_level(self, level: str) -> Path:
+        cache_dir = get_cache_dir()
+        version = self.get_version()
+        return cache_dir / f"overture-{version}-{level}.parquet"
+
+    def get_source_for_level(self, level: str, no_cache: bool = False) -> str:
+        """Get the cached source path for a specific admin level."""
+        if self.source_path is not None:
+            return self.source_path
+        if no_cache:
+            return self.get_default_source()
+
+        cache_path = self.get_cached_path_for_level(level)
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            age_warning = check_cache_age(cache_path)
+            if age_warning:
+                from geoparquet_io.core.logging_config import warn
+
+                warn(age_warning)
+            return str(cache_path)
+
+        self._download_per_level_caches()
+        return str(cache_path)
+
+    def _download_per_level_caches(self) -> None:
+        """Download separate country and region cache files.
+
+        The full Overture divisions dataset is ~4.5GB with 1M+ rows. We split
+        into per-level files so spatial joins run against non-overlapping
+        polygons, preventing row multiplication. Geometries are simplified to
+        ~11m tolerance to keep files small.
+        """
+        from geoparquet_io.core.duckdb_utils import s3_config_scope
+        from geoparquet_io.core.logging_config import info
+
+        cache_dir = get_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        source = self.get_default_source()
+        info(f"Downloading {self.get_dataset_name()} to local cache...")
+        info("This is a one-time download. Future runs will use the cached version.")
+
+        with s3_config_scope(self.get_s3_config()):
+            # Spill to the cache dir so the remote scan + simplification of the
+            # ~4.5GB dataset bounds peak memory rather than OOM-ing (todo 013).
+            con = get_duckdb_connection(
+                load_spatial=True, load_httpfs=True, temp_directory=str(cache_dir)
+            )
+            try:
+                for level in self.get_available_levels():
+                    cache_path = self.get_cached_path_for_level(level)
+                    if cache_path.exists() and cache_path.stat().st_size > 0:
+                        continue
+
+                    tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
+                    if level == "country":
+                        query = (
+                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
+                            "bbox, country, subtype "
+                            f"FROM read_parquet('{source}', hive_partitioning=1) "
+                            "WHERE subtype = 'country' "
+                            "AND country NOT LIKE 'X%' "
+                            "AND country != 'AQ'"
+                        )
+                    else:
+                        query = (
+                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
+                            "bbox, country, region, subtype "
+                            f"FROM read_parquet('{source}', hive_partitioning=1) "
+                            f"WHERE subtype = '{level}'"
+                        )
+
+                    con.execute(
+                        f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                    )
+                    info(f"Cached {level} dataset at: {cache_path}")
+            finally:
+                con.close()
+
+    def _download_to_cache(self, cache_path: Path) -> Path:
+        """Download per-level caches (called by base class fallback)."""
+        self._download_per_level_caches()
+        return cache_path
 
     def get_s3_config(self) -> dict:
         return {"s3_region": "us-west-2"}

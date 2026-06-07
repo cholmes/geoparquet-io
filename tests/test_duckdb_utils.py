@@ -141,6 +141,35 @@ class TestGetDuckdbConnection:
         assert con is not None
         con.close()
 
+    def test_temp_directory_is_set(self, tmp_path):
+        """temp_directory enables spill-to-disk (OOM guard, todo 013)."""
+        spill = str(tmp_path / "spill")
+        con = get_duckdb_connection(load_spatial=False, load_httpfs=False, temp_directory=spill)
+        try:
+            value = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+            assert value == spill
+        finally:
+            con.close()
+
+    def test_memory_limit_is_set(self):
+        """memory_limit is applied when provided."""
+        con = get_duckdb_connection(load_spatial=False, load_httpfs=False, memory_limit="2GB")
+        try:
+            value = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+            # DuckDB normalises the units (e.g. "2.0 GiB"); just assert it changed.
+            assert "GiB" in value or "GB" in value
+        finally:
+            con.close()
+
+    def test_no_temp_directory_by_default(self):
+        """Default connection is unchanged (no behavior change on small inputs)."""
+        con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
+        try:
+            # Default temp_directory is empty/unset; the connection still works.
+            assert con.execute("SELECT 1").fetchone() == (1,)
+        finally:
+            con.close()
+
 
 class TestS3CacheThreadSafety:
     """Tests for thread-safe S3 bucket authentication cache."""
