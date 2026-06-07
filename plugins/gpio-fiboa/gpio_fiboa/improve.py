@@ -78,8 +78,17 @@ def improve_fiboa(
     current_input = input_file
     temp_files: list[str] = []
 
+    # Add bbox up front when an admin spatial join is requested but the input
+    # lacks a bbox column. The join's cheap bbox pre-filter needs it (otherwise
+    # it falls back to a full-geometry intersection over every candidate), and
+    # the column survives the join even though the join does not preserve row
+    # order. Hilbert sorting still runs last, so the final file stays spatially
+    # ordered. Written at the target version so a native 2.0 input becomes 1.1.
+    add_bbox_first = add_admin and not _has_bbox_column(input_file)
+
     steps_remaining = sum(
         [
+            add_bbox_first,
             add_metrics,
             add_admin,
             bool(determination_datetime),
@@ -91,6 +100,23 @@ def improve_fiboa(
     )
 
     try:
+        if add_bbox_first:
+            steps_remaining -= 1
+            progress("Adding bbox column (enables the admin spatial-join pre-filter)...")
+            next_output = _get_next_output(output_file, steps_remaining > 0, temp_files)
+
+            from geoparquet_io.core.add.bbox import add_bbox_column
+
+            add_bbox_column(
+                current_input,
+                next_output,
+                overwrite=True,
+                verbose=verbose,
+                **write_opts,
+            )
+            current_input = next_output
+            success("Added bbox column")
+
         if add_metrics:
             steps_remaining -= 1
             progress("Adding geometry metrics (area + perimeter)...")
@@ -121,7 +147,9 @@ def improve_fiboa(
                 next_output,
                 dataset_name="overture",
                 levels=["country", "region"],
-                vecorel=False,
+                # vecorel=True yields the fiboa-spec admin:country_code /
+                # admin:subdivision_code column names (not overture_*).
+                vecorel=True,
                 verbose=verbose,
                 overwrite=True,
                 **write_opts,
@@ -358,6 +386,13 @@ def _handle_geoparquet_version(
         "Use --geoparquet-version 2.0 to override."
     )
     return "1.1", True
+
+
+def _has_bbox_column(parquet_file: str) -> bool:
+    """Return True if the file already has a bbox struct column."""
+    from geoparquet_io.core.common import check_bbox_structure
+
+    return check_bbox_structure(parquet_file, verbose=False)["has_bbox_column"]
 
 
 def _ensure_bbox(parquet_file: str, verbose: bool) -> None:

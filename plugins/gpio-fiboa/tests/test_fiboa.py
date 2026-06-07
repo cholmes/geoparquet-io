@@ -398,3 +398,66 @@ class TestFiboaImprove:
         finally:
             if os.path.exists(output):
                 os.unlink(output)
+
+    def test_improve_admin_adds_bbox_before_join(self, buildings_file, temp_output, monkeypatch):
+        """With -a, a bbox column is added before the admin spatial join.
+
+        The admin join's bbox pre-filter needs an input bbox column; without it
+        the join falls back to slow full-geometry intersection. The real Overture
+        join needs network, so we stub it and assert its input already has a bbox.
+        """
+        import shutil
+
+        from geoparquet_io.core.common import check_bbox_structure
+
+        # Premise: input has no bbox column.
+        assert check_bbox_structure(buildings_file, verbose=False)["has_bbox_column"] is False
+
+        seen = {}
+
+        def fake_admin(input_parquet, output_parquet, **kwargs):
+            seen["input_had_bbox"] = check_bbox_structure(input_parquet, verbose=False)[
+                "has_bbox_column"
+            ]
+            shutil.copy(input_parquet, output_parquet)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.add.admin_divisions.add_admin_divisions_multi",
+            fake_admin,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fiboa, ["improve", buildings_file, temp_output, "-a", "--skip-hilbert"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # The admin join received an input that already had a bbox column.
+        assert seen.get("input_had_bbox") is True
+        # And the final output keeps it.
+        assert "bbox" in pq.ParquetFile(temp_output).schema_arrow.names
+
+    def test_improve_admin_uses_vecorel_column_names(
+        self, buildings_file, temp_output, monkeypatch
+    ):
+        """`-a` must request vecorel naming so columns are admin:country_code /
+        admin:subdivision_code (the fiboa spec names), not overture_*."""
+        import shutil
+
+        seen = {}
+
+        def fake_admin(input_parquet, output_parquet, **kwargs):
+            seen["vecorel"] = kwargs.get("vecorel")
+            shutil.copy(input_parquet, output_parquet)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.add.admin_divisions.add_admin_divisions_multi",
+            fake_admin,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            fiboa, ["improve", buildings_file, temp_output, "-a", "--skip-hilbert"]
+        )
+        assert result.exit_code == 0, result.output
+        assert seen.get("vecorel") is True
