@@ -31,18 +31,3 @@ updates:
         update-types:
           - "minor"
           - "patch"
-
-  # Security updates for Python - runs daily, catches CVEs fast
-  - package-ecosystem: "uv"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    labels:
-      - "dependencies"
-      - "security"
-    open-pull-requests-limit: 5
-    # Only open PRs for security updates
-    allow:
-      - dependency-type: "all"
-    # This makes it ONLY trigger for security advisories
-    versioning-strategy: "lockfile-only"
