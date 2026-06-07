@@ -204,6 +204,7 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
         new_fields.append(new_field)
 
     if not needs_fix:
+        pf.close()
         return
 
     new_schema = pa.schema(new_fields, metadata=schema.metadata)
@@ -233,6 +234,9 @@ def _fix_vecorel_schema(parquet_file: str, non_nullable_columns: list[str]) -> N
                 rg_table = pf.read_row_group(rg_idx)
                 rg_table = rg_table.cast(new_schema)
                 writer.write_table(rg_table)
+        # Release the read handle before replacing the source. On Windows
+        # os.replace() raises PermissionError if the target is still open.
+        pf.close()
         os.replace(temp_out, parquet_file)
     finally:
         if os.path.exists(temp_out):
