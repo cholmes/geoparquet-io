@@ -1,6 +1,6 @@
-# Adding Spatial Indices
+# Adding Spatial Indices & Metadata
 
-The `add` commands enhance GeoParquet files with spatial indices and metadata.
+The `add` commands enhance GeoParquet files with spatial indices, geometry metrics, and administrative metadata.
 
 ## Bounding Boxes
 
@@ -289,6 +289,58 @@ gpio add kdtree input.parquet output.parquet --approx 200000
 gpio add kdtree input.parquet output.parquet --verbose
 ```
 
+## Geometry Metrics
+
+Add geodesic area and perimeter measurements to each feature:
+
+=== "CLI"
+
+    ```bash
+    gpio add geometry-metrics input.parquet output.parquet
+
+    # Preview SQL without executing
+    gpio add geometry-metrics input.parquet output.parquet --dry-run
+
+    # Without Vecorel metadata
+    gpio add geometry-metrics input.parquet output.parquet --no-vecorel
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+    from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
+
+    # Add area and perimeter columns
+    add_geometry_metrics('input.parquet', 'output.parquet')
+
+    # Without Vecorel schema metadata
+    add_geometry_metrics('input.parquet', 'output.parquet', vecorel=False)
+    ```
+
+Calculates two columns using WGS84 spheroid-based calculations:
+
+- **`metrics:area`** — geodesic area in square meters (m²)
+- **`metrics:perimeter`** — geodesic perimeter in meters (m)
+
+By default, the output follows the [Vecorel geometry-metrics extension](https://vecorel.org/geometry-metrics-extension/v0.1.0/schema.yaml) specification. This adds `collection` metadata to the Parquet file referencing the schema URL, and ensures required columns (`id`, `geometry`) are present and non-nullable. Use `--no-vecorel` to skip the metadata and just add the raw metric columns.
+
+**Options:**
+
+```bash
+# With compression settings
+gpio add geometry-metrics input.parquet output.parquet --compression ZSTD --compression-level 15
+
+# With row group sizing
+gpio add geometry-metrics input.parquet output.parquet --row-group-size-mb 256MB
+
+# Show generated SQL
+gpio add geometry-metrics input.parquet output.parquet --show-sql
+```
+
+!!! note "Input CRS"
+    The spheroid calculations assume WGS84 (EPSG:4326) input. If your data uses a different CRS, reproject first with `gpio convert reproject`.
+
 ## Administrative Divisions
 
 Add administrative division columns via spatial join with remote boundaries datasets:
@@ -366,6 +418,43 @@ Add multiple hierarchical administrative levels:
         country_filter='US'
     )
     ```
+
+### Vecorel-Compliant Output
+
+Use `--vecorel` for output that follows the [Vecorel administrative division extension](https://vecorel.org/administrative-division-extension/v0.1.0/schema.yaml):
+
+=== "CLI"
+
+    ```bash
+    # Vecorel-compliant admin columns (uses Overture dataset automatically)
+    gpio add admin-divisions input.parquet output.parquet --vecorel
+
+    # Equivalent to:
+    gpio add admin-divisions input.parquet output.parquet \
+      --dataset overture --levels country,region --prefix admin
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.read('input.parquet')
+    enriched = table.add_admin_divisions(
+        dataset='overture',
+        levels=['country', 'region'],
+        vecorel=True
+    )
+    enriched.write('output.parquet')
+    ```
+
+The `--vecorel` flag:
+
+- Forces the **Overture** dataset (overrides `--dataset`)
+- Sets levels to **country,region** (overrides `--levels`)
+- Adds `admin:country_code` (ISO 3166-1 alpha-2) and `admin:subdivision_code` (ISO 3166-2)
+- Writes `collection` metadata with the Vecorel schema URL
+- Ensures `id` and `geometry` columns are present and non-nullable
 
 ### Datasets
 

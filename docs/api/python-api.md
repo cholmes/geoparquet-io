@@ -486,6 +486,38 @@ table = gpio.read('input.parquet').add_a5(resolution=10)
 table = gpio.read('input.parquet').add_a5(column_name='a5_index', resolution=12)
 ```
 
+#### `add_geometry_metrics(vecorel=True)`
+
+Add geodesic area (m²) and perimeter (m) columns using WGS84 spheroid calculations.
+
+```python
+# Add metrics with Vecorel metadata (default)
+table = gpio.read('input.parquet').add_geometry_metrics()
+
+# Without Vecorel metadata
+table = gpio.read('input.parquet').add_geometry_metrics(vecorel=False)
+```
+
+Adds `metrics:area` and `metrics:perimeter` columns. With `vecorel=True` (default), also writes Vecorel schema metadata and ensures `id`/`geometry` are present and non-nullable.
+
+#### `add_admin_divisions(dataset='overture', levels=None, vecorel=False)`
+
+Add administrative division columns via spatial join with remote boundary datasets.
+
+```python
+# Add country codes using Overture dataset
+table = gpio.read('input.parquet').add_admin_divisions(levels=['country'])
+
+# Vecorel-compliant output (forces Overture with country,region)
+table = gpio.read('input.parquet').add_admin_divisions(vecorel=True)
+
+# GAUL dataset with multiple levels
+table = gpio.read('input.parquet').add_admin_divisions(
+    dataset='gaul',
+    levels=['continent', 'country', 'department']
+)
+```
+
 #### `add_kdtree(column_name='kdtree_cell', iterations=9, sample_size=100000)`
 
 Add a KD-tree cell column for data-adaptive spatial partitioning.
@@ -694,9 +726,13 @@ stats = table.partition_by_kdtree('output/')
 stats = table.partition_by_kdtree('output/', iterations=6)
 ```
 
-#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False)`
+#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False, vecorel=False)`
 
 Partition by administrative boundaries.
+
+Set `vecorel=True` to write Vecorel-compliant admin columns
+(`admin:country_code`, `admin:subdivision_code`) with schema metadata into each
+partition. This forces the Overture dataset with `country,region` levels.
 
 ```python
 # Partition by country using GAUL dataset
@@ -709,6 +745,9 @@ stats = table.partition_by_admin(
     levels=['continent', 'country', 'department'],
     hive=True
 )
+
+# Vecorel-compliant partitions (forces Overture country,region)
+stats = table.partition_by_admin('output/', vecorel=True)
 ```
 
 ### Sub-Partitioning Utilities
@@ -1125,6 +1164,8 @@ pq.write_table(table, 'output.parquet')
 | `ops.add_h3(table, column_name='h3_cell', resolution=9, geometry_column=None)` | Add H3 cell column |
 | `ops.add_a5(table, column_name='a5_cell', resolution=15, geometry_column=None)` | Add A5 cell column |
 | `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column |
+| `ops.add_geometry_metrics(table, vecorel=True)` | Add geodesic area and perimeter columns |
+| `ops.add_admin_divisions(table, dataset='overture', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |

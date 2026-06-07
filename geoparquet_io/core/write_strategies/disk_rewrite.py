@@ -57,6 +57,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         verbose: bool,
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write query results to GeoParquet using DuckDB COPY then PyArrow rewrite."""
         from geoparquet_io.core.common import (
@@ -145,6 +146,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 compression=validated_compression,
                 compression_level=validated_level,
                 verbose=verbose,
+                extra_kv_metadata=extra_kv_metadata,
             )
 
             os.unlink(temp_path)
@@ -335,6 +337,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         compression: str,
         compression_level: int | None,
         verbose: bool,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Rewrite file with proper geo metadata, row group by row group."""
         pf = pq.ParquetFile(input_path)
@@ -342,6 +345,11 @@ class DiskRewriteStrategy(BaseWriteStrategy):
 
         new_meta = dict(schema.metadata or {})
         new_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+        if extra_kv_metadata:
+            for key, value in extra_kv_metadata.items():
+                bkey = key.encode("utf-8") if isinstance(key, str) else key
+                bval = value.encode("utf-8") if isinstance(value, str) else value
+                new_meta[bkey] = bval
         new_schema = schema.with_metadata(new_meta)
 
         if verbose:
