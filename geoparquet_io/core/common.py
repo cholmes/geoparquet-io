@@ -1679,6 +1679,9 @@ def _auto_fix_vecorel_if_needed(
 
         pf = pq.ParquetFile(output_path)
         columns = set(pf.schema_arrow.names)
+        # Close before _fix_vecorel_schema rewrites the file in place; an open
+        # handle here would make its os.replace() fail on Windows.
+        pf.close()
         non_nullable = [c for c in VECOREL_NON_NULLABLE if c in columns]
         if non_nullable:
             _fix_vecorel_schema(output_path, non_nullable)

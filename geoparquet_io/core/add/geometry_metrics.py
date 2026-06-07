@@ -278,14 +278,19 @@ def _add_vecorel_metadata_to_file(parquet_file: str, verbose: bool) -> None:
     os.unlink(temp_out)
 
     try:
-        write_parquet_with_metadata(
-            con,
-            f"SELECT * FROM '{input_url}'",
-            temp_out,
-            original_metadata=metadata,
-            extra_kv_metadata=extra_kv,
-            verbose=verbose,
-        )
+        try:
+            write_parquet_with_metadata(
+                con,
+                f"SELECT * FROM '{input_url}'",
+                temp_out,
+                original_metadata=metadata,
+                extra_kv_metadata=extra_kv,
+                verbose=verbose,
+            )
+        finally:
+            # Release DuckDB's read handle on the source before replacing it;
+            # an open connection makes os.replace() fail on Windows.
+            con.close()
         os.replace(temp_out, parquet_file)
     finally:
         if os.path.exists(temp_out):

@@ -114,11 +114,11 @@ class TestVecorelMetadataPreservation:
             result = runner.invoke(add, ["bbox", intermediate, temp_output_file])
             assert result.exit_code == 0
 
-            pf = pq.ParquetFile(temp_output_file)
-            meta = pf.schema_arrow.metadata
-            assert b"collection" in meta
-            vecorel = json.loads(meta[b"collection"])
-            assert VECOREL_METRICS_SCHEMA in vecorel["schemas"]["default"]
+            with pq.ParquetFile(temp_output_file) as pf:
+                meta = pf.schema_arrow.metadata
+                assert b"collection" in meta
+                vecorel = json.loads(meta[b"collection"])
+                assert VECOREL_METRICS_SCHEMA in vecorel["schemas"]["default"]
         finally:
             if os.path.exists(intermediate):
                 os.unlink(intermediate)
@@ -144,10 +144,11 @@ class TestVecorelSchemaPreservedThroughOperations:
         try:
             add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
 
-            # Verify it's compliant
-            pf = pq.ParquetFile(intermediate)
-            assert pf.schema_arrow.field("id").nullable is False
-            assert pf.schema_arrow.field("geometry").nullable is False
+            # Verify it's compliant (close the handle so Windows can unlink
+            # the temp file in the finally block).
+            with pq.ParquetFile(intermediate) as pf:
+                assert pf.schema_arrow.field("id").nullable is False
+                assert pf.schema_arrow.field("geometry").nullable is False
 
             # Step 2: add another column (simulating a non-vecorel operation)
             add_computed_column(
@@ -158,10 +159,10 @@ class TestVecorelSchemaPreservedThroughOperations:
             )
 
             # Step 3: verify compliance is preserved
-            pf2 = pq.ParquetFile(temp_output_file)
-            assert pf2.schema_arrow.field("id").nullable is False
-            assert pf2.schema_arrow.field("geometry").nullable is False
-            assert b"collection" in pf2.schema_arrow.metadata
+            with pq.ParquetFile(temp_output_file) as pf2:
+                assert pf2.schema_arrow.field("id").nullable is False
+                assert pf2.schema_arrow.field("geometry").nullable is False
+                assert b"collection" in pf2.schema_arrow.metadata
         finally:
             if os.path.exists(intermediate):
                 os.unlink(intermediate)
@@ -254,16 +255,17 @@ class TestReprojectPreservesVecorel:
         try:
             add_geometry_metrics(buildings_test_file, intermediate, vecorel=True)
 
-            pf = pq.ParquetFile(intermediate)
-            assert b"collection" in pf.schema_arrow.metadata
+            # Close the handle so Windows can unlink the temp file in finally.
+            with pq.ParquetFile(intermediate) as pf:
+                assert b"collection" in pf.schema_arrow.metadata
 
             reproject_impl(intermediate, temp_output_file, target_crs="EPSG:4326")
 
-            pf2 = pq.ParquetFile(temp_output_file)
-            meta = pf2.schema_arrow.metadata
-            assert b"collection" in meta
-            vecorel = json.loads(meta[b"collection"])
-            assert VECOREL_METRICS_SCHEMA in vecorel["schemas"]["default"]
+            with pq.ParquetFile(temp_output_file) as pf2:
+                meta = pf2.schema_arrow.metadata
+                assert b"collection" in meta
+                vecorel = json.loads(meta[b"collection"])
+                assert VECOREL_METRICS_SCHEMA in vecorel["schemas"]["default"]
         finally:
             if os.path.exists(intermediate):
                 os.unlink(intermediate)
