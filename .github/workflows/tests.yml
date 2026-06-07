@@ -130,6 +130,7 @@ jobs:
               echo "DuckDB extension pre-install failed after 3 attempts."
               exit 1
             fi
+            echo "DuckDB extension pre-install attempt $attempt failed; retrying in 5 seconds..."
             sleep 5
           done
 
@@ -228,6 +229,7 @@ jobs:
               echo "DuckDB extension pre-install failed after 3 attempts."
               exit 1
             fi
+            echo "DuckDB extension pre-install attempt $attempt failed; retrying in 5 seconds..."
             sleep 5
           done
 
