@@ -377,7 +377,11 @@ class TestEstoniaGeoPackageIntegration:
 
     # Worker script run in a fresh subprocess (see test below for rationale).
     # Converts the first N layers of a GeoPackage sequentially, tolerating
-    # per-layer read errors and reporting how many succeeded on stdout.
+    # per-layer read errors. The outcome is communicated via the *exit code*
+    # (0 = at least one layer converted, 3 = zero converted) rather than parsed
+    # from stdout - captured stdout can come back as None on some CI runners
+    # (observed on Windows), so the exit code is the reliable signal.
+    _CONVERT_EXIT_NONE_CONVERTED = 3
     _SEQUENTIAL_CONVERT_WORKER = textwrap.dedent(
         """
         import sys
@@ -404,7 +408,8 @@ class TestEstoniaGeoPackageIntegration:
                 # regression we guard against is a hard process crash, not a
                 # per-layer read error.
                 print(f"SKIP {layer_name}: {exc}", file=sys.stderr)
-        print(f"CONVERTED={converted}")
+        print(f"CONVERTED={converted}", file=sys.stderr)
+        sys.exit(0 if converted > 0 else 3)
         """
     )
 
@@ -438,23 +443,19 @@ class TestEstoniaGeoPackageIntegration:
             timeout=600,
         )
 
-        # A segfault/abort shows up as a negative return code (e.g. -11 SIGSEGV).
+        # Captured output can be None on some runners; guard before formatting.
+        out = result.stdout or ""
+        err = result.stderr or ""
+
+        # Our worker exits 3 when no layer converted (a real failure, but not a
+        # crash). Any other non-zero code is a native crash (e.g. SIGSEGV shows
+        # up as a negative return code) - exactly the #401 regression we guard.
+        assert result.returncode != self._CONVERT_EXIT_NONE_CONVERTED, (
+            f"At least one layer should convert successfully.\nstdout:\n{out}\nstderr:\n{err}"
+        )
         assert result.returncode == 0, (
             f"Sequential GeoPackage layer conversion crashed (return code "
-            f"{result.returncode}).\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-
-        converted = next(
-            (
-                int(line.split("=", 1)[1])
-                for line in result.stdout.splitlines()
-                if line.startswith("CONVERTED=")
-            ),
-            0,
-        )
-        assert converted > 0, (
-            f"At least one layer should convert successfully.\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"{result.returncode}).\nstdout:\n{out}\nstderr:\n{err}"
         )
 
     def test_list_layers_estonia(self, estonia_gpkg):
