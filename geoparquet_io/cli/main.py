@@ -1486,7 +1486,11 @@ def _reproject_impl_cli(
     "-d",
     default="EPSG:4326",
     show_default=True,
-    help="Destination CRS (e.g., 'EPSG:4326', 'EPSG:32610')",
+    help=(
+        "Destination CRS (e.g., 'EPSG:4326', 'EPSG:32610'). The default "
+        "(EPSG:4326 / OGC:CRS84) is written by omitting the crs key per the "
+        "GeoParquet spec, so the output has no explicit crs."
+    ),
 )
 @click.option(
     "--src-crs",

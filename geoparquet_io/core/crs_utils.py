@@ -7,6 +7,7 @@ CRS information from GeoParquet files and other spatial formats.
 
 import json
 import os
+from functools import lru_cache
 
 from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.logging_config import debug, warn
@@ -74,15 +75,19 @@ def is_default_crs(crs):
     return False
 
 
-# Per-process set of inputs we've already warned about, to keep the broad
-# null-CRS warning from firing repeatedly within a single CLI invocation.
-_warned_null_crs_paths: set[str] = set()
-
-#: Shared guidance appended to null-CRS warnings/validation messages.
+#: Shared guidance appended to null-CRS warnings and the validate message.
 NULL_CRS_HINT = (
     "An explicit null CRS means the CRS is *unknown* (not the OGC:CRS84 default). "
     "If the coordinates are really lon/lat WGS84, run "
     "`gpio convert reproject <input> <output> --assume-crs84` to set the default."
+)
+
+#: Raised by the file/streaming reproject paths when DuckDB hits a ``crs: null``
+#: input without ``--assume-crs84`` (DuckDB's GeoParquet reader rejects it).
+NULL_CRS_NO_FLAG_ERROR = (
+    "Input has an explicit null CRS (unknown). DuckDB cannot read it. "
+    "If the coordinates are lon/lat WGS84, re-run with --assume-crs84 to "
+    "treat them as OGC:CRS84 and write the default."
 )
 
 
@@ -96,7 +101,11 @@ def crs_is_explicitly_null(col_meta: dict) -> bool:
 
 
 def geoparquet_crs_is_null(parquet_file) -> bool:
-    """Return True if the primary geometry column has an explicit ``crs: null``."""
+    """Return True if the primary geometry column has an explicit ``crs: null``.
+
+    ``parquet_file`` must be a *raw* path/URL — this helper SQL-escapes it
+    internally, so passing an already-escaped URL double-escapes it.
+    """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
     from geoparquet_io.core.file_utils import safe_file_url
 
@@ -109,12 +118,40 @@ def geoparquet_crs_is_null(parquet_file) -> bool:
     return crs_is_explicitly_null(col_meta)
 
 
-def warn_null_crs_once(key: str) -> None:
-    """Emit the null-CRS warning at most once per ``key`` for this process."""
-    if not key or key in _warned_null_crs_paths:
-        return
-    _warned_null_crs_paths.add(key)
+@lru_cache(maxsize=256)
+def _emit_null_crs_warning(key: str) -> None:
+    """Emit the null-CRS warning exactly once per ``key`` (LRU-bounded)."""
     warn(f"Input has an explicit null CRS (unknown). {NULL_CRS_HINT}")
+
+
+def warn_null_crs_once(key: str) -> None:
+    """Emit the null-CRS warning at most once per ``key`` for this process.
+
+    Dedup is bounded by an LRU cache so long-running processes (the Python API)
+    don't accumulate keys without limit.
+    """
+    if key:
+        _emit_null_crs_warning(key)
+
+
+def reset_null_crs_warnings() -> None:
+    """Clear the warn-once dedup cache. Intended for tests."""
+    _emit_null_crs_warning.cache_clear()
+
+
+def apply_target_crs_to_geo_meta(geo_meta: dict, geom_col: str, target_crs: str, con) -> None:
+    """Set or clear a geometry column's CRS in ``geo_meta`` in place.
+
+    The GeoParquet default CRS (EPSG:4326 / OGC:CRS84) is signalled by *omitting*
+    the ``crs`` key entirely — never by writing an explicit CRS84 object or null.
+    """
+    columns = geo_meta.get("columns", {})
+    if geom_col not in columns:
+        return
+    if is_default_crs(target_crs):
+        columns[geom_col].pop("crs", None)
+    else:
+        columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
 
 
 def _validate_projjson(crs: dict) -> bool:

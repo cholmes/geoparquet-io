@@ -16,6 +16,7 @@ Arrow IPC is used because:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 
@@ -265,7 +266,7 @@ def get_crs_from_arrow_table(table: pa.Table, geometry_column: str) -> str | Non
         col_meta = columns.get(geometry_column, {})
 
         if crs_is_explicitly_null(col_meta):
-            warn_null_crs_once(f"table:{hash(geo_bytes)}")
+            warn_null_crs_once(f"table:{hashlib.sha1(geo_bytes).hexdigest()}")
 
         crs = col_meta.get("crs")
         if crs:
@@ -413,7 +414,7 @@ def extract_crs_from_table(
                 geom_col_name = geometry_column or geo_meta.get("primary_column", "geometry")
                 if geom_col_name in columns:
                     if crs_is_explicitly_null(columns[geom_col_name]):
-                        warn_null_crs_once(f"table:{hash(geo_bytes)}")
+                        warn_null_crs_once(f"table:{hashlib.sha1(geo_bytes).hexdigest()}")
                     return columns[geom_col_name].get("crs")
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass

@@ -10,13 +10,15 @@ Covers:
 """
 
 import pyarrow.parquet as pq
+import pytest
 
 from geoparquet_io.core.crs_utils import (
     crs_is_explicitly_null,
     extract_crs_from_parquet,
     geoparquet_crs_is_null,
+    reset_null_crs_warnings,
 )
-from geoparquet_io.core.reproject import reproject, reproject_table
+from geoparquet_io.core.reproject import _reproject_streaming, reproject, reproject_table
 from geoparquet_io.core.validate import CheckStatus, _check_crs_valid
 from tests.conftest import get_geo_metadata
 
@@ -108,13 +110,108 @@ def test_reproject_to_real_crs_still_writes_crs(buildings_test_file, temp_output
     assert present and value is not None
 
 
-def test_reproject_streaming_default_target_omits_crs(buildings_test_file, temp_output_file):
+def test_reproject_default_target_omits_crs(buildings_test_file, temp_output_file):
     # buildings_test is default CRS; reproject to default should keep crs omitted, not null.
     reproject(buildings_test_file, temp_output_file, target_crs="EPSG:4326")
     present, value = _col_crs(temp_output_file)
     assert value is not None or present is False
     # The key must never be present-and-null.
     assert not (present and value is None)
+
+
+# --------------------------------------------------------------------------- #
+# streaming path: _reproject_streaming is exercised directly (file->file routes
+# through reproject_impl, so these call the streaming function explicitly).
+# --------------------------------------------------------------------------- #
+
+
+def _stream(input_file, output_file, target_crs, assume_crs84=False):
+    """Drive _reproject_streaming directly with file paths."""
+    _reproject_streaming(
+        input_file,
+        output_file,
+        target_crs,
+        None,  # source_crs
+        "ZSTD",  # compression
+        None,  # compression_level
+        False,  # verbose
+        None,  # profile
+        None,  # geoparquet_version
+        assume_crs84=assume_crs84,
+    )
+
+
+def test_streaming_default_target_omits_crs(buildings_test_file, temp_output_file):
+    _stream(buildings_test_file, temp_output_file, "EPSG:4326")
+    present, value = _col_crs(temp_output_file)
+    assert not (present and value is None), "streaming default must not write crs:null"
+
+
+def test_streaming_real_target_writes_crs(buildings_test_file, temp_output_file):
+    _stream(buildings_test_file, temp_output_file, "EPSG:3857")
+    present, value = _col_crs(temp_output_file)
+    assert present and value is not None
+
+
+def test_streaming_null_input_without_flag_raises(null_crs_parquet, temp_output_file):
+    with pytest.raises(ValueError, match="assume-crs84"):
+        _stream(null_crs_parquet, temp_output_file, "EPSG:4326")
+
+
+def test_streaming_assume_crs84_null_input_succeeds(null_crs_parquet, temp_output_file):
+    _stream(null_crs_parquet, temp_output_file, "EPSG:4326", assume_crs84=True)
+    assert "crs" not in get_geo_metadata(temp_output_file)["columns"]["geometry"]
+
+
+# --------------------------------------------------------------------------- #
+# Arrow/Python-API path (reproject_table) must not silently coerce crs:null
+# --------------------------------------------------------------------------- #
+
+
+def _table_with_crs_state(buildings_test_file, crs_state):
+    """Return an in-memory table whose geometry crs is null/absent/present."""
+    import json
+
+    table = pq.read_table(buildings_test_file)
+    metadata = dict(table.schema.metadata)
+    geo = json.loads(metadata[b"geo"].decode("utf-8"))
+    col = geo["columns"][geo.get("primary_column", "geometry")]
+    if crs_state == "null":
+        col["crs"] = None
+    elif crs_state == "absent":
+        col.pop("crs", None)
+    metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+    return table.replace_schema_metadata(metadata)
+
+
+def test_reproject_table_null_crs_without_flag_raises(buildings_test_file):
+    table = _table_with_crs_state(buildings_test_file, "null")
+    with pytest.raises(ValueError, match="null CRS"):
+        reproject_table(table, target_crs="EPSG:3857")
+
+
+def test_reproject_table_null_crs_assume_crs84_succeeds(buildings_test_file):
+    import json
+
+    table = _table_with_crs_state(buildings_test_file, "null")
+    result = reproject_table(table, target_crs="EPSG:3857", assume_crs84=True)
+    out_geo = json.loads(result.schema.metadata[b"geo"].decode("utf-8"))
+    assert out_geo["columns"]["geometry"]["crs"] is not None
+
+
+def test_reproject_table_null_crs_explicit_source_crs_succeeds(buildings_test_file):
+    # An explicit source_crs satisfies the contract even with crs:null input.
+    table = _table_with_crs_state(buildings_test_file, "null")
+    result = reproject_table(table, target_crs="EPSG:4326", source_crs="EPSG:4326")
+    out_geo = result.schema.metadata[b"geo"].decode("utf-8")
+    assert '"crs"' not in out_geo or "null" not in out_geo
+
+
+def test_reproject_table_absent_crs_still_reprojects(buildings_test_file):
+    # Omitted crs (true default) must NOT raise — it is the common case.
+    table = _table_with_crs_state(buildings_test_file, "absent")
+    result = reproject_table(table, target_crs="EPSG:3857")
+    assert result.num_rows == table.num_rows
 
 
 # --------------------------------------------------------------------------- #
@@ -160,30 +257,47 @@ def test_assume_crs84_coords_unchanged_for_default(null_crs_parquet, temp_output
 # --------------------------------------------------------------------------- #
 
 
+def _null_crs_warnings(records):
+    return [r for r in records if "null" in r.message.lower() and "crs" in r.message.lower()]
+
+
 def test_warn_on_null_crs_emitted_once(null_crs_parquet, caplog):
     import logging
 
-    from geoparquet_io.core import crs_utils
-
-    crs_utils._warned_null_crs_paths.clear()
+    reset_null_crs_warnings()
     with caplog.at_level(logging.WARNING):
         extract_crs_from_parquet(null_crs_parquet)
         extract_crs_from_parquet(null_crs_parquet)
-    null_warnings = [
-        r for r in caplog.records if "null" in r.message.lower() and "crs" in r.message.lower()
-    ]
-    assert len(null_warnings) == 1
+    assert len(_null_crs_warnings(caplog.records)) == 1
 
 
 def test_no_warn_on_absent_crs(absent_crs_parquet, caplog):
     import logging
 
-    from geoparquet_io.core import crs_utils
-
-    crs_utils._warned_null_crs_paths.clear()
+    reset_null_crs_warnings()
     with caplog.at_level(logging.WARNING):
         extract_crs_from_parquet(absent_crs_parquet)
-    null_warnings = [
-        r for r in caplog.records if "null" in r.message.lower() and "crs" in r.message.lower()
-    ]
-    assert null_warnings == []
+    assert _null_crs_warnings(caplog.records) == []
+
+
+def test_warn_on_two_distinct_null_files(null_crs_parquet, buildings_test_file, tmp_path, caplog):
+    """Two different null-CRS inputs must each warn (dedup key not over-broad)."""
+    import json
+    import logging
+
+    # Build a second, distinct null-CRS file (different path + a tweaked metadata
+    # field so its geo bytes differ from the first).
+    second = pq.read_table(buildings_test_file)
+    meta = dict(second.schema.metadata)
+    geo = json.loads(meta[b"geo"].decode("utf-8"))
+    geo["columns"]["geometry"]["crs"] = None
+    geo["columns"]["geometry"]["geometry_types"] = []  # make bytes distinct
+    meta[b"geo"] = json.dumps(geo).encode("utf-8")
+    second_path = str(tmp_path / "second_null.parquet")
+    pq.write_table(second.replace_schema_metadata(meta), second_path)
+
+    reset_null_crs_warnings()
+    with caplog.at_level(logging.WARNING):
+        extract_crs_from_parquet(null_crs_parquet)
+        extract_crs_from_parquet(second_path)
+    assert len(_null_crs_warnings(caplog.records)) == 2

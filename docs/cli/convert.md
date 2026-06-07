@@ -192,6 +192,12 @@ changed):
 gpio convert reproject unknown_crs.parquet fixed.parquet --assume-crs84
 ```
 
+!!! note "Reprojecting to the default CRS omits the `crs` key"
+    Because EPSG:4326 and OGC:CRS84 are equivalent in GeoParquet (the spec fixes
+    lon/lat axis order), reprojecting to the default — `--dst-crs EPSG:4326`, the
+    default — writes the output with the `crs` key **omitted** rather than an
+    explicit CRS object. This is the spec-correct way to signal the default.
+
 See `gpio convert reproject --help` for all options.
 
 ## S3-Compatible Storage

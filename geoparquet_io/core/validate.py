@@ -13,7 +13,7 @@ from typing import Any
 
 from rich.console import Console
 
-from geoparquet_io.core.crs_utils import get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
 
 
 class CheckStatus(Enum):
@@ -288,11 +288,7 @@ def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
         return ValidationCheck(
             name=f"crs_valid_{col_name}",
             status=CheckStatus.WARNING,
-            message=(
-                f'column "{col_name}" has an explicit null CRS (unknown CRS, not the '
-                "OGC:CRS84 default). If the data is lon/lat WGS84, use "
-                "`gpio convert reproject --assume-crs84` to set the default."
-            ),
+            message=f'column "{col_name}" has an explicit null CRS. {NULL_CRS_HINT}',
             category="column_metadata",
         )
 

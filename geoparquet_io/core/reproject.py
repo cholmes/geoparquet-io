@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -18,11 +19,12 @@ from geoparquet_io.core.common import (
     write_parquet_with_metadata,
 )
 from geoparquet_io.core.crs_utils import (
+    NULL_CRS_NO_FLAG_ERROR,
     _extract_crs_identifier,
+    apply_target_crs_to_geo_meta,
     crs_is_explicitly_null,
     extract_crs_from_parquet,
     geoparquet_crs_is_null,
-    is_default_crs,
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
@@ -127,6 +129,24 @@ def _detect_crs_from_table(table: pa.Table, geom_col: str) -> str:
     return "EPSG:4326"
 
 
+def _table_geo_column_meta(table: pa.Table, geom_col: str) -> dict:
+    """Return the geo-metadata dict for ``geom_col``, or ``{}`` if unavailable."""
+    if table.schema.metadata and b"geo" in table.schema.metadata:
+        try:
+            geo_meta = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+            return geo_meta.get("columns", {}).get(geom_col, {})
+        except (json.JSONDecodeError, KeyError):
+            return {}
+    return {}
+
+
+#: Raised by the Arrow/Python-API path on an explicit ``crs: null`` input.
+NULL_CRS_TABLE_ERROR = (
+    "Input table has an explicit null CRS (unknown). Pass assume_crs84=True to "
+    "treat the coordinates as OGC:CRS84 (lon/lat WGS84), or set source_crs."
+)
+
+
 def reproject_table(
     table: pa.Table,
     target_crs: str = "EPSG:4326",
@@ -149,15 +169,27 @@ def reproject_table(
 
     Returns:
         New table with reprojected geometry
+
+    Raises:
+        ValueError: If the input has an explicit ``crs: null`` (unknown CRS) and
+            neither ``source_crs`` nor ``assume_crs84`` is set. This mirrors the
+            CLI contract so the Python API never silently treats unknown data as
+            the default.
     """
     # Detect geometry column
     geom_col = geometry_column or _detect_geometry_column_from_table(table)
 
-    # Detect or use source CRS. When the input CRS is explicitly null/unknown and
-    # assume_crs84 is set, fall back to CRS84 rather than whatever detection finds.
-    effective_source_crs = source_crs or _detect_crs_from_table(table, geom_col)
-    if assume_crs84 and not source_crs:
+    # Resolve source CRS. An explicit crs:null is *unknown*, not the default — so
+    # mirror the CLI contract: require source_crs or assume_crs84, else raise,
+    # rather than silently transforming unknown coordinates as if lon/lat WGS84.
+    if source_crs:
+        effective_source_crs = source_crs
+    elif crs_is_explicitly_null(_table_geo_column_meta(table, geom_col)):
+        if not assume_crs84:
+            raise ValueError(NULL_CRS_TABLE_ERROR)
         effective_source_crs = "OGC:CRS84"
+    else:
+        effective_source_crs = _detect_crs_from_table(table, geom_col)
 
     # Create connection and register table
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
@@ -206,18 +238,11 @@ def reproject_table(
             if b"geo" in new_metadata:
                 try:
                     geo_meta = json.loads(new_metadata[b"geo"].decode("utf-8"))
-                    columns = geo_meta.get("columns", {})
-                    if geom_col in columns:
-                        if is_default_crs(target_crs):
-                            # Default CRS is signalled by omitting the key, never
-                            # by writing an explicit CRS84 object or null.
-                            columns[geom_col].pop("crs", None)
-                        else:
-                            columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
+                    apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
                     new_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                     result = result.replace_schema_metadata(new_metadata)
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                except (json.JSONDecodeError, KeyError) as e:
+                    debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")
             else:
                 result = result.replace_schema_metadata(table.schema.metadata)
 
@@ -264,36 +289,89 @@ def _get_bbox_column_name(input_url: str, verbose: bool) -> str | None:
     return None
 
 
-def _sanitize_null_crs_file(input_url: str, verbose: bool = False) -> tuple[str, str | None]:
+def _row_group_compression(parquet_file: pq.ParquetFile) -> str:
+    """Return the file's first-column compression codec for ParquetWriter.
+
+    Preserves the input codec so the sanitized copy isn't silently re-encoded to
+    a different (e.g. larger) compression. Falls back to ZSTD for empty files.
+    """
+    md = parquet_file.metadata
+    if md.num_row_groups > 0 and md.row_group(0).num_columns > 0:
+        codec = md.row_group(0).column(0).compression
+        if codec:
+            codec = codec.lower()
+            return "none" if codec == "uncompressed" else codec
+    return "zstd"
+
+
+def _sanitize_null_crs_file(raw_path: str, verbose: bool = False) -> tuple[str, str | None]:
     """Strip an explicit ``crs: null`` so the file presents as default OGC:CRS84.
 
     DuckDB's GeoParquet reader rejects ``crs: null`` outright, so for the
-    ``assume_crs84`` path we rewrite the geo metadata (no coordinate change) to
-    a temp file and read from that instead.
+    ``assume_crs84`` path we rewrite the geo metadata (no coordinate change) to a
+    temp file and read from that instead. The rewrite streams row group by row
+    group so memory stays bounded — the rest of reproject is built to handle
+    larger-than-RAM files and a whole-file load would defeat that.
+
+    ``raw_path`` must be the *unescaped* path/URL (it is handed to PyArrow, not
+    SQL).
 
     Returns:
-        ``(url_to_read, temp_path_or_None)`` — the second element, when set, is a
+        ``(path_to_read, temp_path_or_None)`` — the second element, when set, is a
         temp file the caller must delete.
     """
-    import pyarrow.parquet as pq
+    if not geoparquet_crs_is_null(raw_path):
+        return raw_path, None
 
-    if not geoparquet_crs_is_null(input_url):
-        return input_url, None
-
-    table = pq.read_table(input_url)
-    metadata = dict(table.schema.metadata or {})
+    parquet_file = pq.ParquetFile(raw_path)
+    metadata = dict(parquet_file.schema_arrow.metadata or {})
     geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
     for col in geo_meta.get("columns", {}).values():
         if crs_is_explicitly_null(col):
             col.pop("crs", None)
     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-    table = table.replace_schema_metadata(metadata)
+    new_schema = parquet_file.schema_arrow.with_metadata(metadata)
 
-    temp_path = str(Path(tempfile.gettempdir()) / f"gpio_assume_crs84_{uuid.uuid4()}.parquet")
-    pq.write_table(table, temp_path)
+    # mkstemp creates the file atomically with 0600 perms (it holds a full copy
+    # of the user's data) and a collision-free name.
+    fd, temp_path = tempfile.mkstemp(suffix=".parquet", prefix="gpio_assume_crs84_")
+    os.close(fd)
+    try:
+        writer = pq.ParquetWriter(
+            temp_path, new_schema, compression=_row_group_compression(parquet_file)
+        )
+        try:
+            for i in range(parquet_file.num_row_groups):
+                writer.write_table(parquet_file.read_row_group(i))
+        finally:
+            writer.close()
+    except BaseException:
+        # Self-clean on any failure after creation so we never orphan the copy.
+        Path(temp_path).unlink(missing_ok=True)
+        raise
     if verbose:
-        debug(f"Treating unknown (null) CRS as OGC:CRS84 for {input_url}")
+        debug(f"Treating unknown (null) CRS as OGC:CRS84 for {raw_path}")
     return temp_path, temp_path
+
+
+def _resolve_null_crs_input(
+    raw_path: str, assume_crs84: bool, verbose: bool
+) -> tuple[str, str | None]:
+    """Resolve an explicit null CRS before DuckDB reads the file.
+
+    Without ``assume_crs84`` an explicit ``crs: null`` raises a friendly error
+    (DuckDB can't read it); with it, the file is sanitized to a temp copy.
+
+    ``raw_path`` must be the *unescaped* path/URL.
+
+    Returns:
+        ``(path_to_read, temp_path_or_None)`` — both are raw (unescaped) paths.
+    """
+    if assume_crs84:
+        return _sanitize_null_crs_file(raw_path, verbose=verbose)
+    if geoparquet_crs_is_null(raw_path):
+        raise ValueError(NULL_CRS_NO_FLAG_ERROR)
+    return raw_path, None
 
 
 def reproject_impl(
@@ -355,24 +433,15 @@ def reproject_impl(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
 
-    # Get safe URL for input
-    input_url = safe_file_url(input_parquet, verbose=verbose)
+    # Resolve an explicit null CRS before DuckDB reads the file: raise a friendly
+    # error without --assume-crs84, or sanitize to a temp copy with it. Pass the
+    # raw path (not the SQL-escaped URL) to the PyArrow/metadata helpers.
+    read_source, temp_sanitized = _resolve_null_crs_input(
+        input_parquet, assume_crs84, verbose=verbose
+    )
 
-    # When asked, rewrite an explicit null CRS to the default so DuckDB (which
-    # rejects crs:null) can read the file. The temp copy is read in place of the
-    # original; the geometry column source for detection follows it too.
-    temp_sanitized = None
-    geom_detect_source = input_parquet
-    if assume_crs84:
-        input_url, temp_sanitized = _sanitize_null_crs_file(input_url, verbose=verbose)
-        if temp_sanitized:
-            geom_detect_source = temp_sanitized
-    elif geoparquet_crs_is_null(input_url):
-        raise ValueError(
-            "Input has an explicit null CRS (unknown). DuckDB cannot read it. "
-            "If the coordinates are lon/lat WGS84, re-run with --assume-crs84 to "
-            "treat them as OGC:CRS84 and write the default."
-        )
+    # Safe URL for SQL interpolation, computed from the (possibly sanitized) path.
+    input_url = safe_file_url(read_source, verbose=verbose)
 
     # Create DuckDB connection with spatial extension
     con = get_duckdb_connection(
@@ -382,7 +451,7 @@ def reproject_impl(
 
     try:
         # Detect geometry column
-        geom_col = find_primary_geometry_column(geom_detect_source, verbose=verbose)
+        geom_col = find_primary_geometry_column(read_source, verbose=verbose)
         log(f"Geometry column: {geom_col}")
 
         # Detect source CRS from metadata
@@ -549,8 +618,9 @@ def reproject_impl(
 
     finally:
         con.close()
-        if temp_sanitized and Path(temp_sanitized).exists():
-            Path(temp_sanitized).unlink()
+        # unlink(missing_ok) avoids a TOCTOU and can't mask the real exception.
+        if temp_sanitized:
+            Path(temp_sanitized).unlink(missing_ok=True)
 
 
 def _reproject_streaming(
@@ -566,10 +636,6 @@ def _reproject_streaming(
     assume_crs84: bool = False,
 ) -> None:
     """Handle streaming input/output for reproject."""
-    import os
-
-    import pyarrow.parquet as pq
-
     # Suppress verbose when streaming to stdout
     if should_stream_output(output_path):
         verbose = False
@@ -590,21 +656,14 @@ def _reproject_streaming(
         else:
             working_file = input_path
 
-        # Get safe URL
-        working_url = safe_file_url(working_file, verbose=False)
+        # Resolve an explicit null CRS (raise without the flag, sanitize with it),
+        # passing the raw path — not the SQL-escaped URL — to PyArrow helpers.
+        working_file, temp_sanitized = _resolve_null_crs_input(
+            working_file, assume_crs84, verbose=verbose
+        )
 
-        # Rewrite an explicit null CRS to the default so DuckDB can read it.
-        if assume_crs84:
-            sanitized_url, temp_sanitized = _sanitize_null_crs_file(working_url, verbose=verbose)
-            if temp_sanitized:
-                working_file = temp_sanitized
-                working_url = sanitized_url
-        elif geoparquet_crs_is_null(working_url):
-            raise ValueError(
-                "Input has an explicit null CRS (unknown). DuckDB cannot read it. "
-                "If the coordinates are lon/lat WGS84, re-run with --assume-crs84 to "
-                "treat them as OGC:CRS84 and write the default."
-            )
+        # Get safe URL for SQL interpolation
+        working_url = safe_file_url(working_file, verbose=False)
 
         # Create connection
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(working_file))
@@ -670,16 +729,10 @@ def _reproject_streaming(
             if metadata and b"geo" in metadata:
                 try:
                     geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-                    columns = geo_meta.get("columns", {})
-                    if geom_col in columns:
-                        if is_default_crs(target_crs):
-                            # Default CRS is signalled by omitting the key.
-                            columns[geom_col].pop("crs", None)
-                        else:
-                            columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
+                    apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-                except (json.JSONDecodeError, KeyError):
-                    pass
+                except (json.JSONDecodeError, KeyError) as e:
+                    debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")
 
             # Write output using stream_io
             write_output(
@@ -701,11 +754,11 @@ def _reproject_streaming(
             con.close()
 
     finally:
-        # Clean up temp input file(s)
-        if temp_input_file and os.path.exists(temp_input_file):
-            os.remove(temp_input_file)
-        if temp_sanitized and os.path.exists(temp_sanitized):
-            os.remove(temp_sanitized)
+        # Clean up temp input file(s). unlink(missing_ok) avoids masking errors.
+        if temp_input_file:
+            Path(temp_input_file).unlink(missing_ok=True)
+        if temp_sanitized:
+            Path(temp_sanitized).unlink(missing_ok=True)
 
 
 def reproject(
