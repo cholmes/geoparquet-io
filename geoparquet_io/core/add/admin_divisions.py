@@ -14,6 +14,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -44,8 +45,11 @@ def _build_admin_subquery(
             subquery_cols.append(f'"{col}"')
     subquery_cols_str = ", ".join(subquery_cols)
 
+    geom_select = quote_identifier(admin_geom_col)
+    bbox_select = quote_identifier(admin_bbox_col) if admin_bbox_col else geom_select
+
     return f"""(
-        SELECT {admin_geom_col}, {admin_bbox_col if admin_bbox_col else admin_geom_col}, {subquery_cols_str}
+        SELECT {geom_select}, {bbox_select}, {subquery_cols_str}
         FROM {admin_table_ref}
         {admin_where_clause}
     )"""
@@ -68,9 +72,15 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     return ", ".join(admin_select_parts)
 
 
-def _format_input_ref(input_url):
-    """Format input reference for SQL — quote file paths, leave table names bare."""
-    if input_url.startswith("_gpio_"):
+def _format_input_ref(input_url, is_table_ref=False):
+    """Format input reference for SQL.
+
+    A DuckDB table/CTE name (``is_table_ref=True``) is emitted bare; a file path
+    or URL is single-quoted. The caller passes the flag explicitly rather than
+    sniffing for a ``_gpio_`` prefix, so a real path beginning with ``_gpio_``
+    can never be emitted unquoted (see todo 017).
+    """
+    if is_table_ref:
         return input_url
     return f"'{input_url}'"
 
@@ -83,39 +93,31 @@ def _build_spatial_join_query(
     admin_bbox_col,
     input_geom_col,
     admin_geom_col,
-    deduplicate=False,
+    *,
+    is_table_ref=False,
 ):
-    """Build spatial join query with optional bbox optimization and deduplication."""
-    input_ref = _format_input_ref(input_url)
+    """Build the per-level admin spatial join query.
 
-    if input_bbox_col and admin_bbox_col:
-        join_clause = f"""ON (a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
-        a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
-        a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
-        a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)
-        AND ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"""
-    else:
-        join_clause = f"ON ST_Intersects(b.{admin_geom_col}, a.{input_geom_col})"
+    A plain streaming ``LEFT JOIN`` (the original design): for each input feature
+    it attaches the admin columns of the polygon(s) it intersects. This is the
+    only memory-scalable shape — a DuckDB ``LEFT JOIN`` spills to disk, whereas
+    the ``QUALIFY ROW_NUMBER()`` window that previously de-duplicated overlapping
+    matches buffers every row and OOMs on large inputs (the window operator does
+    not spill). Per-level caches are non-overlapping, so a feature normally
+    matches exactly one polygon per level; a feature straddling overlapping
+    polygons (rare border slivers) is emitted once per match.
 
-    if deduplicate:
-        return f"""
-    WITH _gpio_input AS (
-        SELECT *, ROW_NUMBER() OVER () AS _gpio_row_id
-        FROM {input_ref}
+    All identifiers are quoted via the shared :func:`build_spatial_join_condition`
+    helper / :func:`quote_identifier`, so column names sourced from untrusted file
+    metadata cannot break out of the generated SQL. ``is_table_ref`` marks
+    ``input_url`` as a DuckDB table/CTE name (per-level chaining) vs a file path.
+    """
+    input_ref = _format_input_ref(input_url, is_table_ref)
+
+    # Shared, fully-quoted ON clause (bbox pre-filter + ST_Intersects).
+    join_clause = "ON " + build_spatial_join_condition(
+        input_geom_col, admin_geom_col, input_bbox_col, admin_bbox_col
     )
-    SELECT * EXCLUDE (_gpio_row_id) FROM (
-        SELECT
-            a.*,
-            {admin_select_clause}
-        FROM _gpio_input a
-        LEFT JOIN {admin_subquery} b
-        {join_clause}
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY a._gpio_row_id
-            ORDER BY ST_Contains(b.{admin_geom_col}, ST_Centroid(a.{input_geom_col})) DESC NULLS LAST
-        ) = 1
-    )
-"""
 
     return f"""
     SELECT
@@ -127,40 +129,45 @@ def _build_spatial_join_query(
 """
 
 
-def _add_extent_filter(con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose):
+def _add_extent_filter(
+    con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose, is_table_ref=False
+):
     """Add bbox extent filter to admin where clauses."""
     if not admin_bbox_col:
         return None
 
-    input_ref = _format_input_ref(input_url)
+    input_ref = _format_input_ref(input_url, is_table_ref)
 
     if input_bbox_col:
+        q_input_bbox = quote_identifier(input_bbox_col)
         extent_query = f"""
             SELECT
-                MIN({input_bbox_col}.xmin) as xmin,
-                MAX({input_bbox_col}.xmax) as xmax,
-                MIN({input_bbox_col}.ymin) as ymin,
-                MAX({input_bbox_col}.ymax) as ymax
+                MIN({q_input_bbox}.xmin) as xmin,
+                MAX({q_input_bbox}.xmax) as xmax,
+                MIN({q_input_bbox}.ymin) as ymin,
+                MAX({q_input_bbox}.ymax) as ymax
             FROM {input_ref}
         """
     else:
+        q_input_geom = quote_identifier(input_geom_col)
         extent_query = f"""
             SELECT
-                MIN(ST_XMin("{input_geom_col}")) as xmin,
-                MAX(ST_XMax("{input_geom_col}")) as xmax,
-                MIN(ST_YMin("{input_geom_col}")) as ymin,
-                MAX(ST_YMax("{input_geom_col}")) as ymax
+                MIN(ST_XMin({q_input_geom})) as xmin,
+                MAX(ST_XMax({q_input_geom})) as xmax,
+                MIN(ST_YMin({q_input_geom})) as ymin,
+                MAX(ST_YMax({q_input_geom})) as ymax
             FROM {input_ref}
         """
 
     extent = con.execute(extent_query).fetchone()
     if extent and all(v is not None for v in extent):
         xmin, xmax, ymin, ymax = extent
+        q_admin_bbox = quote_identifier(admin_bbox_col)
         extent_filter = f"""
-            ({admin_bbox_col}.xmin <= {xmax} AND
-             {admin_bbox_col}.xmax >= {xmin} AND
-             {admin_bbox_col}.ymin <= {ymax} AND
-             {admin_bbox_col}.ymax >= {ymin})
+            ({q_admin_bbox}.xmin <= {xmax} AND
+             {q_admin_bbox}.xmax >= {xmin} AND
+             {q_admin_bbox}.ymin <= {ymax} AND
+             {q_admin_bbox}.ymax >= {ymin})
         """
         if verbose:
             debug(
@@ -305,10 +312,33 @@ def _setup_dataset_and_columns(
 
 
 def _setup_duckdb_connection():
-    """Create and configure DuckDB connection."""
+    """Create and configure DuckDB connection for memory-bounded admin joins.
+
+    Large admin spatial joins (e.g. a multi-million-feature input against
+    Overture) are run under the same memory discipline DuckDB needs to reliably
+    spill rather than OOM (see todo 013):
+
+    - ``temp_directory`` (the admin cache dir) enables spill-to-disk.
+    - ``threads = 1`` is required for memory control: parallel spatial-join /
+      window operators each grab memory and cannot coordinate spilling, so they
+      OOM even with a temp directory set (DuckDB #8270). Single-threaded
+      execution spills predictably. This applies to every per-level
+      ``CREATE TEMP TABLE`` join, not just the final write.
+    - ``preserve_insertion_order = false`` lets operators stream/flush to disk
+      instead of buffering the whole result to preserve order. Safe here:
+      threads=1 keeps order within the single pipeline, and admin output order
+      is not contractual anyway.
+    """
+    from geoparquet_io.core.admin_datasets import get_cache_dir
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
-    return get_duckdb_connection(load_spatial=True, load_httpfs=True)
+    temp_dir = get_cache_dir()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    con = get_duckdb_connection(
+        load_spatial=True, load_httpfs=True, temp_directory=str(temp_dir), threads=1
+    )
+    con.execute("SET preserve_insertion_order = false")
+    return con
 
 
 def _build_admin_where_clauses_list(
@@ -321,6 +351,7 @@ def _build_admin_where_clauses_list(
     admin_bbox_col,
     verbose,
     dry_run,
+    is_table_ref=False,
 ):
     """Build WHERE clauses for admin boundaries."""
     admin_where_clauses = []
@@ -331,7 +362,13 @@ def _build_admin_where_clauses_list(
             debug(f"Filtering admin boundaries: {subtype_filter}")
 
     extent_filter = _add_extent_filter(
-        con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose and not dry_run
+        con,
+        input_url,
+        input_bbox_col,
+        input_geom_col,
+        admin_bbox_col,
+        verbose and not dry_run,
+        is_table_ref=is_table_ref,
     )
     if extent_filter:
         admin_where_clauses.append(extent_filter)
@@ -353,7 +390,7 @@ def _build_query_components(
     verbose,
     dry_run,
     prefix=None,
-    deduplicate=False,
+    is_table_ref=False,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -375,6 +412,7 @@ def _build_query_components(
         admin_bbox_col,
         verbose,
         dry_run,
+        is_table_ref=is_table_ref,
     )
 
     admin_select_clause = _build_admin_select_clause(
@@ -403,7 +441,7 @@ def _build_query_components(
         admin_bbox_col,
         input_geom_col,
         admin_geom_col,
-        deduplicate=deduplicate,
+        is_table_ref=is_table_ref,
     )
 
     return query, admin_source
@@ -483,15 +521,17 @@ def _execute_per_level_joins(
 ):
     """Run separate spatial joins per admin level for per-level-source datasets.
 
-    Each level joins against its own cache file, chaining results through
-    DuckDB temp tables so overlapping country/region polygons don't cause
-    row multiplication.
+    Each level joins against its own cache file, chaining results through DuckDB
+    temp tables. Per-level caches are non-overlapping, so each plain LEFT JOIN
+    normally preserves the row count.
     """
     current_source = input_url
 
     for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
         level_admin_source = dataset.get_source_for_level(level, no_cache=no_cache)
         is_last = i == len(levels) - 1
+        # Level 0 reads the input file; later levels read the chained temp table.
+        is_table_ref = i != 0
 
         level_query, _ = _build_query_components(
             con,
@@ -507,7 +547,7 @@ def _execute_per_level_joins(
             verbose,
             dry_run,
             prefix=prefix,
-            deduplicate=True,
+            is_table_ref=is_table_ref,
         )
 
         if dry_run:
@@ -515,6 +555,8 @@ def _execute_per_level_joins(
             progress(f"\n-- Step {i + 1}: Add {output_col} from {level} boundaries")
             progress(f"-- Source: {level_admin_source}")
             progress(level_query)
+            if not is_last:
+                current_source = f"_gpio_admin_step_{i}"
             continue
 
         if verbose:

@@ -250,6 +250,13 @@ class DuckDBKVStrategy(BaseWriteStrategy):
     ) -> None:
         """Configure DuckDB memory settings for streaming."""
         con.execute("SET threads = 1")  # Required for memory control (DuckDB #8270)
+        # Let COPY TO parquet flush row groups to disk instead of buffering the
+        # entire result to preserve order. Without this the writer holds the whole
+        # output in RAM and a large COPY runs out of memory even with a memory_limit
+        # + temp_directory set (the constant-memory design from #185 relied on this
+        # spilling). Safe because threads=1 already makes the single pipeline emit
+        # rows in order, so output ordering (e.g. sorted files) is preserved.
+        con.execute("SET preserve_insertion_order = false")
         effective_limit = memory_limit or get_default_memory_limit()
         con.execute(f"SET memory_limit = '{effective_limit}'")
         if verbose:

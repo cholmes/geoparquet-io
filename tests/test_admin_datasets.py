@@ -196,11 +196,13 @@ class TestOvertureAdminDataset:
         dataset = OvertureAdminDataset()
         transform = dataset.get_column_transform("region")
 
-        # Should return transformation SQL to strip country prefix
+        # Should return transformation SQL to strip country prefix. Column refs
+        # are qualified with the admin alias `b.` (and quoted) so the transform
+        # is unambiguous when the input already has a `region` column (todo 015).
         assert transform is not None
-        assert "CASE WHEN region LIKE '%-%'" in transform
-        assert "split_part(region, '-', 2)" in transform
-        assert "ELSE region END" in transform
+        assert "CASE WHEN b.\"region\" LIKE '%-%'" in transform
+        assert "split_part(b.\"region\", '-', 2)" in transform
+        assert 'ELSE b."region" END' in transform
 
     def test_get_column_transform_country(self):
         """Test that country level returns None (no transformation needed)."""

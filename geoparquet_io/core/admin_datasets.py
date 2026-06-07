@@ -30,6 +30,13 @@ from geoparquet_io.core.overture import OVERTURE_FALLBACK_RELEASE
 # Cache age threshold in seconds (6 months)
 CACHE_AGE_THRESHOLD_SECONDS = 6 * 30 * 24 * 60 * 60  # ~180 days
 
+# Geometry simplification tolerance (in degrees) applied when building the
+# per-level Overture admin caches. 0.0001° is ~11 m near the equator (~7 m at
+# 50°N). This trades near-border attribution accuracy for much smaller caches
+# and faster ST_Intersects joins. Country and region layers are simplified
+# independently, so shared borders are not perfectly coincident (see todo 016).
+_OVERTURE_SIMPLIFY_TOLERANCE_DEG = 0.0001
+
 
 def get_cache_dir() -> Path:
     """
@@ -248,9 +255,13 @@ class AdminDataset(ABC):
         from geoparquet_io.core.duckdb_utils import s3_config_scope
 
         source = self.get_default_source()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         with s3_config_scope(self.get_s3_config()):
-            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            # Spill to the cache dir to bound memory on the remote scan (todo 013).
+            con = get_duckdb_connection(
+                load_spatial=True, load_httpfs=True, temp_directory=str(cache_path.parent)
+            )
             try:
                 # Get read options
                 read_options = self.get_read_parquet_options()
@@ -704,8 +715,13 @@ class OvertureAdminDataset(AdminDataset):
             SQL transformation expression or None if no transform needed
         """
         if level_name == "region":
-            # Strip country prefix for Vecorel compliance
-            return "CASE WHEN region LIKE '%-%' THEN split_part(region, '-', 2) ELSE region END"
+            # Strip country prefix for Vecorel compliance. Qualify with the admin
+            # alias `b.` (and quote) so the ref is unambiguous when the input
+            # already carries a `region` column (a.* forwards it via the join).
+            return (
+                "CASE WHEN b.\"region\" LIKE '%-%' "
+                'THEN split_part(b."region", \'-\', 2) ELSE b."region" END'
+            )
         return None
 
     # Overture now uses the base class implementation
@@ -757,16 +773,21 @@ class OvertureAdminDataset(AdminDataset):
         info("This is a one-time download. Future runs will use the cached version.")
 
         with s3_config_scope(self.get_s3_config()):
-            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            # Spill to the cache dir so the remote scan + simplification of the
+            # ~4.5GB dataset bounds peak memory rather than OOM-ing (todo 013).
+            con = get_duckdb_connection(
+                load_spatial=True, load_httpfs=True, temp_directory=str(cache_dir)
+            )
             try:
                 for level in self.get_available_levels():
                     cache_path = self.get_cached_path_for_level(level)
                     if cache_path.exists() and cache_path.stat().st_size > 0:
                         continue
 
+                    tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
                     if level == "country":
                         query = (
-                            "SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) as geometry, "
+                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
                             "bbox, country, subtype "
                             f"FROM read_parquet('{source}', hive_partitioning=1) "
                             "WHERE subtype = 'country' "
@@ -775,7 +796,7 @@ class OvertureAdminDataset(AdminDataset):
                         )
                     else:
                         query = (
-                            "SELECT ST_SimplifyPreserveTopology(geometry, 0.0001) as geometry, "
+                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
                             "bbox, country, region, subtype "
                             f"FROM read_parquet('{source}', hive_partitioning=1) "
                             f"WHERE subtype = '{level}'"
