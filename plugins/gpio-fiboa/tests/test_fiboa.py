@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 from gpio_fiboa.cli import fiboa
+from gpio_fiboa.improve import improve_fiboa
 
 TEST_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "data"
 BUILDINGS_TEST_FILE = TEST_DATA_DIR / "buildings_test.parquet"
@@ -62,6 +63,12 @@ class TestFiboaDescribe:
         runner = CliRunner()
         result = runner.invoke(fiboa, ["describe", buildings_file, "-v"])
         assert result.exit_code == 0
+
+    def test_describe_missing_file_errors(self):
+        """A missing/unreadable file must fail with a non-zero exit code."""
+        runner = CliRunner()
+        result = runner.invoke(fiboa, ["describe", "does_not_exist.parquet"])
+        assert result.exit_code != 0
 
 
 class TestFiboaImprove:
@@ -441,3 +448,32 @@ class TestFiboaImprove:
         )
         assert result.exit_code == 0, result.output
         assert seen.get("vecorel") is True
+
+    def test_api_rejects_invalid_category(self, buildings_file, temp_output):
+        """The Python API validates category itself, not just the CLI layer."""
+        with pytest.raises(ValueError, match="Invalid categories"):
+            improve_fiboa(buildings_file, temp_output, category=["not-a-category"])
+
+    def test_api_rejects_invalid_determination_method(self, buildings_file, temp_output):
+        """The Python API validates determination_method, blocking unchecked SQL."""
+        with pytest.raises(ValueError, match="Invalid determination_method"):
+            improve_fiboa(buildings_file, temp_output, determination_method="surveyed'; DROP")
+
+    def test_overwrite_protection_blocks_existing_output(self, buildings_file, temp_output):
+        """Without --overwrite, an existing output file must not be clobbered."""
+        # Hilbert runs last by default, so this exercises the previously-bypassed path.
+        Path(temp_output).write_bytes(b"sentinel")
+        runner = CliRunner()
+        result = runner.invoke(fiboa, ["improve", buildings_file, temp_output, "-sz"])
+        assert result.exit_code != 0
+        assert Path(temp_output).read_bytes() == b"sentinel"
+
+    def test_overwrite_flag_allows_existing_output(self, buildings_file, temp_output):
+        """With --overwrite, an existing output file is replaced."""
+        Path(temp_output).write_bytes(b"sentinel")
+        runner = CliRunner()
+        result = runner.invoke(
+            fiboa, ["improve", buildings_file, temp_output, "-sz", "--overwrite"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "metrics:area" in pq.ParquetFile(temp_output).schema_arrow.names

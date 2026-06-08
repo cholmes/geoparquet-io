@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import re
 import tempfile
+from pathlib import Path
 
 from geoparquet_io.core.constants import (
     FIBOA_CORE_SCHEMA,
@@ -22,9 +22,40 @@ VALID_CATEGORIES = {
     "other",
 }
 
+# Mirrors the CLI's --determination-method choices. Validated here too so the
+# Python API (improve_fiboa) can't pass unchecked values into SQL.
+VALID_DETERMINATION_METHODS = {
+    "manual",
+    "surveyed",
+    "driven",
+    "auto-operation",
+    "auto-imagery",
+    "unknown",
+}
+
 DATETIME_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
 )
+
+
+def _validate_improve_inputs(category: list[str] | None, determination_method: str | None) -> None:
+    """Validate values that get interpolated into SQL.
+
+    The CLI already checks these, but ``improve_fiboa`` is a public API entry
+    point, so re-check here to keep unvalidated input out of the query (defense
+    in depth, independent of the CLI layer).
+    """
+    if category:
+        invalid = [c for c in category if c not in VALID_CATEGORIES]
+        if invalid:
+            raise ValueError(
+                f"Invalid categories: {invalid}. Allowed: {', '.join(sorted(VALID_CATEGORIES))}"
+            )
+    if determination_method and determination_method not in VALID_DETERMINATION_METHODS:
+        raise ValueError(
+            f"Invalid determination_method: {determination_method!r}. "
+            f"Allowed: {', '.join(sorted(VALID_DETERMINATION_METHODS))}"
+        )
 
 
 def improve_fiboa(
@@ -47,6 +78,8 @@ def improve_fiboa(
     verbose: bool = False,
 ) -> None:
     """Improve a GeoParquet file for fiboa compliance."""
+    _validate_improve_inputs(category, determination_method)
+
     if row_group_rows is None and row_group_size_mb is None:
         row_group_rows = 50_000
 
@@ -61,6 +94,15 @@ def improve_fiboa(
     if not has_work and not sort_hilbert:
         warn("No improvements requested. Use -sz, -a, -s, or column options.")
         return
+
+    # Enforce overwrite intent once, against the real output. The pipeline runs
+    # every intermediate step to a temp file and only the final step writes
+    # output_file, so a single up-front check is sufficient. This also rejects
+    # output_file == input_file. (Individual steps below force overwrite=True
+    # because they only ever write fresh temp files or this cleared output.)
+    from geoparquet_io.core.file_utils import handle_output_overwrite
+
+    handle_output_overwrite(output_file, overwrite, input_file)
 
     user_requested_version = geoparquet_version is not None
     geoparquet_version, need_bbox = _handle_geoparquet_version(
@@ -129,7 +171,7 @@ def improve_fiboa(
                 next_output,
                 vecorel=False,
                 verbose=verbose,
-                overwrite=overwrite,
+                overwrite=True,
                 **write_opts,
             )
             current_input = next_output
@@ -231,7 +273,6 @@ def improve_fiboa(
                 output_file if current_input != output_file else None,
                 add_metrics,
                 add_admin,
-                overwrite=overwrite,
                 verbose=verbose,
                 **write_opts,
             )
@@ -248,8 +289,7 @@ def improve_fiboa(
 
     finally:
         for tf in temp_files:
-            if os.path.exists(tf):
-                os.unlink(tf)
+            Path(tf).unlink(missing_ok=True)
 
 
 def _add_determination_datetime(
@@ -298,9 +338,10 @@ def _add_determination_datetime(
 def _get_next_output(final_output: str, more_steps: bool, temp_files: list[str]) -> str:
     """Get the next output path: temp file if more steps remain, else final output."""
     if more_steps:
-        fd, path = tempfile.mkstemp(suffix=".parquet")
-        os.close(fd)
-        os.unlink(path)
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            path = tmp.name
+        # The next step writes this path itself; hand it back as a free name.
+        Path(path).unlink(missing_ok=True)
         temp_files.append(path)
         return path
     return final_output
@@ -314,14 +355,16 @@ def _add_schemas_metadata(
     **kwargs,
 ) -> None:
     """Add/update Vecorel schemas metadata with all applicable fiboa URLs."""
-    from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
+    from geoparquet_io.core.common import (
+        get_duckdb_connection,
+        get_parquet_metadata,
+        needs_httpfs,
+        write_parquet_with_metadata,
+    )
     from geoparquet_io.core.constants import build_collection_metadata
     from geoparquet_io.core.duckdb_metadata import get_column_names
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
     from geoparquet_io.core.file_utils import safe_file_url
-    from geoparquet_io.core.remote import needs_httpfs
 
-    kwargs.pop("overwrite", None)
     verbose = kwargs.pop("verbose", False)
 
     url = safe_file_url(input_file, verbose=False)

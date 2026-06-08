@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 
 import click
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.logging_config import debug
 
 FIBOA_COLUMNS = {
@@ -37,8 +39,7 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
     try:
         pf = pq.ParquetFile(input_file)
     except Exception as e:
-        click.echo(click.style(f"Cannot read file: {e}", fg="red"), err=True)
-        return
+        raise GeoParquetError(f"Cannot read file: {input_file}: {e}") from e
 
     schema = pf.schema_arrow
     col_names = set(schema.names)
@@ -55,7 +56,11 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
     if collection_meta:
         try:
             vecorel = json.loads(collection_meta)
-            schema_urls = vecorel.get("schemas", {}).get("default", [])
+            collection_id = vecorel.get("collection", "default")
+            schemas = vecorel.get("schemas", {})
+            schema_urls = schemas.get(collection_id, [])
+            if not schema_urls and collection_id != "default":
+                schema_urls = schemas.get("default", [])
             if schema_urls:
                 click.echo("  Extensions detected:")
                 for url in schema_urls:
@@ -87,28 +92,26 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
             click.echo(f"  - {col:30s} {desc}")
 
     # Extra columns (not in fiboa spec)
-    extra = [c for c in col_names if c not in FIBOA_COLUMNS]
-    if extra and verbose:
-        click.echo(f"\n  Additional columns ({len(extra)}):")
-        for col in sorted(extra):
-            click.echo(f"    {col}")
+    if verbose:
+        extra = [c for c in col_names if c not in FIBOA_COLUMNS]
+        if extra:
+            click.echo(f"\n  Additional columns ({len(extra)}):")
+            for col in sorted(extra):
+                click.echo(f"    {col}")
 
-    # Read first row group once for stats
-    needs_rg = (
-        "metrics:area" in col_names
-        or "metrics:perimeter" in col_names
-        or "admin:country_code" in col_names
-    )
+    # Read first row group once for stats, projecting only the stat columns
+    # (avoids decoding geometry and other unused columns into memory).
+    stat_cols = [
+        c for c in ("metrics:area", "metrics:perimeter", "admin:country_code") if c in col_names
+    ]
     rg_table = None
-    if needs_rg:
+    if stat_cols:
         try:
-            rg_table = pf.read_row_group(0)
+            rg_table = pf.read_row_group(0, columns=stat_cols)
         except Exception as e:
             debug(f"Could not read row group: {e}")
 
     if rg_table is not None and ("metrics:area" in col_names or "metrics:perimeter" in col_names):
-        import pyarrow.compute as pc
-
         click.echo("\nMetrics Summary (first row group):")
         try:
             for col_name in ["metrics:area", "metrics:perimeter"]:
@@ -128,8 +131,6 @@ def describe_fiboa(input_file: str, verbose: bool = False) -> None:
             debug(f"Could not read metrics summary: {e}")
 
     if rg_table is not None and "admin:country_code" in col_names:
-        import pyarrow.compute as pc
-
         click.echo("\nAdmin Coverage (first row group):")
         try:
             col = rg_table.column("admin:country_code")
