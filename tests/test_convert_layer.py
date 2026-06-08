@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 import zipfile
 
 import pyarrow.parquet as pq
@@ -346,6 +347,33 @@ class TestEstoniaGeoPackageIntegration:
     )
     # Number of layers to test (not all, to keep test time reasonable)
     NUM_LAYERS_TO_TEST = 5
+    # Download retry policy for the external geoportal.
+    _DOWNLOAD_ATTEMPTS = 3
+
+    @classmethod
+    def _download_estonia_zip(cls) -> bytes:
+        """Download the Estonia GeoPackage zip, tolerating geoportal flakiness.
+
+        The data lives on an external government geoportal that periodically
+        times out or returns 5xx. Retry a few times with backoff, and if it is
+        still unreachable, ``pytest.skip`` rather than ERROR - an outage of a
+        third-party server is not a regression in this project.
+        """
+        last_exc = None
+        for attempt in range(1, cls._DOWNLOAD_ATTEMPTS + 1):
+            try:
+                response = requests.get(cls.ESTONIA_GPKG_URL, timeout=300)
+                response.raise_for_status()
+                return response.content
+            except requests.exceptions.RequestException as exc:
+                last_exc = exc
+                if attempt < cls._DOWNLOAD_ATTEMPTS:
+                    time.sleep(attempt * 10)
+        pytest.skip(
+            f"Estonia geoportal unavailable after {cls._DOWNLOAD_ATTEMPTS} attempts "
+            f"({type(last_exc).__name__}: {last_exc}). If this persists, verify the "
+            f"download URL on the Estonian Land Board geoportal."
+        )
 
     @pytest.fixture(scope="class")
     def estonia_gpkg(self, tmp_path_factory):
@@ -355,12 +383,11 @@ class TestEstoniaGeoPackageIntegration:
         """
         tmp_dir = tmp_path_factory.mktemp("estonia")
 
-        # Download the zip file
-        response = requests.get(self.ESTONIA_GPKG_URL, timeout=300)
-        response.raise_for_status()
+        # Download the zip file (retries + skips on third-party outage)
+        content = self._download_estonia_zip()
 
         # Extract the GeoPackage from the zip
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
             # Find the .gpkg file in the archive
             gpkg_files = [n for n in zf.namelist() if n.endswith(".gpkg")]
             if not gpkg_files:
