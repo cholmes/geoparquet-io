@@ -75,6 +75,30 @@ def is_default_crs(crs):
     return False
 
 
+def apply_output_crs(col_meta: dict, input_crs) -> None:
+    """Set or clear a geometry column's ``crs`` for the requested output CRS.
+
+    Single source of truth for the GeoParquet null-vs-default CRS rule across all
+    write paths. The default CRS (OGC:CRS84 / EPSG:4326) is signalled by
+    *omitting* the ``crs`` key — never an explicit ``crs: null`` or ``crs: 4326``.
+
+    - ``input_crs`` non-default -> write it explicitly.
+    - ``input_crs`` default -> drop ``crs`` (output is the spec default), so a
+      stale value carried from the source (e.g. EPSG:3857 after reprojecting to
+      4326, or an explicit ``crs: null``) is not written through.
+    - ``input_crs`` is ``None`` (CRS unchanged) -> preserve a real ``crs`` but
+      still strip a stray default/null one the source or DuckDB may have attached.
+
+    Mutates ``col_meta`` in place.
+    """
+    if input_crs and not is_default_crs(input_crs):
+        col_meta["crs"] = input_crs
+    elif input_crs:
+        col_meta.pop("crs", None)
+    elif is_default_crs(col_meta.get("crs")):
+        col_meta.pop("crs", None)
+
+
 #: Shared guidance appended to null-CRS warnings and the validate message.
 NULL_CRS_HINT = (
     "An explicit null CRS means the CRS is *unknown* (not the OGC:CRS84 default). "

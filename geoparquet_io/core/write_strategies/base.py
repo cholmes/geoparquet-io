@@ -55,7 +55,7 @@ def build_geo_metadata(
     Returns:
         dict: Complete geo metadata structure ready for embedding in Parquet
     """
-    from geoparquet_io.core.crs_utils import is_default_crs
+    from geoparquet_io.core.crs_utils import apply_output_crs
     from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS
 
     version_config = GEOPARQUET_VERSIONS.get(geoparquet_version, GEOPARQUET_VERSIONS["1.1"])
@@ -88,9 +88,9 @@ def build_geo_metadata(
     if bbox is not None:
         col_meta["bbox"] = bbox
 
-    # CRS (only if non-default)
-    if input_crs and not is_default_crs(input_crs):
-        col_meta["crs"] = input_crs
+    # CRS: write non-default explicitly; omit (and strip any stale/default/null
+    # value carried from the source) when the output is the spec default.
+    apply_output_crs(col_meta, input_crs)
 
     # Merge custom metadata into geometry column
     if custom_metadata:
