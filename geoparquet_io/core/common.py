@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from geoparquet_io.core.crs_utils import (
     _format_crs_display,
     _wrap_query_with_crs,
+    apply_output_crs,
     is_default_crs,
 )
 from geoparquet_io.core.duckdb_utils import (
@@ -943,13 +944,12 @@ def _assemble_and_apply_geo_metadata(
     Returns:
         pa.Table: Table with geo metadata applied
     """
-    # Add CRS to geo metadata if provided (for v1.x and v2.0)
-    if input_crs and not is_default_crs(input_crs):
-        if geometry_column not in geo_meta.get("columns", {}):
-            geo_meta["columns"][geometry_column] = {}
-        geo_meta["columns"][geometry_column]["crs"] = input_crs
-        if verbose:
-            debug(f"Added CRS to geo metadata: {_format_crs_display(input_crs)}")
+    # Set/clear the geometry column's crs per the GeoParquet null-vs-default rule
+    # (shared helper is the single source of truth across all write paths).
+    columns = geo_meta.setdefault("columns", {})
+    apply_output_crs(columns.setdefault(geometry_column, {}), input_crs)
+    if verbose and input_crs and not is_default_crs(input_crs):
+        debug(f"Added CRS to geo metadata: {_format_crs_display(input_crs)}")
 
     # Apply metadata to table
     existing_metadata = dict(table.schema.metadata) if table.schema.metadata else {}

@@ -1440,6 +1440,7 @@ def _reproject_impl_cli(
     row_group_size_mb=None,
     row_group_rows=None,
     memory_limit=None,
+    assume_crs84=False,
 ):
     """Shared reproject CLI implementation."""
     from geoparquet_io.core.remote import validate_profile_for_urls
@@ -1450,20 +1451,24 @@ def _reproject_impl_cli(
     # Validate profile is only used with S3
     validate_profile_for_urls(None, input_file, output_file)
 
-    result = reproject_core(
-        input_parquet=input_file,
-        output_parquet=output_file,
-        target_crs=dst_crs,
-        source_crs=src_crs,
-        overwrite=overwrite,
-        compression=compression,
-        compression_level=compression_level,
-        verbose=verbose,
-        geoparquet_version=geoparquet_version,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        memory_limit=memory_limit,
-    )
+    try:
+        result = reproject_core(
+            input_parquet=input_file,
+            output_parquet=output_file,
+            target_crs=dst_crs,
+            source_crs=src_crs,
+            overwrite=overwrite,
+            compression=compression,
+            compression_level=compression_level,
+            verbose=verbose,
+            geoparquet_version=geoparquet_version,
+            row_group_size_mb=row_group_size_mb,
+            row_group_rows=row_group_rows,
+            memory_limit=memory_limit,
+            assume_crs84=assume_crs84,
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
 
     # result is None for streaming mode (stdout)
     if result:
@@ -1481,13 +1486,26 @@ def _reproject_impl_cli(
     "-d",
     default="EPSG:4326",
     show_default=True,
-    help="Destination CRS (e.g., 'EPSG:4326', 'EPSG:32610')",
+    help=(
+        "Destination CRS (e.g., 'EPSG:4326', 'EPSG:32610'). The default "
+        "(EPSG:4326 / OGC:CRS84) is written by omitting the crs key per the "
+        "GeoParquet spec, so the output has no explicit crs."
+    ),
 )
 @click.option(
     "--src-crs",
     "-s",
     default=None,
     help="Override source CRS (e.g., 'EPSG:4326'). If not provided, detected from file metadata.",
+)
+@click.option(
+    "--assume-crs84",
+    is_flag=True,
+    help=(
+        "Treat an unknown (explicit null) input CRS as OGC:CRS84 and rewrite the "
+        "file so the crs key is omitted (the default). Use when data is really "
+        "lon/lat WGS84 but the file declares crs:null."
+    ),
 )
 @overwrite_option
 @verbose_option
@@ -1503,6 +1521,7 @@ def convert_reproject(
     output_file,
     dst_crs,
     src_crs,
+    assume_crs84,
     overwrite,
     verbose,
     aws_profile,
@@ -1552,6 +1571,7 @@ def convert_reproject(
             row_group_size_mb=row_group_mb,
             row_group_rows=row_group_size,
             memory_limit=write_memory,
+            assume_crs84=assume_crs84,
         )
 
 

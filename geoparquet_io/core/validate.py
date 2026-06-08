@@ -13,7 +13,7 @@ from typing import Any
 
 from rich.console import Console
 
-from geoparquet_io.core.crs_utils import get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
 
 
 class CheckStatus(Enum):
@@ -266,14 +266,29 @@ def _check_geometry_types_list(col_meta: dict, col_name: str) -> ValidationCheck
 
 
 def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
-    """Check 9: optional 'crs' must be null or a PROJJSON object."""
-    crs = col_meta.get("crs")
+    """Check 9: optional 'crs' must be null or a PROJJSON object.
 
-    if crs is None:
+    Note the spec distinction: an omitted ``crs`` key defaults to OGC:CRS84,
+    while an explicit ``"crs": null`` means the CRS is *unknown*.
+    """
+    # Key omitted entirely -> defaults to OGC:CRS84 (the common, correct case).
+    if "crs" not in col_meta:
         return ValidationCheck(
             name=f"crs_valid_{col_name}",
             status=CheckStatus.PASSED,
             message=f'column "{col_name}" has no CRS (defaults to OGC:CRS84)',
+            category="column_metadata",
+        )
+
+    crs = col_meta.get("crs")
+
+    # Key present but null -> unknown CRS. Valid per spec, but usually a mistake
+    # when the data is really default lon/lat, so surface it as a warning.
+    if crs is None:
+        return ValidationCheck(
+            name=f"crs_valid_{col_name}",
+            status=CheckStatus.WARNING,
+            message=f'column "{col_name}" has an explicit null CRS. {NULL_CRS_HINT}',
             category="column_metadata",
         )
 

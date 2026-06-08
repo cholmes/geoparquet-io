@@ -568,7 +568,7 @@ table = gpio.read('input.parquet').sort_quadkey(remove_column=True)
 table = gpio.read('input.parquet').sort_quadkey(column_name='my_quadkey')
 ```
 
-#### `reproject(target_crs='EPSG:4326', source_crs=None)`
+#### `reproject(target_crs='EPSG:4326', source_crs=None, assume_crs84=False)`
 
 Reproject geometry to a different coordinate reference system.
 
@@ -581,6 +581,16 @@ table = gpio.read('input.parquet').reproject(
     target_crs='EPSG:3857',
     source_crs='EPSG:4326'
 )
+```
+
+A geometry column's `crs` may be **omitted** (defaults to OGC:CRS84) or set to
+**`null`** (CRS is *unknown*) — these mean different things in the GeoParquet
+spec. If a file declares `crs: null` but the coordinates are really lon/lat
+WGS84, use `assume_crs84=True` to treat them as OGC:CRS84 and write the default
+(the `crs` key is omitted on output, no coordinates are changed):
+
+```python
+table = gpio.read('unknown_crs.parquet').reproject(assume_crs84=True)
 ```
 
 #### `extract(columns=None, exclude_columns=None, bbox=None, where=None, limit=None)`
@@ -1170,7 +1180,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |
 | `ops.sort_quadkey(table, column_name='quadkey', resolution=13, use_centroid=False, remove_column=False)` | Sort by quadkey |
-| `ops.reproject(table, target_crs='EPSG:4326', source_crs=None, geometry_column=None)` | Reproject geometry |
+| `ops.reproject(table, target_crs='EPSG:4326', source_crs=None, geometry_column=None, assume_crs84=False)` | Reproject geometry (`assume_crs84` treats an unknown/null CRS as OGC:CRS84) |
 | `ops.extract(table, columns=None, exclude_columns=None, bbox=None, where=None, limit=None, geometry_column=None)` | Filter columns/rows |
 | `ops.read_bigquery(table_id, project=None, credentials_file=None, where=None, bbox=None, bbox_mode='auto', bbox_threshold=500000, limit=None, columns=None, exclude_columns=None)` | Read BigQuery table |
 | `ops.from_arcgis(service_url, token=None, where='1=1', bbox=None, include_cols=None, exclude_cols=None, limit=None)` | Fetch ArcGIS Feature Service |

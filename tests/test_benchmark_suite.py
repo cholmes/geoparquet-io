@@ -387,13 +387,6 @@ class TestChainOperationExecution:
             assert "final_rows" in result
             assert "final_size_mb" in result
 
-    @pytest.mark.skip(
-        reason="Known CRS bug on main: reprojecting EPSG:3857 -> EPSG:4326 leaves the "
-        "stale 3857 in geo metadata (_assemble_and_apply_geo_metadata only overwrites "
-        "crs when non-default), so the quadkey step rejects the file. The real fix lives "
-        "on the fix/crs-null-vs-default branch (PR #471) - remove this skip there, do NOT "
-        "carry it into that PR."
-    )
     def test_chain_filter_reproject_partition_runs(self, places_test_file):
         """Test chain-filter-reproject-partition operation runs."""
         from geoparquet_io.benchmarks.operations import get_operation

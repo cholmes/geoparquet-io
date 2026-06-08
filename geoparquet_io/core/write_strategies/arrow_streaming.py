@@ -222,7 +222,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_info: dict | None = None,
     ) -> dict | None:
         """Build geo metadata for query results."""
-        from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.crs_utils import apply_output_crs
         from geoparquet_io.core.geo_metadata import create_geo_metadata
 
         if not should_add_geo_metadata:
@@ -239,8 +239,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         )
 
         col_meta = geo_meta["columns"][geometry_column]
-        if input_crs and not is_default_crs(input_crs):
-            col_meta["crs"] = input_crs
+        apply_output_crs(col_meta, input_crs)
         col_meta["encoding"] = "WKB"
         col_meta["geometry_types"] = precomputed_geom_types
         if precomputed_bbox is not None:
@@ -425,7 +424,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             _detect_version_from_table,
             validate_compression_settings,
         )
-        from geoparquet_io.core.crs_utils import is_default_crs
+        from geoparquet_io.core.crs_utils import apply_output_crs
         from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS, create_geo_metadata
 
         configure_verbose(verbose)
@@ -473,8 +472,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             geo_meta["columns"][geometry_column]["encoding"] = "WKB"
             geo_meta["columns"][geometry_column]["geometry_types"] = geom_types
 
-            if input_crs and not is_default_crs(input_crs):
-                geo_meta["columns"][geometry_column]["crs"] = input_crs
+            apply_output_crs(geo_meta["columns"][geometry_column], input_crs)
 
         schema_with_meta = self._build_streaming_schema(
             schema=table.schema,

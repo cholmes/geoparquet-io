@@ -10,6 +10,11 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **`gpio convert reproject --assume-crs84`**: treat a file's unknown (explicit
+  `crs: null`) CRS as OGC:CRS84 and rewrite it so the `crs` key is omitted (the
+  spec default). No coordinates are changed. Also available as the
+  `assume_crs84=` argument on the `reproject` Python API.
+
 #### New Spatial Indexing Systems
 - **S2 support**: Add S2 cell indexing with `gpio add s2` and `gpio partition s2`
   - Full S2 geometry library integration for spherical indexing
@@ -75,6 +80,14 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- Distinguish an explicit `crs: null` (CRS *unknown*) from an omitted `crs` key
+  (defaults to OGC:CRS84), per the GeoParquet spec:
+  - Reading a file with `crs: null` now logs a warning (once per input) from the
+    shared CRS read path, and `gpio check spec` reports it as a WARNING instead
+    of incorrectly passing it as "defaults to OGC:CRS84".
+  - Reprojecting to a default CRS now omits the `crs` key instead of writing an
+    explicit CRS84 object (or, if CRS parsing failed, a stray `null`) into the
+    output geo metadata. Affected the Arrow/Python-API and streaming paths.
 - Fix out-of-memory crash in `gpio add admin-divisions --dataset overture` on
   large inputs (#461)
   - Overture now uses a **per-level cache** (separate country and region cache
