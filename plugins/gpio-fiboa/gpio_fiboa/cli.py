@@ -18,37 +18,9 @@ from geoparquet_io.cli.decorators import (
 def fiboa():
     """fiboa (Field Boundaries for Agriculture) commands.
 
-    Tools for validating, improving, and inspecting GeoParquet files
+    Tools for improving and inspecting GeoParquet files
     against the fiboa specification (https://fiboa.org).
     """
-
-
-@fiboa.command()
-@click.argument("input_file")
-@verbose_option
-@handle_geoparquet_errors
-def validate(input_file: str, verbose: bool) -> None:
-    """Validate a GeoParquet file against the fiboa specification.
-
-    Checks for required columns, correct data types, valid admin codes,
-    and positive geometry metrics values.
-
-    \b
-    **Examples:**
-
-    \b
-    # Validate a fiboa dataset
-    gpio fiboa validate fields.parquet
-
-    \b
-    # Verbose validation output
-    gpio fiboa validate fields.parquet --verbose
-    """
-    from gpio_fiboa.validate import validate_fiboa
-
-    is_valid = validate_fiboa(input_file, verbose)
-    if not is_valid:
-        raise SystemExit(1)
 
 
 @fiboa.command()

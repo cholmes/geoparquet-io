@@ -9,7 +9,6 @@ import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 from gpio_fiboa.cli import fiboa
-from gpio_fiboa.validate import validate_fiboa
 
 TEST_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "data"
 BUILDINGS_TEST_FILE = TEST_DATA_DIR / "buildings_test.parquet"
@@ -39,25 +38,6 @@ def metrics_file(buildings_file, temp_output):
 
     add_geometry_metrics(buildings_file, temp_output, vecorel=True)
     return temp_output
-
-
-class TestFiboaValidate:
-    """Test gpio fiboa validate command."""
-
-    def test_validate_plain_file(self, buildings_file):
-        runner = CliRunner()
-        result = runner.invoke(fiboa, ["validate", buildings_file])
-        # Plain file should pass but with warnings about missing metadata
-        assert "Warning" in result.output or "Valid" in result.output
-
-    def test_validate_metrics_file(self, metrics_file):
-        runner = CliRunner()
-        result = runner.invoke(fiboa, ["validate", metrics_file])
-        assert result.exit_code == 0
-
-    def test_validate_core_function(self, buildings_file):
-        is_valid = validate_fiboa(buildings_file)
-        assert isinstance(is_valid, bool)
 
 
 class TestFiboaDescribe:

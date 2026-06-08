@@ -370,15 +370,6 @@ Always explain your reasoning and ask for confirmation before large operations.
 
 The `gpio fiboa` plugin provides tools for working with field boundary datasets according to the [fiboa specification](https://fiboa.org). Install: `uv tool install geoparquet-io --with gpio-fiboa`.
 
-### Validate
-
-Check a GeoParquet file against fiboa requirements:
-
-```bash
-gpio fiboa validate fields.parquet
-gpio fiboa validate fields.parquet --verbose
-```
-
 ### Improve
 
 Apply fiboa enhancements (metrics, admin divisions, schemas, Hilbert sorting):

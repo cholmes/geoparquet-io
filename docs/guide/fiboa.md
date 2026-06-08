@@ -25,35 +25,6 @@ Verify the plugin is loaded:
 gpio fiboa --help
 ```
 
-## Validate
-
-Check a GeoParquet file against fiboa requirements — column presence, data types, admin code patterns, and positive geometry metrics.
-
-=== "CLI"
-    ```bash
-    gpio fiboa validate fields.parquet
-
-    # Verbose output with optional column info
-    gpio fiboa validate fields.parquet --verbose
-    ```
-
-=== "Python"
-    ```python
-    from gpio_fiboa import validate_fiboa
-
-    is_valid = validate_fiboa("fields.parquet", verbose=True)
-    ```
-
-The validator checks:
-
-- Required columns (`geometry`)
-- Expected columns (`id`, `admin:country_code`, `metrics:area`, etc.)
-- ISO 3166-1 alpha-2 country code pattern
-- ISO 3166-2 subdivision code pattern
-- Positive values for `metrics:area` and `metrics:perimeter`
-- Valid `determination:method` values
-- Vecorel collection metadata with fiboa schema URL
-
 ## Improve
 
 Apply fiboa enhancements to a GeoParquet file. Each flag enables a specific improvement, applied in sequence.
@@ -153,7 +124,6 @@ gpio fiboa improve raw.parquet compliant.parquet -sz -a -s \
     --determination-method auto-imagery \
     --category operational
 
-gpio fiboa validate compliant.parquet
 gpio fiboa describe compliant.parquet
 ```
 

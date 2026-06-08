@@ -64,7 +64,7 @@ For Python API usage, install plugins as regular dependencies:
 
 | Plugin | Package | Description |
 |--------|---------|-------------|
-| fiboa | `gpio-fiboa` | Field Boundaries for Agriculture — validate, improve, and describe fiboa datasets |
+| fiboa | `gpio-fiboa` | Field Boundaries for Agriculture — improve and describe fiboa datasets |
 
 See the [fiboa guide](fiboa.md) for detailed usage.
 
