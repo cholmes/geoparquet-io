@@ -750,7 +750,36 @@ class OvertureAdminDataset(AdminDataset):
     def get_cached_path_for_level(self, level: str) -> Path:
         cache_dir = get_cache_dir()
         version = self.get_version()
-        return cache_dir / f"overture-{version}-{level}.parquet"
+        # The "-land" suffix encodes the land-only filter applied at download
+        # time. It also invalidates older caches that mixed in maritime (EEZ)
+        # polygons, which caused ~2x row multiplication in spatial joins.
+        return cache_dir / f"overture-{version}-{level}-land.parquet"
+
+    def _build_level_cache_query(self, level: str, source: str) -> str:
+        """Build the SELECT that produces a non-overlapping per-level cache.
+
+        Only land polygons are kept (``is_land = true``). Overture stores a
+        separate maritime (EEZ) polygon per division whose geometry spans the
+        whole territory — including the entire landmass — so keeping both
+        classes makes every land feature match two polygons per level,
+        inflating spatial-join output ~2x per level. Land-only keeps each
+        level's polygons non-overlapping, which is what the plain (memory-safe)
+        LEFT JOIN relies on instead of an OOM-prone dedup window.
+        """
+        tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
+        if level == "country":
+            cols = "bbox, country, subtype"
+            # Exclude disputed (X*) territories and Antarctica.
+            extra = "AND country NOT LIKE 'X%' AND country != 'AQ' "
+        else:
+            cols = "bbox, country, region, subtype"
+            extra = ""
+        return (
+            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
+            f"{cols} "
+            f"FROM read_parquet('{source}', hive_partitioning=1) "
+            f"WHERE subtype = '{level}' AND is_land = true {extra}"
+        )
 
     def get_source_for_level(self, level: str, no_cache: bool = False) -> str:
         """Get the cached source path for a specific admin level."""
@@ -775,9 +804,10 @@ class OvertureAdminDataset(AdminDataset):
         """Download separate country and region cache files.
 
         The full Overture divisions dataset is ~4.5GB with 1M+ rows. We split
-        into per-level files so spatial joins run against non-overlapping
-        polygons, preventing row multiplication. Geometries are simplified to
-        ~11m tolerance to keep files small.
+        into per-level, land-only files (see :meth:`_build_level_cache_query`)
+        so spatial joins run against non-overlapping polygons, preventing row
+        multiplication. Geometries are simplified to ~11m tolerance to keep
+        files small.
         """
         from geoparquet_io.core.duckdb_utils import s3_config_scope
         from geoparquet_io.core.logging_config import info
@@ -801,24 +831,7 @@ class OvertureAdminDataset(AdminDataset):
                     if cache_path.exists() and cache_path.stat().st_size > 0:
                         continue
 
-                    tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
-                    if level == "country":
-                        query = (
-                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
-                            "bbox, country, subtype "
-                            f"FROM read_parquet('{source}', hive_partitioning=1) "
-                            "WHERE subtype = 'country' "
-                            "AND country NOT LIKE 'X%' "
-                            "AND country != 'AQ'"
-                        )
-                    else:
-                        query = (
-                            f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
-                            "bbox, country, region, subtype "
-                            f"FROM read_parquet('{source}', hive_partitioning=1) "
-                            f"WHERE subtype = '{level}'"
-                        )
-
+                    query = self._build_level_cache_query(level, source)
                     con.execute(
                         f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
                     )

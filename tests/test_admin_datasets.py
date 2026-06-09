@@ -243,6 +243,34 @@ class TestOvertureAdminDataset:
         # Should use dataset prefix
         assert col_name == "overture_unknown_level"
 
+    def test_per_level_cache_query_filters_to_land(self):
+        """Per-level cache must keep only land polygons.
+
+        Overture stores a separate maritime (EEZ) polygon per division whose
+        geometry spans the entire territory including the landmass. Keeping it
+        makes every land feature match two polygons per level, inflating
+        spatial-join output ~2x per level (issue: admin-divisions 2.6x rows).
+        """
+        dataset = OvertureAdminDataset()
+        for level in ("country", "region"):
+            query = dataset._build_level_cache_query(level, "s3://example/*")
+            assert "is_land = true" in query, f"{level} cache must filter to land"
+            assert f"subtype = '{level}'" in query
+
+    def test_per_level_cache_query_excludes_disputed_countries(self):
+        """Country cache still excludes disputed (X*) territories and Antarctica."""
+        dataset = OvertureAdminDataset()
+        query = dataset._build_level_cache_query("country", "s3://example/*")
+        assert "X%" in query
+        assert "AQ" in query
+
+    def test_cached_path_distinguishes_land_only_caches(self):
+        """Cache filename encodes the land-only filter so stale (maritime-
+        contaminated) caches are not silently reused after the fix."""
+        dataset = OvertureAdminDataset()
+        path = dataset.get_cached_path_for_level("country")
+        assert path.name.endswith("-country-land.parquet")
+
 
 class TestBaseAdminDatasetDefaults:
     """Test base AdminDataset default implementations for backwards compatibility."""
