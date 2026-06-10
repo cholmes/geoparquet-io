@@ -88,6 +88,7 @@ def _check_spatial_sorting(parquet_file, verbose=False):
             quiet=True,
         )
         # check_spatial_order with return_results=True always returns a dict
+        assert isinstance(result, dict)
         ratio = result["ratio"]
         ratio_str = f" (ratio: {ratio:.2f})" if ratio is not None else ""
         if result["passed"]:
