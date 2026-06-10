@@ -1654,3 +1654,26 @@ class TestAdaptiveBatchNetworkIntegration:
         assert Path(output_file).exists()
         pf = pq.ParquetFile(output_file)
         assert pf.metadata.num_rows == expected_feature_count
+
+
+class TestEsriJsonPageToTable:
+    """EsriJSON pages are parsed by DuckDB ST_Read (GDAL ESRIJSON driver)."""
+
+    def test_esrijson_page_to_table_parses_geometry_and_attrs(self):
+        from geoparquet_io.core.arcgis import _esrijson_page_to_table
+
+        table = _esrijson_page_to_table(MOCK_ESRI_FEATURES_PAGE)
+
+        assert table is not None
+        assert table.num_rows == 1
+        assert "geometry" in table.column_names
+        # Attribute columns are flattened from `attributes`
+        assert "OBJECTID" in table.column_names
+        assert "name" in table.column_names
+        # Geometry is WKB bytes (projected coords preserved, not reprojected)
+        assert isinstance(table.column("geometry")[0].as_py(), bytes)
+
+    def test_esrijson_page_to_table_empty(self):
+        from geoparquet_io.core.arcgis import _esrijson_page_to_table
+
+        assert _esrijson_page_to_table({"features": []}) is None

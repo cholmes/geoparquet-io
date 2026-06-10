@@ -907,6 +907,42 @@ def _geojson_page_to_table(
             os.unlink(temp_file)
 
 
+def _esrijson_page_to_table(page: dict) -> pa.Table | None:
+    """Convert a page of EsriJSON features to a PyArrow Table with WKB geometry.
+
+    Unlike GeoJSON, GDAL's ESRIJSON driver needs the whole response object
+    (geometryType / spatialReference / fields / features), so the raw page is
+    written verbatim. `attributes` are flattened to columns by the driver.
+
+    Returns a PyArrow Table with WKB geometry column, or None if no features.
+    """
+    if not page.get("features"):
+        return None
+
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    temp_file = tempfile.gettempdir() + f"/arcgis_esri_page_{uuid.uuid4()}.json"
+
+    try:
+        with open(temp_file, "w") as f:
+            f.write(json.dumps(page))
+
+        # GDAL may or may not add OGC_FID for EsriJSON; keep extra columns here and
+        # let _align_table_to_schema drop anything not in the target schema.
+        query = f"""
+            SELECT
+                ST_AsWKB(geom) as geometry,
+                * EXCLUDE (geom)
+            FROM ST_Read('{temp_file}')
+        """
+
+        return con.execute(query).arrow().read_all()
+
+    finally:
+        con.close()
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+
+
 def _stream_features_to_parquet(
     service_url: str,
     layer_info: ArcGISLayerInfo,
