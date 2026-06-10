@@ -236,9 +236,9 @@ module = [
 ignore_errors = true
 
 [tool.mutmut]
-paths_to_mutate = "geoparquet_io/"
-tests_dir = "tests/"
+source_paths = ["geoparquet_io/"]
 runner = "python -m pytest -x -q --tb=no"
+pytest_add_cli_args_test_selection = ["tests/"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "docs"]
