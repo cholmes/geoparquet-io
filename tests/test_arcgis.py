@@ -478,9 +478,7 @@ class TestArcgisToTableOutputCrs:
         mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 4326, "latestWkid": 4326})
 
         with caplog.at_level(logging.WARNING):
-            result = arcgis_to_table(
-                "https://example.com/FeatureServer/0", output_crs="EPSG:25830"
-            )
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
 
         crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
         assert crs["id"]["code"] == 4326
@@ -762,9 +760,7 @@ class TestApiOutputCrs:
     def test_ops_from_arcgis_forwards_output_crs(self, mock_to_table):
         from geoparquet_io.api import ops
 
-        mock_to_table.return_value = pa.table(
-            {"geometry": pa.array([], type=pa.binary())}
-        )
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
         ops.from_arcgis("https://example.com/FeatureServer/0", output_crs="native")
 
         assert mock_to_table.call_args.kwargs["output_crs"] == "native"
@@ -773,12 +769,8 @@ class TestApiOutputCrs:
     def test_extract_arcgis_forwards_output_crs(self, mock_to_table):
         from geoparquet_io.api.table import extract_arcgis
 
-        mock_to_table.return_value = pa.table(
-            {"geometry": pa.array([], type=pa.binary())}
-        )
-        extract_arcgis(
-            "https://example.com/FeatureServer/0", output_crs="EPSG:25830"
-        )
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        extract_arcgis("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
 
         assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
 
@@ -1914,10 +1906,7 @@ class TestArcgisOutputCrsLive:
         from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
 
         out = str(tmp_path / "zp.parquet")
-        url = (
-            "https://sigma.madrid.es/hosted/rest/services/MOVILIDAD/"
-            "ZONAS_PEATONALES/MapServer/0"
-        )
+        url = "https://sigma.madrid.es/hosted/rest/services/MOVILIDAD/ZONAS_PEATONALES/MapServer/0"
 
         # An unavailable server should skip, not fail. A returned-but-wrong
         # CRS is a real bug and must fail (AssertionError propagates below).
