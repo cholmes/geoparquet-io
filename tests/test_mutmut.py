@@ -69,17 +69,13 @@ class TestMutmutConfig:
         assert "mutmut" in output or any(c.isdigit() for c in output)
 
     def test_mutmut_config_exists(self, mutmut_config: dict[str, Any]):
-        """Verify mutmut config has paths_to_mutate."""
-        assert "paths_to_mutate" in mutmut_config
-        assert "geoparquet_io" in mutmut_config["paths_to_mutate"]
+        """Verify mutmut config has source_paths."""
+        assert "source_paths" in mutmut_config
+        assert any("geoparquet_io" in p for p in mutmut_config["source_paths"])
 
     def test_mutmut_paths_exist(self, mutmut_config: dict[str, Any]):
-        """Verify paths_to_mutate points to existing directories."""
-        paths = mutmut_config["paths_to_mutate"]
-
-        # paths_to_mutate can be a string or list
-        if isinstance(paths, str):
-            paths = [paths]
+        """Verify source_paths points to existing directories."""
+        paths = mutmut_config["source_paths"]
 
         for path in paths:
             full_path = PROJECT_ROOT / path.rstrip("/")
@@ -87,11 +83,12 @@ class TestMutmutConfig:
             assert full_path.is_dir(), f"Mutation path is not a directory: {path}"
 
     def test_mutmut_tests_dir_exists(self, mutmut_config: dict[str, Any]):
-        """Verify tests_dir points to existing directory."""
-        tests_dir = mutmut_config.get("tests_dir", "tests/")
-        full_path = PROJECT_ROOT / tests_dir.rstrip("/")
-        assert full_path.exists(), f"Tests directory does not exist: {tests_dir}"
-        assert full_path.is_dir(), f"Tests path is not a directory: {tests_dir}"
+        """Verify pytest_add_cli_args_test_selection points to existing directories."""
+        test_paths = mutmut_config.get("pytest_add_cli_args_test_selection", ["tests/"])
+        for test_path in test_paths:
+            full_path = PROJECT_ROOT / test_path.rstrip("/")
+            assert full_path.exists(), f"Tests directory does not exist: {test_path}"
+            assert full_path.is_dir(), f"Tests path is not a directory: {test_path}"
 
     def test_mutmut_runner_uses_pytest(self, mutmut_config: dict[str, Any]):
         """Verify runner config uses pytest."""
