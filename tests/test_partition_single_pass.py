@@ -251,6 +251,28 @@ class TestMetadata:
         assert bboxes["AAA.parquet"] != bboxes["CCC.parquet"]
 
 
+class TestMemoryLimitValidation:
+    """memory_limit is interpolated into SET, so it must be validated."""
+
+    def test_rejects_injection(self, multi_value_file, temp_output_dir):
+        out = os.path.join(temp_output_dir, "mem")
+        with pytest.raises(ValueError, match="Invalid memory_limit"):
+            partition_by_column(
+                input_parquet=multi_value_file,
+                output_folder=out,
+                column_name="cat",
+                skip_analysis=True,
+                memory_limit="1GB'; ATTACH 'evil.db' AS evil; --",
+            )
+
+    def test_accepts_valid_sizes(self):
+        from geoparquet_io.core.partition.staging import _validate_memory_limit
+
+        assert _validate_memory_limit("512MB") == "512MB"
+        assert _validate_memory_limit("2gb") == "2GB"
+        assert _validate_memory_limit("4.5 GB") == "4.5GB"
+
+
 class TestCollision:
     """Distinct values that sanitize to the same filename must NOT lose rows."""
 

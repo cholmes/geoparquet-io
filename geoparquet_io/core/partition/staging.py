@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from urllib.parse import unquote
@@ -34,6 +35,27 @@ from geoparquet_io.core.write_strategies.duckdb_kv import get_default_memory_lim
 # the PARTITION_BY column from the written files, so using a dedicated alias lets
 # callers keep or drop the *original* column independently.
 PARTITION_ALIAS = "__gpio_part"
+
+# A DuckDB memory-limit size: digits, optional decimal, optional unit (defaults
+# to bytes). Used to validate the user-supplied value before it is interpolated
+# into a SET statement.
+_MEMORY_LIMIT_RE = re.compile(r"^\d+(\.\d+)?\s*(B|KB|MB|GB|TB)?$", re.IGNORECASE)
+
+
+def _validate_memory_limit(value: str) -> str:
+    """Validate/normalize a DuckDB memory-limit before interpolating into SQL.
+
+    ``memory_limit`` is user-supplied (``--write-memory``) and is interpolated
+    into ``SET memory_limit = '…'``; reject anything that isn't a plain size so a
+    crafted value cannot break out of the string literal. Returns the normalized
+    value (whitespace removed, unit upper-cased).
+    """
+    text = str(value).strip()
+    if not _MEMORY_LIMIT_RE.match(text):
+        raise ValueError(
+            f"Invalid memory_limit {value!r}; expected a size like '512MB', '2GB', or '4.5GB'."
+        )
+    return text.upper().replace(" ", "")
 
 
 @dataclass(frozen=True)
@@ -128,7 +150,7 @@ def run_partitioned_copy(con, select_sql, partition_cols, staging_dir, verbose, 
     """
     con.execute("SET threads = 1")  # one file per partition + bounded memory
     con.execute("SET preserve_insertion_order = false")
-    effective_limit = memory_limit or get_default_memory_limit()
+    effective_limit = _validate_memory_limit(memory_limit or get_default_memory_limit())
     con.execute(f"SET memory_limit = '{effective_limit}'")
 
     part_cols = ", ".join(partition_cols)
