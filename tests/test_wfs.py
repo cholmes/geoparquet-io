@@ -12,6 +12,9 @@ import pytest
 
 # Module-level imports for WFS functions (avoids per-test imports)
 from geoparquet_io.core.wfs import (
+    EmptyLayerError,
+    LayerNotFoundError,
+    WFSAuthenticationError,
     WFSError,
     WFSLayerInfo,
     _build_bbox_param,
@@ -594,6 +597,73 @@ class TestErrorHandling:
 
         with pytest.raises(WFSError, match="not found"):
             get_layer_info("http://mock.wfs.server/wfs", "nonexistent:data")
+
+
+class TestWFSExceptionHierarchy:
+    """Test typed WFS exception subclasses for downstream consumers."""
+
+    def test_empty_layer_error_is_wfs_error(self):
+        """EmptyLayerError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(EmptyLayerError, WFSError)
+
+    def test_layer_not_found_error_is_wfs_error(self):
+        """LayerNotFoundError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(LayerNotFoundError, WFSError)
+
+    def test_auth_error_is_wfs_error(self):
+        """WFSAuthenticationError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(WFSAuthenticationError, WFSError)
+
+    def test_empty_layer_error_has_typename(self):
+        """EmptyLayerError should expose typename attribute."""
+        err = EmptyLayerError("ns:layername")
+        assert err.typename == "ns:layername"
+        assert "ns:layername" in str(err)
+        assert "No features returned" in str(err)
+
+    def test_layer_not_found_error_has_typename_and_available(self):
+        """LayerNotFoundError should expose typename and available layers."""
+        err = LayerNotFoundError("ns:missing", ["ns:layer1", "ns:layer2"])
+        assert err.typename == "ns:missing"
+        assert err.available == ["ns:layer1", "ns:layer2"]
+        assert "ns:missing" in str(err)
+        assert "not found" in str(err)
+
+    def test_layer_not_found_error_with_no_available(self):
+        """LayerNotFoundError should work without available layers."""
+        err = LayerNotFoundError("ns:missing")
+        assert err.typename == "ns:missing"
+        assert err.available == []
+        assert "ns:missing" in str(err)
+
+    def test_auth_error_has_url_and_status_code(self):
+        """WFSAuthenticationError should expose url and status_code."""
+        err = WFSAuthenticationError("http://example.com/wfs", 401, "Auth required")
+        assert err.url == "http://example.com/wfs"
+        assert err.status_code == 401
+        assert "Auth required" in str(err)
+
+    def test_empty_layer_error_caught_as_wfs_error(self):
+        """Verify backward compatibility - catching as WFSError works."""
+        try:
+            raise EmptyLayerError("test:layer")
+        except WFSError as e:
+            assert isinstance(e, EmptyLayerError)
+            assert e.typename == "test:layer"
+
+    @patch("owslib.wfs.WebFeatureService")
+    def test_layer_not_found_raises_typed_error(self, mock_wfs_class):
+        """LayerNotFoundError is raised when layer doesn't exist."""
+        mock_wfs = MagicMock()
+        mock_wfs.contents = {"ns:cities": MagicMock(), "ns:roads": MagicMock()}
+        mock_wfs_class.return_value = mock_wfs
+
+        with pytest.raises(LayerNotFoundError) as exc_info:
+            get_layer_info("http://mock.wfs.server/wfs", "nonexistent:data")
+
+        assert exc_info.value.typename == "nonexistent:data"
+        assert "ns:cities" in exc_info.value.available
+        assert "ns:roads" in exc_info.value.available
 
 
 # Helper Data Structures for Tests
