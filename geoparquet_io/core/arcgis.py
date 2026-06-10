@@ -1086,6 +1086,7 @@ def arcgis_to_table(
     limit: int | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
     verbose: bool = False,
 ) -> pa.Table:
     """
@@ -1114,6 +1115,9 @@ def arcgis_to_table(
         limit: Maximum number of features to return
         batch_size: Custom batch size for pagination
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS instead of reprojecting to WGS84. Use
+            "native" for the layer's advertised SR, or an EPSG code (e.g.
+            "EPSG:25830"). Default None fetches GeoJSON in WGS84 (CRS84).
         verbose: Whether to print debug output
 
     Returns:
@@ -1132,6 +1136,16 @@ def arcgis_to_table(
     debug(f"Layer: {layer_info.name}")
     debug(f"Geometry type: {layer_info.geometry_type}")
     debug(f"Total features matching filter: {layer_info.total_count}")
+
+    # Resolve output CRS. "native" means the layer's advertised SR.
+    resolved_output_crs = output_crs
+    if output_crs == "native":
+        native_wkid = _wkid_from_spatial_reference(layer_info.spatial_reference)
+        if native_wkid is None:
+            raise GeoParquetError(
+                "--output-crs native requested but the layer advertises no spatial reference."
+            )
+        resolved_output_crs = f"EPSG:{native_wkid}"
 
     if layer_info.total_count == 0:
         filters_applied = where != "1=1" or bbox is not None
@@ -1160,7 +1174,7 @@ def arcgis_to_table(
 
     try:
         progress("Streaming features to temp file...")
-        total_rows = _stream_features_to_parquet(
+        total_rows, detected_sr = _stream_features_to_parquet(
             service_url=service_url,
             layer_info=layer_info,
             output_path=temp_parquet,
@@ -1171,6 +1185,7 @@ def arcgis_to_table(
             token=token,
             batch_size=batch_size,
             max_workers=max_workers,
+            output_crs=resolved_output_crs,
             verbose=verbose,
         )
 
@@ -1190,10 +1205,25 @@ def arcgis_to_table(
                 table = table.select(cols_to_keep)
                 debug(f"Excluded columns: {cols_to_exclude}")
 
-        # Add CRS to metadata
-        # Always use CRS84 (WGS84 lon/lat) because we request f=geojson,
-        # which per RFC 7946 is always WGS84 regardless of the layer's native SR
-        crs = parse_crs_string_to_projjson("OGC:CRS84")
+        # Add CRS to metadata.
+        # Default (GeoJSON path): always CRS84 (WGS84 lon/lat) because we request
+        # f=geojson, which per RFC 7946 is always WGS84 regardless of the native SR.
+        # Native path (EsriJSON + outSR): tag the SR the server actually returned.
+        if resolved_output_crs is None:
+            crs = parse_crs_string_to_projjson("OGC:CRS84")
+        else:
+            requested_wkid = _parse_crs_to_wkid(resolved_output_crs)
+            # returned_wkid is None when the server omitted spatialReference on
+            # every page; we can't observe a mismatch in that case, so we skip the
+            # warning and fall back to tagging with the requested WKID below.
+            returned_wkid = _wkid_from_spatial_reference(detected_sr or {})
+            if returned_wkid and returned_wkid != requested_wkid:
+                warn(
+                    f"Requested output CRS EPSG:{requested_wkid} but server returned "
+                    f"EPSG:{returned_wkid}. Tagging output with the returned CRS "
+                    f"(coordinates were not reprojected)."
+                )
+            crs = _extract_crs_from_spatial_reference(detected_sr or {"wkid": requested_wkid})
         if crs:
             geo_metadata = {
                 "version": "1.1.0",

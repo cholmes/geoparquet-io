@@ -380,7 +380,7 @@ class TestCrsExtraction:
 
             output_path = kwargs.get("output_path") or args[2]
             shutil.copy(temp_parquet, output_path)
-            return 1
+            return 1, None
 
         mock_stream.side_effect = mock_stream_side_effect
 
@@ -394,6 +394,97 @@ class TestCrsExtraction:
         # CRS84 is WGS84 with lon/lat axis order (matches GeoJSON)
         assert crs["id"]["authority"] == "OGC"
         assert crs["id"]["code"] == "CRS84"
+
+
+class TestArcgisToTableOutputCrs:
+    def _layer(self, wkid, latest):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo
+
+        return ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": wkid, "latestWkid": latest},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+    def _stub_stream(self, tmp_path, detected_sr):
+        import shutil
+
+        temp_parquet = str(tmp_path / "temp.parquet")
+        pq.write_table(
+            pa.table(
+                {
+                    "geometry": [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+                    ],
+                    "OBJECTID": [1],
+                    "name": ["Zone 1"],
+                }
+            ),
+            temp_parquet,
+        )
+
+        def side_effect(*args, **kwargs):
+            output_path = kwargs.get("output_path") or args[2]
+            shutil.copy(temp_parquet, output_path)
+            return 1, detected_sr
+
+        return side_effect
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_explicit_output_crs_tags_returned_sr(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
+
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "EPSG"
+        assert crs["id"]["code"] == 25830
+        assert mock_stream.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_resolves_to_layer_sr(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_crs"] == "EPSG:25830"
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_server_ignores_outsr_tags_returned_and_warns(
+        self, mock_layer, mock_stream, tmp_path, caplog
+    ):
+        import logging
+
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 4326, "latestWkid": 4326})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table(
+                "https://example.com/FeatureServer/0", output_crs="EPSG:25830"
+            )
+
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 4326
+        assert any("25830" in r.message and "4326" in r.message for r in caplog.records)
 
 
 class TestSchemaBuilding:
@@ -816,7 +907,7 @@ class TestStreamingConversion:
             # Write a minimal parquet file
             table = pa.table({"geometry": [b"test1", b"test2", b"test3"], "name": ["a", "b", "c"]})
             pq.write_table(table, output_path)
-            return 3
+            return 3, None
 
         mock_stream.side_effect = mock_stream_impl
 
