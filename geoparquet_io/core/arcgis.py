@@ -469,9 +469,13 @@ def fetch_features_page(
     }
 
     # Server-side geometry generalization (Douglas-Peucker). Honored on both the
-    # GeoJSON and EsriJSON paths; the tolerance is in the units of the output SR.
+    # GeoJSON and EsriJSON paths. ArcGIS measures the tolerance in outSR units and
+    # falls back to the layer's source units when outSR is unset, so anchor outSR
+    # (to 4326 on the default GeoJSON path) to keep the unit well-defined. The
+    # output_wkid branch below overrides this with the requested SR when present.
     if max_allowable_offset is not None:
         params["maxAllowableOffset"] = str(max_allowable_offset)
+        params.setdefault("outSR", "4326")
 
     # Add bbox filter if provided (spatial query)
     if bbox:

@@ -1056,7 +1056,7 @@ Some layers have very large or vertex-dense polygons that are slow to download o
     table.write("out.parquet")
     ```
 
-The tolerance is in the units of the output CRS, so it is degrees on the default WGS84 path and the projected unit (often meters) when `--output-crs` selects a projected CRS. The value must be positive, a bad value fails fast before any network call.
+The tolerance is in the units of the request's output CRS. With `--output-crs` set, that is the chosen CRS's unit, degrees for a geographic CRS and the projected unit (often meters) for a projected CRS. Without `--output-crs` the request is anchored to WGS84, so the tolerance is in degrees. The value must be positive, a bad value fails fast before any network call.
 
 ### Finding Service URLs
 

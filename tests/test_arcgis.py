@@ -361,6 +361,8 @@ class TestFetchFeaturesPage:
         params = mock_request.call_args.kwargs["params"]
         assert params["f"] == "geojson"
         assert params["maxAllowableOffset"] == "0.005"
+        # outSR is anchored to 4326 so the tolerance unit is unambiguously degrees.
+        assert params["outSR"] == "4326"
 
     @patch("geoparquet_io.core.arcgis._make_request")
     def test_fetch_page_max_allowable_offset_with_outsr(self, mock_request):
