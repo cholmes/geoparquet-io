@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+from urllib.parse import unquote
 
 from geoparquet_io.core.common import (
     get_parquet_metadata,
@@ -603,24 +605,118 @@ def _build_column_expression(column_name, column_prefix_length):
     return column_expr, partition_description
 
 
-def _get_unique_partition_values(con, input_url, column_expr, column_name, verbose):
-    """Get unique partition values from input."""
-    query = f"""
-        SELECT DISTINCT {column_expr} as partition_value
-        FROM '{input_url}'
-        WHERE "{column_name}" IS NOT NULL
-        ORDER BY partition_value
+# Internal alias used to drive the single-pass PARTITION_BY split. DuckDB drops
+# the PARTITION_BY column from the written files, so using a dedicated alias lets
+# us keep or drop the *original* column independently (see _build_staging_select).
+_PARTITION_ALIAS = "__gpio_part"
+
+
+def _build_staging_select(input_url, column_name, column_prefix_length, keep_partition_column):
+    """Build the SELECT for the single partitioned COPY.
+
+    Adds an aliased partition key (``__gpio_part``) that PARTITION_BY drops from
+    the output files, so the original column is kept or excluded independently
+    via ``keep_partition_column``. Only non-NULL partition values are written,
+    matching the previous per-value behaviour.
     """
-    result = con.execute(query)
-    partition_values = result.fetchall()
+    if column_prefix_length is not None:
+        pexpr = f'LEFT("{column_name}", {column_prefix_length})'
+    else:
+        pexpr = f'"{column_name}"'
 
-    if len(partition_values) == 0:
-        raise PartitionError(f"No non-NULL values found in column '{column_name}'")
+    projection = "*" if keep_partition_column else f'* EXCLUDE ("{column_name}")'
 
+    return (
+        f"SELECT {projection}, {pexpr} AS {_PARTITION_ALIAS} "
+        f"FROM '{input_url}' "
+        f'WHERE "{column_name}" IS NOT NULL'
+    )
+
+
+def _run_partitioned_copy(con, select_sql, partition_cols, staging_dir, verbose, memory_limit=None):
+    """Run a single DuckDB ``COPY ... PARTITION_BY`` into ``staging_dir``.
+
+    This reads the input exactly once and routes every row to its partition
+    writer (issue #478). Staging files use native geometry + SNAPPY (fast,
+    transient); the final files are rewritten with the requested settings and
+    correct per-partition metadata by the caller.
+    """
+    from geoparquet_io.core.write_strategies.duckdb_kv import get_default_memory_limit
+
+    con.execute("SET threads = 1")  # one file per partition + bounded memory
+    con.execute("SET preserve_insertion_order = false")
+    effective_limit = memory_limit or get_default_memory_limit()
+    con.execute(f"SET memory_limit = '{effective_limit}'")
+
+    part_cols = ", ".join(partition_cols)
+    escaped_dir = staging_dir.replace("'", "''")
+    copy_sql = (
+        f"COPY ({select_sql}) TO '{escaped_dir}' "
+        f"(FORMAT PARQUET, PARTITION_BY ({part_cols}), "
+        f"COMPRESSION SNAPPY, GEOPARQUET_VERSION 'NONE', OVERWRITE_OR_IGNORE)"
+    )
     if verbose:
-        debug(f"Found {len(partition_values)} unique partition values")
+        debug("Single-pass partition COPY (one scan of input):")
+        debug(copy_sql)
+    con.execute(copy_sql)
 
-    return partition_values
+
+def _iter_staging_partitions(staging_dir):
+    """Yield ``(values, partition_dir)`` for each leaf partition in staging.
+
+    ``values`` is the list of decoded partition values (one per PARTITION_BY
+    level), recovered from DuckDB's Hive-encoded ``alias=value`` directory
+    names. Supports nested (multi-level) partitioning.
+    """
+
+    def _walk(current_dir, prefix):
+        entries = sorted(
+            d
+            for d in os.listdir(current_dir)
+            if "=" in d and os.path.isdir(os.path.join(current_dir, d))
+        )
+        for entry in entries:
+            _, _, enc_value = entry.partition("=")
+            value = unquote(enc_value)
+            child = os.path.join(current_dir, entry)
+            sub = [
+                d for d in os.listdir(child) if "=" in d and os.path.isdir(os.path.join(child, d))
+            ]
+            if sub:
+                yield from _walk(child, [*prefix, value])
+            else:
+                yield [*prefix, value], child
+
+    yield from _walk(staging_dir, [])
+
+
+def _finalize_partition_file(
+    con, partition_dir, output_filename, metadata, overwrite, verbose, **write_kwargs
+):
+    """Rewrite one staging partition into its final file with correct metadata.
+
+    Reads the (small) staging partition via a glob so a partition that DuckDB
+    split across files still collapses into one output file. Recomputes the
+    tight per-partition bbox by stripping the inherited bbox.
+    """
+    if os.path.exists(output_filename) and not overwrite:
+        if verbose:
+            debug(f"Output file {output_filename} already exists, skipping...")
+        return False
+
+    staging_glob = os.path.join(partition_dir, "*.parquet").replace("'", "''")
+    query = f"SELECT * FROM read_parquet('{staging_glob}')"
+    write_parquet_with_metadata(
+        con,
+        query,
+        output_filename,
+        original_metadata=_strip_bbox_from_metadata(metadata),
+        verbose=False,
+        **write_kwargs,
+    )
+    if verbose:
+        debug(f"Wrote {output_filename}")
+    return True
 
 
 def _determine_output_path(
@@ -645,18 +741,6 @@ def _determine_output_path(
         output_filename = os.path.join(write_folder, filename)
 
     return output_filename
-
-
-def _build_select_clause(con, input_url, column_name, keep_partition_column):
-    """Build SELECT clause, optionally excluding partition column."""
-    if keep_partition_column:
-        return "*"
-
-    schema_query = f"SELECT * FROM '{input_url}' LIMIT 0"
-    schema_result = con.execute(schema_query)
-    all_columns = [desc[0] for desc in schema_result.description]
-    columns_to_select = [f'"{col}"' for col in all_columns if col != column_name]
-    return ", ".join(columns_to_select)
 
 
 def _strip_bbox_from_metadata(metadata: dict | None) -> dict | None:
@@ -708,79 +792,6 @@ def _strip_bbox_from_metadata(metadata: dict | None) -> dict | None:
                 metadata_copy[geo_key] = geo_dict
 
     return metadata_copy
-
-
-def _process_partition_value(
-    con,
-    input_url,
-    partition_value,
-    column_name,
-    column_prefix_length,
-    actual_output,
-    hive,
-    filename_prefix,
-    overwrite,
-    metadata,
-    keep_partition_column,
-    verbose,
-    geoparquet_version=None,
-    compression: str = "ZSTD",
-    compression_level: int = 15,
-    row_group_size_mb: int | None = None,
-    row_group_rows: int | None = None,
-    memory_limit: str | None = None,
-):
-    """Process a single partition value."""
-    output_filename = _determine_output_path(
-        actual_output, partition_value, column_name, column_prefix_length, hive, filename_prefix
-    )
-
-    if os.path.exists(output_filename) and not overwrite:
-        if verbose:
-            debug(f"Output file for {partition_value} already exists, skipping...")
-        return False
-
-    if verbose:
-        debug(f"Processing partition: {partition_value}...")
-
-    # Build WHERE clause
-    if column_prefix_length is not None:
-        where_clause = f"LEFT(\"{column_name}\", {column_prefix_length}) = '{partition_value}'"
-    else:
-        where_clause = f"\"{column_name}\" = '{partition_value}'"
-
-    # Build SELECT clause
-    select_clause = _build_select_clause(con, input_url, column_name, keep_partition_column)
-
-    # Build SELECT query for partition
-    partition_query = f"""
-        SELECT {select_clause}
-        FROM '{input_url}'
-        WHERE {where_clause}
-    """
-
-    # Strip bbox from metadata so it gets recomputed for this partition's data
-    partition_metadata = _strip_bbox_from_metadata(metadata)
-
-    # Write partition
-    write_parquet_with_metadata(
-        con,
-        partition_query,
-        output_filename,
-        original_metadata=partition_metadata,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        verbose=False,
-        geoparquet_version=geoparquet_version,
-        memory_limit=memory_limit,
-    )
-
-    if verbose:
-        debug(f"Wrote {output_filename}")
-
-    return True
 
 
 def partition_by_column(
@@ -860,46 +871,55 @@ def partition_by_column(
         # Create DuckDB connection with httpfs if needed
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
 
-        # Build the column expression for partitioning
-        column_expr, partition_description = _build_column_expression(
-            column_name, column_prefix_length
-        )
-
-        # Get unique partition values
+        _, partition_description = _build_column_expression(column_name, column_prefix_length)
         if verbose:
-            debug(f"Finding unique values for {partition_description}...")
+            debug(f"Partitioning by {partition_description} in a single pass...")
 
-        partition_values = _get_unique_partition_values(
-            con, input_url, column_expr, column_name, verbose
-        )
-
-        # Process each partition value
-        for row in partition_values:
-            partition_value = row[0]
-            _process_partition_value(
-                con,
-                input_url,
-                partition_value,
-                column_name,
-                column_prefix_length,
-                actual_output,
-                hive,
-                filename_prefix,
-                overwrite,
-                metadata,
-                keep_partition_column,
-                verbose,
-                geoparquet_version,
-                compression,
-                compression_level,
-                row_group_size_mb,
-                row_group_rows,
-                memory_limit,
+        # Single pass: COPY ... PARTITION_BY routes every row in one input scan
+        # into a staging dir, then each (small) staging partition is rewritten
+        # into its final file with correct per-partition metadata (issue #478).
+        staging_dir = os.path.join(actual_output, ".gpio_partition_staging")
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        partition_count = 0
+        try:
+            select_sql = _build_staging_select(
+                input_url, column_name, column_prefix_length, keep_partition_column
+            )
+            _run_partitioned_copy(
+                con, select_sql, [_PARTITION_ALIAS], staging_dir, verbose, memory_limit
             )
 
-        con.close()
+            if not os.path.isdir(staging_dir) or not any("=" in d for d in os.listdir(staging_dir)):
+                raise PartitionError(f"No non-NULL values found in column '{column_name}'")
 
-        partition_count = len(partition_values)
+            for values, partition_dir in _iter_staging_partitions(staging_dir):
+                output_filename = _determine_output_path(
+                    actual_output,
+                    values[0],
+                    column_name,
+                    column_prefix_length,
+                    hive,
+                    filename_prefix,
+                )
+                if _finalize_partition_file(
+                    con,
+                    partition_dir,
+                    output_filename,
+                    metadata,
+                    overwrite,
+                    verbose,
+                    geoparquet_version=geoparquet_version,
+                    compression=compression,
+                    compression_level=compression_level,
+                    row_group_size_mb=row_group_size_mb,
+                    row_group_rows=row_group_rows,
+                    memory_limit=memory_limit,
+                ):
+                    partition_count += 1
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        con.close()
 
         # Upload to remote if needed
         if is_remote:

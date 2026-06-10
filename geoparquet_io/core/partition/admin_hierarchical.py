@@ -11,6 +11,7 @@ This module provides partitioning by administrative boundaries through a two-ste
 from __future__ import annotations
 
 import os
+import shutil
 
 import duckdb
 
@@ -18,13 +19,16 @@ from geoparquet_io.core.admin_datasets import AdminDatasetFactory
 from geoparquet_io.core.common import (
     check_bbox_structure,
     get_parquet_metadata,
-    write_parquet_with_metadata,
 )
 from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress, success, warn
 from geoparquet_io.core.partition.common import (
+    _PARTITION_ALIAS,
+    _finalize_partition_file,
+    _iter_staging_partitions,
+    _run_partitioned_copy,
     sanitize_filename,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
@@ -148,16 +152,6 @@ def _build_admin_where_clause(
                 )
 
     return "WHERE " + " AND ".join(admin_where_clauses) if admin_where_clauses else ""
-
-
-def _build_partition_query(enriched_table, output_column_names, original_cols):
-    """Build partition query for specific combination."""
-    select_cols = ", ".join([f'"{col}"' for col in original_cols])
-    return f"""
-        SELECT {select_cols}
-        FROM {enriched_table}
-        WHERE {" AND ".join([f'"{col}" = ?' for col in output_column_names])}
-    """
 
 
 def _setup_admin_dataset(dataset_name, verbose, levels):
@@ -419,11 +413,30 @@ def _get_original_columns(con, input_url):
     return [desc[0] for desc in original_schema.description]
 
 
-def _create_all_partitions(
+def _build_admin_staging_select(enriched_table, output_column_names, original_cols, vecorel):
+    """Build the SELECT for the single admin partitioned COPY.
+
+    Keeps the original columns (plus the admin columns in Vecorel mode, so each
+    partition is Vecorel-compliant) and adds one aliased partition key per level.
+    PARTITION_BY drops those aliases from the written files, so the admin columns
+    are dropped from non-Vecorel output exactly as before.
+    """
+    keep_cols = list(original_cols)
+    if vecorel:
+        keep_cols += list(output_column_names)
+    keep_sql = ", ".join(f'"{col}"' for col in keep_cols)
+
+    alias_sql = ", ".join(
+        f'"{col}" AS {_PARTITION_ALIAS}{i}' for i, col in enumerate(output_column_names)
+    )
+    where_sql = " AND ".join(f'"{col}" IS NOT NULL' for col in output_column_names)
+    return f"SELECT {keep_sql}, {alias_sql} FROM {enriched_table} WHERE {where_sql}"
+
+
+def _finalize_admin_partition(
     con,
-    enriched_table,
-    output_column_names,
-    combinations,
+    values,
+    partition_dir,
     levels,
     output_folder,
     hive,
@@ -431,144 +444,118 @@ def _create_all_partitions(
     overwrite,
     metadata,
     verbose,
-    profile,
-    original_cols,
-    geoparquet_version=None,
-    compression="ZSTD",
-    compression_level=15,
-    row_group_size_mb=None,
-    row_group_rows=None,
-    memory_limit=None,
-    vecorel=False,
-    extra_kv=None,
+    vecorel,
+    extra_kv,
+    write_kwargs,
 ):
-    """Create all partition files."""
-    partition_count = 0
-    for combination in combinations:
-        if _create_partition_file(
-            con,
-            enriched_table,
-            output_column_names,
-            combination,
-            levels,
-            output_folder,
-            hive,
-            filename_prefix,
-            overwrite,
-            metadata,
-            verbose,
-            profile,
-            original_cols,
-            geoparquet_version,
-            compression,
-            compression_level,
-            row_group_size_mb,
-            row_group_rows,
-            memory_limit,
-            vecorel,
-            extra_kv,
-        ):
-            partition_count += 1
-    return partition_count
-
-
-def _create_partition_file(
-    con,
-    enriched_table,
-    output_column_names,
-    combination,
-    levels,
-    output_folder,
-    hive,
-    filename_prefix,
-    overwrite,
-    metadata,
-    verbose,
-    profile,
-    original_cols,
-    geoparquet_version=None,
-    compression="ZSTD",
-    compression_level=15,
-    row_group_size_mb=None,
-    row_group_rows=None,
-    memory_limit=None,
-    vecorel=False,
-    extra_kv=None,
-):
-    """Create a single partition file."""
-    # Build nested folder path
-    folder_parts = []
-    for level, value in zip(levels, combination, strict=True):
-        safe_value = sanitize_filename(str(value))
-        if hive:
-            folder_parts.append(f"{level}={safe_value}")
-        else:
-            folder_parts.append(safe_value)
-
-    # Create partition folder
+    """Rewrite one staging partition into its final nested location."""
+    folder_parts = [
+        f"{level}={sanitize_filename(str(value))}" if hive else sanitize_filename(str(value))
+        for level, value in zip(levels, values, strict=True)
+    ]
     partition_folder = os.path.join(output_folder, *folder_parts)
     os.makedirs(partition_folder, exist_ok=True)
 
-    # Generate output filename
-    safe_last_value = sanitize_filename(str(combination[-1]))
+    safe_last = sanitize_filename(str(values[-1]))
     filename = (
-        f"{filename_prefix}_{safe_last_value}.parquet"
-        if filename_prefix
-        else f"{safe_last_value}.parquet"
+        f"{filename_prefix}_{safe_last}.parquet" if filename_prefix else f"{safe_last}.parquet"
     )
     output_file = os.path.join(partition_folder, filename)
 
-    # Skip if exists and not overwriting
-    if os.path.exists(output_file) and not overwrite:
-        if verbose:
-            debug(f"  ⊘ Skipping existing: {'/'.join(folder_parts)}")
-        return False
-
-    if verbose:
+    if verbose and not (os.path.exists(output_file) and not overwrite):
         debug(f"  → Creating: {'/'.join(folder_parts)}")
 
-    # Build WHERE clause
-    where_conditions = [
-        f"\"{col}\" = '{value}'"
-        for col, value in zip(output_column_names, combination, strict=True)
-    ]
-    where_clause = " AND ".join(where_conditions)
-
-    # In Vecorel mode, keep the admin columns (e.g. admin:country_code) in the
-    # output so each partition is Vecorel-compliant. Otherwise they are only
-    # used to drive the split and are dropped from the output.
-    select_col_list = original_cols + output_column_names if vecorel else original_cols
-    select_cols = ", ".join([f'"{col}"' for col in select_col_list])
-    partition_query = f"""
-        SELECT {select_cols}
-        FROM {enriched_table}
-        WHERE {where_clause}
-    """
-
-    # Write partition
-    write_parquet_with_metadata(
+    created = _finalize_partition_file(
         con,
-        partition_query,
+        partition_dir,
         output_file,
-        original_metadata=metadata,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        verbose=False,
-        profile=profile,
-        geoparquet_version=geoparquet_version,
-        memory_limit=memory_limit,
+        metadata,
+        overwrite,
+        verbose,
         extra_kv_metadata=extra_kv,
+        **write_kwargs,
     )
 
-    # Ensure Vecorel schema compliance (id column + non-nullable columns)
-    if vecorel:
+    # Ensure Vecorel schema compliance (id column + non-nullable columns) — DuckDB
+    # cannot write non-nullable Parquet columns, so this rewrites in place.
+    if created and vecorel:
         from geoparquet_io.core.constants import ensure_vecorel_columns
 
         ensure_vecorel_columns(output_file, verbose)
 
-    return True
+    return created
+
+
+def _create_all_partitions(
+    con,
+    enriched_table,
+    output_column_names,
+    levels,
+    output_folder,
+    hive,
+    filename_prefix,
+    overwrite,
+    metadata,
+    verbose,
+    profile,
+    original_cols,
+    geoparquet_version=None,
+    compression="ZSTD",
+    compression_level=15,
+    row_group_size_mb=None,
+    row_group_rows=None,
+    memory_limit=None,
+    vecorel=False,
+    extra_kv=None,
+):
+    """Create all partition files in a single pass.
+
+    Routes the enriched rows into a staging dir with one DuckDB
+    ``COPY ... PARTITION_BY`` (no per-combination re-scan, issue #478), then
+    rewrites each (small) staging partition into its final nested file with the
+    correct per-partition metadata.
+    """
+    staging_dir = os.path.join(output_folder, ".gpio_partition_staging")
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    partition_cols = [f"{_PARTITION_ALIAS}{i}" for i in range(len(output_column_names))]
+    write_kwargs = {
+        "profile": profile,
+        "geoparquet_version": geoparquet_version,
+        "compression": compression,
+        "compression_level": compression_level,
+        "row_group_size_mb": row_group_size_mb,
+        "row_group_rows": row_group_rows,
+        "memory_limit": memory_limit,
+    }
+
+    partition_count = 0
+    try:
+        select_sql = _build_admin_staging_select(
+            enriched_table, output_column_names, original_cols, vecorel
+        )
+        _run_partitioned_copy(con, select_sql, partition_cols, staging_dir, verbose, memory_limit)
+
+        for values, partition_dir in _iter_staging_partitions(staging_dir):
+            if _finalize_admin_partition(
+                con,
+                values,
+                partition_dir,
+                levels,
+                output_folder,
+                hive,
+                filename_prefix,
+                overwrite,
+                metadata,
+                verbose,
+                vecorel,
+                extra_kv,
+                write_kwargs,
+            ):
+                partition_count += 1
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+    return partition_count
 
 
 def partition_by_admin_hierarchical(
@@ -759,7 +746,6 @@ def partition_by_admin_hierarchical(
                 con,
                 enriched_table,
                 output_column_names,
-                combinations,
                 levels,
                 output_folder,
                 hive,

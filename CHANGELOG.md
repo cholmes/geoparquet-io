@@ -80,6 +80,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- Partition commands now read the input **once** instead of re-scanning it per
+  partition value (#478). `gpio partition string`, `gpio partition admin`, and
+  the cell-id partitioners (`a5`/`h3`/`s2`/`quadkey`/`kdtree`) all shared an
+  `O(num_partitions × input_size)` per-value loop that made partitioning large
+  datasets into many partitions infeasible (e.g. ~195 country partitions of a
+  220 GB input meant ~43 TB of reads). They now use a single streaming DuckDB
+  `COPY … PARTITION_BY` pass into a staging dir, then rewrite each (small)
+  partition into its final file with correct per-partition metadata. Output
+  layout, naming, flags, and per-partition `geo`/`bbox`/`covering` metadata
+  (plus passthrough KV like vecorel `collection` and non-nullable vecorel
+  columns) are unchanged.
 - Distinguish an explicit `crs: null` (CRS *unknown*) from an omitted `crs` key
   (defaults to OGC:CRS84), per the GeoParquet spec:
   - Reading a file with `crs: null` now logs a warning (once per input) from the
