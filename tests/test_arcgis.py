@@ -335,6 +335,51 @@ class TestFetchFeaturesPage:
         assert params["f"] == "json"
         assert params["outSR"] == "25830"
 
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_no_max_allowable_offset_by_default(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        params = mock_request.call_args.kwargs["params"]
+        assert "maxAllowableOffset" not in params
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_on_geojson(self, mock_request):
+        """Generalization tolerance is honored on the default GeoJSON path too."""
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "geojson"
+        assert params["maxAllowableOffset"] == "0.005"
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_with_outsr(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            output_wkid=25830,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "json"
+        assert params["outSR"] == "25830"
+        assert params["maxAllowableOffset"] == "0.005"
+
 
 class TestCrsParsing:
     """Tests for output-crs parsing helpers."""
@@ -678,6 +723,35 @@ class TestArcgisToTableOutputCrs:
 
     @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
     @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_max_allowable_offset_threads_to_stream(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        arcgis_to_table(
+            "https://example.com/FeatureServer/0",
+            output_crs="EPSG:25830",
+            max_allowable_offset=0.005,
+        )
+
+        assert mock_stream.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_invalid_max_allowable_offset_raises_before_network(self, mock_layer):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=0)
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=-1.0)
+
+        mock_layer.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
     def test_server_ignores_outsr_tags_returned_and_warns(
         self, mock_layer, mock_stream, tmp_path, caplog
     ):
@@ -956,6 +1030,51 @@ class TestArcgisCliOutputCrs:
         assert not isinstance(result.exception, ValueError)
         mock_layer.assert_not_called()
 
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_max_allowable_offset(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0.005",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_cli_invalid_max_allowable_offset_fails_cleanly(self, mock_layer, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "max_allowable_offset" in result.output
+        mock_layer.assert_not_called()
+
 
 class TestPythonAPI:
     """Tests for Python API functions."""
@@ -1009,6 +1128,24 @@ class TestApiOutputCrs:
         extract_arcgis("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
 
         assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_ops_from_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api import ops
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        ops.from_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_extract_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api.table import extract_arcgis
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        extract_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
 
 
 class TestStreamingConversion:

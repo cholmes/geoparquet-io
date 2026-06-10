@@ -2592,6 +2592,14 @@ def extract_geoparquet(
     "advertised SR. Default reprojects to WGS84.",
 )
 @click.option(
+    "--max-allowable-offset",
+    type=float,
+    default=None,
+    help="Server-side geometry generalization tolerance in output CRS units "
+    "(ArcGIS maxAllowableOffset). Reduces vertices per feature, useful for very "
+    "large or dense polygons.",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert spatial ordering (faster but less optimal for spatial queries)",
@@ -2637,6 +2645,7 @@ def extract_arcgis(
     exclude_cols,
     limit,
     output_crs,
+    max_allowable_offset,
     skip_hilbert,
     skip_bbox,
     workers,
@@ -2745,6 +2754,7 @@ def extract_arcgis(
             exclude_cols=exclude_cols,
             limit=limit,
             output_crs=output_crs,
+            max_allowable_offset=max_allowable_offset,
             skip_hilbert=skip_hilbert,
             skip_bbox=skip_bbox,
             max_workers=workers,

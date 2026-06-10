@@ -1031,6 +1031,33 @@ With `--output-crs native`, the layer's spatial reference is taken from its adve
 | `native` | Fetches EsriJSON with the layer's advertised spatial reference |
 | `EPSG:<code>` | Fetches EsriJSON with `outSR` set to the requested EPSG code |
 
+### Geometry generalization
+
+Some layers have very large or vertex-dense polygons that are slow to download or that overwhelm a server. Use `--max-allowable-offset` to ask the server to simplify each geometry before it is sent (the ArcGIS `maxAllowableOffset` parameter, a Douglas-Peucker tolerance). This reduces the vertex count per feature, which is different from `--limit`, which only caps the number of features.
+
+=== "CLI"
+
+    ```bash
+    # Generalize heavy polygons to a 0.005 unit tolerance in the output CRS
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs native --max-allowable-offset 0.005
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="native",
+        max_allowable_offset=0.005,
+    )
+    table.write("out.parquet")
+    ```
+
+The tolerance is in the units of the output CRS, so it is degrees on the default WGS84 path and the projected unit (often meters) when `--output-crs` selects a projected CRS. The value must be positive, a bad value fails fast before any network call.
+
 ### Finding Service URLs
 
 ArcGIS Feature Service URLs follow this pattern:

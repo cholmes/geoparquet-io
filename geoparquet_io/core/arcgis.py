@@ -434,6 +434,7 @@ def fetch_features_page(
     out_fields: str = "*",
     token: str | None = None,
     output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
 ) -> dict:
     """
@@ -449,6 +450,9 @@ def fetch_features_page(
         token: Optional authentication token
         output_wkid: Optional output WKID (e.g. 25830). When set, requests
             EsriJSON (f=json) with outSR so the server reprojects before delivery.
+        max_allowable_offset: Optional server-side geometry generalization
+            tolerance, in the units of the output CRS (degrees on the default
+            WGS84 path). Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
 
     Returns:
@@ -463,6 +467,11 @@ def fetch_features_page(
         "resultOffset": str(offset),
         "resultRecordCount": str(limit),
     }
+
+    # Server-side geometry generalization (Douglas-Peucker). Honored on both the
+    # GeoJSON and EsriJSON paths; the tolerance is in the units of the output SR.
+    if max_allowable_offset is not None:
+        params["maxAllowableOffset"] = str(max_allowable_offset)
 
     # Add bbox filter if provided (spatial query)
     if bbox:
@@ -500,6 +509,7 @@ def fetch_all_features(
     batch_size: int | None = None,
     max_workers: int = 1,
     output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
 ) -> Generator[dict, None, None]:
     """
@@ -569,6 +579,7 @@ def fetch_all_features(
                     out_fields=out_fields,
                     token=token,
                     output_wkid=output_wkid,
+                    max_allowable_offset=max_allowable_offset,
                     verbose=verbose,
                 )
             except BatchTooLargeError as e:
@@ -646,6 +657,7 @@ def fetch_all_features(
                         out_fields=out_fields,
                         token=token,
                         output_wkid=output_wkid,
+                        max_allowable_offset=max_allowable_offset,
                         verbose=False,  # Disable per-request verbose to avoid race conditions
                     )
                     futures.append((offset, current_batch, future))
@@ -1026,6 +1038,7 @@ def _stream_features_to_parquet(
     batch_size: int | None = None,
     max_workers: int = 1,
     output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
 ) -> tuple[int, dict | None]:
     """
@@ -1093,6 +1106,7 @@ def _stream_features_to_parquet(
             batch_size=batch_size,
             max_workers=max_workers,
             output_wkid=output_wkid,
+            max_allowable_offset=max_allowable_offset,
             verbose=verbose,
         ):
             features = page.get("features", [])
@@ -1160,6 +1174,7 @@ def arcgis_to_table(
     batch_size: int | None = None,
     max_workers: int = 1,
     output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
 ) -> pa.Table:
     """
@@ -1191,6 +1206,9 @@ def arcgis_to_table(
         output_crs: Preserve native CRS instead of reprojecting to WGS84. Use
             "native" for the layer's advertised SR, or an EPSG code (e.g.
             "EPSG:25830"). Default None fetches GeoJSON in WGS84 (CRS84).
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            the units of the output CRS (degrees on the default WGS84 path).
+            Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
 
     Returns:
@@ -1207,6 +1225,13 @@ def arcgis_to_table(
             output_wkid = _normalize_wkid(_parse_crs_to_wkid(output_crs))
         except ValueError as e:
             raise InvalidParameterError("output_crs", str(e)) from e
+
+    # A generalization tolerance must be positive; reject bad values before any
+    # network work so the failure is fast and clean.
+    if max_allowable_offset is not None and max_allowable_offset <= 0:
+        raise InvalidParameterError(
+            "max_allowable_offset", "must be a positive number (units of the output CRS)."
+        )
 
     # Validate URL
     service_url, layer_id = validate_arcgis_url(service_url)
@@ -1263,6 +1288,7 @@ def arcgis_to_table(
             batch_size=batch_size,
             max_workers=max_workers,
             output_wkid=output_wkid,
+            max_allowable_offset=max_allowable_offset,
             verbose=verbose,
         )
 
@@ -1343,6 +1369,7 @@ def convert_arcgis_to_geoparquet(
     exclude_cols: str | None = None,
     limit: int | None = None,
     output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     max_workers: int = 1,
@@ -1382,6 +1409,8 @@ def convert_arcgis_to_geoparquet(
         limit: Maximum number of features to return
         output_crs: Preserve native CRS. "native" uses the layer's advertised SR;
             or pass an EPSG code (e.g. "EPSG:25830"). Default None -> WGS84 (f=geojson).
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            output-CRS units (degrees on the default WGS84 path).
         skip_hilbert: Skip Hilbert spatial ordering
         skip_bbox: Skip adding bbox column for spatial query optimization
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
@@ -1428,6 +1457,7 @@ def convert_arcgis_to_geoparquet(
         batch_size=batch_size,
         max_workers=max_workers,
         output_crs=output_crs,
+        max_allowable_offset=max_allowable_offset,
         verbose=verbose,
     )
 
