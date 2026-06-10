@@ -37,6 +37,22 @@ CACHE_AGE_THRESHOLD_SECONDS = 6 * 30 * 24 * 60 * 60  # ~180 days
 # independently, so shared borders are not perfectly coincident (see todo 016).
 _OVERTURE_SIMPLIFY_TOLERANCE_DEG = 0.0001
 
+# Per-level cache schema for Overture. Declares, in one place, the columns each
+# level's cache projects and any level-specific row filters, so the cache
+# producer (_build_level_cache_query) has a single source of truth and an
+# unknown level fails loudly instead of being silently treated as a region.
+_OVERTURE_LEVEL_CACHE_CONFIG: dict[str, dict[str, list[str]]] = {
+    "country": {
+        "cols": ["bbox", "country", "subtype"],
+        # Exclude disputed (X*) territories and Antarctica.
+        "extra_filters": ["country NOT LIKE 'X%'", "country != 'AQ'"],
+    },
+    "region": {
+        "cols": ["bbox", "country", "region", "subtype"],
+        "extra_filters": [],
+    },
+}
+
 
 def get_cache_dir() -> Path:
     """
@@ -750,35 +766,42 @@ class OvertureAdminDataset(AdminDataset):
     def get_cached_path_for_level(self, level: str) -> Path:
         cache_dir = get_cache_dir()
         version = self.get_version()
-        # The "-land" suffix encodes the land-only filter applied at download
-        # time. It also invalidates older caches that mixed in maritime (EEZ)
-        # polygons, which caused ~2x row multiplication in spatial joins.
+        # "-land" suffix invalidates pre-fix caches that mixed in maritime (EEZ)
+        # polygons; see _build_level_cache_query for the rationale.
         return cache_dir / f"overture-{version}-{level}-land.parquet"
 
     def _build_level_cache_query(self, level: str, source: str) -> str:
         """Build the SELECT that produces a non-overlapping per-level cache.
 
-        Only land polygons are kept (``is_land = true``). Overture stores a
-        separate maritime (EEZ) polygon per division whose geometry spans the
-        whole territory — including the entire landmass — so keeping both
-        classes makes every land feature match two polygons per level,
-        inflating spatial-join output ~2x per level. Land-only keeps each
-        level's polygons non-overlapping, which is what the plain (memory-safe)
-        LEFT JOIN relies on instead of an OOM-prone dedup window.
+        Only land polygons are kept. Overture stores a separate maritime (EEZ)
+        polygon per division whose geometry spans the whole territory —
+        including the entire landmass — so keeping both classes makes every
+        land feature match two polygons per level, inflating spatial-join
+        output ~2x per level. Land-only keeps each level's polygons
+        non-overlapping, which is what the plain (memory-safe) LEFT JOIN relies
+        on instead of an OOM-prone dedup window.
+
+        The filter is ``is_land IS NOT FALSE`` (not ``= true``): it drops only
+        explicitly-maritime polygons and keeps land polygons whose flag is
+        NULL, so genuine territory with an unset flag is not silently lost to
+        SQL three-valued logic. Columns and level-specific filters come from
+        :data:`_OVERTURE_LEVEL_CACHE_CONFIG` so an unknown level raises rather
+        than being mis-projected.
         """
+        try:
+            config = _OVERTURE_LEVEL_CACHE_CONFIG[level]
+        except KeyError:
+            raise ValueError(f"No per-level cache config for admin level: {level!r}") from None
         tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
-        if level == "country":
-            cols = "bbox, country, subtype"
-            # Exclude disputed (X*) territories and Antarctica.
-            extra = "AND country NOT LIKE 'X%' AND country != 'AQ' "
-        else:
-            cols = "bbox, country, region, subtype"
-            extra = ""
+        cols = ", ".join(config["cols"])
+        where = " AND ".join(
+            [f"subtype = '{level}'", "is_land IS NOT FALSE", *config["extra_filters"]]
+        )
         return (
             f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
             f"{cols} "
             f"FROM read_parquet('{source}', hive_partitioning=1) "
-            f"WHERE subtype = '{level}' AND is_land = true {extra}"
+            f"WHERE {where}"
         )
 
     def get_source_for_level(self, level: str, no_cache: bool = False) -> str:
@@ -825,9 +848,17 @@ class OvertureAdminDataset(AdminDataset):
             con = get_duckdb_connection(
                 load_spatial=True, load_httpfs=True, temp_directory=str(cache_dir)
             )
+            version = self.get_version()
             try:
                 for level in self.get_available_levels():
                     cache_path = self.get_cached_path_for_level(level)
+                    # Remove the pre-fix (maritime-contaminated) unsuffixed cache
+                    # for this level/version so it doesn't linger after the
+                    # "-land" rename (todo 031).
+                    legacy_cache = cache_dir / f"overture-{version}-{level}.parquet"
+                    if legacy_cache.exists():
+                        legacy_cache.unlink()
+
                     if cache_path.exists() and cache_path.stat().st_size > 0:
                         continue
 

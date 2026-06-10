@@ -244,17 +244,18 @@ class TestOvertureAdminDataset:
         assert col_name == "overture_unknown_level"
 
     def test_per_level_cache_query_filters_to_land(self):
-        """Per-level cache must keep only land polygons.
+        """Per-level cache keeps only land polygons (see _build_level_cache_query
+        for the maritime-EEZ-overlap rationale).
 
-        Overture stores a separate maritime (EEZ) polygon per division whose
-        geometry spans the entire territory including the landmass. Keeping it
-        makes every land feature match two polygons per level, inflating
-        spatial-join output ~2x per level (issue: admin-divisions 2.6x rows).
+        The predicate is ``IS NOT FALSE`` (not ``= true``) so land polygons with
+        a NULL flag are kept rather than silently dropped by SQL three-valued
+        logic.
         """
         dataset = OvertureAdminDataset()
         for level in ("country", "region"):
             query = dataset._build_level_cache_query(level, "s3://example/*")
-            assert "is_land = true" in query, f"{level} cache must filter to land"
+            assert "is_land IS NOT FALSE" in query, f"{level} cache must filter to land"
+            assert "is_land = true" not in query, f"{level} must not drop NULL is_land"
             assert f"subtype = '{level}'" in query
 
     def test_per_level_cache_query_excludes_disputed_countries(self):
@@ -264,12 +265,80 @@ class TestOvertureAdminDataset:
         assert "X%" in query
         assert "AQ" in query
 
+    def test_per_level_cache_query_rejects_unknown_level(self):
+        """An unconfigured level must raise rather than be silently mis-projected
+        as a region (which would produce a wrong-schema cache)."""
+        dataset = OvertureAdminDataset()
+        with pytest.raises(ValueError, match="cache config"):
+            dataset._build_level_cache_query("locality", "s3://example/*")
+
     def test_cached_path_distinguishes_land_only_caches(self):
         """Cache filename encodes the land-only filter so stale (maritime-
         contaminated) caches are not silently reused after the fix."""
         dataset = OvertureAdminDataset()
         path = dataset.get_cached_path_for_level("country")
         assert path.name.endswith("-country-land.parquet")
+
+    def test_land_filter_removes_maritime_double_match(self, tmp_path):
+        """Behavioral: the land-only filter makes a feature match exactly one
+        polygon per level instead of two (land + maritime EEZ) — the root cause
+        of the ~2.6x row multiplication (PR #474).
+
+        Runs the real ``_build_level_cache_query`` output, only substituting the
+        ``ST_SimplifyPreserveTopology`` wrapper (not implemented in the test
+        DuckDB build; the multiplication is in the join/filter, not the
+        simplification).
+        """
+        from geoparquet_io.core.admin_datasets import _OVERTURE_SIMPLIFY_TOLERANCE_DEG
+
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute("SET geometry_always_xy=true;")
+        src = tmp_path / "division_area.parquet"
+        # US: a land polygon AND a maritime (EEZ) polygon spanning the whole
+        # territory (incl. the landmass). CA: a land polygon with NULL is_land.
+        con.execute(
+            f"""
+            COPY (
+              SELECT ST_AsWKB(ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))')) AS geometry,
+                     {{'xmin':0.0,'xmax':1.0,'ymin':0.0,'ymax':1.0}} AS bbox,
+                     'US' AS country, 'country' AS subtype, true AS is_land
+              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((-5 -5,-5 5,5 5,5 -5,-5 -5))')),
+                     {{'xmin':-5.0,'xmax':5.0,'ymin':-5.0,'ymax':5.0}}, 'US', 'country', false
+              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((10 10,10 11,11 11,11 10,10 10))')),
+                     {{'xmin':10.0,'xmax':11.0,'ymin':10.0,'ymax':11.0}}, 'CA', 'country', NULL
+            ) TO '{src}' (FORMAT PARQUET)
+            """
+        )
+
+        query = OvertureAdminDataset()._build_level_cache_query("country", str(src))
+        runnable = query.replace(
+            f"ST_SimplifyPreserveTopology(geometry, {_OVERTURE_SIMPLIFY_TOLERANCE_DEG})",
+            "geometry",
+        )
+        con.execute(f"CREATE TABLE land AS SELECT * FROM ({runnable})")
+
+        # Maritime US polygon dropped; NULL-is_land CA land polygon kept.
+        countries = [
+            r[0] for r in con.execute("SELECT country FROM land ORDER BY country").fetchall()
+        ]
+        assert countries == ["CA", "US"]
+
+        pt = "ST_GeomFromText('POINT(0.5 0.5)')"
+        n_land = con.execute(
+            f"SELECT count(*) FROM land WHERE ST_Intersects(ST_GeomFromWKB(geometry), {pt})"
+        ).fetchone()[0]
+        assert n_land == 1, "land-only cache must match each feature exactly once"
+
+        # Sanity: against the unfiltered source the point matches both polygons.
+        n_all = con.execute(
+            f"""
+            SELECT count(*) FROM read_parquet('{src}')
+            WHERE subtype='country' AND ST_Intersects(ST_GeomFromWKB(geometry), {pt})
+            """
+        ).fetchone()[0]
+        assert n_all == 2
 
 
 class TestBaseAdminDatasetDefaults:
