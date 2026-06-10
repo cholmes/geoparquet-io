@@ -20,16 +20,20 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     get_parquet_metadata,
 )
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress, success, warn
-from geoparquet_io.core.partition.common import (
-    _PARTITION_ALIAS,
-    _finalize_partition_file,
-    _iter_staging_partitions,
-    _run_partitioned_copy,
-    sanitize_filename,
+from geoparquet_io.core.partition.common import sanitize_filename
+from geoparquet_io.core.partition.staging import (
+    PartitionWriteOptions,
+    check_output_collision,
+    create_staging_dir,
+    finalize_partition_file,
+    iter_staging_partitions,
+    make_partition_aliases,
+    run_partitioned_copy,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
@@ -102,10 +106,45 @@ def _build_enrichment_query(
         """
 
 
-def _build_admin_where_clause(
-    dataset, levels, con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose
-):
-    """Build WHERE clause for admin boundaries with filters."""
+def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col):
+    """Compute the input's (xmin, xmax, ymin, ymax) extent in one scan.
+
+    The extent does not change across admin levels, so callers compute it once
+    and reuse it for every level's WHERE clause (issue #480) rather than
+    re-scanning the input per level — important when there is no bbox column and
+    the fallback decodes every geometry.
+    """
+    if input_bbox_col:
+        extent_query = f"""
+            SELECT
+                MIN({input_bbox_col}.xmin) as xmin,
+                MAX({input_bbox_col}.xmax) as xmax,
+                MIN({input_bbox_col}.ymin) as ymin,
+                MAX({input_bbox_col}.ymax) as ymax
+            FROM '{input_url}'
+        """
+    else:
+        qgeom = quote_identifier(input_geom_col)
+        extent_query = f"""
+            SELECT
+                MIN(ST_XMin({qgeom})) as xmin,
+                MAX(ST_XMax({qgeom})) as xmax,
+                MIN(ST_YMin({qgeom})) as ymin,
+                MAX(ST_YMax({qgeom})) as ymax
+            FROM '{input_url}'
+        """
+    extent = con.execute(extent_query).fetchone()
+    if extent and all(v is not None for v in extent):
+        return extent
+    return None
+
+
+def _build_admin_where_clause(dataset, levels, admin_bbox_col, extent, verbose):
+    """Build WHERE clause for admin boundaries with filters.
+
+    ``extent`` is the precomputed input extent (from ``_compute_input_extent``)
+    or None; it is reused across levels instead of being recomputed each call.
+    """
     admin_where_clauses = []
 
     # Add subtype filter if applicable
@@ -116,40 +155,19 @@ def _build_admin_where_clause(
             debug(f"  → Filtering admin boundaries: {subtype_filter}")
 
     # Add bbox extent filter
-    if admin_bbox_col:
-        if input_bbox_col:
-            extent_query = f"""
-                SELECT
-                    MIN({input_bbox_col}.xmin) as xmin,
-                    MAX({input_bbox_col}.xmax) as xmax,
-                    MIN({input_bbox_col}.ymin) as ymin,
-                    MAX({input_bbox_col}.ymax) as ymax
-                FROM '{input_url}'
-            """
-        else:
-            extent_query = f"""
-                SELECT
-                    MIN(ST_XMin("{input_geom_col}")) as xmin,
-                    MAX(ST_XMax("{input_geom_col}")) as xmax,
-                    MIN(ST_YMin("{input_geom_col}")) as ymin,
-                    MAX(ST_YMax("{input_geom_col}")) as ymax
-                FROM '{input_url}'
-            """
-
-        extent = con.execute(extent_query).fetchone()
-        if extent and all(v is not None for v in extent):
-            xmin, xmax, ymin, ymax = extent
-            extent_filter = f"""
-                ({admin_bbox_col}.xmin <= {xmax} AND
-                 {admin_bbox_col}.xmax >= {xmin} AND
-                 {admin_bbox_col}.ymin <= {ymax} AND
-                 {admin_bbox_col}.ymax >= {ymin})
-            """
-            admin_where_clauses.append(extent_filter)
-            if verbose:
-                debug(
-                    f"  → Filtering admin boundaries to input extent: ({xmin:.2f}, {ymin:.2f}, {xmax:.2f}, {ymax:.2f})"
-                )
+    if admin_bbox_col and extent:
+        xmin, xmax, ymin, ymax = extent
+        extent_filter = f"""
+            ({admin_bbox_col}.xmin <= {xmax} AND
+             {admin_bbox_col}.xmax >= {xmin} AND
+             {admin_bbox_col}.ymin <= {ymax} AND
+             {admin_bbox_col}.ymax >= {ymin})
+        """
+        admin_where_clauses.append(extent_filter)
+        if verbose:
+            debug(
+                f"  → Filtering admin boundaries to input extent: ({xmin:.2f}, {ymin:.2f}, {xmax:.2f}, {ymax:.2f})"
+            )
 
     return "WHERE " + " AND ".join(admin_where_clauses) if admin_where_clauses else ""
 
@@ -319,6 +337,10 @@ def _perform_per_level_enrichment_join(
     output_column_names = []
     intermediate_tables = []
 
+    # The data extent does not change across levels, so compute it once and reuse
+    # it for every level's WHERE clause rather than re-scanning per level (#480).
+    extent = _compute_input_extent(con, input_url, input_bbox_col, input_geom_col)
+
     for i, (level, col) in enumerate(zip(levels, boundary_columns, strict=True)):
         level_source = dataset.get_source_for_level(level)
         admin_table_ref = _build_admin_table_reference(dataset, f"'{level_source}'")
@@ -327,17 +349,8 @@ def _perform_per_level_enrichment_join(
         )
         output_column_names.extend(level_outputs)
 
-        # The data extent does not change across levels, so the extent filter is
-        # always computed from the original input file.
         admin_where_clause = _build_admin_where_clause(
-            dataset,
-            [level],
-            con,
-            input_url,
-            input_bbox_col,
-            input_geom_col,
-            admin_bbox_col,
-            verbose,
+            dataset, [level], admin_bbox_col, extent, verbose
         )
 
         is_last = i == len(levels) - 1
@@ -372,15 +385,23 @@ def _perform_per_level_enrichment_join(
 
 
 def _verify_enrichment_results(con, enriched_table, output_column_names):
-    """Verify enrichment results and return stats."""
+    """Verify enrichment results and return stats.
+
+    Also warns when features match a coarser level but are NULL at a finer level:
+    they pass the "matched" (any-level) check but are excluded from every
+    partition by the all-levels-NOT-NULL filter, so they would otherwise vanish
+    silently (#480).
+    """
+    any_clause = " OR ".join([f'"{col}" IS NOT NULL' for col in output_column_names])
+    all_clause = " AND ".join([f'"{col}" IS NOT NULL' for col in output_column_names])
     stats_query = f"""
         SELECT
             COUNT(*) as total,
-            COUNT(CASE WHEN {" OR ".join([f'"{col}" IS NOT NULL' for col in output_column_names])} THEN 1 END) as with_admin
+            COUNT(CASE WHEN {any_clause} THEN 1 END) as with_admin,
+            COUNT(CASE WHEN {all_clause} THEN 1 END) as with_all_admin
         FROM {enriched_table}
     """
-    stats = con.execute(stats_query).fetchone()
-    total_count, with_admin_count = stats
+    total_count, with_admin_count, with_all_count = con.execute(stats_query).fetchone()
 
     success(f"  ✓ Matched {with_admin_count:,} of {total_count:,} features to admin boundaries")
 
@@ -390,20 +411,14 @@ def _verify_enrichment_results(con, enriched_table, output_column_names):
             "are in compatible CRS and overlap geographically."
         )
 
+    dropped = with_admin_count - with_all_count
+    if dropped > 0:
+        warn(
+            f"  ⚠️  {dropped:,} feature(s) matched a coarser admin level but are missing a finer "
+            "level; they will not appear in any partition (incomplete admin hierarchy)."
+        )
+
     return total_count, with_admin_count
-
-
-def _get_partition_combinations(con, enriched_table, output_column_names):
-    """Get unique partition combinations."""
-    group_by_cols = ", ".join([f'"{col}"' for col in output_column_names])
-    combinations_query = f"""
-        SELECT DISTINCT {group_by_cols}
-        FROM {enriched_table}
-        WHERE {" AND ".join([f'"{col}" IS NOT NULL' for col in output_column_names])}
-        ORDER BY {group_by_cols}
-    """
-    result = con.execute(combinations_query)
-    return result.fetchall()
 
 
 def _get_original_columns(con, input_url):
@@ -413,23 +428,27 @@ def _get_original_columns(con, input_url):
     return [desc[0] for desc in original_schema.description]
 
 
-def _build_admin_staging_select(enriched_table, output_column_names, original_cols, vecorel):
+def _build_admin_staging_select(
+    enriched_table, output_column_names, original_cols, vecorel, aliases
+):
     """Build the SELECT for the single admin partitioned COPY.
 
     Keeps the original columns (plus the admin columns in Vecorel mode, so each
-    partition is Vecorel-compliant) and adds one aliased partition key per level.
-    PARTITION_BY drops those aliases from the written files, so the admin columns
-    are dropped from non-Vecorel output exactly as before.
+    partition is Vecorel-compliant) and adds one aliased partition key per level
+    (``aliases``, guaranteed not to collide with a real column). PARTITION_BY
+    drops those aliases from the written files, so the admin columns are dropped
+    from non-Vecorel output exactly as before.
     """
     keep_cols = list(original_cols)
     if vecorel:
         keep_cols += list(output_column_names)
-    keep_sql = ", ".join(f'"{col}"' for col in keep_cols)
+    keep_sql = ", ".join(quote_identifier(col) for col in keep_cols)
 
     alias_sql = ", ".join(
-        f'"{col}" AS {_PARTITION_ALIAS}{i}' for i, col in enumerate(output_column_names)
+        f"{quote_identifier(col)} AS {alias}"
+        for col, alias in zip(output_column_names, aliases, strict=True)
     )
-    where_sql = " AND ".join(f'"{col}" IS NOT NULL' for col in output_column_names)
+    where_sql = " AND ".join(f"{quote_identifier(col)} IS NOT NULL" for col in output_column_names)
     return f"SELECT {keep_sql}, {alias_sql} FROM {enriched_table} WHERE {where_sql}"
 
 
@@ -445,8 +464,8 @@ def _finalize_admin_partition(
     metadata,
     verbose,
     vecorel,
-    extra_kv,
-    write_kwargs,
+    write_options,
+    seen_outputs,
 ):
     """Rewrite one staging partition into its final nested location."""
     folder_parts = [
@@ -454,26 +473,20 @@ def _finalize_admin_partition(
         for level, value in zip(levels, values, strict=True)
     ]
     partition_folder = os.path.join(output_folder, *folder_parts)
-    os.makedirs(partition_folder, exist_ok=True)
 
     safe_last = sanitize_filename(str(values[-1]))
     filename = (
         f"{filename_prefix}_{safe_last}.parquet" if filename_prefix else f"{safe_last}.parquet"
     )
     output_file = os.path.join(partition_folder, filename)
+    check_output_collision(seen_outputs, output_file, tuple(values))
 
+    os.makedirs(partition_folder, exist_ok=True)
     if verbose and not (os.path.exists(output_file) and not overwrite):
         debug(f"  → Creating: {'/'.join(folder_parts)}")
 
-    created = _finalize_partition_file(
-        con,
-        partition_dir,
-        output_file,
-        metadata,
-        overwrite,
-        verbose,
-        extra_kv_metadata=extra_kv,
-        **write_kwargs,
+    created = finalize_partition_file(
+        con, partition_dir, output_file, metadata, overwrite, verbose, write_options
     )
 
     # Ensure Vecorel schema compliance (id column + non-nullable columns) — DuckDB
@@ -515,27 +528,31 @@ def _create_all_partitions(
     rewrites each (small) staging partition into its final nested file with the
     correct per-partition metadata.
     """
-    staging_dir = os.path.join(output_folder, ".gpio_partition_staging")
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    partition_cols = [f"{_PARTITION_ALIAS}{i}" for i in range(len(output_column_names))]
-    write_kwargs = {
-        "profile": profile,
-        "geoparquet_version": geoparquet_version,
-        "compression": compression,
-        "compression_level": compression_level,
-        "row_group_size_mb": row_group_size_mb,
-        "row_group_rows": row_group_rows,
-        "memory_limit": memory_limit,
-    }
+    # Aliases must not collide with kept columns (originals + admin columns).
+    aliases = make_partition_aliases(
+        len(output_column_names), list(original_cols) + list(output_column_names)
+    )
+    write_options = PartitionWriteOptions(
+        geoparquet_version=geoparquet_version,
+        compression=compression,
+        compression_level=compression_level,
+        row_group_size_mb=row_group_size_mb,
+        row_group_rows=row_group_rows,
+        memory_limit=memory_limit,
+        profile=profile,
+        extra_kv_metadata=extra_kv,
+    )
 
+    staging_dir = create_staging_dir(output_folder)
     partition_count = 0
+    seen_outputs: dict[str, tuple] = {}
     try:
         select_sql = _build_admin_staging_select(
-            enriched_table, output_column_names, original_cols, vecorel
+            enriched_table, output_column_names, original_cols, vecorel, aliases
         )
-        _run_partitioned_copy(con, select_sql, partition_cols, staging_dir, verbose, memory_limit)
+        run_partitioned_copy(con, select_sql, aliases, staging_dir, verbose, memory_limit)
 
-        for values, partition_dir in _iter_staging_partitions(staging_dir):
+        for values, partition_dir in iter_staging_partitions(staging_dir):
             if _finalize_admin_partition(
                 con,
                 values,
@@ -548,10 +565,12 @@ def _create_all_partitions(
                 metadata,
                 verbose,
                 vecorel,
-                extra_kv,
-                write_kwargs,
+                write_options,
+                seen_outputs,
             ):
                 partition_count += 1
+            # Incremental cleanup caps peak staging disk at ~one partition.
+            shutil.rmtree(partition_dir, ignore_errors=True)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -674,15 +693,9 @@ def partition_by_admin_hierarchical(
                     levels, boundary_columns, dataset=dataset, vecorel=vecorel
                 )
                 admin_table_ref = _build_admin_table_reference(dataset, admin_source)
+                extent = _compute_input_extent(con, input_url, input_bbox_col, input_geom_col)
                 admin_where_clause = _build_admin_where_clause(
-                    dataset,
-                    levels,
-                    con,
-                    input_url,
-                    input_bbox_col,
-                    input_geom_col,
-                    admin_bbox_col,
-                    verbose,
+                    dataset, levels, admin_bbox_col, extent, verbose
                 )
                 _perform_enrichment_join(
                     con,
@@ -731,12 +744,6 @@ def partition_by_admin_hierarchical(
 
             # Create output directory
             os.makedirs(output_folder, exist_ok=True)
-
-            # Get unique partition combinations
-            combinations = _get_partition_combinations(con, enriched_table, output_column_names)
-
-            if verbose:
-                debug(f"  → Creating {len(combinations)} partition(s)...")
 
             # Get original columns (exclude temporary admin columns)
             original_cols = _get_original_columns(con, input_url)

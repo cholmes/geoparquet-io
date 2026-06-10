@@ -15,7 +15,25 @@ import duckdb
 import pyarrow.parquet as pq
 import pytest
 
+from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.partition.common import partition_by_column
+
+
+def _write_points(path, rows):
+    """Write a tiny GeoParquet from ``rows`` of (cat, x, y); cat may be None."""
+    from geoparquet_io.core.common import write_parquet_with_metadata
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute("CREATE TABLE t (cat VARCHAR, geometry GEOMETRY)")
+    for cat, x, y in rows:
+        if cat is None:
+            con.execute("INSERT INTO t VALUES (NULL, ST_Point(?, ?))", [x, y])
+        else:
+            con.execute("INSERT INTO t VALUES (?, ST_Point(?, ?))", [cat, x, y])
+    write_parquet_with_metadata(con, "SELECT * FROM t", path)
+    con.close()
+    return path
 
 
 @pytest.fixture
@@ -87,8 +105,10 @@ class TestReconciliation:
             "BBB.parquet",
             "CCC.parquet",
         ]
-        # Partition column kept
-        assert "cat" in pq.ParquetFile(files[0]).schema_arrow.names
+        # Partition column kept; internal alias never leaks into output.
+        names = pq.ParquetFile(files[0]).schema_arrow.names
+        assert "cat" in names
+        assert not any(n.startswith("__gpio_part") for n in names)
 
     def test_flat_drop_column(self, multi_value_file, temp_output_dir):
         out = os.path.join(temp_output_dir, "drop")
@@ -229,3 +249,91 @@ class TestMetadata:
         assert bboxes["AAA.parquet"][0] < 50
         assert bboxes["CCC.parquet"][0] > 150
         assert bboxes["AAA.parquet"] != bboxes["CCC.parquet"]
+
+
+class TestCollision:
+    """Distinct values that sanitize to the same filename must NOT lose rows."""
+
+    def test_colliding_values_raise(self, temp_output_dir):
+        # "a b" and "a_b" both sanitize to "a_b.parquet" -> would collide.
+        path = _write_points(
+            os.path.join(temp_output_dir, "collide.parquet"),
+            [("a b", 1, 1), ("a b", 2, 2), ("a_b", 3, 3)],
+        )
+        out = os.path.join(temp_output_dir, "out")
+        with pytest.raises(PartitionError, match="map to the same output file"):
+            partition_by_column(
+                input_parquet=path,
+                output_folder=out,
+                column_name="cat",
+                skip_analysis=True,
+            )
+
+    def test_empty_sanitized_value_does_not_become_dotfile(self, temp_output_dir):
+        # A value of "." sanitizes to "" -> must fall back, not write ".parquet".
+        path = _write_points(
+            os.path.join(temp_output_dir, "dot.parquet"), [(".", 1, 1), ("ok", 2, 2)]
+        )
+        out = os.path.join(temp_output_dir, "out")
+        partition_by_column(
+            input_parquet=path, output_folder=out, column_name="cat", skip_analysis=True
+        )
+        names = sorted(os.path.basename(f) for f in _rglob_parquet(out))
+        assert ".parquet" not in names
+        assert "_empty.parquet" in names
+        assert sum(_row_count(f) for f in _rglob_parquet(out)) == 2
+
+
+class TestNullHandling:
+    """NULL partition values are dropped; non-NULL rows still reconcile."""
+
+    def test_null_values_dropped_rest_reconcile(self, temp_output_dir):
+        path = _write_points(
+            os.path.join(temp_output_dir, "nulls.parquet"),
+            [("AAA", 1, 1), ("AAA", 2, 2), (None, 3, 3), (None, 4, 4), ("BBB", 5, 5)],
+        )
+        out = os.path.join(temp_output_dir, "out")
+        n = partition_by_column(
+            input_parquet=path, output_folder=out, column_name="cat", skip_analysis=True
+        )
+        assert n == 2  # AAA, BBB — the two NULL rows excluded
+        files = _rglob_parquet(out)
+        assert sum(_row_count(f) for f in files) == 3  # 2 + 1, NULLs gone
+
+    def test_all_null_raises(self, temp_output_dir):
+        path = _write_points(
+            os.path.join(temp_output_dir, "allnull.parquet"), [(None, 1, 1), (None, 2, 2)]
+        )
+        out = os.path.join(temp_output_dir, "out")
+        with pytest.raises(PartitionError, match="No non-NULL values"):
+            partition_by_column(
+                input_parquet=path, output_folder=out, column_name="cat", skip_analysis=True
+            )
+
+
+class TestOverwrite:
+    """overwrite=False preserves existing files and counts only new writes."""
+
+    def test_existing_partitions_skipped(self, multi_value_file, temp_output_dir):
+        out = os.path.join(temp_output_dir, "ow")
+        first = partition_by_column(
+            input_parquet=multi_value_file,
+            output_folder=out,
+            column_name="cat",
+            skip_analysis=True,
+        )
+        assert first == 3
+        mtimes = {f: os.path.getmtime(f) for f in _rglob_parquet(out)}
+
+        # Re-run with overwrite=False: everything exists -> nothing rewritten.
+        second = partition_by_column(
+            input_parquet=multi_value_file,
+            output_folder=out,
+            column_name="cat",
+            overwrite=False,
+            skip_analysis=True,
+        )
+        assert second == 0
+        for f, mtime in mtimes.items():
+            assert os.path.exists(f)
+            assert os.path.getmtime(f) == mtime  # untouched

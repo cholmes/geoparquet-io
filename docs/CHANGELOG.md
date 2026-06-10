@@ -80,17 +80,28 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
-- Partition commands now read the input **once** instead of re-scanning it per
-  partition value (#478). `gpio partition string`, `gpio partition admin`, and
-  the cell-id partitioners (`a5`/`h3`/`s2`/`quadkey`/`kdtree`) all shared an
+- Partition commands now route all rows in a **single** `COPY … PARTITION_BY`
+  scan instead of re-scanning the input per partition value (#478).
+  `gpio partition string`, `gpio partition admin`, and the cell-id partitioners
+  (`a5`/`h3`/`s2`/`quadkey`/`kdtree`) all shared an
   `O(num_partitions × input_size)` per-value loop that made partitioning large
   datasets into many partitions infeasible (e.g. ~195 country partitions of a
-  220 GB input meant ~43 TB of reads). They now use a single streaming DuckDB
-  `COPY … PARTITION_BY` pass into a staging dir, then rewrite each (small)
-  partition into its final file with correct per-partition metadata. Output
-  layout, naming, flags, and per-partition `geo`/`bbox`/`covering` metadata
-  (plus passthrough KV like vecorel `collection` and non-nullable vecorel
-  columns) are unchanged.
+  220 GB input meant ~43 TB of reads). They now stream into a staging dir, then
+  rewrite each (small) partition into its final file with correct per-partition
+  metadata. Output layout, naming, flags, and per-partition
+  `geo`/`bbox`/`covering` metadata (plus passthrough KV like vecorel
+  `collection` and non-nullable vecorel columns) are unchanged.
+  - Distinct partition values that sanitize to the **same** filename (e.g.
+    `"São Paulo"` / `"São-Paulo"`) now raise a clear error instead of silently
+    dropping or overwriting rows; values that sanitize to empty fall back to
+    `_empty` rather than `.parquet`.
+  - `gpio partition admin` warns when features match a coarser admin level but
+    are missing a finer one (they cannot be placed in any partition).
+  - Note: row order *within* a partition is no longer guaranteed (sort each
+    output afterward if needed); with `--no-overwrite` the returned/printed
+    partition count reflects only files actually written this run; and when
+    partition analysis runs (the default) the input is read once more for that
+    cheap aggregate before the COPY.
 - Distinguish an explicit `crs: null` (CRS *unknown*) from an omitted `crs` key
   (defaults to OGC:CRS84), per the GeoParquet spec:
   - Reading a file with `crs: null` now logs a warning (once per input) from the
