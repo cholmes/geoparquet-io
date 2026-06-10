@@ -422,6 +422,7 @@ def fetch_features_page(
     bbox: tuple[float, float, float, float] | None = None,
     out_fields: str = "*",
     token: str | None = None,
+    output_crs: str | None = None,
     verbose: bool = False,
 ) -> dict:
     """
@@ -435,10 +436,12 @@ def fetch_features_page(
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         out_fields: Comma-separated field names or "*" for all
         token: Optional authentication token
+        output_crs: Optional output CRS (e.g. "EPSG:25830"). When set, requests
+            EsriJSON (f=json) with outSR so the server reprojects before delivery.
         verbose: Whether to print debug output
 
     Returns:
-        GeoJSON FeatureCollection dict
+        GeoJSON FeatureCollection dict, or EsriJSON dict when output_crs is set
     """
     query_url = f"{service_url}/query"
     params = {
@@ -457,6 +460,11 @@ def fetch_features_page(
         params["geometryType"] = "esriGeometryEnvelope"
         params["spatialRel"] = "esriSpatialRelIntersects"
         params["inSR"] = "4326"  # WGS84
+
+    # Native-CRS path: ArcGIS honors outSR only for EsriJSON (f=json), not GeoJSON.
+    if output_crs is not None:
+        params["f"] = "json"
+        params["outSR"] = str(_parse_crs_to_wkid(output_crs))
 
     params = _add_token_to_params(params, token)
 

@@ -55,6 +55,31 @@ MOCK_FEATURES_PAGE = {
     ],
 }
 
+MOCK_ESRI_FEATURES_PAGE = {
+    "geometryType": "esriGeometryPolygon",
+    "spatialReference": {"wkid": 25830, "latestWkid": 25830},
+    "fields": [
+        {"name": "OBJECTID", "type": "esriFieldTypeOID"},
+        {"name": "name", "type": "esriFieldTypeString"},
+    ],
+    "features": [
+        {
+            "attributes": {"OBJECTID": 1, "name": "Zone 1"},
+            "geometry": {
+                "rings": [
+                    [
+                        [442931.3, 4475041.4],
+                        [442930.1, 4475006.5],
+                        [442896.9, 4475008.9],
+                        [442898.3, 4475043.0],
+                        [442931.3, 4475041.4],
+                    ]
+                ]
+            },
+        }
+    ],
+}
+
 
 class TestResolveToken:
     """Tests for token resolution."""
@@ -227,6 +252,33 @@ class TestFetchFeaturesPage:
 
         assert result["type"] == "FeatureCollection"
         assert len(result["features"]) == 3
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_default_uses_geojson(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "geojson"
+        assert "outSR" not in params
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_output_crs_uses_esrijson_and_outsr(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            output_crs="EPSG:25830",
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "json"
+        assert params["outSR"] == "25830"
 
 
 class TestCrsParsing:
