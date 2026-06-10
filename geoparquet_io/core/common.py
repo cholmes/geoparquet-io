@@ -601,8 +601,15 @@ def _promote_numeric_type(type_a, type_b):
     if (a_is_bool and b_is_float) or (a_is_float and b_is_bool):
         return pa.float64()
 
-    # int + int → largest int
+    # int + int → check for unsigned overflow risk
     if a_is_int and b_is_int:
+        a_unsigned = pa.types.is_unsigned_integer(type_a)
+        b_unsigned = pa.types.is_unsigned_integer(type_b)
+        # uint64 mixed with signed int → float64 (avoids overflow for large uint64)
+        if (a_unsigned and type_a == pa.uint64() and not b_unsigned) or (
+            b_unsigned and type_b == pa.uint64() and not a_unsigned
+        ):
+            return pa.float64()
         return pa.int64()
 
     # float + float → float64

@@ -268,8 +268,8 @@ class TestPromoteNumericTypeEdgeCases:
         assert _promote_numeric_type(pa.timestamp("ms"), pa.timestamp("s")) == pa.timestamp("ms")
         assert _promote_numeric_type(pa.timestamp("s"), pa.timestamp("us")) == pa.timestamp("us")
 
-    def test_binary_types_promote_to_large_binary(self):
-        """Binary + binary should promote to large_binary for safety."""
+    def test_binary_types_handling(self):
+        """Binary types: same returns same, mixed returns large_binary."""
         assert _promote_numeric_type(pa.binary(), pa.binary()) == pa.binary()
         assert _promote_numeric_type(pa.large_binary(), pa.binary()) == pa.large_binary()
         assert _promote_numeric_type(pa.binary(), pa.large_binary()) == pa.large_binary()
@@ -279,10 +279,15 @@ class TestPromoteNumericTypeEdgeCases:
         result = _promote_numeric_type(pa.binary(), pa.string())
         assert result == pa.binary()
 
-    def test_unsigned_int_promotes_to_int64(self):
-        """Unsigned integers should promote to int64."""
+    def test_unsigned_int_promotion(self):
+        """Unsigned integers: small ones to int64, uint64+signed to float64."""
+        # Small unsigned + signed → int64 (no overflow risk)
         assert _promote_numeric_type(pa.uint8(), pa.int64()) == pa.int64()
-        assert _promote_numeric_type(pa.uint64(), pa.int32()) == pa.int64()
+        assert _promote_numeric_type(pa.uint16(), pa.int32()) == pa.int64()
+        # uint64 + signed → float64 (avoids overflow for values > 2^63)
+        assert _promote_numeric_type(pa.uint64(), pa.int32()) == pa.float64()
+        assert _promote_numeric_type(pa.int64(), pa.uint64()) == pa.float64()
+        # All unsigned → int64
         assert _promote_numeric_type(pa.uint16(), pa.uint32()) == pa.int64()
 
 
