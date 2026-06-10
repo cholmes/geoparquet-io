@@ -341,6 +341,7 @@ def extract_arcgis(
     exclude_cols: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
 ) -> Table:
     """
     Extract features from an ArcGIS Feature Service to a Table.
@@ -371,6 +372,8 @@ def extract_arcgis(
         exclude_cols: Comma-separated column names to exclude (client-side)
         limit: Maximum number of features to return
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS. 'native' uses the layer's advertised SR,
+            or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
 
     Returns:
         Table for chaining operations
@@ -412,6 +415,7 @@ def extract_arcgis(
         exclude_cols=exclude_cols,
         limit=limit,
         max_workers=max_workers,
+        output_crs=output_crs,
         verbose=False,
     )
 

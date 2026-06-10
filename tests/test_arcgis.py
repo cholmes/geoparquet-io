@@ -755,6 +755,34 @@ class TestPythonAPI:
         assert result.num_rows == 1
 
 
+class TestApiOutputCrs:
+    """Tests for output_crs forwarding through the Python API."""
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_ops_from_arcgis_forwards_output_crs(self, mock_to_table):
+        from geoparquet_io.api import ops
+
+        mock_to_table.return_value = pa.table(
+            {"geometry": pa.array([], type=pa.binary())}
+        )
+        ops.from_arcgis("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "native"
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_extract_arcgis_forwards_output_crs(self, mock_to_table):
+        from geoparquet_io.api.table import extract_arcgis
+
+        mock_to_table.return_value = pa.table(
+            {"geometry": pa.array([], type=pa.binary())}
+        )
+        extract_arcgis(
+            "https://example.com/FeatureServer/0", output_crs="EPSG:25830"
+        )
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+
 class TestStreamingConversion:
     """Tests for memory-efficient streaming conversion."""
 
