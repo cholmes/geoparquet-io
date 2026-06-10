@@ -534,6 +534,157 @@ def _rebuild_array_with_type(
     return pa.chunked_array(new_chunks, type=new_type)
 
 
+def _promote_numeric_type(type_a, type_b):
+    """
+    Compute a common type that both input types can safely cast to.
+
+    Type promotion rules (ordered by preference):
+    - Same types → return as-is
+    - int8/16/32 + int64 → int64
+    - float32 + float64 → float64
+    - int* + float* → float64
+    - int* + decimal128 → float64
+    - decimal128 + float64 → float64
+    - any numeric + string → string
+    - null + any → any
+
+    Args:
+        type_a: First PyArrow type
+        type_b: Second PyArrow type
+
+    Returns:
+        PyArrow type that both can safely cast to
+    """
+    import pyarrow as pa
+
+    if type_a == type_b:
+        return type_a
+
+    if pa.types.is_null(type_a):
+        return type_b
+    if pa.types.is_null(type_b):
+        return type_a
+
+    a_is_int = pa.types.is_integer(type_a)
+    b_is_int = pa.types.is_integer(type_b)
+    a_is_float = pa.types.is_floating(type_a)
+    b_is_float = pa.types.is_floating(type_b)
+    a_is_decimal = pa.types.is_decimal(type_a)
+    b_is_decimal = pa.types.is_decimal(type_b)
+    a_is_string = pa.types.is_string(type_a) or pa.types.is_large_string(type_a)
+    b_is_string = pa.types.is_string(type_b) or pa.types.is_large_string(type_b)
+
+    # String wins over numeric (safest fallback)
+    if a_is_string or b_is_string:
+        return pa.string()
+
+    # int + int → largest int
+    if a_is_int and b_is_int:
+        return pa.int64()
+
+    # float + float → float64
+    if a_is_float and b_is_float:
+        return pa.float64()
+
+    # int + float → float64
+    if (a_is_int and b_is_float) or (a_is_float and b_is_int):
+        return pa.float64()
+
+    # int + decimal → float64 (safest common type)
+    if (a_is_int and b_is_decimal) or (a_is_decimal and b_is_int):
+        return pa.float64()
+
+    # decimal + float → float64
+    if (a_is_decimal and b_is_float) or (a_is_float and b_is_decimal):
+        return pa.float64()
+
+    # decimal + decimal with different precision → float64
+    if a_is_decimal and b_is_decimal:
+        return pa.float64()
+
+    # Fallback: return first type (caller should handle incompatible types)
+    return type_a
+
+
+def _compute_unified_schema(schemas: list):
+    """
+    Compute unified schema from multiple schemas with safe type promotion.
+
+    Used when merging paginated results where different pages may have
+    different inferred types for the same field (e.g., int64 vs decimal128).
+
+    Args:
+        schemas: List of PyArrow schemas to unify
+
+    Returns:
+        Unified PyArrow schema that all input schemas can safely cast to
+    """
+    import pyarrow as pa
+
+    if not schemas:
+        return pa.schema([])
+
+    if len(schemas) == 1:
+        return schemas[0]
+
+    # Build field name → list of types mapping
+    field_types: dict[str, list] = {}
+    field_order: list[str] = []
+
+    for schema in schemas:
+        for field in schema:
+            if field.name not in field_types:
+                field_types[field.name] = []
+                field_order.append(field.name)
+            field_types[field.name].append(field.type)
+
+    # Compute unified type for each field
+    unified_fields = []
+    for name in field_order:
+        types = field_types[name]
+        unified_type = types[0]
+        for t in types[1:]:
+            unified_type = _promote_numeric_type(unified_type, t)
+        unified_fields.append(pa.field(name, unified_type))
+
+    return pa.schema(unified_fields)
+
+
+def _cast_table_to_schema(table, target_schema):
+    """
+    Cast a table's columns to match target schema types.
+
+    Handles type conversions that PyArrow's concat_tables(promote=True) cannot,
+    such as int64 → float64 when another table has decimal128.
+
+    Args:
+        table: PyArrow table to cast
+        target_schema: Target schema with desired types
+
+    Returns:
+        Table with columns cast to target schema types
+    """
+    import pyarrow as pa
+
+    if table.schema.equals(target_schema):
+        return table
+
+    new_columns = []
+    for field in target_schema:
+        if field.name in table.column_names:
+            col = table.column(field.name)
+            if col.type != field.type:
+                # Cast to target type
+                col = col.cast(field.type, safe=True)
+            new_columns.append(col)
+        else:
+            # Missing column - create null array
+            null_array = pa.nulls(table.num_rows, type=field.type)
+            new_columns.append(null_array)
+
+    return pa.table(dict(zip([f.name for f in target_schema], new_columns, strict=True)))
+
+
 def _detect_version_from_table(table, verbose: bool = False) -> str | None:
     """
     Detect GeoParquet version from table's schema metadata.
