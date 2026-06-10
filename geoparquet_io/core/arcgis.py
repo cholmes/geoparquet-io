@@ -488,6 +488,7 @@ def fetch_all_features(
     token: str | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
     verbose: bool = False,
 ) -> Generator[dict, None, None]:
     """
@@ -556,6 +557,7 @@ def fetch_all_features(
                     bbox=bbox,
                     out_fields=out_fields,
                     token=token,
+                    output_crs=output_crs,
                     verbose=verbose,
                 )
             except BatchTooLargeError as e:
@@ -632,6 +634,7 @@ def fetch_all_features(
                         bbox=bbox,
                         out_fields=out_fields,
                         token=token,
+                        output_crs=output_crs,
                         verbose=False,  # Disable per-request verbose to avoid race conditions
                     )
                     futures.append((offset, current_batch, future))
@@ -954,8 +957,9 @@ def _stream_features_to_parquet(
     token: str | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
     verbose: bool = False,
-) -> int:
+) -> tuple[int, dict | None]:
     """
     Stream features from ArcGIS to a Parquet file page by page.
 
@@ -974,10 +978,14 @@ def _stream_features_to_parquet(
         token: Optional authentication token
         batch_size: Custom batch size for pagination
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS. When set (e.g. "EPSG:25830"), fetches
+            EsriJSON (f=json) with outSR; default None fetches GeoJSON in WGS84.
         verbose: Whether to print debug output
 
     Returns:
-        Number of features written
+        Tuple of (number of features written, the server's returned
+        spatialReference dict or None). The spatialReference is only populated
+        on the EsriJSON path (output_crs set).
     """
     # Build fixed schema from layer metadata upfront to prevent type mismatches
     # between batches (issue #290)
@@ -999,6 +1007,7 @@ def _stream_features_to_parquet(
     writer = None
     total_rows = 0
     page_count = 0
+    detected_sr: dict | None = None
 
     try:
         for page in fetch_all_features(
@@ -1011,14 +1020,22 @@ def _stream_features_to_parquet(
             token=token,
             batch_size=batch_size,
             max_workers=max_workers,
+            output_crs=output_crs,
             verbose=verbose,
         ):
             features = page.get("features", [])
             if not features:
                 continue
 
+            # Capture the server-returned spatial reference once (output_crs path)
+            if output_crs is not None and detected_sr is None:
+                detected_sr = page.get("spatialReference")
+
             # Convert this page to Arrow table
-            page_table = _geojson_page_to_table(features)
+            if output_crs is not None:
+                page_table = _esrijson_page_to_table(page)
+            else:
+                page_table = _geojson_page_to_table(features)
             if page_table is None:
                 continue
 
@@ -1052,7 +1069,7 @@ def _stream_features_to_parquet(
             del page_table
 
         debug(f"Streamed {total_rows} features in {page_count} pages to temp file")
-        return total_rows
+        return total_rows, detected_sr
 
     finally:
         if writer is not None:

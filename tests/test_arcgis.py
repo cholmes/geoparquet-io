@@ -686,7 +686,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -746,7 +746,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -781,7 +781,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -832,6 +832,62 @@ class TestStreamingConversion:
         # Should have same number (temp file cleaned up)
         assert temp_files_before == temp_files_after
         assert result.num_rows == 3
+
+
+class TestStreamOutputCrs:
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_stream_returns_detected_sr_for_esrijson(self, mock_fetch, tmp_path):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 25830, "latestWkid": 25830},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_fetch.return_value = iter([MOCK_ESRI_FEATURES_PAGE])
+        out = str(tmp_path / "stream.parquet")
+
+        total_rows, detected_sr = _stream_features_to_parquet(
+            "https://example.com/FeatureServer/0",
+            layer_info,
+            out,
+            output_crs="EPSG:25830",
+        )
+
+        assert total_rows == 1
+        assert detected_sr == {"wkid": 25830, "latestWkid": 25830}
+        assert mock_fetch.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_stream_default_returns_no_sr(self, mock_fetch, tmp_path):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=3,
+        )
+        mock_fetch.return_value = iter([MOCK_FEATURES_PAGE])
+        out = str(tmp_path / "stream.parquet")
+
+        total_rows, detected_sr = _stream_features_to_parquet(
+            "https://example.com/FeatureServer/0", layer_info, out
+        )
+
+        assert total_rows == 3
+        assert detected_sr is None
 
 
 @pytest.mark.network
@@ -1089,7 +1145,7 @@ class TestSchemaMismatchBetweenBatches:
         )
 
         # This should NOT raise a schema mismatch error
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1149,7 +1205,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=2,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1216,7 +1272,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=2,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1269,7 +1325,7 @@ class TestSchemaMismatchBetweenBatches:
         )
 
         # This should NOT raise a schema mismatch error
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1320,7 +1376,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=1,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1371,7 +1427,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=1,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
