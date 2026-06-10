@@ -41,8 +41,14 @@ def _build_enrichment_query(
     input_geom_col,
     input_bbox_col,
     enriched_table,
+    input_is_table_ref=False,
 ):
-    """Build enrichment query for spatial join."""
+    """Build enrichment query for spatial join.
+
+    ``input_is_table_ref`` marks ``input_url`` as a DuckDB temp-table name
+    (per-level chaining) rather than a file path, so it is referenced without
+    surrounding quotes.
+    """
     # Build column list for subquery - handle struct access
     subquery_cols = []
     for i, col in enumerate(boundary_columns):
@@ -51,6 +57,8 @@ def _build_enrichment_query(
         else:
             subquery_cols.append(f'"{col}"')
     subquery_cols_str = ", ".join(subquery_cols)
+
+    input_ref = input_url if input_is_table_ref else f"'{input_url}'"
 
     if input_bbox_col and admin_bbox_col:
         bbox_filter = f"""
@@ -65,7 +73,7 @@ def _build_enrichment_query(
             SELECT
                 a.*,
                 {admin_select_clause}
-            FROM '{input_url}' a
+            FROM {input_ref} a
             LEFT JOIN (
                 SELECT {admin_geom_col}, {admin_bbox_col}, {subquery_cols_str}
                 FROM {admin_table_ref}
@@ -80,7 +88,7 @@ def _build_enrichment_query(
             SELECT
                 a.*,
                 {admin_select_clause}
-            FROM '{input_url}' a
+            FROM {input_ref} a
             LEFT JOIN (
                 SELECT {admin_geom_col}, {subquery_cols_str}
                 FROM {admin_table_ref}
@@ -180,6 +188,29 @@ def _get_input_file_info(input_parquet, verbose):
     return input_url, input_geom_col, input_bbox_col
 
 
+def _setup_admin_join_connection(dataset, get_duckdb_connection):
+    """Create the DuckDB connection for the enrichment join.
+
+    Per-level datasets (Overture) can join multi-million-feature inputs and need
+    the same memory discipline as ``gpio add admin-divisions`` to spill rather
+    than OOM (see add_divisions todo 013): a temp directory for spill,
+    single-threaded execution (parallel spatial-join operators each grab memory
+    and cannot coordinate spilling, so they OOM even with a temp dir), and no
+    insertion-order buffering. Other datasets keep the simple default connection.
+    """
+    if dataset.supports_per_level_sources():
+        from geoparquet_io.core.admin_datasets import get_cache_dir
+
+        temp_dir = get_cache_dir()
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        con = get_duckdb_connection(
+            load_spatial=True, load_httpfs=True, temp_directory=str(temp_dir), threads=1
+        )
+        con.execute("SET preserve_insertion_order = false")
+        return con
+    return get_duckdb_connection(load_spatial=True, load_httpfs=True)
+
+
 def _setup_duckdb_extensions(con):
     """Load required DuckDB extensions."""
     con.execute("INSTALL spatial;")
@@ -259,6 +290,91 @@ def _perform_enrichment_join(
         enriched_table,
     )
     con.execute(enrichment_query)
+
+
+def _perform_per_level_enrichment_join(
+    con,
+    dataset,
+    levels,
+    boundary_columns,
+    enriched_table,
+    input_url,
+    admin_geom_col,
+    admin_bbox_col,
+    input_geom_col,
+    input_bbox_col,
+    vecorel,
+    verbose,
+):
+    """Enrich by chaining one LEFT JOIN per level against its own land cache.
+
+    Datasets that ``supports_per_level_sources()`` (Overture) split each admin
+    level into a separate, land-only cache file (see
+    ``OvertureAdminDataset._build_level_cache_query``). Joining each level
+    against its own non-overlapping cache — rather than one combined join over
+    the raw remote dataset, which still contains the maritime (EEZ) polygons
+    that double-match every land feature — is what keeps the output row count
+    ≈ the input and bounds memory. Each level reads the previous level's temp
+    table so a feature carries all admin columns forward; the final join
+    produces ``enriched_table``.
+
+    Returns the list of output admin column names.
+    """
+    current_source = input_url
+    current_is_table_ref = False
+    output_column_names = []
+    intermediate_tables = []
+
+    for i, (level, col) in enumerate(zip(levels, boundary_columns, strict=True)):
+        level_source = dataset.get_source_for_level(level)
+        admin_table_ref = _build_admin_table_reference(dataset, f"'{level_source}'")
+        select_clause, level_outputs = _build_admin_select_for_partitioning(
+            [level], [col], dataset=dataset, vecorel=vecorel
+        )
+        output_column_names.extend(level_outputs)
+
+        # The data extent does not change across levels, so the extent filter is
+        # always computed from the original input file.
+        admin_where_clause = _build_admin_where_clause(
+            dataset,
+            [level],
+            con,
+            input_url,
+            input_bbox_col,
+            input_geom_col,
+            admin_bbox_col,
+            verbose,
+        )
+
+        is_last = i == len(levels) - 1
+        target = enriched_table if is_last else f"_admin_step_{i}"
+        if verbose:
+            debug(f"  → Level {i + 1}/{len(levels)}: joining {level} from {level_source}")
+
+        con.execute(
+            _build_enrichment_query(
+                current_source,
+                admin_table_ref,
+                admin_where_clause,
+                select_clause,
+                admin_geom_col,
+                admin_bbox_col,
+                [col],
+                input_geom_col,
+                input_bbox_col,
+                target,
+                input_is_table_ref=current_is_table_ref,
+            )
+        )
+        if not is_last:
+            intermediate_tables.append(target)
+        current_source = target
+        current_is_table_ref = True
+
+    for table in intermediate_tables:
+        con.execute(f"DROP TABLE IF EXISTS {table}")
+
+    return output_column_names
 
 
 def _verify_enrichment_results(con, enriched_table, output_column_names):
@@ -536,54 +652,64 @@ def partition_by_admin_hierarchical(
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection, s3_config_scope
 
         with s3_config_scope(dataset.get_s3_config()):
-            con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+            con = _setup_admin_join_connection(dataset, get_duckdb_connection)
 
             # STEP 1: Spatial join to create enriched data with admin columns
             progress("\n📍 Step 1/2: Performing spatial join with admin boundaries...")
 
             enriched_table = "_enriched_with_admin"
-            admin_source = dataset.prepare_data_source(con)
 
-            # Build SELECT clause for admin columns
-            admin_select_clause, output_column_names = _build_admin_select_for_partitioning(
-                levels, boundary_columns, dataset=dataset, vecorel=vecorel
-            )
-
-            # Build admin data source with read_parquet options if needed
-            admin_table_ref = _build_admin_table_reference(dataset, admin_source)
-
-            # Build WHERE clause for admin boundaries
-            admin_where_clause = _build_admin_where_clause(
-                dataset,
-                levels,
-                con,
-                input_url,
-                input_bbox_col,
-                input_geom_col,
-                admin_bbox_col,
-                verbose,
-            )
-
-            # Build efficient spatial join query
             if input_bbox_col and admin_bbox_col and verbose:
                 debug("  → Using bbox columns for optimized spatial join")
             elif not (input_bbox_col and admin_bbox_col) and verbose:
                 debug("  → Using full geometry intersection (no bbox optimization)")
 
-            # Perform enrichment join
-            _perform_enrichment_join(
-                con,
-                enriched_table,
-                input_url,
-                admin_table_ref,
-                admin_where_clause,
-                admin_select_clause,
-                admin_geom_col,
-                admin_bbox_col,
-                boundary_columns,
-                input_geom_col,
-                input_bbox_col,
-            )
+            if dataset.supports_per_level_sources():
+                # Per-level land caches: chain one join per level so maritime
+                # (EEZ) polygons don't double-match and memory stays bounded.
+                output_column_names = _perform_per_level_enrichment_join(
+                    con,
+                    dataset,
+                    levels,
+                    boundary_columns,
+                    enriched_table,
+                    input_url,
+                    admin_geom_col,
+                    admin_bbox_col,
+                    input_geom_col,
+                    input_bbox_col,
+                    vecorel,
+                    verbose,
+                )
+            else:
+                admin_source = dataset.prepare_data_source(con)
+                admin_select_clause, output_column_names = _build_admin_select_for_partitioning(
+                    levels, boundary_columns, dataset=dataset, vecorel=vecorel
+                )
+                admin_table_ref = _build_admin_table_reference(dataset, admin_source)
+                admin_where_clause = _build_admin_where_clause(
+                    dataset,
+                    levels,
+                    con,
+                    input_url,
+                    input_bbox_col,
+                    input_geom_col,
+                    admin_bbox_col,
+                    verbose,
+                )
+                _perform_enrichment_join(
+                    con,
+                    enriched_table,
+                    input_url,
+                    admin_table_ref,
+                    admin_where_clause,
+                    admin_select_clause,
+                    admin_geom_col,
+                    admin_bbox_col,
+                    boundary_columns,
+                    input_geom_col,
+                    input_bbox_col,
+                )
 
             # Verify enrichment results
             _verify_enrichment_results(con, enriched_table, output_column_names)

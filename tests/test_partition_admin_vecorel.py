@@ -116,7 +116,10 @@ class TestVecorelPartitionLocalIntegration:
         input_file = os.path.join(temp_output_dir, "input.parquet")
         out_dir = os.path.join(temp_output_dir, "out")
 
-        # Overture-shaped admin file: two region polygons with country + region
+        # Overture-shaped admin file. Per-level joins read each level's own
+        # polygons, so the country level needs a country-subtype polygon (real
+        # Overture has these; region rows alone are not enough). One country
+        # polygon covering both regions, plus the two region polygons.
         _write_geoparquet(
             con,
             """
@@ -124,6 +127,8 @@ class TestVecorelPartitionLocalIntegration:
                 {'xmin': ST_XMin(geometry), 'xmax': ST_XMax(geometry),
                  'ymin': ST_YMin(geometry), 'ymax': ST_YMax(geometry)} AS bbox
             FROM (VALUES
+                ('country', 'US', NULL,
+                 ST_GeomFromText('POLYGON((0 0, 0 10, 20 10, 20 0, 0 0))')),
                 ('region', 'US', 'US-CA',
                  ST_GeomFromText('POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))')),
                 ('region', 'US', 'US-NV',
@@ -166,6 +171,11 @@ class TestVecorelPartitionLocalIntegration:
 
         files = list(Path(out_dir).rglob("*.parquet"))
         assert len(files) == 2
+
+        # No row multiplication: per-level chaining must emit one row per input
+        # feature, not one per (country × region) polygon match (PR #474).
+        total_rows = sum(pq.ParquetFile(str(f)).metadata.num_rows for f in files)
+        assert total_rows == 2
 
         for f in files:
             pf = pq.ParquetFile(str(f))

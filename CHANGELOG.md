@@ -90,6 +90,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
     output geo metadata. Affected the Arrow/Python-API and streaming paths.
 - Fix out-of-memory crash in `gpio add admin-divisions --dataset overture` on
   large inputs (#461)
+- Fix `gpio add admin-divisions`/`gpio partition admin` with the Overture
+  dataset producing ~2.6x as many output rows as the input. Overture stores a
+  separate maritime (EEZ) polygon per division whose geometry spans the entire
+  territory including the landmass, so every land feature matched both the land
+  and maritime polygon at each level (~2x for country, ~1.3x for region). The
+  per-level caches are now filtered to land polygons (`is_land IS NOT FALSE`),
+  making them genuinely non-overlapping so the memory-safe plain spatial join no
+  longer multiplies rows. Cache files gain a `-land` suffix, which invalidates
+  stale maritime-contaminated caches automatically (the old unsuffixed files are
+  also removed on the next download).
+  - `gpio partition admin` now joins each level against its own land-only cache
+    (chained per-level joins), the same memory-bounded approach as
+    `gpio add admin-divisions`; previously it joined the raw remote dataset and
+    still multiplied rows / risked OOM.
+  - Behavior change: genuinely offshore features (outside any land polygon, e.g.
+    buoys or platforms that previously matched the surrounding EEZ) now receive
+    no admin code — `ZZ` in `--vecorel` mode, `NULL` otherwise. This is correct
+    for land datasets; a maritime opt-in could be added later if needed.
   - Overture now uses a **per-level cache** (separate country and region cache
     files instead of one combined file), with simplified boundaries, to keep
     memory bounded.
