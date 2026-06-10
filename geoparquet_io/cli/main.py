@@ -2587,6 +2587,11 @@ def extract_geoparquet(
     help="Maximum number of features to extract",
 )
 @click.option(
+    "--output-crs",
+    help="Output CRS such as EPSG:25830, or 'native' for the layer's "
+    "advertised SR. Default reprojects to WGS84.",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert spatial ordering (faster but less optimal for spatial queries)",
@@ -2631,6 +2636,7 @@ def extract_arcgis(
     include_cols,
     exclude_cols,
     limit,
+    output_crs,
     skip_hilbert,
     skip_bbox,
     workers,
@@ -2738,6 +2744,7 @@ def extract_arcgis(
             include_cols=include_cols,
             exclude_cols=exclude_cols,
             limit=limit,
+            output_crs=output_crs,
             skip_hilbert=skip_hilbert,
             skip_bbox=skip_bbox,
             max_workers=workers,

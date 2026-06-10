@@ -697,6 +697,32 @@ class TestCLI:
         assert "password" in result.output.lower() or "password" in str(result.exception).lower()
 
 
+class TestArcgisCliOutputCrs:
+    """Tests for the --output-crs CLI option on extract arcgis."""
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_output_crs(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--output-crs",
+                "EPSG:25830",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+
 class TestPythonAPI:
     """Tests for Python API functions."""
 
