@@ -28,6 +28,9 @@ import pyarrow as pa
 
 # Public API
 __all__ = [
+    "EmptyLayerError",
+    "LayerNotFoundError",
+    "WFSAuthenticationError",
     "WFSError",
     "WFSLayerInfo",
     "WFS_VERSIONS",
@@ -70,6 +73,40 @@ class WFSError(Exception):
     """Exception raised for WFS-related errors."""
 
     pass
+
+
+class EmptyLayerError(WFSError):
+    """Raised when a WFS layer has 0 features."""
+
+    def __init__(self, typename: str) -> None:
+        self.typename = typename
+        super().__init__(
+            f"No features returned from WFS service for layer '{typename}'.\n"
+            "Check that the layer exists and is not empty."
+        )
+
+
+class LayerNotFoundError(WFSError):
+    """Raised when a WFS layer does not exist in the service."""
+
+    def __init__(self, typename: str, available: list[str] | None = None) -> None:
+        self.typename = typename
+        self.available = available or []
+        hint = (
+            f"\nAvailable layers (first 10): {', '.join(self.available[:10])}"
+            if self.available
+            else ""
+        )
+        super().__init__(f"Layer '{typename}' not found in WFS service.{hint}")
+
+
+class WFSAuthenticationError(WFSError):
+    """Raised when WFS service requires authentication or access is denied."""
+
+    def __init__(self, url: str, status_code: int, message: str) -> None:
+        self.url = url
+        self.status_code = status_code
+        super().__init__(message)
 
 
 # GeoJSON output format identifiers (in preference order)
@@ -204,9 +241,13 @@ def _make_request(
                     time.sleep(delay)
                     continue
             elif status == 401:
-                raise WFSError("Authentication required. WFS server requires credentials.") from e
+                raise WFSAuthenticationError(
+                    url, 401, "Authentication required. WFS server requires credentials."
+                ) from e
             elif status == 403:
-                raise WFSError("Access denied. Check your permissions for this WFS service.") from e
+                raise WFSAuthenticationError(
+                    url, 403, "Access denied. Check your permissions for this WFS service."
+                ) from e
             elif status == 404:
                 raise WFSError(f"WFS service not found (404). Check the URL: {url}") from e
             raise WFSError(f"HTTP error {status}: {e}") from e
@@ -559,8 +600,7 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
 
     if layer is None:
         available = list(wfs.contents.keys())[:10]
-        hint = f"\nAvailable layers (first 10): {', '.join(available)}" if available else ""
-        raise WFSError(f"Layer '{typename}' not found in WFS service.{hint}")
+        raise LayerNotFoundError(typename, available)
 
     # Extract CRS list
     crs_list = []
@@ -1529,7 +1569,7 @@ def _fetch_with_spatial_tiles(
         progress(f"Tile {i + 1}/{len(tiles)}: {tile_table.num_rows:,} features")
 
     if not all_tables:
-        raise WFSError("No features returned from any spatial tile.")
+        raise EmptyLayerError(typename)
 
     # Unify schemas to handle type mismatches across tiles (e.g., int64 vs decimal128)
     if len(all_tables) > 1:
@@ -1930,7 +1970,7 @@ def fetch_all_features_duckdb(
 
     # Combine tables in order
     if not results:
-        raise WFSError("No features returned from WFS service.")
+        raise EmptyLayerError(typename)
 
     tables = [results[i] for i in sorted(results.keys())]
 
@@ -2085,10 +2125,7 @@ def wfs_to_table(
             warn(f"No features found in bbox for layer '{typename}'. Writing empty file.")
         else:
             # Empty results without bbox likely indicates a problem
-            raise WFSError(
-                f"No features returned from WFS service for layer '{typename}'.\n"
-                "Check that the layer exists and is not empty."
-            )
+            raise EmptyLayerError(typename)
 
     # Apply local bbox filter if needed
     if bbox and not use_server_bbox:
