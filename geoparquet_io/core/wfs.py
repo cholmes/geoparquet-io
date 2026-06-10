@@ -1535,7 +1535,10 @@ def _fetch_with_spatial_tiles(
     if len(all_tables) > 1:
         schemas = [t.schema for t in all_tables]
         unified_schema = _compute_unified_schema(schemas)
-        all_tables = [_cast_table_to_schema(t, unified_schema) for t in all_tables]
+        all_tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"tile {i + 1}")
+            for i, t in enumerate(all_tables)
+        ]
 
     combined = pa.concat_tables(all_tables)
     before_dedup = combined.num_rows
@@ -1935,7 +1938,10 @@ def fetch_all_features_duckdb(
     if len(tables) > 1:
         schemas = [t.schema for t in tables]
         unified_schema = _compute_unified_schema(schemas)
-        tables = [_cast_table_to_schema(t, unified_schema) for t in tables]
+        tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"page {i + 1}")
+            for i, t in enumerate(tables)
+        ]
 
     combined = pa.concat_tables(tables)
     debug(f"Combined {len(tables)} pages: {combined.num_rows:,} total features")
