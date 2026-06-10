@@ -233,6 +233,61 @@ class TestGetLayerInfo:
         assert result.max_record_count == 1000
         assert result.total_count == 100
 
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_from_extent(self, mock_count, mock_request):
+        """Many servers advertise the layer SR only under extent.spatialReference."""
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Madrid",
+            "geometryType": "esriGeometryPolygon",
+            "extent": {"spatialReference": {"wkid": 25830, "latestWkid": 25830}},
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {"wkid": 25830, "latestWkid": 25830}
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_from_source_sr(self, mock_count, mock_request):
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Layer",
+            "geometryType": "esriGeometryPolygon",
+            "sourceSpatialReference": {"wkid": 4269},
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {"wkid": 4269}
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_missing_is_empty_not_4326(self, mock_count, mock_request):
+        """No advertised SR must not silently default to 4326 (native would lie)."""
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Layer",
+            "geometryType": "esriGeometryPolygon",
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {}
+
 
 class TestFetchFeaturesPage:
     """Tests for feature fetching."""

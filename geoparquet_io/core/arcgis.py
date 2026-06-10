@@ -357,10 +357,21 @@ def get_layer_info(
     # Get feature count (using the WHERE and bbox filters)
     count = get_feature_count(service_url, where=where, bbox=bbox, token=token, verbose=verbose)
 
+    # Servers advertise the layer SR in different places: top-level
+    # spatialReference, extent.spatialReference, or sourceSpatialReference.
+    # An empty dict (not a silent 4326 default) marks "no advertised SR" so
+    # --output-crs native can fail honestly instead of resolving to the wrong CRS.
+    spatial_reference = (
+        data.get("spatialReference")
+        or data.get("extent", {}).get("spatialReference")
+        or data.get("sourceSpatialReference")
+        or {}
+    )
+
     return ArcGISLayerInfo(
         name=data.get("name", "Unknown"),
         geometry_type=data.get("geometryType", "esriGeometryPoint"),
-        spatial_reference=data.get("spatialReference", {"wkid": 4326}),
+        spatial_reference=spatial_reference,
         fields=data.get("fields", []),
         max_record_count=data.get("maxRecordCount", 1000),
         total_count=count,
