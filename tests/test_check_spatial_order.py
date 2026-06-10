@@ -414,3 +414,133 @@ class TestNativeGeoBboxDetection:
         assert result["method"] == "native_geo_bbox"
         assert "overlap_count" in result
         assert "total_pairs" in result
+
+
+class TestSpatialLocalitySecondaryCheck:
+    """Tests for secondary locality metrics (area ratio + skip rate).
+
+    When consecutive overlap ratio is high but data has good spatial locality
+    (tight row group bboxes, high skip rate), the check should still pass.
+    This is the common pattern with Hilbert-sorted global data.
+    """
+
+    def test_hilbert_like_overlapping_but_tight_bboxes_pass(self):
+        """Hilbert-sorted data: consecutive RGs overlap but bboxes are tight."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        # Simulate Hilbert-sorted global data: consecutive RGs overlap
+        # but each covers only a small fraction of the total extent.
+        # Modeled after real Hilbert-sorted data with 9 row groups.
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 20.0, "ymax": 15.0},
+            {"row_group_id": 1, "xmin": 5.0, "ymin": 10.0, "xmax": 20.0, "ymax": 15.0},
+            {"row_group_id": 2, "xmin": 15.0, "ymin": 5.0, "xmax": 35.0, "ymax": 12.0},
+            {"row_group_id": 3, "xmin": 25.0, "ymin": 7.0, "xmax": 35.0, "ymax": 12.0},
+            {"row_group_id": 4, "xmin": 30.0, "ymin": 10.0, "xmax": 45.0, "ymax": 13.0},
+            {"row_group_id": 5, "xmin": 40.0, "ymin": 9.0, "xmax": 45.0, "ymax": 13.0},
+            {"row_group_id": 6, "xmin": 38.0, "ymin": 7.0, "xmax": 45.0, "ymax": 10.0},
+            {"row_group_id": 7, "xmin": 25.0, "ymin": 0.0, "xmax": 45.0, "ymax": 10.0},
+            {"row_group_id": 8, "xmin": 25.0, "ymin": -5.0, "xmax": 44.0, "ymax": 1.0},
+        ]
+        # All consecutive pairs overlap → overlap ratio = 1.0
+        # But each RG covers a small fraction of total extent (45x20=900)
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_hilbert.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert result["ratio"] >= 0.3, "Overlap ratio should be high"
+        assert result["passed"] is True, (
+            "Should pass because bbox area ratio is low and skip rate is high"
+        )
+        assert "estimated_skip_rate" in result
+        assert "avg_bbox_area_ratio" in result
+
+    def test_genuinely_poor_spatial_order_still_fails(self):
+        """Truly unordered data: large overlapping bboxes covering most of extent."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        # Each RG bbox covers nearly the entire extent → poor locality
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 95.0, "ymax": 95.0},
+            {"row_group_id": 1, "xmin": 5.0, "ymin": 5.0, "xmax": 100.0, "ymax": 100.0},
+            {"row_group_id": 2, "xmin": 2.0, "ymin": 2.0, "xmax": 98.0, "ymax": 98.0},
+            {"row_group_id": 3, "xmin": 1.0, "ymin": 1.0, "xmax": 99.0, "ymax": 99.0},
+            {"row_group_id": 4, "xmin": 3.0, "ymin": 3.0, "xmax": 97.0, "ymax": 97.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_unsorted.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert result["ratio"] >= 0.3, "Overlap ratio should be high"
+        assert result["passed"] is False, (
+            "Should fail because bboxes cover nearly the entire extent"
+        )
+
+    def test_two_row_groups_skips_secondary_check(self):
+        """With only 2 row groups, secondary locality check is skipped."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 10.0, "ymax": 10.0},
+            {"row_group_id": 1, "xmin": 5.0, "ymin": 5.0, "xmax": 15.0, "ymax": 15.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_two_rg.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert result["ratio"] == 1.0, "Both groups overlap"
+        assert result["passed"] is False, "Secondary check not applied with < 3 row groups"
+        assert result["estimated_skip_rate"] == 0.0
+        assert result["avg_bbox_area_ratio"] == 0.0
+
+    def test_return_ratio_when_return_results_false(self):
+        """_check_spatial_order_from_row_group_bboxes returns float when return_results=False."""
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 10.0, "ymax": 10.0},
+            {"row_group_id": 1, "xmin": 20.0, "ymin": 20.0, "xmax": 30.0, "ymax": 30.0},
+            {"row_group_id": 2, "xmin": 40.0, "ymin": 40.0, "xmax": 50.0, "ymax": 50.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_ratio.parquet",
+            verbose=False,
+            return_results=False,
+            quiet=True,
+        )
+
+        assert isinstance(result, float)
+        assert result == 0.0
+
+    def test_secondary_metrics_included_in_bbox_stats_result(self, places_test_file):
+        """check_spatial_order_bbox_stats should include locality metrics."""
+        result = check_spatial_order_bbox_stats(
+            places_test_file, verbose=False, return_results=True, quiet=True
+        )
+        assert "estimated_skip_rate" in result
+        assert "avg_bbox_area_ratio" in result
