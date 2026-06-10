@@ -985,6 +985,50 @@ By default, ArcGIS extracts include bbox metadata and Hilbert spatial ordering f
         The CLI applies Hilbert sorting and bbox by default (use `--skip-hilbert` and `--skip-bbox` to disable).
         The Python API does NOT apply these by default—chain `.sort_hilbert()` and `.add_bbox()` explicitly if needed.
 
+### Output CRS
+
+By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WGS84 (CRS84). Use `--output-crs` to preserve the layer's native coordinate reference system or request a specific CRS instead.
+
+=== "CLI"
+
+    ```bash
+    # Preserve the layer's native CRS (fetches EsriJSON with the layer's advertised SR)
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs native
+
+    # Request a specific CRS (fetches EsriJSON with outSR set to EPSG:25830)
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs EPSG:25830
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Preserve the layer's native CRS
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="native"
+    )
+    table.write("out.parquet")
+
+    # Request a specific CRS
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="EPSG:25830"
+    )
+    table.write("out.parquet")
+    ```
+
+The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable.
+
+| Value | Behavior |
+|-------|----------|
+| *(omitted)* | Fetches GeoJSON, outputs WGS84 (default) |
+| `native` | Fetches EsriJSON with the layer's advertised spatial reference |
+| `EPSG:<code>` | Fetches EsriJSON with `outSR` set to the requested EPSG code |
+
 ### Finding Service URLs
 
 ArcGIS Feature Service URLs follow this pattern:

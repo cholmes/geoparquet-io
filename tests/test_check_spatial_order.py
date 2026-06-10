@@ -511,8 +511,81 @@ class TestSpatialLocalitySecondaryCheck:
 
         assert result["ratio"] == 1.0, "Both groups overlap"
         assert result["passed"] is False, "Secondary check not applied with < 3 row groups"
-        assert result["estimated_skip_rate"] == 0.0
-        assert result["avg_bbox_area_ratio"] == 0.0
+        # None (not 0.0) signals the metrics were never computed
+        assert result["estimated_skip_rate"] is None
+        assert result["avg_bbox_area_ratio"] is None
+
+    def test_hilbert_few_large_row_groups_pass(self):
+        """Hilbert-sorted data with few large row groups must still pass.
+
+        With only ~5 row groups each Hilbert segment legitimately covers a
+        larger share of the extent (roughly 1/N plus bbox slop), so the
+        area-ratio threshold must scale with the group count. Regression test
+        for the removed 80k-120k rows/group heuristic.
+        """
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        # 5 overlapping quadrant-traversal segments over a 100x100 extent,
+        # avg bbox area ratio ~0.29 (above the fixed 0.25 cutoff) but high
+        # skip rate (~0.64)
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 55.0, "ymax": 55.0},
+            {"row_group_id": 1, "xmin": 0.0, "ymin": 45.0, "xmax": 55.0, "ymax": 100.0},
+            {"row_group_id": 2, "xmin": 45.0, "ymin": 45.0, "xmax": 100.0, "ymax": 100.0},
+            {"row_group_id": 3, "xmin": 45.0, "ymin": 0.0, "xmax": 100.0, "ymax": 55.0},
+            {"row_group_id": 4, "xmin": 40.0, "ymin": 0.0, "xmax": 90.0, "ymax": 50.0},
+        ]
+
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes,
+            parquet_file="test_hilbert_few_groups.parquet",
+            verbose=False,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert result["ratio"] == 1.0, "All consecutive pairs overlap"
+        assert result["passed"] is True, (
+            "Should pass via the locality check with the count-scaled area threshold"
+        )
+        assert result["fix_available"] is False
+
+    def test_print_path_reflects_secondary_pass(self, caplog):
+        """Standalone print output must match the structured passed verdict."""
+        import logging
+
+        from geoparquet_io.core.check_spatial_order import (
+            _check_spatial_order_from_row_group_bboxes,
+        )
+
+        row_group_bboxes = [
+            {"row_group_id": 0, "xmin": 0.0, "ymin": 0.0, "xmax": 20.0, "ymax": 15.0},
+            {"row_group_id": 1, "xmin": 5.0, "ymin": 10.0, "xmax": 20.0, "ymax": 15.0},
+            {"row_group_id": 2, "xmin": 15.0, "ymin": 5.0, "xmax": 35.0, "ymax": 12.0},
+            {"row_group_id": 3, "xmin": 25.0, "ymin": 7.0, "xmax": 35.0, "ymax": 12.0},
+            {"row_group_id": 4, "xmin": 30.0, "ymin": 10.0, "xmax": 45.0, "ymax": 13.0},
+            {"row_group_id": 5, "xmin": 40.0, "ymin": 9.0, "xmax": 45.0, "ymax": 13.0},
+            {"row_group_id": 6, "xmin": 38.0, "ymin": 7.0, "xmax": 45.0, "ymax": 10.0},
+            {"row_group_id": 7, "xmin": 25.0, "ymin": 0.0, "xmax": 45.0, "ymax": 10.0},
+            {"row_group_id": 8, "xmin": 25.0, "ymin": -5.0, "xmax": 44.0, "ymax": 1.0},
+        ]
+
+        # Sanity: this fixture passes via the secondary locality check
+        result = _check_spatial_order_from_row_group_bboxes(
+            row_group_bboxes, "hilbert.parquet", return_results=True, quiet=True
+        )
+        assert result["passed"] is True and result["ratio"] >= 0.3
+
+        with caplog.at_level(logging.INFO):
+            _check_spatial_order_from_row_group_bboxes(
+                row_group_bboxes, "hilbert.parquet", return_results=False, quiet=False
+            )
+
+        messages = " ".join(r.message for r in caplog.records)
+        assert "may benefit from spatial ordering" not in messages
+        assert "well spatially ordered" in messages
 
     def test_return_ratio_when_return_results_false(self):
         """_check_spatial_order_from_row_group_bboxes returns float when return_results=False."""

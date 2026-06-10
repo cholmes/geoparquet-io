@@ -125,15 +125,17 @@ def _print_standalone_results(ratio, consecutive_avg, random_avg):
         progress("=> Data might not be strongly clustered (or is partially clustered).")
 
 
-def _print_bbox_stats_results(ratio, overlap_count, total_pairs):
+def _print_bbox_stats_results(ratio, overlap_count, total_pairs, passed):
     """Print bbox-stats results when running as standalone command."""
     progress("\nResults:")
     debug(f"Row group pairs analyzed: {total_pairs}")
     debug(f"Overlapping pairs: {overlap_count}")
     progress(f"Overlap ratio: {ratio:.2f}")
 
-    if ratio < _OVERLAP_RATIO_THRESHOLD:
-        progress("=> Data appears well spatially ordered (low row group overlap).")
+    # `passed` is the final verdict (overlap ratio plus the secondary locality
+    # check), so the printed message cannot contradict the structured result
+    if passed:
+        progress("=> Data appears well spatially ordered.")
     else:
         progress("=> Data may benefit from spatial ordering (high row group overlap).")
 
@@ -233,30 +235,26 @@ def _check_spatial_order_from_row_group_bboxes(
             debug(f"Overlapping pairs: {overlap_count}/{total_pairs}")
 
     passed = ratio < _OVERLAP_RATIO_THRESHOLD
-    avg_area_ratio = 0.0
-    avg_skip_rate = 0.0
+    # None signals "not computed" (primary check passed or too few row groups);
+    # 0.0 would be indistinguishable from the worst possible real skip rate
+    avg_area_ratio: float | None = None
+    avg_skip_rate: float | None = None
 
     # Secondary check: when overlap is high, measure actual spatial locality.
     # Hilbert-sorted data often has overlapping consecutive row group bboxes
     # but each bbox covers only a small fraction of the total extent.
     if not passed and len(row_group_bboxes) >= 3:
-        extent = _compute_data_extent(row_group_bboxes)
-        avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
-        samples = _generate_sample_query_bboxes(
-            extent,
-            num_samples=_DEFAULT_NUM_SAMPLES,
-            query_fraction=_DEFAULT_QUERY_FRACTION,
-            seed=_DEFAULT_SEED,
-        )
-        skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
-        avg_skip_rate = mean(skip_rates)
+        avg_area_ratio, avg_skip_rate = _compute_locality_metrics(row_group_bboxes)
 
         if verbose:
             debug(
                 f"Secondary locality check: area_ratio={avg_area_ratio:.4f}, skip_rate={avg_skip_rate:.2%}"
             )
 
-        if avg_area_ratio < _AREA_RATIO_THRESHOLD and avg_skip_rate >= _SKIP_RATE_THRESHOLD:
+        if (
+            avg_area_ratio < _area_ratio_threshold(len(row_group_bboxes))
+            and avg_skip_rate >= _SKIP_RATE_THRESHOLD
+        ):
             passed = True
 
     issues = []
@@ -266,7 +264,7 @@ def _check_spatial_order_from_row_group_bboxes(
         recommendations.append("Apply Hilbert spatial ordering for better query performance")
 
     if not quiet and not return_results and not verbose:
-        _print_bbox_stats_results(ratio, overlap_count, total_pairs)
+        _print_bbox_stats_results(ratio, overlap_count, total_pairs, passed)
 
     if return_results:
         return {
@@ -466,6 +464,39 @@ def _compute_skip_rate_for_query(query_bbox: dict, row_group_bboxes: list[dict])
     return skipped / len(row_group_bboxes)
 
 
+def _area_ratio_threshold(num_row_groups: int) -> float:
+    """Area-ratio cutoff for the secondary locality check.
+
+    With few row groups each Hilbert segment legitimately covers a larger
+    share of the total extent (roughly 1/N plus bbox slop), so the fixed
+    threshold is relaxed for small group counts.
+    """
+    return max(_AREA_RATIO_THRESHOLD, 2.0 / num_row_groups)
+
+
+def _compute_locality_metrics(
+    row_group_bboxes: list[dict],
+    num_samples: int = _DEFAULT_NUM_SAMPLES,
+    query_fraction: float = _DEFAULT_QUERY_FRACTION,
+    seed: int = _DEFAULT_SEED,
+) -> tuple[float, float]:
+    """Compute spatial locality metrics for a set of row group bboxes.
+
+    Shared pipeline for the spatial-order secondary check and
+    check_spatial_pushdown_readiness.
+
+    Returns:
+        Tuple of (avg bbox area ratio, avg skip rate across sample queries).
+    """
+    extent = _compute_data_extent(row_group_bboxes)
+    avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
+    samples = _generate_sample_query_bboxes(
+        extent, num_samples=num_samples, query_fraction=query_fraction, seed=seed
+    )
+    skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in samples]
+    return avg_area_ratio, mean(skip_rates)
+
+
 def _compute_avg_bbox_area_ratio(row_group_bboxes: list[dict], extent: dict) -> float:
     """Compute average ratio of row group bbox area to total extent area.
 
@@ -570,20 +601,12 @@ def check_spatial_pushdown_readiness(
             "recommendations": ["Consider using smaller row groups for spatial queries"],
         }
 
-    extent = _compute_data_extent(row_group_bboxes)
-    avg_area_ratio = _compute_avg_bbox_area_ratio(row_group_bboxes, extent)
-
-    if verbose:
-        debug(f"Data extent: {extent}")
-        debug(f"Average bbox area ratio: {avg_area_ratio:.4f}")
-
-    sample_bboxes = _generate_sample_query_bboxes(
-        extent, num_samples=num_samples, query_fraction=query_fraction, seed=seed
+    avg_area_ratio, avg_skip_rate = _compute_locality_metrics(
+        row_group_bboxes, num_samples=num_samples, query_fraction=query_fraction, seed=seed
     )
-    skip_rates = [_compute_skip_rate_for_query(s, row_group_bboxes) for s in sample_bboxes]
-    avg_skip_rate = mean(skip_rates)
 
     if verbose:
+        debug(f"Average bbox area ratio: {avg_area_ratio:.4f}")
         debug(f"Estimated average skip rate: {avg_skip_rate:.2%}")
 
     passed = avg_skip_rate >= _SKIP_RATE_THRESHOLD
