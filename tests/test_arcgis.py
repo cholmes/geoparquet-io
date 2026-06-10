@@ -1824,3 +1824,23 @@ class TestEsriJsonPageToTable:
         from geoparquet_io.core.arcgis import _esrijson_page_to_table
 
         assert _esrijson_page_to_table({"features": []}) is None
+
+
+class TestConvertOutputCrs:
+    @patch("geoparquet_io.core.arcgis.write_geoparquet_table")
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_convert_forwards_output_crs(self, mock_to_table, mock_write, tmp_path):
+        from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        out = str(tmp_path / "out.parquet")
+
+        convert_arcgis_to_geoparquet(
+            "https://example.com/FeatureServer/0",
+            out,
+            output_crs="EPSG:25830",
+            skip_hilbert=True,
+            skip_bbox=True,
+        )
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"

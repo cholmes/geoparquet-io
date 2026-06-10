@@ -1266,6 +1266,7 @@ def convert_arcgis_to_geoparquet(
     include_cols: str | None = None,
     exclude_cols: str | None = None,
     limit: int | None = None,
+    output_crs: str | None = None,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     max_workers: int = 1,
@@ -1303,6 +1304,8 @@ def convert_arcgis_to_geoparquet(
         include_cols: Comma-separated columns to include (pushed to server)
         exclude_cols: Comma-separated columns to exclude (applied client-side)
         limit: Maximum number of features to return
+        output_crs: Preserve native CRS. "native" uses the layer's advertised SR;
+            or pass an EPSG code (e.g. "EPSG:25830"). Default None -> WGS84 (f=geojson).
         skip_hilbert: Skip Hilbert spatial ordering
         skip_bbox: Skip adding bbox column for spatial query optimization
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
@@ -1348,6 +1351,7 @@ def convert_arcgis_to_geoparquet(
         limit=limit,
         batch_size=batch_size,
         max_workers=max_workers,
+        output_crs=output_crs,
         verbose=verbose,
     )
 
