@@ -1898,3 +1898,41 @@ class TestConvertOutputCrs:
         )
 
         assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+
+@pytest.mark.network
+@pytest.mark.slow
+class TestArcgisOutputCrsLive:
+    """Live smoke test against a real ArcGIS server to confirm that
+    --output-crs preserves geometries in their native CRS (EPSG:25830)
+    rather than reprojecting them to WGS84."""
+
+    def test_madrid_native_25830(self, tmp_path):
+        import duckdb
+
+        from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
+        from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
+
+        out = str(tmp_path / "zp.parquet")
+        url = (
+            "https://sigma.madrid.es/hosted/rest/services/MOVILIDAD/"
+            "ZONAS_PEATONALES/MapServer/0"
+        )
+
+        # An unavailable server should skip, not fail. A returned-but-wrong
+        # CRS is a real bug and must fail (AssertionError propagates below).
+        try:
+            convert_arcgis_to_geoparquet(
+                url,
+                out,
+                limit=5,
+                output_crs="EPSG:25830",
+                geoparquet_version="2.0",
+            )
+        except (RemoteAccessError, GeoParquetError) as exc:
+            pytest.skip(f"Madrid server unavailable: {exc}")
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        crs = con.execute(f"SELECT ST_CRS(geometry) FROM '{out}' LIMIT 1").fetchone()[0]
+        assert "25830" in str(crs)
