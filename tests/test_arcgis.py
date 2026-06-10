@@ -229,6 +229,38 @@ class TestFetchFeaturesPage:
         assert len(result["features"]) == 3
 
 
+class TestCrsParsing:
+    """Tests for output-crs parsing helpers."""
+
+    def test_parse_crs_to_wkid_epsg_prefix(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("EPSG:25830") == 25830
+
+    def test_parse_crs_to_wkid_bare_code(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("25830") == 25830
+
+    def test_parse_crs_to_wkid_case_insensitive(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("epsg:4148") == 4148
+
+    def test_parse_crs_to_wkid_rejects_garbage(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        with pytest.raises(ValueError):
+            _parse_crs_to_wkid("not-a-crs")
+
+    def test_wkid_from_spatial_reference(self):
+        from geoparquet_io.core.arcgis import _wkid_from_spatial_reference
+
+        assert _wkid_from_spatial_reference({"wkid": 102100, "latestWkid": 3857}) == 102100
+        assert _wkid_from_spatial_reference({"latestWkid": 4326}) == 4326
+        assert _wkid_from_spatial_reference({}) is None
+
+
 class TestCrsExtraction:
     """Tests for CRS handling."""
 

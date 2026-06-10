@@ -709,10 +709,33 @@ def fetch_all_features(
             debug(f"Fetched {fetched} features total using {max_workers} workers")
 
 
+def _wkid_from_spatial_reference(spatial_ref: dict) -> int | None:
+    """Return the WKID from an ArcGIS spatial reference dict, or None."""
+    return spatial_ref.get("wkid") or spatial_ref.get("latestWkid")
+
+
+def _parse_crs_to_wkid(value: str) -> int:
+    """Parse a CRS string to an integer WKID.
+
+    Accepts 'EPSG:25830' (any case) or a bare '25830'.
+    """
+    cleaned = value.strip()
+    if ":" in cleaned:
+        authority, _, code = cleaned.rpartition(":")
+        if authority.upper() != "EPSG":
+            raise ValueError(
+                f"Unsupported CRS authority '{authority}' in '{value}'. Use EPSG codes."
+            )
+        cleaned = code
+    if not cleaned.isdigit():
+        raise ValueError(f"Cannot parse CRS '{value}'. Use 'EPSG:<code>' or a numeric code.")
+    return int(cleaned)
+
+
 def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
     """Extract CRS as PROJJSON from ArcGIS spatial reference."""
     # ArcGIS uses WKID (Well-Known ID) which maps to EPSG codes
-    wkid = spatial_ref.get("wkid") or spatial_ref.get("latestWkid")
+    wkid = _wkid_from_spatial_reference(spatial_ref)
 
     if wkid:
         # Handle special WKIDs
