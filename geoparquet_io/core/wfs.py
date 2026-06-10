@@ -39,7 +39,11 @@ __all__ = [
     "wfs_to_table",
 ]
 
-from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.common import (
+    _cast_table_to_schema,
+    _compute_unified_schema,
+    write_geoparquet_table,
+)
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
 from geoparquet_io.core.http_retry import (
@@ -1527,7 +1531,16 @@ def _fetch_with_spatial_tiles(
     if not all_tables:
         raise WFSError("No features returned from any spatial tile.")
 
-    combined = pa.concat_tables(all_tables, promote=True)
+    # Unify schemas to handle type mismatches across tiles (e.g., int64 vs decimal128)
+    if len(all_tables) > 1:
+        schemas = [t.schema for t in all_tables]
+        unified_schema = _compute_unified_schema(schemas)
+        all_tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"tile {i + 1}")
+            for i, t in enumerate(all_tables)
+        ]
+
+    combined = pa.concat_tables(all_tables)
     before_dedup = combined.num_rows
 
     combined = _deduplicate_tiles(combined)
@@ -1920,7 +1933,17 @@ def fetch_all_features_duckdb(
         raise WFSError("No features returned from WFS service.")
 
     tables = [results[i] for i in sorted(results.keys())]
-    combined = pa.concat_tables(tables, promote=True)
+
+    # Unify schemas to handle type mismatches across pages (e.g., int64 vs decimal128)
+    if len(tables) > 1:
+        schemas = [t.schema for t in tables]
+        unified_schema = _compute_unified_schema(schemas)
+        tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"page {i + 1}")
+            for i, t in enumerate(tables)
+        ]
+
+    combined = pa.concat_tables(tables)
     debug(f"Combined {len(tables)} pages: {combined.num_rows:,} total features")
 
     # Skip type inference for tile fetches — the tiling orchestrator handles it

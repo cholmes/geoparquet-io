@@ -534,6 +534,216 @@ def _rebuild_array_with_type(
     return pa.chunked_array(new_chunks, type=new_type)
 
 
+def _promote_numeric_type(type_a, type_b):
+    """
+    Compute a common type that both input types can safely cast to.
+
+    Type promotion rules (ordered by preference):
+    - Same types → return as-is
+    - null + any → any
+    - bool + int* → int64
+    - int8/16/32 + int64 → int64
+    - float32 + float64 → float64
+    - int* + float* → float64
+    - int* + decimal128 → float64
+    - decimal128 + float* → float64
+    - timestamp[*] + timestamp[*] → timestamp with finest unit
+    - any numeric + string → string (but not binary + string)
+    - incompatible types → first type (caller handles cast errors)
+
+    Args:
+        type_a: First PyArrow type
+        type_b: Second PyArrow type
+
+    Returns:
+        PyArrow type that both can safely cast to
+    """
+    import pyarrow as pa
+
+    if type_a == type_b:
+        return type_a
+
+    if pa.types.is_null(type_a):
+        return type_b
+    if pa.types.is_null(type_b):
+        return type_a
+
+    a_is_int = pa.types.is_integer(type_a)
+    b_is_int = pa.types.is_integer(type_b)
+    a_is_float = pa.types.is_floating(type_a)
+    b_is_float = pa.types.is_floating(type_b)
+    a_is_decimal = pa.types.is_decimal(type_a)
+    b_is_decimal = pa.types.is_decimal(type_b)
+    a_is_string = pa.types.is_string(type_a) or pa.types.is_large_string(type_a)
+    b_is_string = pa.types.is_string(type_b) or pa.types.is_large_string(type_b)
+    a_is_bool = pa.types.is_boolean(type_a)
+    b_is_bool = pa.types.is_boolean(type_b)
+    a_is_timestamp = pa.types.is_timestamp(type_a)
+    b_is_timestamp = pa.types.is_timestamp(type_b)
+    a_is_binary = pa.types.is_binary(type_a) or pa.types.is_large_binary(type_a)
+    b_is_binary = pa.types.is_binary(type_b) or pa.types.is_large_binary(type_b)
+
+    # Binary types: don't promote to string (would corrupt geometry data)
+    if a_is_binary or b_is_binary:
+        if a_is_binary and b_is_binary:
+            return pa.large_binary()  # Safest binary type
+        return type_a  # Can't promote binary + non-binary safely
+
+    # String wins over numeric (safest fallback for text data)
+    if a_is_string or b_is_string:
+        return pa.string()
+
+    # bool + int → int64 (bool can safely cast to int)
+    if (a_is_bool and b_is_int) or (a_is_int and b_is_bool):
+        return pa.int64()
+
+    # bool + float → float64
+    if (a_is_bool and b_is_float) or (a_is_float and b_is_bool):
+        return pa.float64()
+
+    # int + int → check for unsigned overflow risk
+    if a_is_int and b_is_int:
+        a_unsigned = pa.types.is_unsigned_integer(type_a)
+        b_unsigned = pa.types.is_unsigned_integer(type_b)
+        # uint64 mixed with signed int → float64 (avoids overflow for large uint64)
+        if (a_unsigned and type_a == pa.uint64() and not b_unsigned) or (
+            b_unsigned and type_b == pa.uint64() and not a_unsigned
+        ):
+            return pa.float64()
+        return pa.int64()
+
+    # float + float → float64
+    if a_is_float and b_is_float:
+        return pa.float64()
+
+    # int + float → float64
+    if (a_is_int and b_is_float) or (a_is_float and b_is_int):
+        return pa.float64()
+
+    # int + decimal → float64 (safest common type)
+    if (a_is_int and b_is_decimal) or (a_is_decimal and b_is_int):
+        return pa.float64()
+
+    # decimal + float → float64
+    if (a_is_decimal and b_is_float) or (a_is_float and b_is_decimal):
+        return pa.float64()
+
+    # decimal + decimal with different precision → float64
+    if a_is_decimal and b_is_decimal:
+        return pa.float64()
+
+    # timestamp + timestamp → finest unit (ns > us > ms > s)
+    if a_is_timestamp and b_is_timestamp:
+        unit_order = {"ns": 0, "us": 1, "ms": 2, "s": 3}
+        a_unit = type_a.unit
+        b_unit = type_b.unit
+        # Return the finer-grained unit (lower number = finer)
+        if unit_order.get(a_unit, 99) <= unit_order.get(b_unit, 99):
+            return type_a
+        return type_b
+
+    # Fallback: return first type (caller handles cast errors with context)
+    return type_a
+
+
+def _compute_unified_schema(schemas: list):
+    """
+    Compute unified schema from multiple schemas with safe type promotion.
+
+    Used when merging paginated results where different pages may have
+    different inferred types for the same field (e.g., int64 vs decimal128).
+
+    Args:
+        schemas: List of PyArrow schemas to unify
+
+    Returns:
+        Unified PyArrow schema that all input schemas can safely cast to
+    """
+    import pyarrow as pa
+
+    if not schemas:
+        return pa.schema([])
+
+    if len(schemas) == 1:
+        return schemas[0]
+
+    # Build field name → list of types mapping
+    field_types: dict[str, list] = {}
+    field_order: list[str] = []
+
+    for schema in schemas:
+        for field in schema:
+            if field.name not in field_types:
+                field_types[field.name] = []
+                field_order.append(field.name)
+            field_types[field.name].append(field.type)
+
+    # Compute unified type for each field
+    unified_fields = []
+    for name in field_order:
+        types = field_types[name]
+        unified_type = types[0]
+        for t in types[1:]:
+            unified_type = _promote_numeric_type(unified_type, t)
+        unified_fields.append(pa.field(name, unified_type))
+
+    return pa.schema(unified_fields)
+
+
+def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None):
+    """
+    Cast a table's columns to match target schema types.
+
+    Handles type conversions that PyArrow's concat_tables(promote=True) cannot,
+    such as int64 → float64 when another table has decimal128.
+
+    Args:
+        table: PyArrow table to cast
+        target_schema: Target schema with desired types
+        page_info: Optional context string for error messages (e.g., "page 3")
+
+    Returns:
+        Table with columns cast to target schema types
+
+    Raises:
+        ValueError: If a column cannot be cast to the target type
+    """
+    import pyarrow as pa
+
+    from geoparquet_io.core.logging_config import warn
+
+    if table.schema.equals(target_schema):
+        return table
+
+    new_columns = []
+    for field in target_schema:
+        if field.name in table.column_names:
+            col = table.column(field.name)
+            if col.type != field.type:
+                # Warn about precision loss for decimal → float64
+                if pa.types.is_decimal(col.type) and pa.types.is_floating(field.type):
+                    warn(
+                        f"Column '{field.name}' cast from {col.type} to {field.type} "
+                        f"may lose precision for large values"
+                    )
+                # Cast to target type with error context
+                try:
+                    col = col.cast(field.type, safe=True)
+                except pa.ArrowInvalid as e:
+                    context = f" ({page_info})" if page_info else ""
+                    raise ValueError(
+                        f"Failed to cast column '{field.name}' from {col.type} to "
+                        f"{field.type}{context}: {e}"
+                    ) from e
+            new_columns.append(col)
+        else:
+            # Missing column - create null array
+            null_array = pa.nulls(table.num_rows, type=field.type)
+            new_columns.append(null_array)
+
+    return pa.table(dict(zip([f.name for f in target_schema], new_columns, strict=True)))
+
+
 def _detect_version_from_table(table, verbose: bool = False) -> str | None:
     """
     Detect GeoParquet version from table's schema metadata.
