@@ -366,6 +366,39 @@ Always explain your reasoning and ask for confirmation before large operations.
 
 ---
 
+## fiboa Plugin Commands
+
+The `gpio fiboa` plugin provides tools for working with field boundary datasets according to the [fiboa specification](https://fiboa.org). Install: `uv tool install geoparquet-io --with gpio-fiboa`.
+
+### Improve
+
+Apply fiboa enhancements (metrics, admin divisions, schemas, Hilbert sorting):
+
+```bash
+# Add geometry metrics (area + perimeter)
+gpio fiboa improve input.parquet output.parquet -sz
+
+# Add admin divisions + metrics + schemas (full compliance)
+gpio fiboa improve input.parquet output.parquet -sz -a -s
+
+# Set determination datetime from a column
+gpio fiboa improve input.parquet output.parquet --determination-datetime time
+
+# Set determination method and category
+gpio fiboa improve input.parquet output.parquet -sz --determination-method auto-imagery --category operational
+```
+
+### Describe
+
+Show fiboa column coverage and extension metadata:
+
+```bash
+gpio fiboa describe fields.parquet
+gpio fiboa describe fields.parquet --verbose
+```
+
+---
+
 ## Tips
 
 - Use `--verbose` flag for detailed output during debugging

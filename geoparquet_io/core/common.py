@@ -2495,7 +2495,7 @@ def add_computed_column(
     if replace_column:
         query = f"""
         SELECT
-            * EXCLUDE ({replace_column}),
+            * EXCLUDE ({quote_identifier(replace_column)}),
             {sql_expression} AS {quoted_col}
         FROM '{input_url}'
     """
