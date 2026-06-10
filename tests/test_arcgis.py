@@ -265,7 +265,7 @@ class TestFetchFeaturesPage:
         assert "outSR" not in params
 
     @patch("geoparquet_io.core.arcgis._make_request")
-    def test_fetch_page_output_crs_uses_esrijson_and_outsr(self, mock_request):
+    def test_fetch_page_output_wkid_uses_esrijson_and_outsr(self, mock_request):
         from geoparquet_io.core.arcgis import fetch_features_page
 
         mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
@@ -273,7 +273,7 @@ class TestFetchFeaturesPage:
             "https://example.com/FeatureServer/0",
             offset=0,
             limit=1000,
-            output_crs="EPSG:25830",
+            output_wkid=25830,
         )
 
         params = mock_request.call_args.kwargs["params"]
@@ -305,12 +305,31 @@ class TestCrsParsing:
         with pytest.raises(ValueError):
             _parse_crs_to_wkid("not-a-crs")
 
-    def test_wkid_from_spatial_reference(self):
+    def test_parse_crs_to_wkid_rejects_non_epsg_authority(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        with pytest.raises(ValueError, match="ESRI"):
+            _parse_crs_to_wkid("ESRI:102039")
+
+    def test_parse_crs_to_wkid_urn_form(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("urn:ogc:def:crs:EPSG::25830") == 25830
+
+    def test_wkid_from_spatial_reference_prefers_latest_wkid(self):
         from geoparquet_io.core.arcgis import _wkid_from_spatial_reference
 
-        assert _wkid_from_spatial_reference({"wkid": 102100, "latestWkid": 3857}) == 102100
+        # latestWkid carries the modern EPSG code; legacy wkid is Esri-specific
+        assert _wkid_from_spatial_reference({"wkid": 102100, "latestWkid": 3857}) == 3857
         assert _wkid_from_spatial_reference({"latestWkid": 4326}) == 4326
+        assert _wkid_from_spatial_reference({"wkid": 25830}) == 25830
         assert _wkid_from_spatial_reference({}) is None
+
+    def test_normalize_wkid_maps_esri_legacy_codes(self):
+        from geoparquet_io.core.arcgis import _normalize_wkid
+
+        assert _normalize_wkid(102100) == 3857
+        assert _normalize_wkid(25830) == 25830
 
 
 class TestCrsExtraction:
@@ -449,7 +468,7 @@ class TestArcgisToTableOutputCrs:
         crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
         assert crs["id"]["authority"] == "EPSG"
         assert crs["id"]["code"] == 25830
-        assert mock_stream.call_args.kwargs["output_crs"] == "EPSG:25830"
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
 
     @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
     @patch("geoparquet_io.core.arcgis.get_layer_info")
@@ -461,9 +480,64 @@ class TestArcgisToTableOutputCrs:
 
         result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
 
-        assert mock_stream.call_args.kwargs["output_crs"] == "EPSG:25830"
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
         crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
         assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_no_warning_for_esri_legacy_wkid_alias(self, mock_layer, mock_stream, tmp_path, caplog):
+        """Server echoing legacy wkid 102100 for EPSG:3857 must not warn."""
+        import logging
+
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(102100, 3857)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 102100, "latestWkid": 3857})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:3857")
+
+        assert not any("server returned" in r.message for r in caplog.records)
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "EPSG"
+        assert crs["id"]["code"] == 3857
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_esri_only_wkid_tags_esri_authority(self, mock_layer, mock_stream, tmp_path):
+        """ESRI-authority WKIDs (no EPSG equivalent) must not be tagged as EPSG."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 102039},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 102039})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 102039
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "ESRI"
+        assert int(crs["id"]["code"]) == 102039
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_invalid_output_crs_raises_before_network(self, mock_layer):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="output_crs"):
+            arcgis_to_table("https://example.com/FeatureServer/0", output_crs="ESRI:102100")
+
+        mock_layer.assert_not_called()
 
     @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
     @patch("geoparquet_io.core.arcgis.get_layer_info")
@@ -719,6 +793,31 @@ class TestArcgisCliOutputCrs:
 
         assert result.exit_code == 0, result.output
         assert mock_convert.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_cli_invalid_output_crs_fails_cleanly(self, mock_layer, tmp_path):
+        """A bad --output-crs must fail with a clean message before any network call."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--output-crs",
+                "not-a-crs",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "output_crs" in result.output
+        assert not isinstance(result.exception, ValueError)
+        mock_layer.assert_not_called()
 
 
 class TestPythonAPI:
@@ -994,12 +1093,12 @@ class TestStreamOutputCrs:
             "https://example.com/FeatureServer/0",
             layer_info,
             out,
-            output_crs="EPSG:25830",
+            output_wkid=25830,
         )
 
         assert total_rows == 1
         assert detected_sr == {"wkid": 25830, "latestWkid": 25830}
-        assert mock_fetch.call_args.kwargs["output_crs"] == "EPSG:25830"
+        assert mock_fetch.call_args.kwargs["output_wkid"] == 25830
 
     @patch("geoparquet_io.core.arcgis.fetch_all_features")
     def test_stream_default_returns_no_sr(self, mock_fetch, tmp_path):
