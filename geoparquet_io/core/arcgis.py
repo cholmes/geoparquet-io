@@ -782,8 +782,40 @@ def _projjson_from_wkid(wkid: int) -> dict | None:
             return CRS.from_authority(authority, code).to_json_dict()
         except CRSError:
             continue
-    warn(f"WKID {wkid} is not a known EPSG or ESRI code; tagging output as EPSG:{code} anyway.")
-    return {"id": {"authority": "EPSG", "code": code}}
+    warn(f"WKID {wkid} is not a known EPSG or ESRI code; leaving the output CRS unset.")
+    return None
+
+
+def _resolve_native_wkid(spatial_ref: dict) -> int:
+    """Resolve a layer's advertised native SR to an EPSG/ESRI WKID for outSR.
+
+    Prefers an advertised WKID. Falls back to deriving an EPSG code from an
+    advertised WKT (common for layers that omit a WKID). Raises when the SR is
+    absent or its WKT maps to no EPSG code.
+    """
+    wkid = _wkid_from_spatial_reference(spatial_ref)
+    if wkid is not None:
+        return _normalize_wkid(wkid)
+
+    wkt = spatial_ref.get("wkt")
+    if wkt:
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+
+        try:
+            epsg = CRS.from_wkt(wkt).to_epsg()
+        except CRSError:
+            epsg = None
+        if epsg is not None:
+            return epsg
+        raise GeoParquetError(
+            "--output-crs native could not resolve the layer's WKT spatial reference "
+            "to an EPSG code. Pass an explicit --output-crs EPSG:<code> instead."
+        )
+
+    raise GeoParquetError(
+        "--output-crs native requested but the layer advertises no spatial reference."
+    )
 
 
 def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
@@ -1190,12 +1222,7 @@ def arcgis_to_table(
 
     # Resolve "native" to the layer's advertised SR
     if output_crs == "native":
-        native_wkid = _wkid_from_spatial_reference(layer_info.spatial_reference)
-        if native_wkid is None:
-            raise GeoParquetError(
-                "--output-crs native requested but the layer advertises no spatial reference."
-            )
-        output_wkid = _normalize_wkid(native_wkid)
+        output_wkid = _resolve_native_wkid(layer_info.spatial_reference)
 
     if layer_info.total_count == 0:
         filters_applied = where != "1=1" or bbox is not None

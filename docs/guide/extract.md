@@ -1021,7 +1021,9 @@ By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WG
     table.write("out.parquet")
     ```
 
-The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable.
+The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable. A WKID that resolves to neither an EPSG nor an ESRI definition is left untagged rather than labeled with a code no reader can resolve.
+
+With `--output-crs native`, the layer's spatial reference is taken from its advertised WKID, or recovered from its WKT when no WKID is published. If the WKT maps to no EPSG code, the extraction fails with a clear message so you can pass an explicit `--output-crs EPSG:<code>` instead.
 
 | Value | Behavior |
 |-------|----------|

@@ -584,6 +584,88 @@ class TestArcgisToTableOutputCrs:
         assert crs["id"]["authority"] == "ESRI"
         assert int(crs["id"]["code"]) == 102039
 
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_unresolvable_wkid_writes_no_crs(self, mock_layer, mock_stream, tmp_path, caplog):
+        """A WKID resolving as neither EPSG nor ESRI must not be tagged as EPSG."""
+        import logging
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 999999},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 999999})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        # No fabricated EPSG metadata when the code cannot be resolved.
+        metadata = result.schema.metadata or {}
+        assert b"geo" not in metadata
+        assert any("999999" in r.message for r in caplog.records)
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_resolves_via_epsg(self, mock_layer, mock_stream, tmp_path):
+        """Native SR advertised only as WKT must resolve to its EPSG code."""
+        from pyproj import CRS
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        wkt = CRS.from_epsg(25830).to_wkt()
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_unresolvable_raises(self, mock_layer, mock_stream, tmp_path):
+        """A WKT-only native SR with no EPSG equivalent raises an accurate error."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        wkt = (
+            'LOCAL_CS["Custom",LOCAL_DATUM["Custom",0],UNIT["metre",1.0],'
+            'AXIS["X",EAST],AXIS["Y",NORTH]]'
+        )
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[{"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False}],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+        with pytest.raises(GeoParquetError, match="could not resolve"):
+            arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        mock_stream.assert_not_called()
+
     @patch("geoparquet_io.core.arcgis.get_layer_info")
     def test_invalid_output_crs_raises_before_network(self, mock_layer):
         from geoparquet_io.core.arcgis import arcgis_to_table
