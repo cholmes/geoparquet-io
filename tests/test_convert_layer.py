@@ -17,6 +17,7 @@ Integration tests:
 """
 
 import io
+import platform
 import shutil
 import subprocess
 import sys
@@ -440,6 +441,13 @@ class TestEstoniaGeoPackageIntegration:
         """
     )
 
+    @pytest.mark.xfail(
+        platform.system() in ("Windows", "Darwin"),
+        reason="DuckDB spatial extension has intermittent native crashes (SIGSEGV on "
+        "macOS, ACCESS_VIOLATION on Windows) when reading GeoPackage layers "
+        "sequentially. The gc.collect() fix for #401 is insufficient. Upstream issue.",
+        strict=False,
+    )
     def test_sequential_layer_conversion_no_crash(self, estonia_gpkg, tmp_path):
         """Converting multiple layers sequentially should not crash the process.
 
