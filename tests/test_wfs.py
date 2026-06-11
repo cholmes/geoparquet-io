@@ -19,7 +19,9 @@ from geoparquet_io.core.wfs import (
     WFSLayerInfo,
     _build_bbox_param,
     _build_local_bbox_filter,
+    _build_wfs_url,
     _detect_best_output_format,
+    _detect_sortable_attribute,
     _determine_bbox_strategy,
     _negotiate_crs,
     _normalize_crs,
@@ -840,6 +842,94 @@ class TestBboxFilters:
         bbox = (-122.5, 37.5, -122.0, 38.0)
         with pytest.raises(WFSError, match="Invalid geometry column name"):
             _build_local_bbox_filter(bbox, 'geom"; DROP TABLE --')
+
+
+# =============================================================================
+# Unit Tests - Sort By Parameter (Issue #488)
+# =============================================================================
+
+
+class TestSortByParameter:
+    """Test sortBy parameter for stable pagination on PK-less layers.
+
+    GeoServer requires sortBy for pagination on layers without a primary key.
+    """
+
+    def test_build_wfs_url_includes_sortby_when_provided(self):
+        """sortBy parameter is included in URL when specified."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="2.0.0",
+            max_features=1000,
+            start_index=10000,
+            sort_by="gid",
+        )
+        assert "sortBy=gid" in url
+
+    def test_build_wfs_url_no_sortby_when_not_provided(self):
+        """sortBy parameter is omitted when not specified."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="2.0.0",
+            max_features=1000,
+            start_index=10000,
+        )
+        assert "sortBy" not in url
+
+    def test_build_wfs_url_no_sortby_for_wfs_1_0(self):
+        """sortBy is not included for WFS 1.0.0 (not supported)."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="1.0.0",
+            max_features=1000,
+            sort_by="gid",
+        )
+        assert "sortBy" not in url
+
+    def test_detect_sortable_attribute_picks_first_non_geometry(self):
+        """_detect_sortable_attribute returns first non-geometry attribute."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {
+            "geometry_column": "the_geom",
+            "properties": {
+                "gid": "int",
+                "name": "string",
+                "the_geom": "geometry",
+            },
+        }
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result == "gid"
+
+    def test_detect_sortable_attribute_skips_geometry_types(self):
+        """_detect_sortable_attribute skips columns with geometry types."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {
+            "geometry_column": "geom",
+            "properties": {
+                "geom": "gml:PointPropertyType",
+                "boundary": "gml:MultiPolygonPropertyType",
+                "id": "int",
+            },
+        }
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result == "id"
+
+    def test_detect_sortable_attribute_returns_none_when_no_properties(self):
+        """_detect_sortable_attribute returns None if no properties."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {"geometry_column": "geom"}
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result is None
+
+    def test_detect_sortable_attribute_handles_exception(self):
+        """_detect_sortable_attribute returns None on schema fetch error."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.side_effect = Exception("Schema unavailable")
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result is None
 
 
 # =============================================================================
