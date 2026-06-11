@@ -141,6 +141,7 @@ class WFSLayerInfo:
     bbox: tuple[float, float, float, float] | None
     geometry_column: str
     available_formats: list[str]
+    sortable_attribute: str | None = None
 
 
 # Default timeout for HTTP requests (seconds)
@@ -569,6 +570,42 @@ def _detect_geometry_column(wfs, typename: str) -> str:
     return "geometry"
 
 
+def _detect_sortable_attribute(wfs, typename: str) -> str | None:
+    """
+    Detect a sortable (non-geometry) attribute from DescribeFeatureType.
+
+    GeoServer requires a sortBy parameter for stable pagination on layers
+    without a primary key. This function finds the first non-geometry
+    attribute that can be used for sorting.
+
+    Args:
+        wfs: OWSLib WebFeatureService object
+        typename: Layer typename
+
+    Returns:
+        First sortable attribute name, or None if none found
+    """
+    try:
+        schema = wfs.get_schema(typename)
+        if schema and "properties" in schema:
+            geometry_col = schema.get("geometry_column", "geometry")
+            for prop_name, prop_type in schema["properties"].items():
+                # Skip geometry columns
+                if prop_name == geometry_col:
+                    continue
+                prop_type_str = str(prop_type).lower()
+                if any(
+                    geom in prop_type_str
+                    for geom in ["geometry", "point", "line", "polygon", "multi", "curve"]
+                ):
+                    continue
+                # Found a non-geometry attribute
+                return str(prop_name)
+    except Exception:
+        pass
+    return None
+
+
 def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> WFSLayerInfo:
     """
     Get metadata for a specific WFS layer.
@@ -649,6 +686,9 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
         except Exception:
             pass
 
+    # Detect sortable attribute for stable pagination (Issue #488)
+    sortable_attribute = _detect_sortable_attribute(wfs, matched_typename)
+
     return WFSLayerInfo(
         typename=matched_typename,
         title=getattr(layer, "title", None),
@@ -657,6 +697,7 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
         bbox=bbox,
         geometry_column=geometry_column,
         available_formats=available_formats,
+        sortable_attribute=sortable_attribute,
     )
 
 
@@ -1519,6 +1560,7 @@ def _fetch_with_spatial_tiles(
     page_size: int = 10000,
     axis_order: str = "auto",
     max_features: int | None = None,
+    sort_by: str | None = None,
 ) -> pa.Table:
     """
     Fetch a large WFS dataset by subdividing into spatial tiles.
@@ -1563,6 +1605,7 @@ def _fetch_with_spatial_tiles(
             page_size=page_size,
             axis_order=axis_order,
             extract_fid=True,
+            sort_by=sort_by,
         )
         if tile_table.num_rows > 0:
             all_tables.append(tile_table)
@@ -1653,6 +1696,7 @@ def _build_wfs_url(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     axis_order: str = "auto",
+    sort_by: str | None = None,
 ) -> str:
     """Build a WFS GetFeature URL with pagination support."""
     from urllib.parse import urlencode
@@ -1685,6 +1729,10 @@ def _build_wfs_url(
 
     if bbox and crs:
         params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
+
+    # sortBy is required for stable pagination on PK-less layers (Issue #488)
+    if sort_by and version != "1.0.0":
+        params["sortBy"] = sort_by
 
     return f"{clean_url}?{urlencode(params)}"
 
@@ -1727,6 +1775,7 @@ def _sequential_pagination_mode(
     crs: str | None,
     axis_order: str,
     extract_fid: bool,
+    sort_by: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using sequential adaptive pagination.
@@ -1750,6 +1799,7 @@ def _sequential_pagination_mode(
             bbox=bbox,
             crs=crs,
             axis_order=axis_order,
+            sort_by=sort_by,
         )
         try:
             table = _fetch_wfs_page(url, extract_fid=extract_fid)
@@ -1787,6 +1837,7 @@ def _parallel_pagination_mode(
     crs: str | None,
     axis_order: str,
     extract_fid: bool,
+    sort_by: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using parallel pagination.
@@ -1812,6 +1863,7 @@ def _parallel_pagination_mode(
             bbox=bbox,
             crs=crs,
             axis_order=axis_order,
+            sort_by=sort_by,
         )
         pages.append((i, start, url))
 
@@ -1846,6 +1898,7 @@ def fetch_all_features_duckdb(
     page_size: int = 10000,
     axis_order: str = "auto",
     extract_fid: bool = False,
+    sort_by: str | None = None,
 ) -> pa.Table:
     """
     Fetch WFS features via Python httpx download and DuckDB local parsing.
@@ -1870,6 +1923,7 @@ def fetch_all_features_duckdb(
         page_size: Features per page when paginating (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         extract_fid: If True, extract WFS feature IDs for deduplication
+        sort_by: Attribute to sort by for stable pagination (auto-detected if None)
 
     Returns:
         PyArrow Table with geometry (WKB) and all properties
@@ -1952,6 +2006,7 @@ def fetch_all_features_duckdb(
             crs,
             axis_order,
             extract_fid,
+            sort_by=sort_by,
         )
     else:
         results = _parallel_pagination_mode(
@@ -1966,6 +2021,7 @@ def fetch_all_features_duckdb(
             crs,
             axis_order,
             extract_fid,
+            sort_by=sort_by,
         )
 
     # Combine tables in order
@@ -2006,6 +2062,7 @@ def wfs_to_table(
     strict_crs: bool = False,
     verbose: bool = False,
     auto_tile: bool = False,
+    sort_by: str | None = None,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -2033,6 +2090,8 @@ def wfs_to_table(
         strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
             output_crs is set, reproject automatically; otherwise warn and use detected CRS
         verbose: Enable debug output
+        sort_by: Attribute to sort by for stable pagination. If None, auto-detected from
+            DescribeFeatureType. Required for layers without a primary key.
 
     Returns:
         PyArrow Table with GeoParquet-compatible geometry
@@ -2058,6 +2117,14 @@ def wfs_to_table(
     # Detect best output format
     output_format = _detect_best_output_format(layer_info.available_formats)
     debug(f"Using output format: {output_format}")
+
+    # Auto-detect sortBy attribute for stable pagination (Issue #488)
+    # GeoServer requires sortBy for pagination on layers without a primary key
+    effective_sort_by = sort_by
+    if effective_sort_by is None and version != "1.0.0":
+        effective_sort_by = layer_info.sortable_attribute
+        if effective_sort_by:
+            debug(f"Auto-detected sort attribute: {effective_sort_by}")
 
     # Determine bbox strategy
     use_server_bbox = True
@@ -2105,6 +2172,7 @@ def wfs_to_table(
             page_size=page_size,
             axis_order=axis_order,
             max_features=limit,
+            sort_by=effective_sort_by,
         )
     else:
         table = fetch_all_features_duckdb(
@@ -2117,6 +2185,7 @@ def wfs_to_table(
             max_workers=max_workers,
             page_size=page_size,
             axis_order=axis_order,
+            sort_by=effective_sort_by,
         )
 
     if table.num_rows == 0:
@@ -2202,6 +2271,7 @@ def convert_wfs_to_geoparquet(
     overwrite: bool = False,
     verbose: bool = False,
     auto_tile: bool = False,
+    sort_by: str | None = None,
 ) -> None:
     """
     Extract WFS layer and save as optimized GeoParquet.
@@ -2230,6 +2300,7 @@ def convert_wfs_to_geoparquet(
         overwrite: Overwrite existing file
         verbose: Enable debug output
         auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
+        sort_by: Attribute to sort by for stable pagination. If None, auto-detected.
     """
     configure_verbose(verbose)
 
@@ -2253,6 +2324,7 @@ def convert_wfs_to_geoparquet(
         strict_crs=strict_crs,
         verbose=verbose,
         auto_tile=auto_tile,
+        sort_by=sort_by,
     )
 
     # Apply Hilbert ordering (unless skipped)

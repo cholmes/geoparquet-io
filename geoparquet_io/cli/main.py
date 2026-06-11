@@ -3062,6 +3062,11 @@ def _deprecated_version_callback(ctx, param, value):
     "startIndex limits. Use for large datasets on servers that cap pagination.",
 )
 @click.option(
+    "--sort-by",
+    help="Attribute to sort by for stable pagination. Required for layers without a "
+    "primary key on GeoServer. If not specified, auto-detected from DescribeFeatureType.",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert curve sorting (faster, but no spatial clustering)",
@@ -3092,6 +3097,7 @@ def extract_wfs_cmd(
     workers,
     page_size,
     auto_tile,
+    sort_by,
     skip_hilbert,
     skip_bbox,
     compression,
@@ -3234,6 +3240,7 @@ def extract_wfs_cmd(
             overwrite=overwrite,
             verbose=verbose,
             auto_tile=auto_tile,
+            sort_by=sort_by,
         )
     except WFSError as e:
         raise click.ClickException(str(e)) from None
