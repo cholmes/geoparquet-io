@@ -814,6 +814,7 @@ def from_arcgis(
     limit: int | None = None,
     max_workers: int = 1,
     output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
 ) -> pa.Table:
     """
     Fetch ArcGIS Feature Service as a PyArrow Table.
@@ -832,6 +833,8 @@ def from_arcgis(
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
         output_crs: Preserve native CRS. 'native' uses the layer's advertised SR,
             or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            output-CRS units (degrees on the default WGS84 path).
 
     Returns:
         PyArrow Table with WKB geometry column
@@ -861,6 +864,7 @@ def from_arcgis(
         limit=limit,
         max_workers=max_workers,
         output_crs=output_crs,
+        max_allowable_offset=max_allowable_offset,
         verbose=False,
     )
 

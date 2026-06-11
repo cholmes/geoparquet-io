@@ -1021,13 +1021,42 @@ By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WG
     table.write("out.parquet")
     ```
 
-The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable.
+The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable. A WKID that resolves to neither an EPSG nor an ESRI definition is left untagged rather than labeled with a code no reader can resolve.
+
+With `--output-crs native`, the layer's spatial reference is taken from its advertised WKID, or recovered from its WKT when no WKID is published. If the WKT maps to no EPSG code, the extraction fails with a clear message so you can pass an explicit `--output-crs EPSG:<code>` instead.
 
 | Value | Behavior |
 |-------|----------|
 | *(omitted)* | Fetches GeoJSON, outputs WGS84 (default) |
 | `native` | Fetches EsriJSON with the layer's advertised spatial reference |
 | `EPSG:<code>` | Fetches EsriJSON with `outSR` set to the requested EPSG code |
+
+### Geometry generalization
+
+Some layers have very large or vertex-dense polygons that are slow to download or that overwhelm a server. Use `--max-allowable-offset` to ask the server to simplify each geometry before it is sent (the ArcGIS `maxAllowableOffset` parameter, a Douglas-Peucker tolerance). This reduces the vertex count per feature, which is different from `--limit`, which only caps the number of features.
+
+=== "CLI"
+
+    ```bash
+    # Generalize heavy polygons to a 0.005 unit tolerance in the output CRS
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs native --max-allowable-offset 0.005
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="native",
+        max_allowable_offset=0.005,
+    )
+    table.write("out.parquet")
+    ```
+
+The tolerance is in the units of the request's output CRS. With `--output-crs` set, that is the chosen CRS's unit, degrees for a geographic CRS and the projected unit (often meters) for a projected CRS. Without `--output-crs` the request is anchored to WGS84, so the tolerance is in degrees. The value must be positive, a bad value fails fast before any network call.
 
 ### Finding Service URLs
 

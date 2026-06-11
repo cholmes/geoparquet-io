@@ -335,6 +335,53 @@ class TestFetchFeaturesPage:
         assert params["f"] == "json"
         assert params["outSR"] == "25830"
 
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_no_max_allowable_offset_by_default(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        params = mock_request.call_args.kwargs["params"]
+        assert "maxAllowableOffset" not in params
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_on_geojson(self, mock_request):
+        """Generalization tolerance is honored on the default GeoJSON path too."""
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "geojson"
+        assert params["maxAllowableOffset"] == "0.005"
+        # outSR is anchored to 4326 so the tolerance unit is unambiguously degrees.
+        assert params["outSR"] == "4326"
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_with_outsr(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            output_wkid=25830,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "json"
+        assert params["outSR"] == "25830"
+        assert params["maxAllowableOffset"] == "0.005"
+
 
 class TestCrsParsing:
     """Tests for output-crs parsing helpers."""
@@ -584,6 +631,88 @@ class TestArcgisToTableOutputCrs:
         assert crs["id"]["authority"] == "ESRI"
         assert int(crs["id"]["code"]) == 102039
 
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_unresolvable_wkid_writes_no_crs(self, mock_layer, mock_stream, tmp_path, caplog):
+        """A WKID resolving as neither EPSG nor ESRI must not be tagged as EPSG."""
+        import logging
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 999999},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 999999})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        # No fabricated EPSG metadata when the code cannot be resolved.
+        metadata = result.schema.metadata or {}
+        assert b"geo" not in metadata
+        assert any("999999" in r.message for r in caplog.records)
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_resolves_via_epsg(self, mock_layer, mock_stream, tmp_path):
+        """Native SR advertised only as WKT must resolve to its EPSG code."""
+        from pyproj import CRS
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        wkt = CRS.from_epsg(25830).to_wkt()
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_unresolvable_raises(self, mock_layer, mock_stream, tmp_path):
+        """A WKT-only native SR with no EPSG equivalent raises an accurate error."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        wkt = (
+            'LOCAL_CS["Custom",LOCAL_DATUM["Custom",0],UNIT["metre",1.0],'
+            'AXIS["X",EAST],AXIS["Y",NORTH]]'
+        )
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[{"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False}],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+        with pytest.raises(GeoParquetError, match="could not resolve"):
+            arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        mock_stream.assert_not_called()
+
     @patch("geoparquet_io.core.arcgis.get_layer_info")
     def test_invalid_output_crs_raises_before_network(self, mock_layer):
         from geoparquet_io.core.arcgis import arcgis_to_table
@@ -591,6 +720,35 @@ class TestArcgisToTableOutputCrs:
 
         with pytest.raises(GeoParquetError, match="output_crs"):
             arcgis_to_table("https://example.com/FeatureServer/0", output_crs="ESRI:102100")
+
+        mock_layer.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_max_allowable_offset_threads_to_stream(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        arcgis_to_table(
+            "https://example.com/FeatureServer/0",
+            output_crs="EPSG:25830",
+            max_allowable_offset=0.005,
+        )
+
+        assert mock_stream.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_invalid_max_allowable_offset_raises_before_network(self, mock_layer):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=0)
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=-1.0)
 
         mock_layer.assert_not_called()
 
@@ -874,6 +1032,51 @@ class TestArcgisCliOutputCrs:
         assert not isinstance(result.exception, ValueError)
         mock_layer.assert_not_called()
 
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_max_allowable_offset(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0.005",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_cli_invalid_max_allowable_offset_fails_cleanly(self, mock_layer, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "max_allowable_offset" in result.output
+        mock_layer.assert_not_called()
+
 
 class TestPythonAPI:
     """Tests for Python API functions."""
@@ -927,6 +1130,24 @@ class TestApiOutputCrs:
         extract_arcgis("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
 
         assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_ops_from_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api import ops
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        ops.from_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_extract_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api.table import extract_arcgis
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        extract_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
 
 
 class TestStreamingConversion:
