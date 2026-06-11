@@ -168,6 +168,52 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Plugin system documentation
 - Dependency updates (actions/checkout v6, astral-sh/setup-uv v7, etc.)
 
+## v1.3.0 (2026-06-11)
+
+### Feat
+
+- **extract arcgis**: add --max-allowable-offset for server-side generalization
+- **api**: add output_crs to from_arcgis and extract_arcgis
+- **extract arcgis**: add --output-crs CLI option
+- **arcgis**: thread output_crs through convert_arcgis_to_geoparquet
+- **arcgis**: tag native CRS from returned SR with mismatch warning
+- **arcgis**: thread output_crs through streaming and capture returned SR
+- **arcgis**: add EsriJSON page-to-table converter via ST_Read
+- **arcgis**: request EsriJSON+outSR in fetch_features_page when output_crs set
+- **arcgis**: add CRS parsing helpers for output-crs
+- **wfs**: add typed exception subclasses for downstream consumers
+- add fiboa plugin (gpio fiboa) (#451)
+- add Vecorel specification support (#450)
+- fetch latest Overture Maps release dynamically (#455)
+- **convert**: add --geoparquet-version 1.1-geoarrow output format (#436)
+- **extract**: add Carto SQL API extractor
+
+### Fix
+
+- **test**: xfail GeoPackage sequential conversion test on Windows/macOS
+- **arcgis**: anchor maxAllowableOffset units by setting outSR
+- **arcgis**: unset CRS for unresolvable WKID, resolve native WKT to EPSG
+- **partition**: single-pass COPY PARTITION_BY instead of per-value re-scan (#478) (#480)
+- **check**: assert dict result to satisfy mypy in optimization check
+- **arcgis**: read layer SR from extent/sourceSpatialReference fallbacks
+- **check**: scale locality threshold by row-group count, report uncomputed metrics as None
+- **arcgis**: normalize WKIDs, validate output-crs upfront, dedupe page converters
+- **deps**: update mutmut config for 3.6.0 breaking changes
+- **deps**: pin duckdb<1.5.2 for geography extension compatibility
+- **check**: use spatial locality metrics instead of row-count heuristic (#456)
+- **add**: filter Overture admin caches to land — stop ~2.6x row multiplication (#474)
+- **wfs**: handle uint64 overflow in type promotion
+- **wfs**: harden schema unification with edge case handling
+- **wfs**: handle type mismatches across paginated pages
+- **crs**: distinguish null CRS (unknown) from omitted CRS (default) (#471)
+- **ci**: repair recurring slow-tests failures on main (#472)
+- **add**: admin-divisions OOM fix — restore plain spatial join, retire in-join dedup (#461)
+- **add**: restore bbox pre-filter in spatial join ON clause (#460)
+- **add**: remove bbox pre-filter from spatial join ON clauses (#457)
+- **ci**: separate blocking security checks from proactive CVE alerts
+- **carto**: address code review findings
+- **carto**: address security and robustness issues in Carto extractor
+
 ## v1.2.0 (2026-06-02)
 
 ### Feat
