@@ -66,12 +66,15 @@ repos:
             # Per-call always_xy in ST_Transform is an antipattern - set it once at the
             # session level instead. Scoped to ST_Transform so pyproj Transformer(always_xy=True),
             # which is correct, is not flagged. (Recurring CRS fix; see CLAUDE.md.)
-            if grep -rnE 'ST_Transform[^;]*always_xy' geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "instead"; then
+            # awk filters comment lines by testing the code text (field 3+), since
+            # grep -rn prefixes each line with "path:line:" so "^\s*#" never matches.
+            # grep . restores exit-status gating (awk always exits 0).
+            if grep -rnE 'ST_Transform[^;]*always_xy' geoparquet_io/ --include="*.py" | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
               echo "ERROR: Use session-level 'SET geometry_always_xy = true' instead of ST_Transform(..., always_xy := true)"
               errors=1
             fi
             # apply_crs_to_parquet() was removed - use _wrap_query_with_crs() instead
-            if grep -rn 'apply_crs_to_parquet' geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "instead"; then
+            if grep -rn 'apply_crs_to_parquet' geoparquet_io/ --include="*.py" | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
               echo "ERROR: apply_crs_to_parquet() was removed. Use _wrap_query_with_crs() instead."
               errors=1
             fi
