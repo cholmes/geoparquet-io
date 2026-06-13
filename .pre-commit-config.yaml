@@ -63,6 +63,18 @@ repos:
               echo "ERROR: Use TRY(ST_GeomFromText(x)) instead of TRY_CAST(x AS GEOMETRY)"
               errors=1
             fi
+            # Per-call always_xy in ST_Transform is an antipattern - set it once at the
+            # session level instead. Scoped to ST_Transform so pyproj Transformer(always_xy=True),
+            # which is correct, is not flagged. (Recurring CRS fix; see CLAUDE.md.)
+            if grep -rnE 'ST_Transform[^;]*always_xy' geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "instead"; then
+              echo "ERROR: Use session-level 'SET geometry_always_xy = true' instead of ST_Transform(..., always_xy := true)"
+              errors=1
+            fi
+            # apply_crs_to_parquet() was removed - use _wrap_query_with_crs() instead
+            if grep -rn 'apply_crs_to_parquet' geoparquet_io/ --include="*.py" | grep -v "^\s*#" | grep -v "instead"; then
+              echo "ERROR: apply_crs_to_parquet() was removed. Use _wrap_query_with_crs() instead."
+              errors=1
+            fi
             exit $errors
         language: system
         pass_filenames: false
@@ -78,6 +90,27 @@ repos:
           - |
             if grep -rn "click\.echo" geoparquet_io/core/ --include="*.py" | grep -v "logging_config.py"; then
               echo "ERROR: Use logger instead of click.echo in core/. See CLAUDE.md Logging section."
+              exit 1
+            fi
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      # Forbid hand-rolling paginated-schema reconciliation in extractors.
+      # WFS and ArcGIS each grew separate, separately-buggy schema-alignment code
+      # (18 + 8 fix commits). The canonical helpers live in core/common.py:
+      # _compute_unified_schema and _cast_table_to_schema. New extractors must reuse them.
+      - id: forbid-bespoke-schema-reconciliation
+        name: forbid-bespoke-schema-reconciliation
+        description: Use shared schema helpers from core/common.py, not hand-rolled ones
+        entry: bash
+        args:
+          - -c
+          - |
+            if grep -rnE 'def _(align|unify|reconcile)[a-zA-Z_]*schema' geoparquet_io/core/ --include="*.py" | grep -v "common.py"; then
+              echo "ERROR: Reuse _compute_unified_schema / _cast_table_to_schema from core/common.py"
+              echo "       instead of hand-rolling schema reconciliation. See the WFS/ArcGIS history"
+              echo "       and docs/contributing.md (External extractors)."
               exit 1
             fi
         language: system

@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.common import _cast_table_to_schema, write_geoparquet_table
 from geoparquet_io.core.crs_utils import _extract_crs_identifier, parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.exceptions import (
@@ -849,44 +849,6 @@ def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
     return parse_crs_string_to_projjson("EPSG:4326")
 
 
-def _align_table_to_schema(table: pa.Table, target_schema: pa.Schema) -> pa.Table:
-    """
-    Align a table's columns to match a target schema.
-
-    This handles three types of mismatches between DuckDB output and ArcGIS metadata:
-    1. Column order differences - reorders columns to match target schema
-    2. Extra columns - drops columns not in target schema
-    3. Missing columns - adds null columns of the correct type
-
-    This is critical for handling schema variance in paginated ArcGIS responses
-    (issue #334), where different batches may have different column ordering or
-    missing/extra fields.
-
-    Args:
-        table: Source table from DuckDB with potentially different column order
-        target_schema: Target schema from ArcGIS layer metadata
-
-    Returns:
-        Table with columns aligned to target schema
-    """
-    source_columns = set(table.column_names)
-    target_columns = [field.name for field in target_schema]
-
-    aligned_arrays = []
-    for field in target_schema:
-        if field.name in source_columns:
-            # Column exists - select it (handles reordering)
-            col = table.column(field.name)
-            aligned_arrays.append(col)
-        else:
-            # Column missing - create null array of correct type
-            null_array = pa.nulls(table.num_rows, type=field.type)
-            aligned_arrays.append(null_array)
-
-    # Create new table with aligned columns (automatically drops extra columns)
-    return pa.table(dict(zip(target_columns, aligned_arrays, strict=True)))
-
-
 def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
     """
     Build a fixed PyArrow schema from ArcGIS layer metadata.
@@ -1020,7 +982,7 @@ def _esrijson_page_to_table(page: dict, con=None) -> pa.Table | None:
     (geometryType / spatialReference / fields / features), so the raw page is
     written verbatim. `attributes` are flattened to columns by the driver.
     GDAL may or may not add OGC_FID for EsriJSON; extra columns are kept here
-    and dropped later by _align_table_to_schema.
+    and dropped later by _cast_table_to_schema.
 
     Returns a PyArrow Table with WKB geometry column, or None if no features.
     """
@@ -1131,25 +1093,31 @@ def _stream_features_to_parquet(
 
             page_count += 1
 
-            # Align columns to target schema (handles order/missing/extra columns)
-            # This is required because DuckDB may return columns in different order
-            # than ArcGIS metadata, or some batches may have different fields
-            page_table = _align_table_to_schema(page_table, target_schema)
-
-            # Cast to fixed schema (handles type mismatches between batches)
+            # Reconcile this page to the authoritative metadata schema using the
+            # shared helper from core/common.py (same code path as the WFS extractor):
+            # it reorders columns, fills missing fields with typed nulls, drops extras,
+            # and casts each column to the metadata type with page context in errors.
+            # The metadata schema stays authoritative (e.g. int32 declared fields are
+            # narrowed back from DuckDB's int64 inference); promotion is intentionally
+            # NOT used here because, unlike WFS, ArcGIS has an authoritative schema.
             try:
-                page_table = page_table.cast(target_schema, safe=True)
-            except pa.ArrowInvalid as e:
-                # If safe casting fails, try to provide helpful error message
+                page_table = _cast_table_to_schema(
+                    page_table, target_schema, page_info=f"batch {page_count}"
+                )
+            except ValueError as e:
+                # Cast failure (e.g. a value that overflows a declared narrower type)
                 raise GeoParquetError(
                     f"Failed to cast batch {page_count} to target schema. "
-                    f"This may indicate data corruption or unexpected types from the service. "
-                    f"Error: {e}"
+                    f"This may indicate unexpected types from the service. {e}"
                 ) from e
 
-            # Initialize writer with fixed schema on first page
+            # Initialize writer on first page using the reconciled page's schema.
+            # _cast_table_to_schema produces nullable columns (it rebuilds the table),
+            # so we seed the writer from the reconciled table rather than the metadata
+            # schema to avoid a nullability mismatch. Column types still match metadata;
+            # geo metadata is (re)derived in the second pass, not from this writer.
             if writer is None:
-                writer = pq.ParquetWriter(output_path, target_schema)
+                writer = pq.ParquetWriter(output_path, page_table.schema)
 
             # Write this page
             writer.write_table(page_table)
