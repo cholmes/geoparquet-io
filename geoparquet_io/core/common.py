@@ -534,6 +534,112 @@ def _rebuild_array_with_type(
     return pa.chunked_array(new_chunks, type=new_type)
 
 
+def _type_category(arrow_type) -> str:
+    """Classify a PyArrow type into a single promotion category.
+
+    Categories are mutually exclusive, so two types in the same category are
+    treated alike by the promotion rules. Returns "other" for types that have
+    no special promotion handling (caller falls back to the first type).
+    """
+    import pyarrow as pa
+
+    if pa.types.is_null(arrow_type):
+        return "null"
+    if pa.types.is_boolean(arrow_type):
+        return "bool"
+    if pa.types.is_integer(arrow_type):
+        return "int"
+    if pa.types.is_floating(arrow_type):
+        return "float"
+    if pa.types.is_decimal(arrow_type):
+        return "decimal"
+    if pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type):
+        return "string"
+    if pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
+        return "binary"
+    if pa.types.is_timestamp(arrow_type):
+        return "timestamp"
+    return "other"
+
+
+def _promote_special(type_a, type_b, cat_a: str, cat_b: str):
+    """Promote null / binary / string categories. Returns None if neither applies.
+
+    Order matters: binary is handled before string so that binary geometry
+    data is never coerced to string.
+    """
+    import pyarrow as pa
+
+    if cat_a == "null":
+        return type_b
+    if cat_b == "null":
+        return type_a
+
+    # Binary types: don't promote to string (would corrupt geometry data)
+    if cat_a == "binary" or cat_b == "binary":
+        if cat_a == "binary" and cat_b == "binary":
+            return pa.large_binary()  # Safest binary type
+        return type_a  # Can't promote binary + non-binary safely
+
+    # String wins over numeric (safest fallback for text data)
+    if cat_a == "string" or cat_b == "string":
+        return pa.string()
+
+    return None
+
+
+def _promote_int_pair(type_a, type_b):
+    """Promote two integer types, guarding against uint64/signed overflow."""
+    import pyarrow as pa
+
+    a_unsigned = pa.types.is_unsigned_integer(type_a)
+    b_unsigned = pa.types.is_unsigned_integer(type_b)
+    # uint64 mixed with signed int → float64 (avoids overflow for large uint64)
+    if (a_unsigned and type_a == pa.uint64() and not b_unsigned) or (
+        b_unsigned and type_b == pa.uint64() and not a_unsigned
+    ):
+        return pa.float64()
+    return pa.int64()
+
+
+def _promote_numeric_pair(type_a, type_b, cat_a: str, cat_b: str):
+    """Promote bool / int / float / decimal combinations. None if not numeric."""
+    import pyarrow as pa
+
+    cats = {cat_a, cat_b}
+
+    # bool + int → int64 (bool can safely cast to int)
+    if cats == {"bool", "int"}:
+        return pa.int64()
+
+    # bool + float → float64
+    if cats == {"bool", "float"}:
+        return pa.float64()
+
+    # int + int → check for unsigned overflow risk
+    if cat_a == "int" and cat_b == "int":
+        return _promote_int_pair(type_a, type_b)
+
+    # Any remaining int/float/decimal mix → float64 (safest common type)
+    numeric = {"int", "float", "decimal"}
+    if cat_a in numeric and cat_b in numeric:
+        return pa.float64()
+
+    return None
+
+
+def _promote_timestamp_pair(type_a, type_b, cat_a: str, cat_b: str):
+    """Promote two timestamps to the finer unit. None if not both timestamps."""
+    if cat_a != "timestamp" or cat_b != "timestamp":
+        return None
+
+    # ns > us > ms > s — return the finer-grained unit (lower number = finer)
+    unit_order = {"ns": 0, "us": 1, "ms": 2, "s": 3}
+    if unit_order.get(type_a.unit, 99) <= unit_order.get(type_b.unit, 99):
+        return type_a
+    return type_b
+
+
 def _promote_numeric_type(type_a, type_b):
     """
     Compute a common type that both input types can safely cast to.
@@ -558,89 +664,16 @@ def _promote_numeric_type(type_a, type_b):
     Returns:
         PyArrow type that both can safely cast to
     """
-    import pyarrow as pa
-
     if type_a == type_b:
         return type_a
 
-    if pa.types.is_null(type_a):
-        return type_b
-    if pa.types.is_null(type_b):
-        return type_a
+    cat_a = _type_category(type_a)
+    cat_b = _type_category(type_b)
 
-    a_is_int = pa.types.is_integer(type_a)
-    b_is_int = pa.types.is_integer(type_b)
-    a_is_float = pa.types.is_floating(type_a)
-    b_is_float = pa.types.is_floating(type_b)
-    a_is_decimal = pa.types.is_decimal(type_a)
-    b_is_decimal = pa.types.is_decimal(type_b)
-    a_is_string = pa.types.is_string(type_a) or pa.types.is_large_string(type_a)
-    b_is_string = pa.types.is_string(type_b) or pa.types.is_large_string(type_b)
-    a_is_bool = pa.types.is_boolean(type_a)
-    b_is_bool = pa.types.is_boolean(type_b)
-    a_is_timestamp = pa.types.is_timestamp(type_a)
-    b_is_timestamp = pa.types.is_timestamp(type_b)
-    a_is_binary = pa.types.is_binary(type_a) or pa.types.is_large_binary(type_a)
-    b_is_binary = pa.types.is_binary(type_b) or pa.types.is_large_binary(type_b)
-
-    # Binary types: don't promote to string (would corrupt geometry data)
-    if a_is_binary or b_is_binary:
-        if a_is_binary and b_is_binary:
-            return pa.large_binary()  # Safest binary type
-        return type_a  # Can't promote binary + non-binary safely
-
-    # String wins over numeric (safest fallback for text data)
-    if a_is_string or b_is_string:
-        return pa.string()
-
-    # bool + int → int64 (bool can safely cast to int)
-    if (a_is_bool and b_is_int) or (a_is_int and b_is_bool):
-        return pa.int64()
-
-    # bool + float → float64
-    if (a_is_bool and b_is_float) or (a_is_float and b_is_bool):
-        return pa.float64()
-
-    # int + int → check for unsigned overflow risk
-    if a_is_int and b_is_int:
-        a_unsigned = pa.types.is_unsigned_integer(type_a)
-        b_unsigned = pa.types.is_unsigned_integer(type_b)
-        # uint64 mixed with signed int → float64 (avoids overflow for large uint64)
-        if (a_unsigned and type_a == pa.uint64() and not b_unsigned) or (
-            b_unsigned and type_b == pa.uint64() and not a_unsigned
-        ):
-            return pa.float64()
-        return pa.int64()
-
-    # float + float → float64
-    if a_is_float and b_is_float:
-        return pa.float64()
-
-    # int + float → float64
-    if (a_is_int and b_is_float) or (a_is_float and b_is_int):
-        return pa.float64()
-
-    # int + decimal → float64 (safest common type)
-    if (a_is_int and b_is_decimal) or (a_is_decimal and b_is_int):
-        return pa.float64()
-
-    # decimal + float → float64
-    if (a_is_decimal and b_is_float) or (a_is_float and b_is_decimal):
-        return pa.float64()
-
-    # decimal + decimal with different precision → float64
-    if a_is_decimal and b_is_decimal:
-        return pa.float64()
-
-    # timestamp + timestamp → finest unit (ns > us > ms > s)
-    if a_is_timestamp and b_is_timestamp:
-        unit_order = {"ns": 0, "us": 1, "ms": 2, "s": 3}
-        a_unit = type_a.unit
-        b_unit = type_b.unit
-        # Return the finer-grained unit (lower number = finer)
-        if unit_order.get(a_unit, 99) <= unit_order.get(b_unit, 99):
-            return type_a
-        return type_b
+    for handler in (_promote_special, _promote_numeric_pair, _promote_timestamp_pair):
+        result = handler(type_a, type_b, cat_a, cat_b)
+        if result is not None:
+            return result
 
     # Fallback: return first type (caller handles cast errors with context)
     return type_a
