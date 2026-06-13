@@ -1134,6 +1134,7 @@ def create_pmtiles(
     no_tile_size_limit: bool = True,
     drop_densest_as_needed: bool = True,
     maximum_tile_bytes: int | None = None,
+    force: bool = False,
 ) -> None:
     """
     Create PMTiles from a GeoParquet file using tippecanoe.
@@ -1165,6 +1166,7 @@ def create_pmtiles(
             Only takes effect when there is a tile size limit to drop against.
         maximum_tile_bytes: Set an explicit per-tile byte cap via
             --maximum-tile-bytes. Takes precedence over no_tile_size_limit.
+        force: Pass --force to overwrite the output file if it already exists.
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -1205,4 +1207,5 @@ def create_pmtiles(
         no_tile_size_limit=no_tile_size_limit,
         drop_densest_as_needed=drop_densest_as_needed,
         maximum_tile_bytes=maximum_tile_bytes,
+        force=force,
     )

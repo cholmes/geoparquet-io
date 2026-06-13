@@ -6739,6 +6739,12 @@ def pmtiles(ctx):
     default=None,
     help="Explicit per-tile byte cap (--maximum-tile-bytes); takes precedence over --no-tile-size-limit",
 )
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite the output file if it already exists (tippecanoe --force)",
+)
 @verbose_option
 @aws_profile_option
 def pmtiles_create(
@@ -6761,6 +6767,7 @@ def pmtiles_create(
     no_tile_size_limit,
     drop_densest_as_needed,
     maximum_tile_bytes,
+    force,
 ):
     """Create PMTiles from a GeoParquet file.
 
@@ -6780,6 +6787,8 @@ def pmtiles_create(
         gpio pmtiles create data.parquet tiles.pmtiles --layer-by-column owner
 
         gpio pmtiles create dense.parquet tiles.pmtiles --tile-size-limit --max-zoom 14
+
+        gpio pmtiles create data.parquet tiles.pmtiles --force
     """
     from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
 
@@ -6804,6 +6813,7 @@ def pmtiles_create(
             no_tile_size_limit=no_tile_size_limit,
             drop_densest_as_needed=drop_densest_as_needed,
             maximum_tile_bytes=maximum_tile_bytes,
+            force=force,
         )
         click.echo(click.style(f"✓ Created {output_file}", fg="green"))
     except Exception as e:

@@ -364,6 +364,37 @@ class TestBuildTippecanoeCommand:
         assert "--maximum-tile-bytes=500000" in cmd
         assert "--no-tile-size-limit" not in cmd
 
+    def test_force_omitted_by_default(self):
+        """--force is not passed unless requested."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+        )
+
+        assert "--force" not in cmd
+
+    def test_force_passed_when_enabled(self):
+        """--force is passed to tippecanoe when force=True."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            force=True,
+        )
+
+        assert "--force" in cmd
+
     def test_max_zoom_only(self):
         """Test that -z is used for max zoom without min zoom."""
         from geoparquet_io.core.pmtiles import _build_tippecanoe_command
@@ -611,6 +642,7 @@ class TestPMTilesCreateCLIFlags:
         assert kwargs["no_tile_size_limit"] is True
         assert kwargs["drop_densest_as_needed"] is True
         assert kwargs["maximum_tile_bytes"] is None
+        assert kwargs["force"] is False
 
     def test_toggles_off_thread_through(self):
         result, mock_create = self._invoke(
@@ -634,6 +666,18 @@ class TestPMTilesCreateCLIFlags:
 
         assert result.exit_code == 0, result.output
         assert mock_create.call_args.kwargs["maximum_tile_bytes"] == 500000
+
+    def test_force_thread_through(self):
+        result, mock_create = self._invoke(["--force"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_create.call_args.kwargs["force"] is True
+
+    def test_force_short_flag_thread_through(self):
+        result, mock_create = self._invoke(["-f"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_create.call_args.kwargs["force"] is True
 
 
 class TestRunPipelineErrorSurfacing:

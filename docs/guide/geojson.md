@@ -128,6 +128,9 @@ For national- or global-overview maps over dense data, re-enable the size limit 
     gpio pmtiles create data.parquet tiles.pmtiles \
       --no-simplify-only-low-zooms \
       --no-drop-densest-as-needed
+
+    # Overwrite an existing output file
+    gpio pmtiles create data.parquet tiles.pmtiles --force
     ```
 
 === "Python"
