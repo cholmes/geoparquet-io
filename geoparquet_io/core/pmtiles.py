@@ -186,8 +186,21 @@ def _build_tippecanoe_command(
     verbose: bool,
     attribution: str | None = None,
     layer_by_column: str | None = None,
+    simplify_only_low_zooms: bool = True,
+    no_simplification_of_shared_nodes: bool = True,
+    no_tile_size_limit: bool = True,
+    drop_densest_as_needed: bool = True,
+    maximum_tile_bytes: int | None = None,
 ) -> list[str]:
-    """Build the tippecanoe command with production-quality settings."""
+    """Build the tippecanoe command with production-quality settings.
+
+    The four production-quality tippecanoe flags are individually
+    toggleable; their defaults reproduce the historical behaviour. When
+    ``maximum_tile_bytes`` is set it takes precedence over
+    ``no_tile_size_limit`` — the two are contradictory, and an explicit
+    cap is what gives ``--drop-densest-as-needed`` a limit to drop
+    features against.
+    """
     cmd = ["tippecanoe", "-P", "-o", output_path]
 
     if layer_by_column:
@@ -213,10 +226,20 @@ def _build_tippecanoe_command(
     else:
         cmd.append("-zg")
 
-    cmd.append("--simplify-only-low-zooms")
-    cmd.append("--no-simplification-of-shared-nodes")
-    cmd.append("--no-tile-size-limit")
-    cmd.append("--drop-densest-as-needed")
+    if simplify_only_low_zooms:
+        cmd.append("--simplify-only-low-zooms")
+    if no_simplification_of_shared_nodes:
+        cmd.append("--no-simplification-of-shared-nodes")
+
+    # An explicit byte cap and "no limit" are mutually exclusive; the cap wins
+    # so drop-densest has a limit to drop features against.
+    if maximum_tile_bytes is not None:
+        cmd.append(f"--maximum-tile-bytes={maximum_tile_bytes}")
+    elif no_tile_size_limit:
+        cmd.append("--no-tile-size-limit")
+
+    if drop_densest_as_needed:
+        cmd.append("--drop-densest-as-needed")
 
     if verbose:
         cmd.append("--progress-interval=1")
@@ -437,6 +460,11 @@ def create_pmtiles_from_geoparquet(
     src_crs: str | None = None,
     attribution: str | None = None,
     layer_by_column: str | None = None,
+    simplify_only_low_zooms: bool = True,
+    no_simplification_of_shared_nodes: bool = True,
+    no_tile_size_limit: bool = True,
+    drop_densest_as_needed: bool = True,
+    maximum_tile_bytes: int | None = None,
 ) -> None:
     """
     Create PMTiles using gpio streaming + tippecanoe subprocess.
@@ -462,6 +490,16 @@ def create_pmtiles_from_geoparquet(
         src_crs: Source CRS for reprojection to WGS84
         attribution: Attribution HTML for the tiles
         layer_by_column: Split tiles into layers grouped by values of this column
+        simplify_only_low_zooms: Pass --simplify-only-low-zooms (default: True)
+        no_simplification_of_shared_nodes: Pass --no-simplification-of-shared-nodes (default: True)
+        no_tile_size_limit: Pass --no-tile-size-limit, removing the tile size
+            cap (default: True). Set False to respect tippecanoe's size limit so
+            that drop_densest_as_needed actually drops features on dense data.
+        drop_densest_as_needed: Pass --drop-densest-as-needed (default: True).
+            Only drops features to bring a tile back under the size limit, so it
+            has no effect while no_tile_size_limit is True.
+        maximum_tile_bytes: Set an explicit per-tile byte cap via
+            --maximum-tile-bytes. Takes precedence over no_tile_size_limit.
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -506,6 +544,11 @@ def create_pmtiles_from_geoparquet(
         verbose,
         attribution,
         layer_by_column,
+        simplify_only_low_zooms=simplify_only_low_zooms,
+        no_simplification_of_shared_nodes=no_simplification_of_shared_nodes,
+        no_tile_size_limit=no_tile_size_limit,
+        drop_densest_as_needed=drop_densest_as_needed,
+        maximum_tile_bytes=maximum_tile_bytes,
     )
 
     _run_pipeline(gpio_commands, tippecanoe_cmd, verbose, layer_by_column)

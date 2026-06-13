@@ -102,6 +102,56 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 The command handles the entire pipeline internally (reprojection → filtering → conversion → tippecanoe) with optimal settings.
 
+#### Tuning tile generation (dense data)
+
+By default `gpio pmtiles create` runs tippecanoe with `--no-tile-size-limit` and `--drop-densest-as-needed`. This is a max-fidelity setting: nothing is dropped, so tiles can grow without bound. `--drop-densest-as-needed` only drops features to bring a tile back **under the size limit**, so while the limit is off it never fires.
+
+For national- or global-overview maps over dense data, re-enable the size limit so feature dropping actually happens. Each flag is individually toggleable; the defaults reproduce the historical behavior.
+
+!!! warning "`--no-tile-size-limit` defeats `--drop-densest-as-needed`"
+    These two ship on by default and interact: with no size limit, there is nothing for drop-densest to drop against. Pass `--tile-size-limit` (or set an explicit `--maximum-tile-bytes`) to make dropping take effect.
+
+=== "CLI"
+
+    ```bash
+    # Re-enable tippecanoe's size limit so drop-densest actually drops
+    gpio pmtiles create dense.parquet tiles.pmtiles \
+      --tile-size-limit \
+      --max-zoom 14
+
+    # Or set an explicit per-tile byte cap (takes precedence over
+    # --no-tile-size-limit)
+    gpio pmtiles create dense.parquet tiles.pmtiles \
+      --maximum-tile-bytes 500000
+
+    # Disable individual production-quality flags
+    gpio pmtiles create data.parquet tiles.pmtiles \
+      --no-simplify-only-low-zooms \
+      --no-drop-densest-as-needed
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    # Re-enable tippecanoe's size limit so drop-densest actually drops
+    ops.create_pmtiles(
+        input_path="dense.parquet",
+        output_path="tiles.pmtiles",
+        no_tile_size_limit=False,
+        max_zoom=14,
+    )
+
+    # Or set an explicit per-tile byte cap (takes precedence over
+    # no_tile_size_limit)
+    ops.create_pmtiles(
+        input_path="dense.parquet",
+        output_path="tiles.pmtiles",
+        maximum_tile_bytes=500000,
+    )
+    ```
+
 ## Common Workflows
 
 ### Filter Before Converting

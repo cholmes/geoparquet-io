@@ -6705,6 +6705,40 @@ def pmtiles(ctx):
     default=None,
     help="In the generated PMTiles, split tiles into layers based on the value of this column",
 )
+@click.option(
+    "--simplify-only-low-zooms/--no-simplify-only-low-zooms",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --simplify-only-low-zooms",
+)
+@click.option(
+    "--no-simplification-of-shared-nodes/--simplification-of-shared-nodes",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --no-simplification-of-shared-nodes",
+)
+@click.option(
+    "--no-tile-size-limit/--tile-size-limit",
+    default=True,
+    show_default=True,
+    help=(
+        "Remove the tile size cap (--no-tile-size-limit). Use --tile-size-limit "
+        "to keep tippecanoe's limit so --drop-densest-as-needed actually drops "
+        "features on dense data."
+    ),
+)
+@click.option(
+    "--drop-densest-as-needed/--no-drop-densest-as-needed",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --drop-densest-as-needed (no effect while size limit is off)",
+)
+@click.option(
+    "--maximum-tile-bytes",
+    type=int,
+    default=None,
+    help="Explicit per-tile byte cap (--maximum-tile-bytes); takes precedence over --no-tile-size-limit",
+)
 @verbose_option
 @aws_profile_option
 def pmtiles_create(
@@ -6722,6 +6756,11 @@ def pmtiles_create(
     verbose,
     aws_profile,
     layer_by_column,
+    simplify_only_low_zooms,
+    no_simplification_of_shared_nodes,
+    no_tile_size_limit,
+    drop_densest_as_needed,
+    maximum_tile_bytes,
 ):
     """Create PMTiles from a GeoParquet file.
 
@@ -6739,6 +6778,8 @@ def pmtiles_create(
         gpio pmtiles create data.parquet tiles.pmtiles --where "population > 10000"
 
         gpio pmtiles create data.parquet tiles.pmtiles --layer-by-column owner
+
+        gpio pmtiles create dense.parquet tiles.pmtiles --tile-size-limit --max-zoom 14
     """
     from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
 
@@ -6758,6 +6799,11 @@ def pmtiles_create(
             src_crs=src_crs,
             attribution=attribution,
             layer_by_column=layer_by_column,
+            simplify_only_low_zooms=simplify_only_low_zooms,
+            no_simplification_of_shared_nodes=no_simplification_of_shared_nodes,
+            no_tile_size_limit=no_tile_size_limit,
+            drop_densest_as_needed=drop_densest_as_needed,
+            maximum_tile_bytes=maximum_tile_bytes,
         )
         click.echo(click.style(f"✓ Created {output_file}", fg="green"))
     except Exception as e:
