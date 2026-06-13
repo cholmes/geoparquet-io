@@ -64,6 +64,25 @@ New CLI commands need corresponding Python API:
 
 See `CLAUDE.md` for full architecture details.
 
+### External extractors
+
+Extractors that page through a remote service (`wfs`, `arcgis`, `carto`, `bigquery`) keep
+re-discovering the same edge cases. Reuse the shared schema helpers in `core/common.py`
+(`_compute_unified_schema`, `_cast_table_to_schema`, `_promote_numeric_type`) rather than
+hand-rolling schema reconciliation — the `forbid-bespoke-schema-reconciliation` pre-commit hook
+enforces this. Known edge cases to handle:
+
+- **Pagination**: detect server `startIndex`/page-size limits; supply a stable sort
+  (`sortBy`/`orderByFields`) for layers without a primary key.
+- **Schema across pages**: never trust the first page's inferred schema. Where a source has an
+  authoritative schema (ArcGIS layer metadata), cast each page to it via `_cast_table_to_schema`.
+  Where it does not (WFS), unify with `_compute_unified_schema` (handles int/float/decimal mixes,
+  uint64 overflow).
+- **Empty/null responses**: handle empty result sets and null properties without crashing.
+- **CRS/SR**: normalize WKID/SR; resolve native WKT → EPSG; unset CRS for unresolvable codes; honor
+  `--output-crs` by reprojecting when the server returns a different CRS.
+- **Network**: retry transient errors; surface upstream stderr.
+
 ## Releasing
 
 (Maintainers only)

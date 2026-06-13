@@ -1476,12 +1476,18 @@ class TestNetworkIntegration:
         assert "geometry" in table.column_names
 
 
-class TestAlignTableToSchema:
-    """Unit tests for the _align_table_to_schema helper function."""
+class TestCastTableToSchema:
+    """Schema-reconciliation tests for the shared _cast_table_to_schema helper.
+
+    ArcGIS converged onto core/common._cast_table_to_schema (the same helper WFS
+    uses) instead of a bespoke _align_table_to_schema + raw cast. These tests
+    preserve the reorder/drop/add coverage of the deleted helper and add the new
+    page-context-error and geometry-binary guarantees the convergence provides.
+    """
 
     def test_reorders_columns_to_match_schema(self):
-        """Test that columns are reordered to match target schema."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Columns are reordered to match the target schema."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         # Source table with different column order
         source = pa.table(
@@ -1500,7 +1506,7 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "b", "c"]
         assert result.column("a").to_pylist() == [1, 4]
@@ -1508,8 +1514,8 @@ class TestAlignTableToSchema:
         assert result.column("c").to_pylist() == [3, 6]
 
     def test_drops_extra_columns(self):
-        """Test that extra columns not in target schema are dropped."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Extra columns not in the target schema are dropped."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -1526,14 +1532,14 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "b"]
         assert "extra" not in result.column_names
 
     def test_adds_missing_columns_with_nulls(self):
-        """Test that missing columns are filled with nulls."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Missing columns are filled with typed nulls."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -1548,14 +1554,14 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "missing"]
         assert result.column("missing").to_pylist() == [None, None]
 
     def test_handles_all_mismatches_together(self):
-        """Test reorder + drop + add in combination."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Reorder + drop + add + cast in combination."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -1573,13 +1579,58 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "missing", "z"]
         assert result.column("a").to_pylist() == [1, 2]
         assert result.column("missing").to_pylist() == [None, None]
         assert result.column("z").to_pylist() == [9, 10]
         assert "extra" not in result.column_names
+
+    def test_geometry_binary_is_preserved(self):
+        """A WKB geometry column stays binary even when attributes are strings.
+
+        Guards against any regression that coerces the geometry column toward
+        string when reconciling an ArcGIS page table to the metadata schema.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02", b"\x03\x04"], type=pa.binary()),
+                "name": ["a", "b"],
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("geometry", pa.binary()),
+                pa.field("name", pa.string()),
+            ]
+        )
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("geometry").type == pa.binary()
+        assert result.column("geometry").to_pylist() == [b"\x01\x02", b"\x03\x04"]
+
+    def test_cast_failure_reports_page_context(self):
+        """An impossible cast raises ValueError carrying the page/column context.
+
+        This is the new diagnostic the convergence buys: ArcGIS wraps this
+        ValueError into a GeoParquetError that names the batch and column,
+        replacing the previous generic message.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        # A non-numeric string cannot be safely cast to int64
+        source = pa.table({"amount": ["not_a_number", "also_bad"]})
+        target_schema = pa.schema([pa.field("amount", pa.int64())])
+
+        with pytest.raises(ValueError, match="amount") as exc_info:
+            _cast_table_to_schema(source, target_schema, page_info="batch 7")
+
+        assert "batch 7" in str(exc_info.value)
 
 
 class TestSchemaMismatchBetweenBatches:
