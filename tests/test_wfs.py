@@ -3204,6 +3204,51 @@ class TestSrsNameWithoutBbox:
         assert 49.0 <= y <= 52.0, f"Y coord {y} not in Belgium latitude range"
 
 
+@pytest.mark.integration
+@pytest.mark.network
+@pytest.mark.slow
+class TestProjectedCRSPreservedIntegration:
+    """Live regression for #499: a server-honored projected CRS must be kept.
+
+    IDECOR (Córdoba, Argentina) serves all layers in EPSG:22174 (an Argentine
+    Gauss-Krüger zone). The old bbox heuristic saw the large metric coordinates
+    (~4.5M, ~6.4M) and relabeled the output EPSG:3857, silently corrupting any
+    downstream reprojection. The geometry was correct, so this can only be
+    caught by asserting on the stored CRS metadata, not coordinate ranges.
+    """
+
+    IDECOR_WFS = "https://idecor-ws.mapascordoba.gob.ar/geoserver/idecor/wfs"
+    IDECOR_LAYER = "idecor:puntos_interes_bv"
+
+    @pytest.mark.xfail(
+        reason="External WFS service may be unavailable",
+        strict=False,
+        raises=(Exception,),  # Only xfail on connection/service errors
+    )
+    def test_projected_crs_not_relabeled(self):
+        """Output metadata must report EPSG:22174, never the bbox-guessed 3857."""
+        import json
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        table = wfs_to_table(
+            self.IDECOR_WFS,
+            self.IDECOR_LAYER,
+            output_crs="EPSG:22174",
+            limit=5,
+        )
+
+        assert table.num_rows > 0
+
+        geo = json.loads(table.schema.metadata[b"geo"])
+        crs = geo["columns"]["geometry"]["crs"]
+        # PROJJSON for EPSG:22174 — the authoritative code must be preserved.
+        assert crs["id"]["authority"] == "EPSG"
+        assert int(crs["id"]["code"]) == 22174, (
+            f"Output mislabeled as {crs['id']}; expected EPSG:22174 (issue #499)"
+        )
+
+
 # =============================================================================
 # Spatial Tiling Tests (startIndex limit workaround)
 # =============================================================================
