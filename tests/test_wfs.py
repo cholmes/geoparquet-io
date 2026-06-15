@@ -2617,6 +2617,35 @@ class TestServerDeclaredCRS:
         assert table.num_rows == 0
         assert (table.schema.metadata or {}).get(_SERVER_CRS_METADATA_KEY) == b"EPSG:22174"
 
+    def test_fetch_wfs_page_unrecognized_crs_shape(self):
+        """A ``crs`` member without a name (e.g. a link CRS) yields no metadata.
+
+        ``json_extract_string`` returns NULL rather than raising on an
+        unexpected shape, so extraction falls back to the bbox heuristic.
+        """
+        import json
+
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY, _fetch_wfs_page
+
+        body = json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "link", "properties": {"href": "http://example/crs"}},
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [4527586.01, 6386852.32]},
+                        "properties": {"name": "a"},
+                    }
+                ],
+            }
+        ).encode()
+        with self._make_mock_stream(body):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert table.num_rows == 1
+        assert _SERVER_CRS_METADATA_KEY not in (table.schema.metadata or {})
+
     def test_read_and_with_server_crs_roundtrip(self):
         """_with_server_crs / _read_server_crs round-trip through metadata."""
         import pyarrow as pa
@@ -2776,6 +2805,93 @@ class TestResolveCRSForOutput:
         geo = json.loads(result.schema.metadata[b"geo"])
         expected = parse_crs_string_to_projjson("EPSG:22174")
         assert geo["columns"]["geometry"]["crs"] == expected
+
+    def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self):
+        """Issue #499: local bbox filtering must not drop the server CRS.
+
+        The local-filter path round-trips the table through DuckDB, which
+        strips Arrow schema metadata. If the server-declared CRS is lost there,
+        resolution silently falls back to the bbox heuristic — the exact bug
+        #499 fixes — so we assert the heuristic validator is never consulted.
+        """
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+        from geoparquet_io.core.wfs import _with_server_crs, wfs_to_table
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+            patch("geoparquet_io.core.wfs._validate_crs_coordinates") as mock_validate,
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:22174"],
+                default_crs="EPSG:22174",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                bbox=(4_000_000, 6_000_000, 5_000_000, 7_000_000),
+                bbox_mode="local",
+            )
+
+        # Server CRS survived the local-filter roundtrip → no heuristic guess.
+        mock_validate.assert_not_called()
+        assert result.num_rows == 1
+        geo = json.loads(result.schema.metadata[b"geo"])
+        assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
+
+    def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
+        """The internal server-CRS marker never leaks into the output schema.
+
+        Even when no geo metadata is written (projjson unavailable for the
+        resolved CRS), the ``_wfs_server_crs`` marker must be removed.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.wfs import (
+            _SERVER_CRS_METADATA_KEY,
+            _with_server_crs,
+            wfs_to_table,
+        )
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+            patch("geoparquet_io.core.wfs.parse_crs_string_to_projjson", return_value=None),
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:22174"],
+                default_crs="EPSG:22174",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                output_crs="EPSG:22174",
+            )
+
+        metadata = result.schema.metadata or {}
+        assert _SERVER_CRS_METADATA_KEY not in metadata
+        assert b"geo" not in metadata
 
 
 # =============================================================================

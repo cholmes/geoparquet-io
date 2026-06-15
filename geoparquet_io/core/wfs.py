@@ -651,12 +651,16 @@ def _resolve_crs_for_output(
     crs_valid, detected_crs = _validate_crs_coordinates(table, requested_crs, strict=strict_crs)
     if crs_valid or not detected_crs:
         return table, requested_crs
+    # A real mismatch under strict_crs already raised inside
+    # _validate_crs_coordinates, so reconciliation here is only ever reached in
+    # non-strict mode — pass strict_crs=False to keep that the single source of
+    # truth and avoid a redundant raise.
     return _reconcile_source_crs(
         table,
         source_crs=detected_crs,
         requested_crs=requested_crs,
         output_crs=output_crs,
-        strict_crs=strict_crs,
+        strict_crs=False,
         origin="detected",
     )
 
@@ -1112,7 +1116,9 @@ def _build_local_bbox_filter(
 
     xmin, ymin, xmax, ymax = bbox
     wkt = f"POLYGON(({xmin} {ymin}, {xmax} {ymin}, {xmax} {ymax}, {xmin} {ymax}, {xmin} {ymin}))"
-    return f"ST_Intersects(\"{safe_column}\", ST_GeomFromText('{wkt}'))"
+    # Fetched features carry geometry as WKB (BLOB), so decode it before the
+    # spatial predicate — ST_Intersects has no BLOB overload.
+    return f"ST_Intersects(ST_GeomFromWKB(\"{safe_column}\"), ST_GeomFromText('{wkt}'))"
 
 
 def _get_feature_count(
@@ -1375,33 +1381,39 @@ def _build_wfs_feature_query(
         """
 
 
-def _extract_server_crs_from_geojson(
-    con: duckdb.DuckDBPyConnection, safe_path: str, max_object_size: int
-) -> str | None:
-    """Read the CRS the server declared in a GeoJSON FeatureCollection.
+def _read_count_and_server_crs(
+    con: duckdb.DuckDBPyConnection, safe_path: str
+) -> tuple[int, str | None]:
+    """Read the feature count and the server-declared CRS in a single pass.
 
-    WFS servers (e.g. GeoServer) echo the CRS actually used in a top-level
-    ``crs`` member, e.g. ``{"crs": {"properties": {"name":
-    "urn:ogc:def:crs:EPSG::22174"}}}``. This is authoritative — when present it
-    tells us exactly what the server honored, so we never have to guess from
-    coordinate ranges. Returns a normalized ``EPSG:<code>`` string, or None when
-    the response omits the member (RFC 7946 GeoJSON has no ``crs``).
+    A WFS GeoJSON response is one FeatureCollection object, so we read it once
+    as raw text and pull out both things we need before parsing features:
+
+    * the ``features`` array length — DuckDB can't UNNEST an empty array, so we
+      must branch on the count;
+    * the optional top-level ``crs`` member. WFS servers (e.g. GeoServer) echo
+      the CRS they actually honored there, e.g. ``{"crs": {"properties":
+      {"name": "urn:ogc:def:crs:EPSG::22174"}}}``. This is authoritative — when
+      present we never have to guess the CRS from coordinate ranges.
+
+    ``json_extract_string`` returns NULL (rather than raising) when the ``crs``
+    member is absent (RFC 7946 GeoJSON has none) or has an unexpected shape, so
+    we transparently fall back to the coordinate heuristic. Reading once here
+    replaces a separate count query and a separate CRS query with one scan.
 
     See https://github.com/geoparquet/geoparquet-io/issues/499
     """
-    try:
-        row = con.execute(f"""
-            SELECT crs.properties.name AS crs_name
-            FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
-            LIMIT 1
-        """).fetchone()
-    except (duckdb.BinderException, duckdb.Error):
-        # No 'crs' member, or a shape we don't recognize — fall back to guessing.
-        return None
-
-    if not row or not row[0]:
-        return None
-    return _normalize_crs(str(row[0]))
+    row = con.execute(f"""
+        SELECT
+            json_array_length(content, '$.features') AS cnt,
+            json_extract_string(content, '$.crs.properties.name') AS crs_name
+        FROM read_text('{safe_path}')
+    """).fetchone()
+    if not row:
+        return 0, None
+    feature_count = row[0] or 0
+    server_crs = _normalize_crs(str(row[1])) if row[1] else None
+    return feature_count, server_crs
 
 
 def _fetch_wfs_page(
@@ -1513,15 +1525,10 @@ def _fetch_wfs_page(
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         safe_path = _escape_sql_string(tmp_path)
 
-        # Check feature count first (DuckDB can't UNNEST empty JSON arrays)
-        count_result = con.execute(f"""
-            SELECT len(features) AS cnt
-            FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
-        """).fetchone()
-        feature_count = count_result[0] if count_result else 0
-
-        # Authoritative CRS the server reported in its GeoJSON response, if any.
-        server_crs = _extract_server_crs_from_geojson(con, safe_path, _MAX_JSON_OBJECT_SIZE)
+        # Read the feature count (DuckDB can't UNNEST empty JSON arrays) and the
+        # authoritative CRS the server reported in its GeoJSON response, if any,
+        # in a single scan over the response.
+        feature_count, server_crs = _read_count_and_server_crs(con, safe_path)
 
         if feature_count == 0:
             debug("Empty response, returning empty table")
@@ -2381,11 +2388,15 @@ def wfs_to_table(
     if bbox and not use_server_bbox:
         debug("Applying local bbox filter...")
         filter_sql = _build_local_bbox_filter(bbox, "geometry")
+        # The DuckDB roundtrip below drops Arrow schema metadata, which would
+        # discard the server-declared CRS and silently fall back to the bbox
+        # heuristic (issue #499). Capture it first and re-attach afterwards.
+        server_crs = _read_server_crs(table)
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
             con.register("features", table)
             filtered = con.execute(f"SELECT * FROM features WHERE {filter_sql}").arrow()
-            table = filtered.read_all()
+            table = _with_server_crs(filtered.read_all(), server_crs)
             debug(f"After local filter: {table.num_rows:,} features")
         finally:
             con.close()
@@ -2393,6 +2404,11 @@ def wfs_to_table(
     # Resolve the CRS to label/reproject to. Trust the server's declared CRS
     # when it gave one; otherwise fall back to a coordinate-range guess.
     table, crs = _resolve_crs_for_output(table, crs, output_crs, strict_crs)
+
+    # Drop the internal server-CRS marker unconditionally so it never leaks into
+    # the output file, regardless of whether geo metadata is written below.
+    existing_meta = dict(table.schema.metadata or {})
+    existing_meta.pop(_SERVER_CRS_METADATA_KEY, None)
 
     # Add CRS metadata to schema
     projjson = parse_crs_string_to_projjson(_normalize_crs(crs))
@@ -2407,11 +2423,9 @@ def wfs_to_table(
                 }
             },
         }
-        existing_meta = dict(table.schema.metadata or {})
-        # Drop the internal server-CRS marker so it doesn't leak into the file.
-        existing_meta.pop(_SERVER_CRS_METADATA_KEY, None)
         existing_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-        table = table.replace_schema_metadata(existing_meta)
+
+    table = table.replace_schema_metadata(existing_meta)
 
     success(f"Fetched {table.num_rows:,} features from WFS")
     return table
