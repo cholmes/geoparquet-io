@@ -513,8 +513,17 @@ def _validate_crs_coordinates(
             if not (2_000_000 < xmin < 7_500_000 and 1_000_000 < ymin < 5_500_000):
                 mismatch = True
         elif detected and detected != normalized_crs:
-            # Generic check: if we detected a CRS and it differs from requested
-            mismatch = True
+            # The bbox heuristic can reliably distinguish coordinate *categories*
+            # (geographic degrees vs. projected meters) but NOT one projected CRS
+            # from another — e.g. EPSG:22174 (POSGAR 98 / Argentina 4) and
+            # EPSG:3857 both use large metric coordinates. Only treat this as a
+            # mismatch when the categories disagree; otherwise trust the
+            # server-honored CRS rather than relabel it on a guess, which silently
+            # corrupts downstream reprojection (issue #499).
+            requested_geographic = _is_geographic_crs(normalized_crs)
+            detected_geographic = detected == "EPSG:4326"
+            if requested_geographic != detected_geographic:
+                mismatch = True
 
         if mismatch:
             msg = (

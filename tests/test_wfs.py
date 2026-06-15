@@ -2271,6 +2271,73 @@ class TestCRSValidation:
         assert is_valid is False
         assert detected == "EPSG:3035"
 
+    def test_validate_crs_coordinates_does_not_override_projected_crs(self):
+        """Should NOT override a server-honored projected CRS on a bbox guess (issue #499).
+
+        EPSG:22174 (POSGAR 98 / Argentina 4) and EPSG:3857 both use large metric
+        coordinates that the bbox heuristic cannot distinguish. When the server
+        honored the requested projected CRS, we must trust it rather than relabel
+        it as the heuristic's guess, which silently corrupts downstream reprojection.
+        """
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Real EPSG:22174 coordinates from IDECOR (Córdoba, Argentina)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(4527586.01, 6386852.32)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # Requested and server-returned 22174 — heuristic would guess 3857, but
+        # both are projected, so there is no real (category) mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:22174", strict=False)
+        assert is_valid is True
+        assert detected is None
+
+    def test_validate_crs_coordinates_detects_projected_data_for_geographic_request(self):
+        """Should still flag a real category mismatch: geographic requested, metric data."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Projected (metric) coordinates returned for a non-4326 geographic request
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(4527586.01, 6386852.32)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # EPSG:4258 (ETRS89) is geographic — metric values are a real mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:4258", strict=False)
+        assert is_valid is False
+        assert detected == "EPSG:3857"
+
+    def test_validate_crs_coordinates_detects_geographic_data_for_projected_request(self):
+        """Should flag a real category mismatch: projected requested, degree data."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Degree-range coordinates returned for a projected request
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(-62.7, -32.6)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # EPSG:22174 is projected — degree values are a real mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:22174", strict=False)
+        assert is_valid is False
+        assert detected == "EPSG:4326"
+
     def test_validate_crs_coordinates_raises_on_strict_mismatch(self):
         """Should raise error in strict mode when CRS doesn't match."""
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
