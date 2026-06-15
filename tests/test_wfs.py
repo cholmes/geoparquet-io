@@ -2758,15 +2758,20 @@ class TestResolveCRSForOutput:
 
     def test_falls_back_to_heuristic_without_server_crs(self):
         """No server CRS → fall back to coordinate-range guessing (degrees for 4326)."""
+        from unittest.mock import patch
+
         from geoparquet_io.core.wfs import _resolve_crs_for_output
 
         # Projected metric coords but WGS84 requested, no server CRS declared.
         table = self._point_table(3900000, 3000000)
 
-        out_table, crs = _resolve_crs_for_output(table, "EPSG:4326", None, False)
+        with patch("geoparquet_io.core.wfs.debug") as mock_debug:
+            out_table, crs = _resolve_crs_for_output(table, "EPSG:4326", None, False)
 
         # Heuristic detects projected data and relabels (fallback path preserved).
         assert crs == "EPSG:3035"
+        # The fallback to coordinate inference is announced (visible under --verbose).
+        assert any("declared no CRS" in str(call.args[0]) for call in mock_debug.call_args_list)
 
     def test_wfs_to_table_trusts_server_crs_end_to_end(self):
         """End-to-end #499 regression: declared EPSG:22174 stays EPSG:22174."""

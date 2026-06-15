@@ -648,6 +648,10 @@ def _resolve_crs_for_output(
             origin="server",
         )
 
+    debug(
+        f"Server declared no CRS in its GeoJSON response; inferring from "
+        f"coordinates and trusting the requested {requested_crs} unless they clearly disagree."
+    )
     crs_valid, detected_crs = _validate_crs_coordinates(table, requested_crs, strict=strict_crs)
     if crs_valid or not detected_crs:
         return table, requested_crs
