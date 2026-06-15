@@ -1227,10 +1227,22 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --output-crs EPSG:3857
 ```
 
-Some servers ignore `srsName` and return data in their native CRS. gpio detects this and warns:
+When a server reports the CRS it actually used (GeoServer and most WFS servers
+echo it in the GeoJSON `crs` member), gpio trusts that declaration verbatim —
+it never second-guesses a server-honored CRS by inspecting coordinates. This
+matters for projected systems: a bounding box alone cannot distinguish, say,
+EPSG:22174 (Argentine Gauss-Krüger) from EPSG:3857 (Web Mercator), so guessing
+would silently mislabel the output and corrupt any later reprojection (#499).
+
+If a server ignores `srsName` and returns a *different* CRS than requested,
+gpio honors the real CRS rather than the one you asked for:
+
+- with `--output-crs`, it reprojects from the server's actual CRS to your target;
+- without `--output-crs`, it labels the output with the server's actual CRS and warns;
+- with `--strict-crs`, it fails instead of proceeding.
 
 ```bash
-# Fail instead of warn on CRS mismatch
+# Fail instead of warn when the server returns a different CRS than requested
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --strict-crs
 ```

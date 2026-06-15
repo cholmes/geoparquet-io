@@ -129,6 +129,13 @@ GML_FORMATS = [
     "text/xml; subtype=gml/2.1.2",
 ]
 
+# Schema-metadata key under which the CRS declared by the server in its GeoJSON
+# response (the FeatureCollection ``crs`` member) is carried up from the fetch
+# layer to wfs_to_table. This is the authoritative statement of which CRS the
+# server actually honored — far more reliable than guessing from a bbox. See
+# https://github.com/geoparquet/geoparquet-io/issues/499
+_SERVER_CRS_METADATA_KEY = b"_wfs_server_crs"
+
 
 @dataclass
 class WFSLayerInfo:
@@ -412,6 +419,27 @@ def _crs_matches(crs1: str, crs2: str) -> bool:
     return _normalize_crs(crs1) == _normalize_crs(crs2)
 
 
+def _with_server_crs(table: pa.Table, server_crs: str | None) -> pa.Table:
+    """Attach the server-declared CRS to a table's schema metadata.
+
+    Carries the CRS the server reported in its GeoJSON response up through the
+    fetch/concat/type-inference pipeline so wfs_to_table can trust it instead of
+    guessing from coordinates. No-op when ``server_crs`` is None.
+    """
+    if not server_crs:
+        return table
+    metadata = dict(table.schema.metadata or {})
+    metadata[_SERVER_CRS_METADATA_KEY] = server_crs.encode()
+    return table.replace_schema_metadata(metadata)
+
+
+def _read_server_crs(table: pa.Table) -> str | None:
+    """Read the server-declared CRS previously attached via _with_server_crs."""
+    metadata = table.schema.metadata or {}
+    value = metadata.get(_SERVER_CRS_METADATA_KEY)
+    return value.decode() if value else None
+
+
 def _estimate_crs_from_bbox(
     bbox: tuple[float, float, float, float],
 ) -> str | None:
@@ -513,8 +541,17 @@ def _validate_crs_coordinates(
             if not (2_000_000 < xmin < 7_500_000 and 1_000_000 < ymin < 5_500_000):
                 mismatch = True
         elif detected and detected != normalized_crs:
-            # Generic check: if we detected a CRS and it differs from requested
-            mismatch = True
+            # The bbox heuristic can reliably distinguish coordinate *categories*
+            # (geographic degrees vs. projected meters) but NOT one projected CRS
+            # from another — e.g. EPSG:22174 (POSGAR 98 / Argentina 4) and
+            # EPSG:3857 both use large metric coordinates. Only treat this as a
+            # mismatch when the categories disagree; otherwise trust the
+            # server-honored CRS rather than relabel it on a guess, which silently
+            # corrupts downstream reprojection (issue #499).
+            requested_geographic = _is_geographic_crs(normalized_crs)
+            detected_geographic = detected == "EPSG:4326"
+            if requested_geographic != detected_geographic:
+                mismatch = True
 
         if mismatch:
             msg = (
@@ -539,6 +576,97 @@ def _validate_crs_coordinates(
     except Exception as e:
         debug(f"CRS validation skipped due to error: {e}")
         return True, None
+
+
+def _reconcile_source_crs(
+    table: pa.Table,
+    *,
+    source_crs: str,
+    requested_crs: str,
+    output_crs: str | None,
+    strict_crs: bool,
+    origin: str,
+) -> tuple[pa.Table, str]:
+    """Reconcile a known source CRS against the requested CRS.
+
+    ``source_crs`` is the CRS the data is actually in (from the server's GeoJSON
+    ``crs`` member, or — as a last resort — guessed from coordinates). When it
+    matches what we requested, the data is trusted as-is. When it genuinely
+    differs, the server ignored ``srsName``; we reproject to ``output_crs`` if
+    one was given, raise under ``strict_crs``, else label the output with the
+    real ``source_crs`` rather than silently mislabeling it (issue #499).
+    """
+    if _crs_matches(source_crs, requested_crs):
+        return table, requested_crs
+
+    lead = "Server declared" if origin == "server" else "Coordinates look like"
+    base_msg = (
+        f"{lead} {source_crs} but {requested_crs} was requested; server may have ignored srsName."
+    )
+
+    if strict_crs:
+        raise WFSError(base_msg)
+
+    if output_crs:
+        info(f"{base_msg} Reprojecting from {source_crs} to {output_crs}.")
+        try:
+            table = reproject_table(table, target_crs=output_crs, source_crs=source_crs)
+        except Exception as e:
+            raise WFSError(f"Failed to reproject from {source_crs} to {output_crs}: {e}") from e
+        return table, output_crs
+
+    warn(f"{base_msg} Labeling output with {source_crs}.")
+    return table, source_crs
+
+
+def _resolve_crs_for_output(
+    table: pa.Table,
+    requested_crs: str,
+    output_crs: str | None,
+    strict_crs: bool,
+) -> tuple[pa.Table, str]:
+    """Decide the CRS to label (and optionally reproject) the fetched data to.
+
+    Trust order:
+      1. The CRS the server declared in its GeoJSON response — authoritative.
+         When present we never second-guess it with coordinate heuristics.
+      2. A bbox-coordinate guess — last resort, only when the server declared
+         nothing. The guess cannot tell two projected CRSs apart, so it is used
+         conservatively (see _validate_crs_coordinates).
+
+    Returns ``(table, crs)`` where ``table`` may have been reprojected.
+    """
+    server_crs = _read_server_crs(table)
+    if server_crs:
+        debug(f"Server declared CRS {server_crs} in GeoJSON response")
+        return _reconcile_source_crs(
+            table,
+            source_crs=server_crs,
+            requested_crs=requested_crs,
+            output_crs=output_crs,
+            strict_crs=strict_crs,
+            origin="server",
+        )
+
+    debug(
+        f"Server declared no CRS in its GeoJSON response; inferring from "
+        f"coordinates and trusting the requested {requested_crs} unless they clearly disagree."
+    )
+    crs_valid, detected_crs = _validate_crs_coordinates(table, requested_crs, strict=strict_crs)
+    if crs_valid or not detected_crs:
+        return table, requested_crs
+    # A real mismatch under strict_crs already raised inside
+    # _validate_crs_coordinates, so reconciliation here is only ever reached in
+    # non-strict mode — pass strict_crs=False to keep that the single source of
+    # truth and avoid a redundant raise.
+    return _reconcile_source_crs(
+        table,
+        source_crs=detected_crs,
+        requested_crs=requested_crs,
+        output_crs=output_crs,
+        strict_crs=False,
+        origin="detected",
+    )
 
 
 def _detect_geometry_column(wfs, typename: str) -> str:
@@ -845,16 +973,28 @@ def _is_urn_crs(crs: str) -> bool:
 
 
 def _is_geographic_crs(crs: str) -> bool:
-    """Check if CRS is a geographic coordinate system (lat/lon, not projected)."""
+    """Check if CRS is a geographic coordinate system (lat/lon, not projected).
+
+    Uses pyproj for authoritative detection across all geographic CRSs rather
+    than a hardcoded list — an allowlist misclassifies valid geographic systems
+    outside it (e.g. EPSG:4171 RGF93) as projected, which would flag a false
+    coordinate mismatch and relabel correct data to EPSG:4326. Falls back to a
+    small known set only when pyproj cannot resolve the CRS.
+    """
     normalized = _normalize_crs(crs)
-    # Common geographic CRS codes
-    geographic_codes = {
-        "EPSG:4326",  # WGS84
-        "EPSG:4269",  # NAD83
-        "EPSG:4267",  # NAD27
-        "EPSG:4258",  # ETRS89
-    }
-    return normalized in geographic_codes or "CRS84" in crs.upper()
+    try:
+        from pyproj import CRS as _PyprojCRS
+
+        return bool(_PyprojCRS.from_user_input(normalized).is_geographic)
+    except Exception:
+        # pyproj unavailable or CRS unrecognized — fall back to a known set.
+        geographic_codes = {
+            "EPSG:4326",  # WGS84
+            "EPSG:4269",  # NAD83
+            "EPSG:4267",  # NAD27
+            "EPSG:4258",  # ETRS89
+        }
+        return normalized in geographic_codes or "CRS84" in crs.upper()
 
 
 def _needs_axis_swap(crs: str, version: str, axis_order: str = "auto") -> bool:
@@ -980,7 +1120,34 @@ def _build_local_bbox_filter(
 
     xmin, ymin, xmax, ymax = bbox
     wkt = f"POLYGON(({xmin} {ymin}, {xmax} {ymin}, {xmax} {ymax}, {xmin} {ymax}, {xmin} {ymin}))"
-    return f"ST_Intersects(\"{safe_column}\", ST_GeomFromText('{wkt}'))"
+    # Fetched features carry geometry as WKB (BLOB), so decode it before the
+    # spatial predicate — ST_Intersects has no BLOB overload.
+    return f"ST_Intersects(ST_GeomFromWKB(\"{safe_column}\"), ST_GeomFromText('{wkt}'))"
+
+
+def _reproject_bbox_for_local_filter(
+    bbox: tuple[float, float, float, float], source_crs: str, target_crs: str
+) -> tuple[float, float, float, float]:
+    """Reproject a filter bbox from ``source_crs`` into ``target_crs``.
+
+    The local bbox filter compares fetched geometries against this bbox. The
+    bbox is expressed in the requested CRS, but when the server honors a
+    different CRS the geometries are in *that* CRS — comparing the two as-is
+    drops valid rows (issue #499). Aligning the bbox to the geometries' CRS
+    avoids reprojecting the whole geometry column just to filter. On failure we
+    fall back to the original bbox rather than crash the extraction.
+    """
+    try:
+        from pyproj import Transformer
+
+        transformer = Transformer.from_crs(
+            _normalize_crs(source_crs), _normalize_crs(target_crs), always_xy=True
+        )
+        xmin, ymin, xmax, ymax = transformer.transform_bounds(*bbox)
+        return (xmin, ymin, xmax, ymax)
+    except Exception as e:
+        warn(f"Could not reproject bbox from {source_crs} to {target_crs} for local filter: {e}")
+        return bbox
 
 
 def _get_feature_count(
@@ -1243,6 +1410,41 @@ def _build_wfs_feature_query(
         """
 
 
+def _read_count_and_server_crs(
+    con: duckdb.DuckDBPyConnection, safe_path: str
+) -> tuple[int, str | None]:
+    """Read the feature count and the server-declared CRS in a single pass.
+
+    A WFS GeoJSON response is one FeatureCollection object, so we read it once
+    as raw text and pull out both things we need before parsing features:
+
+    * the ``features`` array length — DuckDB can't UNNEST an empty array, so we
+      must branch on the count;
+    * the optional top-level ``crs`` member. WFS servers (e.g. GeoServer) echo
+      the CRS they actually honored there, e.g. ``{"crs": {"properties":
+      {"name": "urn:ogc:def:crs:EPSG::22174"}}}``. This is authoritative — when
+      present we never have to guess the CRS from coordinate ranges.
+
+    ``json_extract_string`` returns NULL (rather than raising) when the ``crs``
+    member is absent (RFC 7946 GeoJSON has none) or has an unexpected shape, so
+    we transparently fall back to the coordinate heuristic. Reading once here
+    replaces a separate count query and a separate CRS query with one scan.
+
+    See https://github.com/geoparquet/geoparquet-io/issues/499
+    """
+    row = con.execute(f"""
+        SELECT
+            json_array_length(content, '$.features') AS cnt,
+            json_extract_string(content, '$.crs.properties.name') AS crs_name
+        FROM read_text('{safe_path}')
+    """).fetchone()
+    if not row:
+        return 0, None
+    feature_count = row[0] or 0
+    server_crs = _normalize_crs(str(row[1])) if row[1] else None
+    return feature_count, server_crs
+
+
 def _fetch_wfs_page(
     url: str, extract_fid: bool = False, max_retries: int = 3, retry_delay: float = 2.0
 ) -> pa.Table:
@@ -1352,16 +1554,15 @@ def _fetch_wfs_page(
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         safe_path = _escape_sql_string(tmp_path)
 
-        # Check feature count first (DuckDB can't UNNEST empty JSON arrays)
-        count_result = con.execute(f"""
-            SELECT len(features) AS cnt
-            FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
-        """).fetchone()
-        feature_count = count_result[0] if count_result else 0
+        # Read the feature count (DuckDB can't UNNEST empty JSON arrays) and the
+        # authoritative CRS the server reported in its GeoJSON response, if any,
+        # in a single scan over the response.
+        feature_count, server_crs = _read_count_and_server_crs(con, safe_path)
 
         if feature_count == 0:
             debug("Empty response, returning empty table")
-            return pa.table({"geometry": pa.array([], type=pa.binary())})
+            empty = pa.table({"geometry": pa.array([], type=pa.binary())})
+            return _with_server_crs(empty, server_crs)
 
         # Detect property type and build extraction query
         props_type, can_unnest_props = _probe_properties_type(con, safe_path, _MAX_JSON_OBJECT_SIZE)
@@ -1379,7 +1580,7 @@ def _fetch_wfs_page(
         parse_time = time.time() - parse_start
         total_time = time.time() - start_time
         debug(f"Parsed {table.num_rows:,} rows in {parse_time:.1f}s (total: {total_time:.1f}s)")
-        return table
+        return _with_server_crs(table, server_crs)
     except WFSError:
         raise
     except Exception as e:
@@ -1614,6 +1815,9 @@ def _fetch_with_spatial_tiles(
     if not all_tables:
         raise EmptyLayerError(typename)
 
+    # All tiles share one server CRS; capture before schema unification drops it.
+    server_crs = _read_server_crs(all_tables[0])
+
     # Unify schemas to handle type mismatches across tiles (e.g., int64 vs decimal128)
     if len(all_tables) > 1:
         schemas = [t.schema for t in all_tables]
@@ -1634,7 +1838,7 @@ def _fetch_with_spatial_tiles(
             f"Deduplicated: {before_dedup:,} → {after_dedup:,} ({before_dedup - after_dedup:,} duplicates)"
         )
 
-    return _infer_column_types(combined)
+    return _with_server_crs(_infer_column_types(combined), server_crs)
 
 
 def _probe_startindex_limit(
@@ -1762,7 +1966,11 @@ def _single_fetch_mode(
         axis_order=axis_order,
     )
     table = _fetch_wfs_page(url, extract_fid=extract_fid)
-    return table if extract_fid else _infer_column_types(table)
+    if extract_fid:
+        return table
+    # _infer_column_types rebuilds the schema and drops metadata; re-attach the
+    # server-declared CRS captured by _fetch_wfs_page.
+    return _with_server_crs(_infer_column_types(table), _read_server_crs(table))
 
 
 def _sequential_pagination_mode(
@@ -2030,6 +2238,10 @@ def fetch_all_features_duckdb(
 
     tables = [results[i] for i in sorted(results.keys())]
 
+    # All pages come from the same layer/request, so they share one server CRS.
+    # Capture it before schema unification, which drops metadata.
+    server_crs = _read_server_crs(tables[0])
+
     # Unify schemas to handle type mismatches across pages (e.g., int64 vs decimal128)
     if len(tables) > 1:
         schemas = [t.schema for t in tables]
@@ -2044,8 +2256,8 @@ def fetch_all_features_duckdb(
 
     # Skip type inference for tile fetches — the tiling orchestrator handles it
     if extract_fid:
-        return combined
-    return _infer_column_types(combined)
+        return _with_server_crs(combined, server_crs)
+    return _with_server_crs(_infer_column_types(combined), server_crs)
 
 
 def wfs_to_table(
@@ -2081,14 +2293,19 @@ def wfs_to_table(
         version: WFS version (1.0.0, 1.1.0, or 2.0.0)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax)
         bbox_mode: Bbox strategy ("auto", "server", "local")
-        output_crs: Guarantee output in this CRS. If server returns different CRS, data is
-            reprojected automatically. (e.g., "EPSG:4326")
+        output_crs: Guarantee output in this CRS. If the server returns a
+            different CRS than requested, data is reprojected automatically from
+            the server's actual CRS. (e.g., "EPSG:4326")
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1 = single request)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
-            output_crs is set, reproject automatically; otherwise warn and use detected CRS
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False and output_crs is set, reproject from the
+            server's actual CRS; otherwise warn and label the output with the
+            server's actual CRS. The CRS the server declares in its GeoJSON
+            response is authoritative — gpio never guesses from coordinates when
+            the server states which CRS it used (issue #499).
         verbose: Enable debug output
         sort_by: Attribute to sort by for stable pagination. If None, auto-detected from
             DescribeFeatureType. Required for layers without a primary key.
@@ -2199,33 +2416,34 @@ def wfs_to_table(
     # Apply local bbox filter if needed
     if bbox and not use_server_bbox:
         debug("Applying local bbox filter...")
-        filter_sql = _build_local_bbox_filter(bbox, "geometry")
+        # The DuckDB roundtrip below drops Arrow schema metadata, which would
+        # discard the server-declared CRS and silently fall back to the bbox
+        # heuristic (issue #499). Capture it first and re-attach afterwards.
+        server_crs = _read_server_crs(table)
+        # The bbox is in the requested CRS, but the geometries are in the CRS the
+        # server actually returned. When those differ, align the bbox to the
+        # geometries' CRS so the filter doesn't drop valid rows (issue #499).
+        filter_bbox = bbox
+        if server_crs and not _crs_matches(server_crs, crs):
+            filter_bbox = _reproject_bbox_for_local_filter(bbox, crs, server_crs)
+        filter_sql = _build_local_bbox_filter(filter_bbox, "geometry")
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
             con.register("features", table)
             filtered = con.execute(f"SELECT * FROM features WHERE {filter_sql}").arrow()
-            table = filtered.read_all()
+            table = _with_server_crs(filtered.read_all(), server_crs)
             debug(f"After local filter: {table.num_rows:,} features")
         finally:
             con.close()
 
-    # Validate CRS - check if coordinates match requested CRS
-    crs_valid, detected_crs = _validate_crs_coordinates(table, crs, strict=strict_crs)
-    if not crs_valid and detected_crs:
-        if output_crs:
-            # User explicitly requested CRS but server returned different — reproject
-            info(f"Server returned {detected_crs}, reprojecting to requested {output_crs}")
-            try:
-                table = reproject_table(table, target_crs=output_crs, source_crs=detected_crs)
-            except Exception as e:
-                raise WFSError(
-                    f"Failed to reproject from {detected_crs} to {output_crs}: {e}"
-                ) from e
-            crs = output_crs
-        else:
-            # No explicit request — use detected CRS for metadata
-            info(f"Using detected CRS {detected_crs} for output metadata")
-            crs = detected_crs
+    # Resolve the CRS to label/reproject to. Trust the server's declared CRS
+    # when it gave one; otherwise fall back to a coordinate-range guess.
+    table, crs = _resolve_crs_for_output(table, crs, output_crs, strict_crs)
+
+    # Drop the internal server-CRS marker unconditionally so it never leaks into
+    # the output file, regardless of whether geo metadata is written below.
+    existing_meta = dict(table.schema.metadata or {})
+    existing_meta.pop(_SERVER_CRS_METADATA_KEY, None)
 
     # Add CRS metadata to schema
     projjson = parse_crs_string_to_projjson(_normalize_crs(crs))
@@ -2240,9 +2458,9 @@ def wfs_to_table(
                 }
             },
         }
-        existing_meta = table.schema.metadata or {}
         existing_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-        table = table.replace_schema_metadata(existing_meta)
+
+    table = table.replace_schema_metadata(existing_meta)
 
     success(f"Fetched {table.num_rows:,} features from WFS")
     return table
@@ -2288,8 +2506,11 @@ def convert_wfs_to_geoparquet(
         max_workers: Parallel requests for large datasets (default: 1)
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
-            output_crs is set, reproject automatically; otherwise warn and use detected CRS
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False and output_crs is set, reproject from the
+            server's actual CRS; otherwise warn and label with the server's
+            actual CRS. The server's declared CRS is trusted over any coordinate
+            guess (issue #499).
         skip_hilbert: Skip Hilbert curve sorting
         skip_bbox: Skip adding bbox column
         compression: Compression algorithm

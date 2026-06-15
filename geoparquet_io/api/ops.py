@@ -898,8 +898,10 @@ def from_wfs(
         page_size: Features per page when using parallel mode (default: 10000)
         axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
             CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
-        strict_crs: If True, fail when server returns coordinates that don't match
-            requested CRS. If False (default), warn and use detected CRS.
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False (default), warn and use the server's actual CRS.
+            The CRS the server declares in its GeoJSON response is authoritative;
+            gpio never guesses from coordinates when the server states it (#499).
         auto_tile: Automatically subdivide into spatial tiles for servers with
             startIndex limits (default: False)
 
