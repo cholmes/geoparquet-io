@@ -1125,6 +1125,31 @@ def _build_local_bbox_filter(
     return f"ST_Intersects(ST_GeomFromWKB(\"{safe_column}\"), ST_GeomFromText('{wkt}'))"
 
 
+def _reproject_bbox_for_local_filter(
+    bbox: tuple[float, float, float, float], source_crs: str, target_crs: str
+) -> tuple[float, float, float, float]:
+    """Reproject a filter bbox from ``source_crs`` into ``target_crs``.
+
+    The local bbox filter compares fetched geometries against this bbox. The
+    bbox is expressed in the requested CRS, but when the server honors a
+    different CRS the geometries are in *that* CRS — comparing the two as-is
+    drops valid rows (issue #499). Aligning the bbox to the geometries' CRS
+    avoids reprojecting the whole geometry column just to filter. On failure we
+    fall back to the original bbox rather than crash the extraction.
+    """
+    try:
+        from pyproj import Transformer
+
+        transformer = Transformer.from_crs(
+            _normalize_crs(source_crs), _normalize_crs(target_crs), always_xy=True
+        )
+        xmin, ymin, xmax, ymax = transformer.transform_bounds(*bbox)
+        return (xmin, ymin, xmax, ymax)
+    except Exception as e:
+        warn(f"Could not reproject bbox from {source_crs} to {target_crs} for local filter: {e}")
+        return bbox
+
+
 def _get_feature_count(
     service_url: str,
     typename: str,
@@ -2391,11 +2416,17 @@ def wfs_to_table(
     # Apply local bbox filter if needed
     if bbox and not use_server_bbox:
         debug("Applying local bbox filter...")
-        filter_sql = _build_local_bbox_filter(bbox, "geometry")
         # The DuckDB roundtrip below drops Arrow schema metadata, which would
         # discard the server-declared CRS and silently fall back to the bbox
         # heuristic (issue #499). Capture it first and re-attach afterwards.
         server_crs = _read_server_crs(table)
+        # The bbox is in the requested CRS, but the geometries are in the CRS the
+        # server actually returned. When those differ, align the bbox to the
+        # geometries' CRS so the filter doesn't drop valid rows (issue #499).
+        filter_bbox = bbox
+        if server_crs and not _crs_matches(server_crs, crs):
+            filter_bbox = _reproject_bbox_for_local_filter(bbox, crs, server_crs)
+        filter_sql = _build_local_bbox_filter(filter_bbox, "geometry")
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
             con.register("features", table)

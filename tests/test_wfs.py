@@ -2856,6 +2856,47 @@ class TestResolveCRSForOutput:
         geo = json.loads(result.schema.metadata[b"geo"])
         assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
 
+    def test_local_bbox_filter_reprojects_bbox_to_server_crs(self):
+        """Issue #499: a bbox in the requested CRS must be aligned to the CRS the
+        server actually returned, or local filtering drops valid rows.
+
+        Requested EPSG:4326 (bbox in degrees), but the server returns EPSG:22174
+        geometry. The degree bbox would not intersect the metric point unless it
+        is reprojected into EPSG:22174 first.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.wfs import _with_server_crs, wfs_to_table
+
+        # EPSG:22174 point near Córdoba, AR (= -62.7059, -32.6603 in EPSG:4326).
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+        deg_bbox = (-62.8059, -32.7603, -62.6059, -32.5603)
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                bbox=deg_bbox,
+                bbox_mode="local",
+            )
+
+        # The point is retained because the bbox was reprojected to EPSG:22174.
+        assert result.num_rows == 1
+
     def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
         """The internal server-CRS marker never leaks into the output schema.
 
