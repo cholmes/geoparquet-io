@@ -286,7 +286,7 @@ table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
 | `max_workers` | int | Number of parallel fetch workers (default: 1) |
 | `page_size` | int | Features per WFS request page (default: 10000) |
 | `axis_order` | str | Bbox axis order: `auto` (default), `xy`, `latlon`. Auto detects from CRS format. |
-| `strict_crs` | bool | Fail on CRS mismatch (default: False, warns instead) |
+| `strict_crs` | bool | Fail when the server returns a different CRS than requested (default: False, warns and uses the server's actual CRS instead). gpio trusts the CRS the server declares in its GeoJSON response and never guesses from coordinates. |
 
 !!! note "No automatic Hilbert sorting"
     Like other Python API extraction methods, `from_wfs()` does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if needed.
