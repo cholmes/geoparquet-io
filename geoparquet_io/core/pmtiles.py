@@ -354,7 +354,19 @@ def _pump_features(
         if tippecanoe_proc.poll() is not None:
             raise RuntimeError(f"tippecanoe failed with code {tippecanoe_proc.returncode}")
 
-        tippecanoe_proc.stdin.write(line)
+        # tippecanoe can exit between the poll() above and the write below,
+        # closing the pipe out from under us. Convert that BrokenPipeError into
+        # the same RuntimeError we raise above so subprocess failures surface
+        # consistently — but only if the process really has exited; otherwise
+        # the broken pipe is unexpected and should propagate as-is.
+        try:
+            tippecanoe_proc.stdin.write(line)
+        except BrokenPipeError:
+            if tippecanoe_proc.poll() is not None:
+                raise RuntimeError(
+                    f"tippecanoe failed with code {tippecanoe_proc.returncode}"
+                ) from None
+            raise
         wrote_any = True
     return wrote_any
 
@@ -425,7 +437,7 @@ def _run_simple(
         stdin=processes[-1].stdout if processes else None,
         stdout=None if verbose else subprocess.PIPE,
         stderr=None,
-    )  # type: ignore
+    )
     processes.append(tippecanoe_proc)
     if len(processes) > 1 and processes[-2].stdout:
         processes[-2].stdout.close()
