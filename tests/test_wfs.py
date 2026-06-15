@@ -1980,6 +1980,20 @@ class TestAxisOrder:
         assert _is_geographic_crs("EPSG:3857") is False  # Web Mercator (projected)
         assert _is_geographic_crs("EPSG:3035") is False  # LAEA (projected)
 
+    def test_is_geographic_crs_handles_codes_outside_allowlist(self):
+        """Geographic CRSs beyond the small allowlist must not be called projected.
+
+        pyproj-backed detection identifies any geographic CRS; a hardcoded list
+        would misclassify these and trigger a false coordinate mismatch.
+        """
+        from geoparquet_io.core.wfs import _is_geographic_crs
+
+        assert _is_geographic_crs("EPSG:4171") is True  # RGF93 (geographic)
+        assert _is_geographic_crs("EPSG:4258") is True  # ETRS89 (geographic)
+        assert _is_geographic_crs("urn:ogc:def:crs:EPSG::4171") is True
+        assert _is_geographic_crs("EPSG:22174") is False  # POSGAR 98 (projected)
+        assert _is_geographic_crs("EPSG:25830") is False  # ETRS89 / UTM 30N (projected)
+
     @pytest.mark.parametrize(
         "crs,version,axis_order,expected_swap",
         [

@@ -965,16 +965,28 @@ def _is_urn_crs(crs: str) -> bool:
 
 
 def _is_geographic_crs(crs: str) -> bool:
-    """Check if CRS is a geographic coordinate system (lat/lon, not projected)."""
+    """Check if CRS is a geographic coordinate system (lat/lon, not projected).
+
+    Uses pyproj for authoritative detection across all geographic CRSs rather
+    than a hardcoded list — an allowlist misclassifies valid geographic systems
+    outside it (e.g. EPSG:4171 RGF93) as projected, which would flag a false
+    coordinate mismatch and relabel correct data to EPSG:4326. Falls back to a
+    small known set only when pyproj cannot resolve the CRS.
+    """
     normalized = _normalize_crs(crs)
-    # Common geographic CRS codes
-    geographic_codes = {
-        "EPSG:4326",  # WGS84
-        "EPSG:4269",  # NAD83
-        "EPSG:4267",  # NAD27
-        "EPSG:4258",  # ETRS89
-    }
-    return normalized in geographic_codes or "CRS84" in crs.upper()
+    try:
+        from pyproj import CRS as _PyprojCRS
+
+        return bool(_PyprojCRS.from_user_input(normalized).is_geographic)
+    except Exception:
+        # pyproj unavailable or CRS unrecognized — fall back to a known set.
+        geographic_codes = {
+            "EPSG:4326",  # WGS84
+            "EPSG:4269",  # NAD83
+            "EPSG:4267",  # NAD27
+            "EPSG:4258",  # ETRS89
+        }
+        return normalized in geographic_codes or "CRS84" in crs.upper()
 
 
 def _needs_axis_swap(crs: str, version: str, axis_order: str = "auto") -> bool:
