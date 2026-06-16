@@ -1144,8 +1144,11 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     ```bash
     # Parallel extraction with 4 workers
     gpio extract wfs https://geo.example.com/wfs large_layer output.parquet \
-        --workers 4 \
-        --page-size 10000
+        --workers 4
+
+    # Extract multiple layers in parallel to a directory
+    gpio extract wfs https://geo.example.com/wfs layer1,layer2,layer3 ./output/ \
+        --parallel-layers 3
 
     # For most datasets under 100K features, single-stream is faster
     gpio extract wfs https://geo.example.com/wfs cities output.parquet
@@ -1159,15 +1162,28 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     table = Table.from_wfs(
         'https://geo.example.com/wfs',
         'large_layer',
-        max_workers=4,
-        page_size=10000
+        max_workers=4
+    )
+
+    # Extract multiple layers
+    from geoparquet_io.api import ops
+    results = ops.from_wfs_layers(
+        'https://geo.example.com/wfs',
+        ['layer1', 'layer2', 'layer3'],
+        './output/',
+        parallel_layers=3
     )
     ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--workers` | 1 | Number of parallel requests (1-10) |
-| `--page-size` | 10000 | Features per page when using `--workers > 1` |
+| `--page-size` | 100000 | Features per WFS request page |
+| `--parallel-layers` | 1 | Concurrent layer extraction for multi-layer requests |
+| `--auto-tile` | enabled | Auto-subdivide bbox when server caps response |
+
+!!! tip "Auto-Tiling for Capped Servers"
+    Many WFS servers impose maxFeatures limits (e.g., 1M features). When gpio detects a capped response, it automatically subdivides the bbox and fetches all features. Disable with `--no-auto-tile` if you want the capped response.
 
 !!! tip "When to use parallel"
     - **Single stream (default)**: Fastest for datasets under ~100K features
