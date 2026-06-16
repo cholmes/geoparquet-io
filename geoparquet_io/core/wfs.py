@@ -2104,6 +2104,7 @@ def fetch_all_features_duckdb(
     axis_order: str = "auto",
     extract_fid: bool = False,
     sort_by: str | None = None,
+    total_count: int | None = None,
 ) -> pa.Table:
     """
     Fetch WFS features via Python httpx download and DuckDB local parsing.
@@ -2129,14 +2130,17 @@ def fetch_all_features_duckdb(
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         extract_fid: If True, extract WFS feature IDs for deduplication
         sort_by: Attribute to sort by for stable pagination (auto-detected if None)
+        total_count: Pre-fetched feature count (avoids re-querying at this version).
+            Pass this when the caller already has a trusted count from WFS 2.0.0.
 
     Returns:
         PyArrow Table with geometry (WKB) and all properties
     """
-    # Get expected count for progress and pagination
-    total_count = _get_feature_count(
-        service_url, typename, version, bbox=bbox, crs=crs, axis_order=axis_order
-    )
+    # Use provided count or query at this version
+    if total_count is None:
+        total_count = _get_feature_count(
+            service_url, typename, version, bbox=bbox, crs=crs, axis_order=axis_order
+        )
     if max_features and total_count:
         total_count = min(total_count, max_features)
 
@@ -2261,13 +2265,17 @@ def _looks_like_server_cap(count: int) -> bool:
     """Check if a feature count looks like a server-imposed cap.
 
     Server caps are typically round numbers like 1000000, 500000, 100000, etc.
+    Parallel workers may drift slightly past exact caps due to network retries
+    (e.g., 1,000,002 instead of 1,000,000), so we allow ±0.1% tolerance around
+    common cap values (issue #503).
     """
     if count <= 0:
         return False
-    # Check for common cap values
+    # Check for common cap values with ±0.1% tolerance for parallel-worker drift
     common_caps = {1000000, 500000, 100000, 50000, 10000}
-    if count in common_caps:
-        return True
+    for cap in common_caps:
+        if abs(count - cap) <= cap * 0.001:
+            return True
     # Check if it's a round number (divisible by 10000 with at least 5 digits)
     if count >= 10000 and count % 10000 == 0:
         return True
@@ -2429,7 +2437,8 @@ def wfs_to_table(
             sort_by=effective_sort_by,
         )
     else:
-        # Normal fetch
+        # Normal fetch — pass expected_count so we don't re-query at this version
+        # (some servers return different counts by WFS version; issue #503)
         table = fetch_all_features_duckdb(
             service_url=service_url,
             typename=layer_info.typename,
@@ -2441,6 +2450,7 @@ def wfs_to_table(
             page_size=page_size,
             axis_order=axis_order,
             sort_by=effective_sort_by,
+            total_count=expected_count,
         )
 
         # Check for maxFeatures cap (reactive tiling)
