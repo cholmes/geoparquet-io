@@ -876,7 +876,7 @@ def from_wfs(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     auto_tile: bool = False,
@@ -895,7 +895,7 @@ def from_wfs(
         bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
             CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
         strict_crs: If True, fail when the server returns a different CRS than
@@ -928,6 +928,86 @@ def from_wfs(
         strict_crs=strict_crs,
         auto_tile=auto_tile,
     )
+
+
+def from_wfs_layers(
+    service_url: str,
+    typenames: list[str],
+    output_dir: str,
+    version: str = "auto",
+    bbox: tuple[float, float, float, float] | None = None,
+    limit: int | None = None,
+    max_workers: int = 1,
+    page_size: int = 100000,
+    parallel_layers: int = 1,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
+    auto_tile: bool = False,
+    skip_hilbert: bool = False,
+    skip_bbox: bool = False,
+    compression: str = "ZSTD",
+    overwrite: bool = False,
+) -> dict[str, str]:
+    """
+    Extract multiple WFS layers in parallel to a directory.
+
+    Each layer is saved as a separate GeoParquet file named after the typename.
+
+    Args:
+        service_url: WFS service URL
+        typenames: List of layer typenames to extract
+        output_dir: Directory to write output files
+        version: WFS version ('auto', '2.0.0', '1.1.0', '1.0.0'). Default 'auto'
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) applied to all layers
+        limit: Maximum features per layer
+        max_workers: Per-layer pagination workers (default: 1)
+        page_size: Features per page (default: 100000)
+        parallel_layers: Number of layers to extract concurrently (default: 1)
+        axis_order: Bbox axis order ('auto', 'xy', 'latlon')
+        strict_crs: If True, fail when the server returns a different CRS than requested
+        auto_tile: Automatically subdivide into spatial tiles for servers with
+            startIndex limits (default: False)
+        skip_hilbert: Skip Hilbert curve sorting (default: False)
+        skip_bbox: Skip adding bbox column (default: False)
+        compression: Compression algorithm (default: 'ZSTD')
+        overwrite: Overwrite existing files (default: False)
+
+    Returns:
+        Dict mapping typename to output file path (only successful extractions)
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> results = ops.from_wfs_layers(
+        ...     'https://geo.example.com/wfs',
+        ...     ['roads', 'buildings', 'parcels'],
+        ...     './output/',
+        ...     parallel_layers=3,
+        ...     max_workers=2
+        ... )
+        >>> print(results)  # {'roads': './output/roads.parquet', ...}
+    """
+    from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+    results = convert_wfs_layers_to_directory(
+        service_url=service_url,
+        typenames=typenames,
+        output_dir=output_dir,
+        parallel_layers=parallel_layers,
+        max_workers=max_workers,
+        page_size=page_size,
+        version=version,
+        bbox=bbox,
+        limit=limit,
+        axis_order=axis_order,
+        strict_crs=strict_crs,
+        skip_hilbert=skip_hilbert,
+        skip_bbox=skip_bbox,
+        compression=compression,
+        overwrite=overwrite,
+        auto_tile=auto_tile,
+    )
+    # Convert Path to str for simpler API
+    return {k: str(v) for k, v in results.items()}
 
 
 def from_carto(

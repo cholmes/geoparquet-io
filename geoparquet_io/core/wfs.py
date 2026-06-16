@@ -1045,33 +1045,30 @@ def _build_bbox_param(
     """
     Build WFS bbox parameter string with correct axis order.
 
-    WFS 1.0.0: xmin,ymin,xmax,ymax (always XY)
-    WFS 1.1.0+: Axis order depends on CRS format
-      - EPSG:4326 (simple): xmin,ymin,xmax,ymax,crs
-      - urn:ogc:def:crs:EPSG::4326: ymin,xmin,ymax,xmax,crs (lat,lon per spec)
+    IMPORTANT: Bbox is always sent in WGS84 (EPSG:4326) regardless of output CRS,
+    because many WFS servers (especially GeoServer) only accept bbox in WGS84.
+    The bbox coordinates are expected to be in lon,lat (WGS84) order.
+
+    WFS 1.0.0: xmin,ymin,xmax,ymax (always XY, no CRS suffix)
+    WFS 1.1.0+: xmin,ymin,xmax,ymax,EPSG:4326 (always WGS84)
 
     Args:
-        bbox: Bounding box tuple (xmin, ymin, xmax, ymax) in lon,lat order
-        crs: Coordinate reference system
+        bbox: Bounding box tuple (xmin, ymin, xmax, ymax) in WGS84 lon,lat order
+        crs: Output CRS (ignored for bbox - we always use WGS84)
         version: WFS version
         axis_order: "auto" (detect from CRS), "xy" (force lon,lat), "latlon" (force lat,lon)
 
     Returns:
-        Bbox parameter string with correct axis order for the CRS
+        Bbox parameter string in WGS84
     """
     xmin, ymin, xmax, ymax = bbox
 
     if version == "1.0.0":
         return f"{xmin},{ymin},{xmax},{ymax}"
 
-    # Check if we need to swap axis order for this CRS
-    if _needs_axis_swap(crs, version, axis_order):
-        # Swap to lat,lon order (ymin,xmin,ymax,xmax)
-        debug(f"Using lat,lon axis order for URN CRS: {crs}")
-        return f"{ymin},{xmin},{ymax},{xmax},{crs}"
-    else:
-        # Standard lon,lat order (xmin,ymin,xmax,ymax)
-        return f"{xmin},{ymin},{xmax},{ymax},{crs}"
+    # Always use WGS84 for bbox - most WFS servers expect this regardless of output CRS
+    # Use simple EPSG:4326 format (not URN) to ensure XY axis order
+    return f"{xmin},{ymin},{xmax},{ymax},EPSG:4326"
 
 
 def _validate_identifier(name: str) -> str:
@@ -1758,7 +1755,7 @@ def _fetch_with_spatial_tiles(
     layer_bbox: tuple[float, float, float, float],
     crs: str,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     max_features: int | None = None,
     sort_by: str | None = None,
@@ -2103,7 +2100,7 @@ def fetch_all_features_duckdb(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     extract_fid: bool = False,
     sort_by: str | None = None,
@@ -2128,7 +2125,7 @@ def fetch_all_features_duckdb(
         bbox: Optional bounding box filter
         crs: CRS for bbox parameter
         max_workers: Number of parallel requests (1-10). Use 4-8 for large datasets.
-        page_size: Features per page when paginating (default: 10000)
+        page_size: Features per page when paginating (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         extract_fid: If True, extract WFS feature IDs for deduplication
         sort_by: Attribute to sort by for stable pagination (auto-detected if None)
@@ -2260,6 +2257,41 @@ def fetch_all_features_duckdb(
     return _with_server_crs(_infer_column_types(combined), server_crs)
 
 
+def _looks_like_server_cap(count: int) -> bool:
+    """Check if a feature count looks like a server-imposed cap.
+
+    Server caps are typically round numbers like 1000000, 500000, 100000, etc.
+    """
+    if count <= 0:
+        return False
+    # Check for common cap values
+    common_caps = {1000000, 500000, 100000, 50000, 10000}
+    if count in common_caps:
+        return True
+    # Check if it's a round number (divisible by 10000 with at least 5 digits)
+    if count >= 10000 and count % 10000 == 0:
+        return True
+    return False
+
+
+def _get_tiling_bbox(
+    user_bbox: tuple[float, float, float, float] | None,
+    use_server_bbox: bool,
+    layer_info: WFSLayerInfo,
+) -> tuple[float, float, float, float] | None:
+    """Get the bounding box to use for spatial tiling.
+
+    Returns the user's bbox if provided and server-side filtering is enabled,
+    otherwise falls back to the layer's advertised bbox from capabilities.
+    Returns None if no bbox is available.
+    """
+    if user_bbox and use_server_bbox:
+        return user_bbox
+    if layer_info.bbox:
+        return layer_info.bbox
+    return None
+
+
 def wfs_to_table(
     service_url: str,
     typename: str,
@@ -2269,11 +2301,11 @@ def wfs_to_table(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     sort_by: str | None = None,
 ) -> pa.Table:
     """
@@ -2298,7 +2330,7 @@ def wfs_to_table(
             the server's actual CRS. (e.g., "EPSG:4326")
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1 = single request)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         strict_crs: If True, fail when the server returns a different CRS than
             requested. If False and output_crs is set, reproject from the
@@ -2348,33 +2380,38 @@ def wfs_to_table(
     if bbox:
         use_server_bbox = _determine_bbox_strategy(bbox_mode, layer_info)
 
-    # Check if auto-tiling is needed (server has startIndex limit + dataset exceeds it)
+    # Get expected feature count for cap detection
+    # Try WFS 2.0.0 first for count query since it often has higher/no limits
+    expected_count = None
+    if auto_tile and version != "1.0.0":
+        # Try WFS 2.0.0 count first (higher limits), fall back to requested version
+        expected_count = _get_feature_count(service_url, layer_info.typename, "2.0.0")
+        if not expected_count:
+            expected_count = _get_feature_count(service_url, layer_info.typename, version)
+        if expected_count:
+            debug(f"Server reports {expected_count:,} features")
+
+    # Check for startIndex limit (proactive tiling for pagination limits)
     use_tiling = False
     tiling_bbox: tuple[float, float, float, float] | None = None
     tiling_total = 0
     tiling_limit = 0
-    if auto_tile and version != "1.0.0":
-        total_count = _get_feature_count(service_url, layer_info.typename, version)
+    if auto_tile and version != "1.0.0" and expected_count:
         startindex_limit = _probe_startindex_limit(
             service_url, layer_info.typename, version, crs=crs, axis_order=axis_order
         )
-        if startindex_limit and total_count:
-            effective = min(limit, total_count) if limit else total_count
+        if startindex_limit:
+            effective = min(limit, expected_count) if limit else expected_count
             if effective > startindex_limit + page_size:
-                # Determine bbox for tiling: use caller bbox if provided, else layer bbox
-                if bbox and use_server_bbox:
-                    tiling_bbox = bbox
-                elif layer_info.bbox:
-                    tiling_bbox = layer_info.bbox
-                else:
-                    raise WFSError(
-                        "Auto-tiling requires a bounding box. Either:\n"
-                        "  1. Use --bbox to specify a region\n"
-                        "  2. Ensure the layer has a bbox in capabilities"
+                tiling_bbox = _get_tiling_bbox(bbox, use_server_bbox, layer_info)
+                if tiling_bbox:
+                    use_tiling = True
+                    tiling_total = effective
+                    tiling_limit = startindex_limit
+                    warn(
+                        f"Server has startIndex limit of {startindex_limit:,}. "
+                        f"Auto-tiling {effective:,} features..."
                     )
-                use_tiling = True
-                tiling_total = effective
-                tiling_limit = startindex_limit
 
     if use_tiling and tiling_bbox is not None:
         table = _fetch_with_spatial_tiles(
@@ -2392,6 +2429,7 @@ def wfs_to_table(
             sort_by=effective_sort_by,
         )
     else:
+        # Normal fetch
         table = fetch_all_features_duckdb(
             service_url=service_url,
             typename=layer_info.typename,
@@ -2404,6 +2442,39 @@ def wfs_to_table(
             axis_order=axis_order,
             sort_by=effective_sort_by,
         )
+
+        # Check for maxFeatures cap (reactive tiling)
+        # If we got fewer features than expected and the count looks like a server cap,
+        # retry with spatial tiling to bypass the cap
+        if (
+            auto_tile
+            and version != "1.0.0"
+            and expected_count
+            and table.num_rows < expected_count
+            and _looks_like_server_cap(table.num_rows)
+            and not limit  # Don't retry if user specified a limit
+        ):
+            tiling_bbox = _get_tiling_bbox(bbox, use_server_bbox, layer_info)
+            if tiling_bbox:
+                warn(
+                    f"Server capped response at {table.num_rows:,} features "
+                    f"(expected {expected_count:,}). Auto-tiling to fetch all..."
+                )
+                # Use a synthetic "startindex_limit" equal to the cap for tile sizing
+                table = _fetch_with_spatial_tiles(
+                    service_url=service_url,
+                    typename=layer_info.typename,
+                    version=version,
+                    total_count=expected_count,
+                    startindex_limit=table.num_rows,  # Use the cap as the limit
+                    layer_bbox=tiling_bbox,
+                    crs=crs,
+                    max_workers=max_workers,
+                    page_size=page_size,
+                    axis_order=axis_order,
+                    max_features=limit,
+                    sort_by=effective_sort_by,
+                )
 
     if table.num_rows == 0:
         if bbox:
@@ -2476,7 +2547,7 @@ def convert_wfs_to_geoparquet(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     skip_hilbert: bool = False,
@@ -2504,7 +2575,7 @@ def convert_wfs_to_geoparquet(
         output_crs: Guarantee output in this CRS (reprojects if server returns different)
         limit: Maximum features
         max_workers: Parallel requests for large datasets (default: 1)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         strict_crs: If True, fail when the server returns a different CRS than
             requested. If False and output_crs is set, reproject from the
@@ -2577,3 +2648,217 @@ def convert_wfs_to_geoparquet(
     )
 
     success(f"Wrote {table.num_rows:,} features to {output_file}")
+
+
+def _extract_single_layer(
+    service_url: str,
+    typename: str,
+    output_dir: Path,
+    layer_index: int,
+    total_layers: int,
+    **kwargs,
+) -> tuple[str, Path, int | None, str | None]:
+    """
+    Extract a single WFS layer to a file in output_dir.
+
+    Returns (typename, output_path, row_count, error_message).
+    error_message is None on success.
+    """
+    # Sanitize typename for filename (replace : and / with _)
+    safe_name = typename.replace(":", "_").replace("/", "_")
+    output_path = output_dir / f"{safe_name}.parquet"
+
+    try:
+        progress(f"[{layer_index + 1}/{total_layers}] Starting {typename}...")
+        convert_wfs_to_geoparquet(
+            service_url=service_url,
+            typename=typename,
+            output_file=str(output_path),
+            **kwargs,
+        )
+        # Read back row count for summary
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(output_path)
+        row_count = meta.num_rows
+        return (typename, output_path, row_count, None)
+    except Exception as e:
+        return (typename, output_path, None, str(e))
+
+
+def convert_wfs_layers_to_directory(
+    service_url: str,
+    typenames: list[str],
+    output_dir: str | Path,
+    parallel_layers: int = 1,
+    max_workers: int = 1,
+    page_size: int = 100000,
+    version: str = "1.1.0",
+    bbox: tuple[float, float, float, float] | None = None,
+    bbox_mode: str = "auto",
+    output_crs: str | None = None,
+    limit: int | None = None,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
+    skip_hilbert: bool = False,
+    skip_bbox: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    row_group_size_mb: float | None = None,
+    row_group_rows: int | None = None,
+    geoparquet_version: str | None = None,
+    overwrite: bool = False,
+    verbose: bool = False,
+    auto_tile: bool = False,
+    sort_by: str | None = None,
+) -> dict[str, Path]:
+    """
+    Extract multiple WFS layers in parallel to a directory.
+
+    Each layer is saved as a separate GeoParquet file named after the typename.
+
+    Args:
+        service_url: WFS service URL
+        typenames: List of layer typenames to extract
+        output_dir: Directory to write output files
+        parallel_layers: Number of layers to extract concurrently (default: 1)
+        max_workers: Per-layer pagination workers (default: 1)
+        page_size: Features per page (default: 100000)
+        version: WFS version
+        bbox: Optional bounding box filter (applied to all layers)
+        bbox_mode: Bbox strategy
+        output_crs: Output CRS (applied to all layers)
+        limit: Maximum features per layer
+        axis_order: Bbox axis order
+        strict_crs: Fail on CRS mismatch
+        skip_hilbert: Skip Hilbert ordering
+        skip_bbox: Skip bbox column
+        compression: Compression algorithm
+        compression_level: Compression level
+        row_group_size_mb: Row group size in MB
+        row_group_rows: Row group size in rows
+        geoparquet_version: GeoParquet version
+        overwrite: Overwrite existing files
+        verbose: Enable debug output
+        auto_tile: Auto-tile for servers with startIndex limits
+        sort_by: Sort attribute for stable pagination
+
+    Returns:
+        Dict mapping typename to output file path (only successful extractions)
+
+    Raises:
+        WFSError: If output_dir exists and is not a directory, or if all extractions fail
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    configure_verbose(verbose)
+
+    output_path = Path(output_dir)
+
+    # Create output directory if needed
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise WFSError(f"Output path exists but is not a directory: {output_dir}")
+    else:
+        output_path.mkdir(parents=True)
+
+    # Check for existing files if not overwriting
+    if not overwrite:
+        existing = []
+        for typename in typenames:
+            safe_name = typename.replace(":", "_").replace("/", "_")
+            file_path = output_path / f"{safe_name}.parquet"
+            if file_path.exists():
+                existing.append(str(file_path))
+        if existing:
+            raise WFSError(
+                "Output files already exist:\n  "
+                + "\n  ".join(existing)
+                + "\nUse --overwrite to replace them."
+            )
+
+    progress(
+        f"Extracting {len(typenames)} layers to {output_dir} "
+        f"(parallel_layers={parallel_layers}, workers={max_workers})..."
+    )
+
+    # Build kwargs for each layer extraction
+    kwargs = {
+        "version": version,
+        "bbox": bbox,
+        "bbox_mode": bbox_mode,
+        "output_crs": output_crs,
+        "limit": limit,
+        "max_workers": max_workers,
+        "page_size": page_size,
+        "axis_order": axis_order,
+        "strict_crs": strict_crs,
+        "skip_hilbert": skip_hilbert,
+        "skip_bbox": skip_bbox,
+        "compression": compression,
+        "compression_level": compression_level,
+        "row_group_size_mb": row_group_size_mb,
+        "row_group_rows": row_group_rows,
+        "geoparquet_version": geoparquet_version,
+        "overwrite": overwrite,
+        "verbose": verbose,
+        "auto_tile": auto_tile,
+        "sort_by": sort_by,
+    }
+
+    results: dict[str, Path] = {}
+    errors: list[tuple[str, str]] = []
+    total_rows = 0
+
+    actual_parallel = min(parallel_layers, len(typenames))
+
+    if actual_parallel == 1:
+        # Sequential mode
+        for i, typename in enumerate(typenames):
+            typename, path, rows, error = _extract_single_layer(
+                service_url, typename, output_path, i, len(typenames), **kwargs
+            )
+            if error:
+                errors.append((typename, error))
+                warn(f"Failed to extract {typename}: {error}")
+            else:
+                results[typename] = path
+                total_rows += rows or 0
+    else:
+        # Parallel mode
+        with ThreadPoolExecutor(max_workers=actual_parallel) as executor:
+            futures = {
+                executor.submit(
+                    _extract_single_layer,
+                    service_url,
+                    typename,
+                    output_path,
+                    i,
+                    len(typenames),
+                    **kwargs,
+                ): typename
+                for i, typename in enumerate(typenames)
+            }
+
+            for future in as_completed(futures):
+                typename, path, rows, error = future.result()
+                if error:
+                    errors.append((typename, error))
+                    warn(f"Failed to extract {typename}: {error}")
+                else:
+                    results[typename] = path
+                    total_rows += rows or 0
+
+    # Summary
+    if errors:
+        warn(f"Completed with {len(errors)} failures:")
+        for typename, error in errors:
+            warn(f"  {typename}: {error}")
+
+    if not results:
+        raise WFSError(f"All {len(typenames)} layer extractions failed")
+
+    success(
+        f"Extracted {len(results)}/{len(typenames)} layers ({total_rows:,} total features) to {output_dir}"
+    )
+    return results

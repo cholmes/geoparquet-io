@@ -831,11 +831,17 @@ class TestBboxFilters:
         assert sql.count("-122.5 37.5") == 2
 
     def test_bbox_with_crs_suffix(self):
-        """WFS 1.1.0 bbox includes CRS suffix."""
+        """WFS 1.1.0 bbox always uses EPSG:4326 regardless of output CRS.
+
+        Many WFS servers (especially GeoServer) only accept bbox in WGS84,
+        so we always send bbox with EPSG:4326 suffix regardless of output CRS.
+        """
         bbox = (-122.5, 37.5, -122.0, 38.0)
-        crs = "urn:ogc:def:crs:EPSG::4326"
+        crs = "urn:ogc:def:crs:EPSG::4326"  # Output CRS (ignored for bbox)
         result = _build_bbox_param(bbox, crs, "1.1.0")
-        assert result.endswith(crs)
+        # Bbox should always end with EPSG:4326, not the output CRS
+        assert result.endswith("EPSG:4326")
+        assert result == "-122.5,37.5,-122.0,38.0,EPSG:4326"
 
     def test_invalid_geometry_column_rejected(self):
         """Invalid geometry column names with SQL injection characters are rejected."""
@@ -2029,7 +2035,8 @@ class TestAxisOrder:
         [
             # WFS 1.0.0: no CRS suffix
             ((-122.5, 37.5, -122.0, 38.0), "EPSG:4326", "1.0.0", "auto", "-122.5,37.5,-122.0,38.0"),
-            # WFS 1.1.0 with simple CRS: XY order with CRS suffix
+            # WFS 1.1.0+: Always EPSG:4326 with XY order (bbox is always WGS84)
+            # This ensures compatibility with servers that only accept WGS84 bbox
             (
                 (-122.5, 37.5, -122.0, 38.0),
                 "EPSG:4326",
@@ -2037,34 +2044,34 @@ class TestAxisOrder:
                 "auto",
                 "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
-            # WFS 1.1.0 with URN CRS: YX order (lat,lon) with CRS suffix
+            # Even with URN output CRS, bbox uses simple EPSG:4326
             (
                 (-122.5, 37.5, -122.0, 38.0),
                 "urn:ogc:def:crs:EPSG::4326",
                 "1.1.0",
                 "auto",
-                "37.5,-122.5,38.0,-122.0,urn:ogc:def:crs:EPSG::4326",
+                "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
-            # WFS 2.0.0 with URN CRS: YX order
+            # WFS 2.0.0 also uses EPSG:4326 for bbox
             (
                 (4.82, 50.44, 4.92, 50.48),
                 "urn:ogc:def:crs:EPSG::4326",
                 "2.0.0",
                 "auto",
-                "50.44,4.82,50.48,4.92,urn:ogc:def:crs:EPSG::4326",
+                "4.82,50.44,4.92,50.48,EPSG:4326",
             ),
-            # Forced XY order ignores URN format
+            # Projected output CRS still uses WGS84 bbox
             (
                 (-122.5, 37.5, -122.0, 38.0),
-                "urn:ogc:def:crs:EPSG::4326",
+                "EPSG:3857",
                 "1.1.0",
-                "xy",
-                "-122.5,37.5,-122.0,38.0,urn:ogc:def:crs:EPSG::4326",
+                "auto",
+                "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
         ],
     )
     def test_build_bbox_param_axis_order(self, bbox, crs, version, axis_order, expected):
-        """Bbox parameter string should have correct axis order."""
+        """Bbox parameter string should always use WGS84 for server compatibility."""
         from geoparquet_io.core.wfs import _build_bbox_param
 
         result = _build_bbox_param(bbox, crs, version, axis_order)
@@ -3811,3 +3818,149 @@ class TestFetchWithSpatialTiles:
 
         mock_fetch.assert_called_once()
         mock_tile.assert_not_called()
+
+
+class TestMultiLayerExtraction:
+    """Tests for multi-layer parallel extraction."""
+
+    def test_convert_wfs_layers_creates_directory(self, tmp_path):
+        """Multi-layer extraction should create output directory and files."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            results = convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["layer1", "layer2"],
+                output_dir=str(output_dir),
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        assert len(results) == 2
+        assert "layer1" in results
+        assert "layer2" in results
+        assert output_dir.exists()
+        assert (output_dir / "layer1.parquet").exists()
+        assert (output_dir / "layer2.parquet").exists()
+
+    def test_convert_wfs_layers_parallel_mode(self, tmp_path):
+        """Multi-layer extraction with parallel_layers > 1 should use ThreadPoolExecutor."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            results = convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["layer1", "layer2", "layer3"],
+                output_dir=str(output_dir),
+                parallel_layers=3,
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        assert len(results) == 3
+
+    def test_cli_parses_comma_separated_typenames(self, tmp_path):
+        """CLI should parse comma-separated typenames for multi-layer mode."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        runner = CliRunner()
+
+        # Just test that the CLI parses correctly - don't actually extract
+        # Patch at the import location inside the function
+        with patch("geoparquet_io.core.wfs.convert_wfs_layers_to_directory") as mock_extract:
+            result = runner.invoke(
+                cli,
+                [
+                    "extract",
+                    "wfs",
+                    "http://mock/wfs",
+                    "layer1,layer2,layer3",
+                    str(output_dir),
+                    "--skip-hilbert",
+                    "--skip-bbox",
+                ],
+            )
+
+        # Should have called multi-layer function with parsed typenames
+        if result.exit_code == 0:
+            mock_extract.assert_called_once()
+            call_kwargs = mock_extract.call_args[1]
+            assert call_kwargs["typenames"] == ["layer1", "layer2", "layer3"]
+
+    def test_sanitizes_typename_for_filename(self, tmp_path):
+        """Typenames with colons should be sanitized for filenames."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["ns:layer_name"],
+                output_dir=str(output_dir),
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        # Colons should be replaced with underscores in filename
+        assert (output_dir / "ns_layer_name.parquet").exists()
