@@ -3925,10 +3925,31 @@ class TestMultiLayerExtraction:
             )
 
         # Should have called multi-layer function with parsed typenames
-        if result.exit_code == 0:
-            mock_extract.assert_called_once()
-            call_kwargs = mock_extract.call_args[1]
-            assert call_kwargs["typenames"] == ["layer1", "layer2", "layer3"]
+        assert result.exit_code == 0
+        mock_extract.assert_called_once()
+        call_kwargs = mock_extract.call_args[1]
+        assert call_kwargs["typenames"] == ["layer1", "layer2", "layer3"]
+
+    def test_cli_rejects_empty_typenames(self, tmp_path):
+        """CLI should error (not IndexError) when typename parses to an empty list."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "extract",
+                "wfs",
+                "http://mock/wfs",
+                ", ,",  # whitespace/comma-only -> no valid typenames
+                str(tmp_path / "out.parquet"),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "No valid typename" in result.output
 
     def test_sanitizes_typename_for_filename(self, tmp_path):
         """Typenames with colons should be sanitized for filenames."""

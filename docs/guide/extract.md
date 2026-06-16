@@ -1165,13 +1165,16 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
         max_workers=4
     )
 
-    # Extract multiple layers
+    # Extract multiple layers (tune defaults for large datasets)
     from geoparquet_io.api import ops
     results = ops.from_wfs_layers(
         'https://geo.example.com/wfs',
         ['layer1', 'layer2', 'layer3'],
         './output/',
-        parallel_layers=3
+        parallel_layers=3,
+        max_workers=2,        # parallel page fetches per layer
+        page_size=100000,     # features per WFS request page
+        auto_tile=True        # subdivide bbox when the server caps responses
     )
     ```
 

@@ -2815,14 +2815,14 @@ def convert_wfs_layers_to_directory(
     if actual_parallel == 1:
         # Sequential mode
         for i, typename in enumerate(typenames):
-            typename, path, rows, error = _extract_single_layer(
+            result_typename, path, rows, error = _extract_single_layer(
                 service_url, typename, output_path, i, len(typenames), **kwargs
             )
             if error:
-                errors.append((typename, error))
-                warn(f"Failed to extract {typename}: {error}")
+                errors.append((result_typename, error))
+                warn(f"Failed to extract {result_typename}: {error}")
             else:
-                results[typename] = path
+                results[result_typename] = path
                 total_rows += rows or 0
     else:
         # Parallel mode
@@ -2841,12 +2841,12 @@ def convert_wfs_layers_to_directory(
             }
 
             for future in as_completed(futures):
-                typename, path, rows, error = future.result()
+                result_typename, path, rows, error = future.result()
                 if error:
-                    errors.append((typename, error))
-                    warn(f"Failed to extract {typename}: {error}")
+                    errors.append((result_typename, error))
+                    warn(f"Failed to extract {result_typename}: {error}")
                 else:
-                    results[typename] = path
+                    results[result_typename] = path
                     total_rows += rows or 0
 
     # Summary

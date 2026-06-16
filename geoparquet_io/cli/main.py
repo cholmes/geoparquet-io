@@ -3215,6 +3215,10 @@ def extract_wfs_cmd(
 
     # Parse comma-separated typenames
     typenames = [t.strip() for t in typename.split(",") if t.strip()]
+    if not typenames:
+        raise click.ClickException(
+            "No valid typename(s) provided. Specify one or more comma-separated layer names."
+        )
     is_multi_layer = len(typenames) > 1
 
     # Validate output path based on single/multi layer mode
