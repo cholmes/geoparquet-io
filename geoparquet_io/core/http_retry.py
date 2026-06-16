@@ -36,7 +36,7 @@ DEFAULT_RETRY_DELAY = 1.0
 def get_shared_http_client(
     timeout: float = DEFAULT_TIMEOUT,
     http2: bool = False,
-    max_connections: int = 20,
+    max_connections: int = 50,
 ) -> httpx.Client:
     """
     Get or create a shared HTTP client for connection pooling.

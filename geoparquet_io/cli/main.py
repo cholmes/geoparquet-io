@@ -3051,15 +3051,23 @@ def _deprecated_version_callback(ctx, param, value):
 )
 @click.option(
     "--page-size",
-    type=click.IntRange(1000, 100000),
-    default=10000,
-    help="Features per page when using --workers > 1. Default: 10000.",
+    type=click.IntRange(1000, 500000),
+    default=100000,
+    help="Features per page when using --workers > 1. Default: 100000.",
 )
 @click.option(
-    "--auto-tile",
-    is_flag=True,
-    help="Automatically subdivide into spatial tiles to work around server "
-    "startIndex limits. Use for large datasets on servers that cap pagination.",
+    "--parallel-layers",
+    type=click.IntRange(min=1, max=10),
+    default=1,
+    help="Number of layers to extract concurrently when extracting multiple layers. "
+    "Default: 1 (sequential). Use with comma-separated typename for parallel extraction.",
+)
+@click.option(
+    "--auto-tile/--no-auto-tile",
+    default=True,
+    help="Automatically subdivide into spatial tiles when server caps responses "
+    "(e.g., maxFeatures or startIndex limits). Enabled by default. "
+    "Use --no-auto-tile to disable and accept partial data.",
 )
 @click.option(
     "--sort-by",
@@ -3096,6 +3104,7 @@ def extract_wfs_cmd(
     output_crs,
     workers,
     page_size,
+    parallel_layers,
     auto_tile,
     sort_by,
     skip_hilbert,
@@ -3115,9 +3124,11 @@ def extract_wfs_cmd(
     SERVICE_URL is the WFS service endpoint URL.
 
     TYPENAME is the layer to extract (e.g., 'roads', 'buildings').
+    Use comma-separated names for multiple layers (e.g., 'roads,buildings,parcels').
     If omitted, lists available layers.
 
-    OUTPUT_FILE is the output GeoParquet file path. Required when TYPENAME is specified.
+    OUTPUT_FILE is the output path. For single layer, this is the output file.
+    For multiple layers, this is the output directory (each layer saved as typename.parquet).
 
     \b
     Examples:
@@ -3127,8 +3138,13 @@ def extract_wfs_cmd(
         gpio extract wfs https://geo.example.com/wfs
 
         \b
-        # Extract entire layer
+        # Extract single layer
         gpio extract wfs https://geo.example.com/wfs cities output.parquet
+
+        \b
+        # Extract multiple layers in parallel to a directory
+        gpio extract wfs https://geo.example.com/wfs roads,buildings,parcels ./output/ \\
+            --workers 2 --parallel-layers 3
 
         \b
         # With bbox filter (server-side when supported)
@@ -3147,6 +3163,7 @@ def extract_wfs_cmd(
     """
     from geoparquet_io.core.wfs import (
         WFSError,
+        convert_wfs_layers_to_directory,
         convert_wfs_to_geoparquet,
         list_available_layers,
         negotiate_wfs_version,
@@ -3196,8 +3213,25 @@ def extract_wfs_cmd(
             f"Usage: gpio extract wfs {service_url} {typename} OUTPUT_FILE"
         )
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_file, any_extension)
+    # Parse comma-separated typenames
+    typenames = [t.strip() for t in typename.split(",") if t.strip()]
+    if not typenames:
+        raise click.ClickException(
+            "No valid typename(s) provided. Specify one or more comma-separated layer names."
+        )
+    is_multi_layer = len(typenames) > 1
+
+    # Validate output path based on single/multi layer mode
+    if is_multi_layer:
+        # Multi-layer mode: output_file is a directory
+        if output_file.endswith(".parquet"):
+            raise click.ClickException(
+                f"Multiple layers specified ({len(typenames)}), but output looks like a file: {output_file}\n"
+                "For multi-layer extraction, provide a directory path (e.g., ./output/)."
+            )
+    else:
+        # Single layer mode: validate .parquet extension
+        validate_parquet_extension(output_file, any_extension)
 
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
@@ -3217,31 +3251,61 @@ def extract_wfs_cmd(
             ) from e
 
     try:
-        convert_wfs_to_geoparquet(
-            service_url=service_url,
-            typename=typename,
-            output_file=output_file,
-            version=wfs_version,
-            bbox=bbox_tuple,
-            bbox_mode=bbox_mode,
-            output_crs=output_crs,
-            limit=limit,
-            max_workers=workers,
-            page_size=page_size,
-            axis_order=axis_order,
-            strict_crs=strict_crs,
-            skip_hilbert=skip_hilbert,
-            skip_bbox=skip_bbox,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-            verbose=verbose,
-            auto_tile=auto_tile,
-            sort_by=sort_by,
-        )
+        if is_multi_layer:
+            # Multi-layer parallel extraction
+            convert_wfs_layers_to_directory(
+                service_url=service_url,
+                typenames=typenames,
+                output_dir=output_file,
+                parallel_layers=parallel_layers,
+                max_workers=workers,
+                page_size=page_size,
+                version=wfs_version,
+                bbox=bbox_tuple,
+                bbox_mode=bbox_mode,
+                output_crs=output_crs,
+                limit=limit,
+                axis_order=axis_order,
+                strict_crs=strict_crs,
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+                auto_tile=auto_tile,
+                sort_by=sort_by,
+            )
+        else:
+            # Single layer extraction
+            convert_wfs_to_geoparquet(
+                service_url=service_url,
+                typename=typenames[0],
+                output_file=output_file,
+                version=wfs_version,
+                bbox=bbox_tuple,
+                bbox_mode=bbox_mode,
+                output_crs=output_crs,
+                limit=limit,
+                max_workers=workers,
+                page_size=page_size,
+                axis_order=axis_order,
+                strict_crs=strict_crs,
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+                auto_tile=auto_tile,
+                sort_by=sort_by,
+            )
     except WFSError as e:
         raise click.ClickException(str(e)) from None
 

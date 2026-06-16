@@ -284,12 +284,42 @@ table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
 | `bbox` | tuple | Bounding box filter (xmin, ymin, xmax, ymax) |
 | `limit` | int | Maximum number of features |
 | `max_workers` | int | Number of parallel fetch workers (default: 1) |
-| `page_size` | int | Features per WFS request page (default: 10000) |
+| `page_size` | int | Features per WFS request page (default: 100000) |
 | `axis_order` | str | Bbox axis order: `auto` (default), `xy`, `latlon`. Auto detects from CRS format. |
+| `auto_tile` | bool | Auto-subdivide bbox when server caps response (default: False) |
 | `strict_crs` | bool | Fail when the server returns a different CRS than requested (default: False, warns and uses the server's actual CRS instead). gpio trusts the CRS the server declares in its GeoJSON response and never guesses from coordinates. |
 
 !!! note "No automatic Hilbert sorting"
     Like other Python API extraction methods, `from_wfs()` does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if needed.
+
+#### ops.from_wfs_layers()
+
+Extract multiple WFS layers in parallel to a directory:
+
+```python
+from geoparquet_io.api import ops
+
+results = ops.from_wfs_layers(
+    'https://geo.example.com/wfs',
+    ['cities', 'roads', 'buildings'],
+    './output/',
+    parallel_layers=3,
+    max_workers=2
+)
+# Returns: {'cities': Path('output/cities.parquet'), ...}
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `service_url` | str | WFS service URL |
+| `typenames` | list[str] | Layer names to extract |
+| `output_dir` | str \| Path | Output directory for parquet files |
+| `parallel_layers` | int | Concurrent layer extraction (default: 1) |
+| `max_workers` | int | Parallel fetch workers per layer (default: 1) |
+| `page_size` | int | Features per page (default: 100000) |
+| `auto_tile` | bool | Auto-subdivide bbox when server caps (default: True) |
 
 ## Table Class
 
@@ -1189,7 +1219,8 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
 | `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
-| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=10000, axis_order='auto', strict_crs=False)` | Fetch from WFS service |
+| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
+| `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

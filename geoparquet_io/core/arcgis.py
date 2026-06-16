@@ -1322,9 +1322,13 @@ def arcgis_to_table(
         return table
 
     finally:
-        # Clean up temp file
+        # Clean up temp file (best-effort: on Windows pyarrow may still hold
+        # the file handle after read_table, raising PermissionError on unlink)
         if os.path.exists(temp_parquet):
-            os.unlink(temp_parquet)
+            try:
+                os.unlink(temp_parquet)
+            except OSError:
+                debug(f"Could not remove temp file {temp_parquet}")
 
 
 def convert_arcgis_to_geoparquet(
