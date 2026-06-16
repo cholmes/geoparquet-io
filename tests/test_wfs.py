@@ -3820,6 +3820,169 @@ class TestFetchWithSpatialTiles:
         mock_tile.assert_not_called()
 
 
+class TestServerCapDetection:
+    """Cap detection must tolerate slight count drift (issue #503).
+
+    Parallel workers retry pages on transient errors, which can nudge the total
+    a few features past an exact server cap (e.g. 1,000,002 instead of
+    1,000,000). The detector must still recognise these as caps so reactive
+    auto-tiling fires.
+    """
+
+    def test_exact_common_caps_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        for cap in (1000000, 500000, 100000, 50000, 10000):
+            assert _looks_like_server_cap(cap) is True
+
+    def test_slight_drift_above_cap_detected(self):
+        """The core #503 bug: parallel-worker drift past a round cap."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1000002) is True
+        assert _looks_like_server_cap(1000500) is True  # +0.05%
+
+    def test_slight_drift_below_cap_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(999998) is True
+        assert _looks_like_server_cap(49997) is True
+
+    def test_outside_tolerance_not_detected(self):
+        """Counts beyond ±0.1% of a cap (and not round) are real totals."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1002000) is False  # +0.2%, not round
+        assert _looks_like_server_cap(1234567) is False
+
+    def test_round_numbers_still_detected(self):
+        """Existing divisible-by-10000 heuristic is preserved."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1230000) is True
+        assert _looks_like_server_cap(40000) is True
+
+    def test_zero_and_negative_not_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(0) is False
+        assert _looks_like_server_cap(-5) is False
+
+    def test_reactive_tiling_triggers_on_drifted_cap(self):
+        """End-to-end: a capped response of 10,005 (drifted from 10,000) with a
+        higher 2.0.0 count must trigger reactive spatial tiling (issue #503)."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        # Build a real table whose row count looks like a drifted server cap.
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            capped_table = (
+                con.execute("SELECT ST_AsWKB(ST_Point(0, 0)) AS geometry FROM range(10005)")
+                .arrow()
+                .read_all()
+            )
+        finally:
+            con.close()
+
+        tiled_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["full"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            # 2.0.0 reports the true count; the capped fetch returns fewer.
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=11000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=capped_table),
+            patch(
+                "geoparquet_io.core.wfs._fetch_with_spatial_tiles", return_value=tiled_table
+            ) as mock_tile,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_tile.assert_called_once()
+
+
+class TestCountThreadedToFetch:
+    """The trusted 2.0.0 count must be threaded into the fetch (issue #503).
+
+    Previously ``fetch_all_features_duckdb`` re-queried the count at the
+    requested version (e.g. 1.1.0), which on some GeoServer instances returns a
+    DIFFERENT (capped) number than 2.0.0 — so pagination stopped early.
+    """
+
+    def test_fetch_uses_provided_total_count(self):
+        """When total_count is passed, fetch must not re-query the count."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        # Table size must match total_count to avoid fallback to pagination
+        small_table = pa.table({"geometry": pa.array([b"\x01"], type=pa.binary())})
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count") as mock_count,
+            patch("geoparquet_io.core.wfs._single_fetch_mode", return_value=small_table),
+        ):
+            fetch_all_features_duckdb("http://mock/wfs", "layer", version="1.1.0", total_count=1)
+
+        mock_count.assert_not_called()
+
+    def test_wfs_to_table_threads_count_into_fetch(self):
+        """wfs_to_table must pass the 2.0.0 expected_count as total_count."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch(
+                "geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=mock_table
+            ) as mock_fetch,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args.kwargs.get("total_count") == 20000
+
+
 class TestMultiLayerExtraction:
     """Tests for multi-layer parallel extraction."""
 
