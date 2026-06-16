@@ -279,6 +279,7 @@ def convert(
     skip_invalid: bool = False,
     profile: str | None = None,
     layer: str | None = None,
+    repair_geometry: bool = True,
 ) -> Table:
     """
     Convert a geospatial file to a Table.
@@ -322,6 +323,7 @@ def convert(
         profile=profile,
         geometry_column=geometry_column,
         layer=layer,
+        repair_geometry=repair_geometry,
     )
 
     return Table(arrow_table, geometry_column=geom_col)
@@ -343,6 +345,7 @@ def extract_arcgis(
     max_workers: int = 1,
     output_crs: str | None = None,
     max_allowable_offset: float | None = None,
+    repair_geometry: bool = True,
 ) -> Table:
     """
     Extract features from an ArcGIS Feature Service to a Table.
@@ -421,6 +424,7 @@ def extract_arcgis(
         output_crs=output_crs,
         max_allowable_offset=max_allowable_offset,
         verbose=False,
+        repair_geometry=repair_geometry,
     )
 
     return Table(arrow_table, geometry_column="geometry")
@@ -478,6 +482,7 @@ class Table:
         geography_column: str | None = None,
         geometry_format: str = "wkt",
         edges: str | None = None,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Read data from a BigQuery table.
@@ -560,6 +565,7 @@ class Table:
             geometry_format=geometry_format,
             edges=edges,
             verbose=False,
+            repair_geometry=repair_geometry,
         )
 
         if arrow_table is None:
@@ -586,6 +592,7 @@ class Table:
         axis_order: str = "auto",
         strict_crs: bool = False,
         auto_tile: bool = False,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Create Table from WFS layer.
@@ -634,6 +641,7 @@ class Table:
             axis_order=axis_order,
             strict_crs=strict_crs,
             auto_tile=auto_tile,
+            repair_geometry=repair_geometry,
         )
         return cls(table)
 
@@ -1226,6 +1234,7 @@ class Table:
         bbox: tuple[float, float, float, float] | None = None,
         where: str | None = None,
         limit: int | None = None,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Extract columns and rows with optional filtering.
@@ -1236,6 +1245,7 @@ class Table:
             bbox: Bounding box filter (xmin, ymin, xmax, ymax)
             where: SQL WHERE clause
             limit: Maximum rows to return
+            repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
         Returns:
             New filtered Table
@@ -1250,6 +1260,7 @@ class Table:
             where=where,
             limit=limit,
             geometry_column=self._geometry_column,
+            repair_geometry=repair_geometry,
         )
         return Table(result, self._geometry_column)
 
@@ -2017,6 +2028,7 @@ class Table:
         precision: int = 7,
         write_bbox: bool = False,
         id_field: str | None = None,
+        repair_geometry: bool = True,
     ) -> str | None:
         """
         Convert the table to GeoJSON.
@@ -2048,6 +2060,7 @@ class Table:
             precision=precision,
             write_bbox=write_bbox,
             id_field=id_field,
+            repair_geometry=repair_geometry,
         )
 
     def _with_temp_file(self, func, *args, **kwargs):

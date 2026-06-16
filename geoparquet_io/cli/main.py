@@ -24,6 +24,7 @@ from geoparquet_io.cli.decorators import (
     partition_input_options,
     partition_options,
     partition_options_base,
+    repair_geometry_option,
     row_group_options,
     show_sql_option,
     verbose_option,
@@ -1250,6 +1251,7 @@ def convert(ctx):
     is_flag=True,
     help="Allow conversion to plain Parquet when no geometry column is detected (default: error)",
 )
+@repair_geometry_option
 @geoparquet_version_option
 @verbose_option
 @output_format_options
@@ -1271,6 +1273,7 @@ def convert_to_geoparquet_cmd(
     skip_invalid,
     csv_max_line_size,
     allow_no_geometry,
+    repair_geometry,
     geoparquet_version,
     verbose,
     compression,
@@ -1343,6 +1346,7 @@ def convert_to_geoparquet_cmd(
                 compression_level=compression_level,
                 row_group_rows=row_group_size,
                 row_group_size_mb=row_group_mb,
+                repair_geometry=repair_geometry,
             )
         else:
             convert_to_geoparquet(
@@ -1364,6 +1368,7 @@ def convert_to_geoparquet_cmd(
                 allow_no_geometry=allow_no_geometry,
                 profile=aws_profile,
                 geoparquet_version=geoparquet_version,
+                repair_geometry=repair_geometry,
             )
 
 
@@ -1384,6 +1389,7 @@ def _convert_streaming(
     compression_level=15,
     row_group_rows=None,
     row_group_size_mb=None,
+    repair_geometry=True,
 ):
     """Handle streaming output for convert command."""
     import tempfile
@@ -1416,6 +1422,7 @@ def _convert_streaming(
             skip_invalid=skip_invalid,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            repair_geometry=repair_geometry,
         )
 
         # Read and stream to stdout
@@ -1623,6 +1630,7 @@ def convert_reproject(
     is_flag=True,
     help="Keep original CRS instead of reprojecting to WGS84 (EPSG:4326)",
 )
+@repair_geometry_option
 @verbose_option
 @aws_profile_option
 @show_sql_option
@@ -1640,6 +1648,7 @@ def convert_geojson(
     no_seq,
     pretty,
     keep_crs,
+    repair_geometry,
     verbose,
     aws_profile,
     show_sql,
@@ -1702,6 +1711,7 @@ def convert_geojson(
                 overwrite=overwrite,
                 verbose=verbose,
                 profile=aws_profile,
+                repair_geometry=repair_geometry,
             )
         else:
             # Streaming mode - use convert_to_geojson directly
@@ -1718,6 +1728,7 @@ def convert_geojson(
                 verbose=verbose,
                 profile=aws_profile,
                 keep_crs=keep_crs,
+                repair_geometry=repair_geometry,
             )
 
 
@@ -2388,6 +2399,7 @@ def extract(ctx):
 @overwrite_option
 @write_strategy_option
 @partition_input_options
+@repair_geometry_option
 @dry_run_option
 @show_sql_option
 @verbose_option
@@ -2416,6 +2428,7 @@ def extract_geoparquet(
     write_memory,
     allow_schema_diff,
     hive_input,
+    repair_geometry,
     dry_run,
     show_sql,
     verbose,
@@ -2537,6 +2550,7 @@ def extract_geoparquet(
             write_strategy=write_strategy,
             memory_limit=write_memory,
             overwrite=overwrite,
+            repair_geometry=repair_geometry,
         )
 
 
@@ -2623,6 +2637,7 @@ def extract_geoparquet(
 )
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @verbose_option
 @compression_options
 @row_group_options
@@ -2652,6 +2667,7 @@ def extract_arcgis(
     batch_size,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     verbose,
     compression,
     compression_level,
@@ -2767,6 +2783,7 @@ def extract_arcgis(
             row_group_size_mb=row_group_mb,
             row_group_rows=row_group_size,
             overwrite=overwrite,
+            repair_geometry=repair_geometry,
         )
 
 
@@ -2843,6 +2860,7 @@ def extract_arcgis(
 @output_format_options
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @dry_run_option
 @show_sql_option
 @verbose_option
@@ -2869,6 +2887,7 @@ def extract_bigquery_cmd(
     write_memory,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     dry_run,
     show_sql,
     verbose,
@@ -2972,6 +2991,7 @@ def extract_bigquery_cmd(
         row_group_rows=row_group_size,
         geoparquet_version=geoparquet_version,
         overwrite=overwrite,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -3084,6 +3104,7 @@ def _deprecated_version_callback(ctx, param, value):
     is_flag=True,
     help="Skip adding bbox column (faster, but no per-geometry bbox)",
 )
+@repair_geometry_option
 @compression_options
 @row_group_options
 @geoparquet_version_option
@@ -3109,6 +3130,7 @@ def extract_wfs_cmd(
     sort_by,
     skip_hilbert,
     skip_bbox,
+    repair_geometry,
     compression,
     compression_level,
     row_group_size,
@@ -3278,6 +3300,7 @@ def extract_wfs_cmd(
                 verbose=verbose,
                 auto_tile=auto_tile,
                 sort_by=sort_by,
+                repair_geometry=repair_geometry,
             )
         else:
             # Single layer extraction
@@ -3305,6 +3328,7 @@ def extract_wfs_cmd(
                 verbose=verbose,
                 auto_tile=auto_tile,
                 sort_by=sort_by,
+                repair_geometry=repair_geometry,
             )
     except WFSError as e:
         raise click.ClickException(str(e)) from None
@@ -3356,6 +3380,7 @@ def extract_wfs_cmd(
 @row_group_options
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @verbose_option
 @any_extension_option
 @aws_profile_option
@@ -3379,6 +3404,7 @@ def extract_carto_cmd(
     row_group_size_mb,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     verbose,
     any_extension,
     aws_profile,
@@ -3470,6 +3496,7 @@ def extract_carto_cmd(
                 geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
                 verbose=verbose,
+                repair_geometry=repair_geometry,
             )
         except CartoError as e:
             raise click.ClickException(str(e)) from None
@@ -6809,6 +6836,7 @@ def pmtiles(ctx):
     is_flag=True,
     help="Overwrite the output file if it already exists (tippecanoe --force)",
 )
+@repair_geometry_option
 @verbose_option
 @aws_profile_option
 def pmtiles_create(
@@ -6832,6 +6860,7 @@ def pmtiles_create(
     drop_densest_as_needed,
     maximum_tile_bytes,
     force,
+    repair_geometry,
 ):
     """Create PMTiles from a GeoParquet file.
 
@@ -6878,6 +6907,7 @@ def pmtiles_create(
             drop_densest_as_needed=drop_densest_as_needed,
             maximum_tile_bytes=maximum_tile_bytes,
             force=force,
+            repair_geometry=repair_geometry,
         )
         click.echo(click.style(f"✓ Created {output_file}", fg="green"))
     except Exception as e:

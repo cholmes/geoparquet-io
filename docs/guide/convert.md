@@ -317,6 +317,47 @@ See [Remote Files Guide](remote-files.md) for authentication setup.
 
 ## Options
 
+### Geometry Repair
+
+Invalid geometry (self-intersections, unclosed rings — common in government and
+municipal data) is repaired automatically with `ST_MakeValid` and a warning
+reports how many features were fixed.
+
+Repair is **on by default** across the pipeline (`convert`, `extract wfs`,
+`extract arcgis`, `extract bigquery`, `extract carto`, `extract geoparquet`,
+`convert geojson`, and `pmtiles create`). It prevents downstream failures such
+as tippecanoe `TopologyException` crashes during PMTiles generation.
+
+To preserve invalid geometry exactly (e.g. for round-tripping), opt out — gpio
+still counts and warns about the invalid features it left untouched.
+
+=== "CLI"
+
+    ```bash
+    # Default: repairs and warns ("Repaired 3 invalid geometries")
+    gpio convert cordoba.gpkg output.parquet
+
+    # Opt out: preserves invalid geometry, still warns
+    # ("Left unrepaired 3 invalid geometries (--no-repair-geometry)")
+    gpio convert cordoba.gpkg output.parquet --no-repair-geometry
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Default: repairs invalid geometry
+    gpio.convert("cordoba.gpkg").write("output.parquet")
+
+    # Opt out: preserve invalid geometry exactly
+    gpio.convert("cordoba.gpkg", repair_geometry=False).write("output.parquet")
+    ```
+
+Only invalid geometry is touched: valid geometry is byte-identical, NULL is
+preserved, and bounding boxes stay correct (`ST_MakeValid` never expands an
+envelope).
+
 ### Skip Hilbert Ordering
 
 For faster conversion when spatial ordering isn't critical:

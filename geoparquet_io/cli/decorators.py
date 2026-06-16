@@ -176,6 +176,23 @@ def overwrite_option(func):
     return click.option("--overwrite", is_flag=True, help="Overwrite existing files")(func)
 
 
+def repair_geometry_option(func):
+    """
+    Add --repair-geometry/--no-repair-geometry option to a command.
+
+    Repairs invalid geometry with ST_MakeValid by default. Users who need to
+    preserve invalid geometry exactly can opt out with --no-repair-geometry.
+    """
+    return click.option(
+        "--repair-geometry/--no-repair-geometry",
+        default=True,
+        help=(
+            "Repair invalid geometry with ST_MakeValid (default: on). "
+            "Use --no-repair-geometry to preserve invalid geometry exactly."
+        ),
+    )(func)
+
+
 def write_memory_option(func):
     """
     Add --write-memory option to a command.

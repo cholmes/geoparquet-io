@@ -17,6 +17,7 @@ from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -810,6 +811,7 @@ def extract_bigquery(
     row_group_rows: int | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    repair_geometry: bool = True,
 ) -> pa.Table | None:
     """
     Extract data from BigQuery table to GeoParquet or plain Parquet.
@@ -909,6 +911,7 @@ def extract_bigquery(
         row_group_rows=row_group_rows,
         geoparquet_version=geoparquet_version,
         verbose=verbose,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -935,6 +938,7 @@ def _execute_bigquery_extraction(
     row_group_rows: int | None,
     geoparquet_version: str | None,
     verbose: bool,
+    repair_geometry: bool = True,
 ) -> pa.Table | None:
     """Execute the BigQuery extraction with the given parameters."""
     debug("Connecting to BigQuery...")
@@ -1009,6 +1013,11 @@ def _execute_bigquery_extraction(
 
         # Determine if geometry column is in the final result
         final_geom_col = geom_col if geom_col and geom_col in result.column_names else None
+
+        # Repair invalid geometry (issue #506). The geometry column is already
+        # WKB-encoded by the SELECT; the helper preserves schema metadata.
+        if final_geom_col and result.num_rows > 0:
+            result, _ = repair_arrow_table_geometry(result, final_geom_col, repair=repair_geometry)
 
         # Write output if path provided
         if output_parquet:

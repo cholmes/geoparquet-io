@@ -27,6 +27,7 @@ from geoparquet_io.core.exceptions import (
     InvalidParameterError,
     RemoteAccessError,
 )
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     make_request_with_retry,
 )
@@ -1148,6 +1149,7 @@ def arcgis_to_table(
     output_crs: str | None = None,
     max_allowable_offset: float | None = None,
     verbose: bool = False,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Convert ArcGIS Feature Service to PyArrow Table.
@@ -1318,6 +1320,10 @@ def arcgis_to_table(
             new_metadata = {**existing_metadata, b"geo": json.dumps(geo_metadata).encode("utf-8")}
             table = table.replace_schema_metadata(new_metadata)
 
+        # Repair invalid geometry (issue #506). Helper preserves schema metadata.
+        if table.num_rows > 0:
+            table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+
         success(f"Converted {table.num_rows} features")
         return table
 
@@ -1358,6 +1364,7 @@ def convert_arcgis_to_geoparquet(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     overwrite: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Convert ArcGIS Feature Service to GeoParquet file.
@@ -1435,6 +1442,7 @@ def convert_arcgis_to_geoparquet(
         output_crs=output_crs,
         max_allowable_offset=max_allowable_offset,
         verbose=verbose,
+        repair_geometry=repair_geometry,
     )
 
     # Apply Hilbert ordering if not skipped

@@ -49,6 +49,7 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
 )
@@ -2315,6 +2316,7 @@ def wfs_to_table(
     verbose: bool = False,
     auto_tile: bool = True,
     sort_by: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -2349,6 +2351,8 @@ def wfs_to_table(
         verbose: Enable debug output
         sort_by: Attribute to sort by for stable pagination. If None, auto-detected from
             DescribeFeatureType. Required for layers without a primary key.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
 
     Returns:
         PyArrow Table with GeoParquet-compatible geometry
@@ -2517,6 +2521,13 @@ def wfs_to_table(
         finally:
             con.close()
 
+    # Repair invalid geometry (issue #506) before CRS resolution, so the rest
+    # of the pipeline — and any downstream consumer like PMTiles — sees valid
+    # geometry. The helper repairs on native GEOMETRY in DuckDB and restores the
+    # table's schema metadata (including the server-CRS marker, issue #499).
+    if table.num_rows > 0:
+        table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+
     # Resolve the CRS to label/reproject to. Trust the server's declared CRS
     # when it gave one; otherwise fall back to a coordinate-range guess.
     table, crs = _resolve_crs_for_output(table, crs, output_crs, strict_crs)
@@ -2571,6 +2582,7 @@ def convert_wfs_to_geoparquet(
     verbose: bool = False,
     auto_tile: bool = False,
     sort_by: str | None = None,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Extract WFS layer and save as optimized GeoParquet.
@@ -2603,6 +2615,8 @@ def convert_wfs_to_geoparquet(
         verbose: Enable debug output
         auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
         sort_by: Attribute to sort by for stable pagination. If None, auto-detected.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
     """
     configure_verbose(verbose)
 
@@ -2627,6 +2641,7 @@ def convert_wfs_to_geoparquet(
         verbose=verbose,
         auto_tile=auto_tile,
         sort_by=sort_by,
+        repair_geometry=repair_geometry,
     )
 
     # Apply Hilbert ordering (unless skipped)
@@ -2721,6 +2736,7 @@ def convert_wfs_layers_to_directory(
     verbose: bool = False,
     auto_tile: bool = False,
     sort_by: str | None = None,
+    repair_geometry: bool = True,
 ) -> dict[str, Path]:
     """
     Extract multiple WFS layers in parallel to a directory.
@@ -2752,6 +2768,7 @@ def convert_wfs_layers_to_directory(
         verbose: Enable debug output
         auto_tile: Auto-tile for servers with startIndex limits
         sort_by: Sort attribute for stable pagination
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
     Returns:
         Dict mapping typename to output file path (only successful extractions)
@@ -2814,6 +2831,7 @@ def convert_wfs_layers_to_directory(
         "verbose": verbose,
         "auto_tile": auto_tile,
         "sort_by": sort_by,
+        "repair_geometry": repair_geometry,
     }
 
     results: dict[str, Path] = {}
