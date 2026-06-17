@@ -94,9 +94,12 @@ def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool
         # we never crash the pipeline; such rows are passed through unchanged.
         parsed = f"TRY(ST_GeomFromWKB({col}))"
         count_pred = f"{col} IS NOT NULL AND {parsed} IS NOT NULL AND NOT ST_IsValid({parsed})"
+        # AND-form (repair in THEN, passthrough in ELSE). The equivalent OR-form
+        # with ST_MakeValid in the ELSE branch segfaults DuckDB 1.5.1's spatial
+        # extension on some real WKB inputs (see repair_arrow_table_geometry).
         repaired_expr = (
-            f"CASE WHEN {col} IS NULL OR {parsed} IS NULL OR ST_IsValid({parsed}) "
-            f"THEN {col} ELSE ST_AsWKB(ST_MakeValid({parsed})) END"
+            f"CASE WHEN {parsed} IS NOT NULL AND NOT ST_IsValid({parsed}) "
+            f"THEN ST_AsWKB(ST_MakeValid({parsed})) ELSE {col} END"
         )
     else:
         # GeoArrow STRUCT or other encoding we don't repair in place.
@@ -159,9 +162,15 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
         _warn_invalid(n, repaired=repair)
         if not repair or n == 0:
             return table, n
+        # AND-form (repair in THEN, passthrough in ELSE). The equivalent
+        # OR-form (`col IS NULL OR parsed IS NULL OR ST_IsValid(parsed)` with
+        # ST_MakeValid in the ELSE branch) segfaults DuckDB 1.5.1's spatial
+        # extension on some real WKB inputs — a conditional-execution bug where
+        # the raw-blob `IS NULL` term mis-aligns the selection vector fed to
+        # ST_MakeValid. This form is logically identical and crash-free.
         repair_expr = (
-            f"CASE WHEN {col} IS NULL OR {parsed} IS NULL OR ST_IsValid({parsed}) "
-            f"THEN {col} ELSE ST_AsWKB(ST_MakeValid({parsed})) END"
+            f"CASE WHEN {parsed} IS NOT NULL AND NOT ST_IsValid({parsed}) "
+            f"THEN ST_AsWKB(ST_MakeValid({parsed})) ELSE {col} END"
         )
         repaired = (
             con.execute(f"SELECT * REPLACE ({repair_expr} AS {col}) FROM _gpio_repair_src")
