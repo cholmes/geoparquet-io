@@ -21,6 +21,7 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -361,6 +362,7 @@ def carto_to_table(
     max_retries: int = DEFAULT_MAX_RETRIES,
     geoparquet_version: str | None = None,
     verbose: bool = False,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """Extract data from Carto SQL API to PyArrow Table.
 
@@ -487,6 +489,10 @@ def carto_to_table(
         new_metadata = {**existing_metadata, b"geo": json.dumps(geo_metadata).encode("utf-8")}
         table = table.replace_schema_metadata(new_metadata)
 
+    # Repair invalid geometry (issue #506). Helper preserves schema metadata.
+    if table.num_rows > 0:
+        table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+
     success(f"Extracted {table.num_rows:,} features")
     return table
 
@@ -513,6 +519,7 @@ def convert_carto_to_geoparquet(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """Extract Carto table and save as optimized GeoParquet.
 
@@ -537,6 +544,8 @@ def convert_carto_to_geoparquet(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing file
         verbose: Enable verbose output
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
     """
     configure_verbose(verbose)
 
@@ -559,6 +568,7 @@ def convert_carto_to_geoparquet(
         max_retries=max_retries,
         geoparquet_version=geoparquet_version,
         verbose=verbose,
+        repair_geometry=repair_geometry,
     )
 
     # Apply Hilbert ordering (unless skipped)

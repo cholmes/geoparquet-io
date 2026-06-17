@@ -181,6 +181,7 @@ def extract(
     where: str | None = None,
     limit: int | None = None,
     geometry_column: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Extract columns and rows with optional filtering.
@@ -193,6 +194,7 @@ def extract(
         where: SQL WHERE clause
         limit: Maximum rows to return
         geometry_column: Geometry column name (auto-detected if None)
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
     Returns:
         Filtered table
@@ -205,6 +207,7 @@ def extract(
         where=where,
         limit=limit,
         geometry_column=geometry_column,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -423,6 +426,7 @@ def read_bigquery(
     geography_column: str | None = None,
     geometry_format: str = "wkt",
     edges: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Read data from a BigQuery table.
@@ -513,6 +517,7 @@ def read_bigquery(
         geometry_format=geometry_format,
         edges=edges,
         verbose=False,
+        repair_geometry=repair_geometry,
     )
 
     if arrow_table is None:
@@ -528,6 +533,7 @@ def convert_to_geojson(
     precision: int = 7,
     write_bbox: bool = False,
     id_field: str | None = None,
+    repair_geometry: bool = True,
 ) -> str | None:
     """
     Convert a GeoParquet table to GeoJSON.
@@ -575,6 +581,7 @@ def convert_to_geojson(
             precision=precision,
             write_bbox=write_bbox,
             id_field=id_field,
+            repair_geometry=repair_geometry,
         )
 
         return output_path
@@ -815,6 +822,7 @@ def from_arcgis(
     max_workers: int = 1,
     output_crs: str | None = None,
     max_allowable_offset: float | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch ArcGIS Feature Service as a PyArrow Table.
@@ -866,6 +874,7 @@ def from_arcgis(
         output_crs=output_crs,
         max_allowable_offset=max_allowable_offset,
         verbose=False,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -880,6 +889,7 @@ def from_wfs(
     axis_order: str = "auto",
     strict_crs: bool = False,
     auto_tile: bool = False,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -927,6 +937,7 @@ def from_wfs(
         axis_order=axis_order,
         strict_crs=strict_crs,
         auto_tile=auto_tile,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -947,6 +958,7 @@ def from_wfs_layers(
     skip_bbox: bool = False,
     compression: str = "ZSTD",
     overwrite: bool = False,
+    repair_geometry: bool = True,
 ) -> dict[str, str]:
     """
     Extract multiple WFS layers in parallel to a directory.
@@ -1005,6 +1017,7 @@ def from_wfs_layers(
         compression=compression,
         overwrite=overwrite,
         auto_tile=auto_tile,
+        repair_geometry=repair_geometry,
     )
     # Convert Path to str for simpler API
     return {k: str(v) for k, v in results.items()}
@@ -1020,6 +1033,7 @@ def from_carto(
     exclude_cols: str | None = None,
     api_key: str | None = None,
     timeout: float = 120.0,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch Carto SQL API table as PyArrow Table.
@@ -1076,6 +1090,7 @@ def from_carto(
         exclude_cols=exclude_cols,
         api_key=api_key,
         timeout=timeout,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -1217,6 +1232,7 @@ def create_pmtiles(
     drop_densest_as_needed: bool = True,
     maximum_tile_bytes: int | None = None,
     force: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Create PMTiles from a GeoParquet file using tippecanoe.
@@ -1290,4 +1306,5 @@ def create_pmtiles(
         drop_densest_as_needed=drop_densest_as_needed,
         maximum_tile_bytes=maximum_tile_bytes,
         force=force,
+        repair_geometry=repair_geometry,
     )

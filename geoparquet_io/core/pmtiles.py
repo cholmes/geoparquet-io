@@ -76,11 +76,17 @@ def _build_gpio_commands(
     verbose: bool,
     profile: str | None,
     src_crs: str | None,
+    repair_geometry: bool = True,
 ) -> list[list[str]]:
     """
     Build the gpio command(s) for GeoJSON conversion.
 
     Returns a list of commands to be piped together.
+
+    The chain always ends with ``gpio convert geojson``, which repairs invalid
+    geometry by default — so the geometry tippecanoe receives is valid (issue
+    #506). When ``repair_geometry`` is False we propagate ``--no-repair-geometry``
+    to that final step so opt-out reaches the pipeline.
     """
     gpio_exe = _get_gpio_executable()
 
@@ -135,6 +141,8 @@ def _build_gpio_commands(
             convert_cmd.append("--verbose")
         if profile:
             convert_cmd.extend(["--profile", profile])
+        if not repair_geometry:
+            convert_cmd.append("--no-repair-geometry")
 
         commands.append(convert_cmd)
 
@@ -146,6 +154,8 @@ def _build_gpio_commands(
         convert_cmd.append("--verbose")
     if profile:
         convert_cmd.extend(["--profile", profile])
+    if not repair_geometry:
+        convert_cmd.append("--no-repair-geometry")
 
     return [convert_cmd]
 
@@ -515,6 +525,7 @@ def create_pmtiles_from_geoparquet(
     drop_densest_as_needed: bool = True,
     maximum_tile_bytes: int | None = None,
     force: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Create PMTiles using gpio streaming + tippecanoe subprocess.
@@ -551,6 +562,9 @@ def create_pmtiles_from_geoparquet(
         maximum_tile_bytes: Set an explicit per-tile byte cap via
             --maximum-tile-bytes. Takes precedence over no_tile_size_limit.
         force: Pass --force to overwrite the output file if it already exists.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            Prevents tippecanoe TopologyExceptions on self-intersecting polygons.
+            Set False to pass geometry through unrepaired.
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -586,6 +600,7 @@ def create_pmtiles_from_geoparquet(
         verbose,
         profile,
         src_crs,
+        repair_geometry=repair_geometry,
     )
     tippecanoe_cmd = _build_tippecanoe_command(
         output_path,

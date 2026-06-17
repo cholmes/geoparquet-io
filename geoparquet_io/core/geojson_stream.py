@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
+from geoparquet_io.core.geometry_repair import repair_geometry_sql
 
 # RFC 8142 record separator character
 RS = "\x1e"
@@ -139,6 +140,7 @@ def _build_feature_query(
     write_bbox: bool = False,
     id_field: str | None = None,
     source_crs: str | None = None,
+    repair_geometry: bool = True,
 ) -> str:
     """
     Build SQL query that outputs GeoJSON Feature strings.
@@ -157,12 +159,18 @@ def _build_feature_query(
     """
     quoted_geom = quote_identifier(geometry_column)
 
+    # Repair invalid geometry (issue #506) before reproject/precision/GeoJSON so
+    # downstream consumers (e.g. tippecanoe in the PMTiles pipeline) never see a
+    # self-intersection. The NULL filter in the WHERE clause stays on the raw
+    # column. ST_AsGeoJSON requires native GEOMETRY, which this already is.
+    geom_base = repair_geometry_sql(quoted_geom) if repair_geometry else quoted_geom
+
     # Apply reprojection if needed
     if source_crs:
         # Transform to WGS84 before converting to GeoJSON
-        geom_for_output = f"ST_Transform({quoted_geom}, '{source_crs}', '{WGS84_CRS}')"
+        geom_for_output = f"ST_Transform({geom_base}, '{source_crs}', '{WGS84_CRS}')"
     else:
-        geom_for_output = quoted_geom
+        geom_for_output = geom_base
 
     # Apply coordinate precision using ST_ReducePrecision before GeoJSON conversion.
     # The grid size is 10^-precision (e.g., precision=7 -> grid=0.0000001).
@@ -398,6 +406,7 @@ def convert_to_geojson_stream(
     verbose: bool = False,
     profile: str | None = None,
     keep_crs: bool = False,
+    repair_geometry: bool = True,
 ) -> int:
     """
     Convert GeoParquet to GeoJSON.
@@ -448,6 +457,7 @@ def convert_to_geojson_stream(
             pretty=pretty,
             verbose=verbose,
             keep_crs=keep_crs,
+            repair_geometry=repair_geometry,
         )
 
     # Setup AWS profile if needed
@@ -486,6 +496,7 @@ def convert_to_geojson_stream(
             write_bbox=write_bbox,
             id_field=id_field,
             source_crs=source_crs if needs_reproject else None,
+            repair_geometry=repair_geometry,
         )
         debug(f"Query: {query}")
 
@@ -518,6 +529,7 @@ def _convert_from_stream(
     pretty: bool = False,
     verbose: bool = False,
     keep_crs: bool = False,
+    repair_geometry: bool = True,
 ) -> int:
     """
     Convert Arrow IPC stream from stdin to GeoJSON.
@@ -600,6 +612,7 @@ def _convert_from_stream(
             write_bbox=write_bbox,
             id_field=id_field,
             source_crs=source_crs if needs_reproject else None,
+            repair_geometry=repair_geometry,
         )
         debug(f"Query: {query}")
 
@@ -634,6 +647,7 @@ def convert_to_geojson(
     verbose: bool = False,
     profile: str | None = None,
     keep_crs: bool = False,
+    repair_geometry: bool = True,
 ) -> int:
     """
     Convert GeoParquet to GeoJSON.
@@ -674,4 +688,5 @@ def convert_to_geojson(
         verbose=verbose,
         profile=profile,
         keep_crs=keep_crs,
+        repair_geometry=repair_geometry,
     )

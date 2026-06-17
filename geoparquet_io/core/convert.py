@@ -31,6 +31,10 @@ from geoparquet_io.core.file_utils import (
     safe_file_url,
     validate_output_path,
 )
+from geoparquet_io.core.geometry_repair import (
+    repair_arrow_table_geometry,
+    repair_query_geometry,
+)
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import (
@@ -1082,6 +1086,7 @@ def read_spatial_to_arrow(
     profile=None,
     geometry_column="geometry",
     layer=None,
+    repair_geometry=True,
 ):
     """
     Read a geospatial file and return an Arrow table with geometry.
@@ -1197,6 +1202,13 @@ def read_spatial_to_arrow(
                 table_expr = _build_st_read_expr(input_url, layer)
             arrow_table = con.execute(f"SELECT * FROM {table_expr}").arrow().read_all()
             return arrow_table, None, None
+
+        # Repair invalid geometry (issue #506). The geometry column is WKB-encoded
+        # ("geometry") at this point; the helper preserves schema metadata.
+        if arrow_table.num_rows > 0:
+            arrow_table, _ = repair_arrow_table_geometry(
+                arrow_table, "geometry", repair=repair_geometry
+            )
 
         return arrow_table, detected_crs, geometry_column
 
@@ -1409,6 +1421,7 @@ def convert_to_geoparquet(
     allow_no_geometry=False,
     profile=None,
     geoparquet_version=None,
+    repair_geometry=True,
 ):
     """
     Convert vector format to optimized GeoParquet.
@@ -1439,6 +1452,8 @@ def convert_to_geoparquet(
         allow_no_geometry: Allow conversion to plain Parquet if no geometry detected
         profile: AWS profile name for S3 operations
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only)
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
@@ -1518,6 +1533,17 @@ def convert_to_geoparquet(
             )
             geoparquet_version = "parquet-geo-only"
             effective_crs = None
+
+        # Geometry repair (issue #506). At this point `query` exposes the geometry
+        # column before WKB conversion (which happens later in the write strategy).
+        # repair_query_geometry auto-detects native GEOMETRY vs WKB and skips
+        # GeoArrow STRUCT encodings it cannot repair in place. It warns with the
+        # invalid count (whether repairing or, on opt-out, leaving as-is).
+        # ST_MakeValid never expands a geometry's envelope, so any bbox already
+        # computed upstream stays correct.
+        if has_geometry:
+            geom_col = "geometry" if is_csv else geometry_info["primary"]
+            query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
         write_parquet_with_metadata(
             con,

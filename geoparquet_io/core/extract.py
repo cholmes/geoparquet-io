@@ -39,6 +39,7 @@ from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
 )
+from geoparquet_io.core.geometry_repair import repair_query_geometry
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.remote import (
     _sanitize_url_for_logging,
@@ -752,6 +753,7 @@ def extract_table(
     where: str | None = None,
     limit: int | None = None,
     geometry_column: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Extract columns and rows from an Arrow Table.
@@ -800,6 +802,10 @@ def extract_table(
                 source_ref, selected_columns, spatial_filter, where, limit
             )
 
+        # Repair invalid geometry (issue #506) before materializing the result.
+        if geom_col in selected_columns:
+            query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
+
         result = con.execute(query).arrow().read_all()
         if table.schema.metadata:
             result = result.replace_schema_metadata(table.schema.metadata)
@@ -824,6 +830,7 @@ def _extract_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    repair_geometry: bool = True,
 ) -> None:
     """Handle extraction with streaming input/output."""
     # Suppress verbose when streaming to stdout
@@ -864,6 +871,9 @@ def _extract_streaming(
 
         # Build query
         query = _build_query_for_source(source, selected_columns, spatial_filter, where, limit)
+
+        # Repair invalid geometry (issue #506) before streaming the write.
+        query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
         if verbose:
             debug(f"Streaming extraction query: {query}")
@@ -962,6 +972,8 @@ def _execute_extraction(
     geoparquet_version: str | None = None,
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
+    geometry_col: str | None = None,
+    repair_geometry: bool = True,
 ) -> None:
     """Execute the extraction query and write output."""
     if verbose:
@@ -1000,6 +1012,11 @@ def _execute_extraction(
             metadata, _ = get_parquet_metadata(input_parquet, verbose=False)
         except Exception:
             pass  # Metadata preservation is optional
+
+        # Repair invalid geometry (issue #506). Auto-detects GEOMETRY vs WKB
+        # encoding and rewrites the query to repair in place before the write.
+        if geometry_col:
+            query = repair_query_geometry(con, query, geometry_col, repair=repair_geometry)
 
         # Write output
         write_parquet_with_metadata(
@@ -1058,6 +1075,7 @@ def extract(
     hive_input: bool = False,
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Extract columns and rows from GeoParquet files.
@@ -1096,6 +1114,7 @@ def extract(
         hive_input,
         write_strategy,
         memory_limit,
+        repair_geometry,
     )
 
 
@@ -1148,6 +1167,7 @@ def _extract_impl(
     hive_input: bool = False,
     write_strategy: str = "duckdb-kv",
     memory_limit: str | None = None,
+    repair_geometry: bool = True,
 ) -> None:
     """Internal implementation of extract with auto-detecting S3 access."""
     include_list = [c.strip() for c in include_cols.split(",")] if include_cols else None
@@ -1179,6 +1199,7 @@ def _extract_impl(
             row_group_rows,
             profile,
             geoparquet_version,
+            repair_geometry=repair_geometry,
         )
 
     # File-based mode
@@ -1250,4 +1271,6 @@ def _extract_impl(
             geoparquet_version,
             write_strategy,
             memory_limit,
+            geometry_col=geometry_col,
+            repair_geometry=repair_geometry,
         )

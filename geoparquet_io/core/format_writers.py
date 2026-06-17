@@ -401,6 +401,7 @@ def write_geojson(
     overwrite: bool = False,
     verbose: bool = False,
     profile: str | None = None,
+    repair_geometry: bool = True,
 ) -> str:
     """
     Convert GeoParquet to GeoJSON format.
@@ -472,6 +473,7 @@ def write_geojson(
             keep_crs=keep_crs,
             verbose=verbose,
             profile=profile,
+            repair_geometry=repair_geometry,
         )
 
         success(f"Created GeoJSON: {output_path}")
