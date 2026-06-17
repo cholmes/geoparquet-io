@@ -14,6 +14,7 @@ from geoparquet_io.core.carto import (
     _create_empty_geoparquet_table,
     _detect_geometry_column,
     _geometry_column_from_fields,
+    _table_has_geometry,
     _validate_carto_url,
     _validate_table_name,
     carto_to_table,
@@ -403,6 +404,30 @@ class TestCartoToTable:
         )
         assert geom_col is not None
 
+    def test_table_has_geometry_true_for_spatial(self):
+        """A populated spatial table is detected as geometry."""
+        assert (
+            _table_has_geometry("https://phl.carto.com/api/v2/sql", "opa_properties_public") is True
+        )
+
+    def test_table_has_geometry_false_for_tabular(self):
+        """A tabular table whose Carto the_geom is all-NULL is detected as plain.
+
+        Carto attaches an empty the_geom (type=geometry) to managed tabular
+        tables, so schema inspection alone is insufficient; the non-NULL probe
+        must classify hr_pay_range (0 non-null geometries) as plain.
+        """
+        assert _table_has_geometry("https://phl.carto.com/api/v2/sql", "hr_pay_range") is False
+
+    def test_autodetect_tabular_returns_plain_table(self):
+        """Auto-detect (geometry=None) on a tabular table yields no geo metadata."""
+        table = carto_to_table(
+            url="https://phl.carto.com/api/v2/sql",
+            table_name="hr_pay_range",
+        )
+        assert not (table.schema.metadata and b"geo" in table.schema.metadata)
+        assert "geometry" not in table.column_names
+
     def test_forced_no_geometry_returns_plain_table(self):
         """geometry=False extracts as a plain table with no geo metadata."""
         table = carto_to_table(
@@ -499,6 +524,32 @@ class TestCartoCli:
                     "--no-geometry",
                     "--limit",
                     "5",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert output_file.exists()
+            metadata = pq.read_table(str(output_file)).schema.metadata or {}
+            assert b"geo" not in metadata
+
+    def test_cli_autodetect_tabular_writes_plain_parquet(self):
+        """Auto-detect (no flags) on a real tabular table writes plain Parquet.
+
+        This is the issue #508 reprex: a geometry-less Carto table is extracted
+        to plain Parquet with no 'geo' metadata key.
+        """
+        import pyarrow.parquet as pq
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "tabular.parquet"
+            result = runner.invoke(
+                cli,
+                [
+                    "extract",
+                    "carto",
+                    "https://phl.carto.com/api/v2/sql",
+                    "hr_pay_range",
+                    str(output_file),
                 ],
             )
             assert result.exit_code == 0, result.output

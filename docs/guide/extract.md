@@ -1371,7 +1371,10 @@ Carto tables typically have geometry in a column named `the_geom` (WGS84). This 
 
 ### Non-Geometry (Tabular) Tables
 
-Carto accounts often include geometry-less lookup or demographics tables. `gpio` auto-detects these from the table schema and extracts them as **plain Parquet** (no GeoParquet `geo` metadata key) — the same behavior as converting a non-spatial file. Hilbert ordering, the bbox column, and `--bbox` filtering are skipped (they require geometry); `--where`, `--limit`, `--include-cols`, and `--exclude-cols` are still honored.
+Carto accounts often include geometry-less lookup or demographics tables. `gpio` auto-detects these and extracts them as **plain Parquet** (no GeoParquet `geo` metadata key) — the same behavior as converting a non-spatial file. Hilbert ordering, the bbox column, and `--bbox` filtering are skipped (they require geometry); `--where`, `--limit`, `--include-cols`, and `--exclude-cols` are still honored.
+
+!!! note "How detection works"
+    Carto attaches a `the_geom` column (type `geometry`) to nearly every managed table — even purely tabular ones, where it is entirely `NULL`. So inspecting the schema alone isn't enough. `gpio` first checks the schema for a geometry-typed column, then runs a fast `WHERE the_geom IS NOT NULL LIMIT 1` probe to confirm the column actually holds geometry before choosing the GeoParquet path.
 
 Use `--geometry` / `--no-geometry` to override auto-detection:
 

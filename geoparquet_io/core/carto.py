@@ -252,34 +252,20 @@ def _geometry_column_from_fields(fields: object) -> str | None:
     return None
 
 
-def _detect_geometry_column(
+def _carto_sql_json(
     url: str,
-    table_name: str,
+    sql: str,
     api_key: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> str | None:
-    """Probe the Carto SQL API for a geometry column.
+) -> dict:
+    """Run a SQL query against the Carto API and return the parsed JSON response.
 
-    Issues ``SELECT * FROM <table> LIMIT 0`` (returns only the schema, no rows)
-    and inspects the ``fields`` block. This is cheap and lets the extractor
-    route geometry-less tables to a plain-Parquet path.
-
-    Args:
-        url: Carto SQL API URL (already normalized)
-        table_name: Table to inspect
-        api_key: Optional API key for authenticated requests
-        timeout: Request timeout in seconds
-
-    Returns:
-        Name of the first geometry column, or None if the table has none.
+    Used for lightweight metadata/detection probes (schema, existence checks).
+    Bulk data is fetched via DuckDB in :func:`_fetch_with_retry` instead.
 
     Raises:
-        CartoError: If the probe request fails (network/HTTP/parse error) or
-            the API returns an error payload.
+        CartoError: On request/parse failure or an API error payload.
     """
-    _validate_table_name(table_name)
-    quoted_table = quote_identifier(table_name)
-    sql = f"SELECT * FROM {quoted_table} LIMIT 0"
     full_url = f"{url}?q={quote(sql)}"
     if api_key:
         full_url += f"&api_key={quote(api_key)}"
@@ -289,13 +275,69 @@ def _detect_geometry_column(
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as e:
-        raise CartoError(f"Failed to probe schema for table '{table_name}': {e}") from e
+        raise CartoError(f"Carto SQL request failed: {e}") from e
 
-    if isinstance(payload, dict) and payload.get("error"):
-        raise CartoError(f"Carto API error probing table '{table_name}': {payload['error']}")
+    if not isinstance(payload, dict):
+        raise CartoError("Unexpected Carto SQL API response (not a JSON object)")
+    if payload.get("error"):
+        raise CartoError(f"Carto API error: {payload['error']}")
+    return payload
 
-    fields = payload.get("fields") if isinstance(payload, dict) else None
-    return _geometry_column_from_fields(fields)
+
+def _detect_geometry_column(
+    url: str,
+    table_name: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> str | None:
+    """Probe the Carto SQL API for a geometry-typed column.
+
+    Issues ``SELECT * FROM <table> LIMIT 0`` (schema only, no rows) and inspects
+    the ``fields`` block for a column whose ``type`` is ``"geometry"``.
+
+    Note:
+        Carto attaches ``the_geom``/``the_geom_webmercator`` (type ``geometry``)
+        to nearly every managed table, even purely tabular ones where those
+        columns are entirely NULL. A column reported here therefore does *not*
+        guarantee the table actually holds geometry — confirm with
+        :func:`_geometry_column_has_values`.
+
+    Returns:
+        Name of the first geometry-typed column, or None if the schema has none.
+
+    Raises:
+        CartoError: If the probe request fails.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+    payload = _carto_sql_json(url, f"SELECT * FROM {quoted_table} LIMIT 0", api_key, timeout)
+    return _geometry_column_from_fields(payload.get("fields"))
+
+
+def _geometry_column_has_values(
+    url: str,
+    table_name: str,
+    geom_col: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
+    """Probe whether a geometry column holds any non-NULL value.
+
+    Carto attaches an often entirely-NULL ``the_geom`` to managed tabular
+    tables, so the schema alone misclassifies them as spatial. A bounded
+    ``... WHERE <geom> IS NOT NULL LIMIT 1`` probe confirms real geometry
+    (returns instantly for spatial tables; ~sub-second even for large all-NULL
+    tables since Postgres stops at the first match / table statistics).
+
+    Raises:
+        CartoError: If the probe request fails.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+    quoted_geom = quote_identifier(geom_col)
+    sql = f"SELECT 1 AS has_geom FROM {quoted_table} WHERE {quoted_geom} IS NOT NULL LIMIT 1"
+    payload = _carto_sql_json(url, sql, api_key, timeout)
+    return bool(payload.get("rows"))
 
 
 def _table_has_geometry(
@@ -306,22 +348,25 @@ def _table_has_geometry(
 ) -> bool:
     """Decide whether a Carto table should be extracted as geometry.
 
-    Wraps :func:`_detect_geometry_column`. If the probe is inconclusive (network
-    error, etc.) we fall back to the geometry path so the normal extraction and
-    error handling apply — preserving prior behavior for transient failures.
+    Two-step: (1) find a geometry-typed column in the schema; (2) confirm it
+    actually holds non-NULL geometry. Both are needed because Carto adds an
+    often-empty ``the_geom`` to managed tabular tables. If detection is
+    inconclusive (network error, etc.) we fall back to the geometry path so the
+    normal extraction and error handling apply.
     """
     try:
         geom_col = _detect_geometry_column(url, table_name, api_key, timeout)
+        if not geom_col:
+            debug("No geometry-typed column in schema; extracting as plain table")
+            return False
+        if _geometry_column_has_values(url, table_name, geom_col, api_key, timeout):
+            debug(f"Detected populated geometry column: {geom_col}")
+            return True
+        debug(f"Geometry column {geom_col!r} is entirely NULL; extracting as plain table")
+        return False
     except CartoError as e:
         debug(f"Geometry detection inconclusive ({e}); assuming geometry present")
         return True
-
-    if geom_col:
-        debug(f"Detected geometry column: {geom_col}")
-        return True
-
-    debug("No geometry column detected; extracting as plain table")
-    return False
 
 
 def _create_empty_geoparquet_table(geoparquet_version: str | None = None) -> pa.Table:
