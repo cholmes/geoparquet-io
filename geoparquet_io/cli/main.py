@@ -3376,6 +3376,13 @@ def extract_wfs_cmd(
     is_flag=True,
     help="Skip adding bbox column (faster, but no per-geometry bbox)",
 )
+@click.option(
+    "--geometry/--no-geometry",
+    "geometry",
+    default=None,
+    help="Force geometry (GeoParquet) or plain tabular (plain Parquet) "
+    "extraction. Default: auto-detect from the table schema.",
+)
 @compression_options
 @row_group_options
 @geoparquet_version_option
@@ -3398,6 +3405,7 @@ def extract_carto_cmd(
     timeout,
     skip_hilbert,
     skip_bbox,
+    geometry,
     compression,
     compression_level,
     row_group_size,
@@ -3422,7 +3430,11 @@ def extract_carto_cmd(
     \b
     Notes:
         - Geometry column 'the_geom' is renamed to 'geometry' for consistency
+        - Tables with no geometry are written as plain Parquet (no geo metadata);
+          use --no-geometry to force tabular extraction or --geometry to force
+          GeoParquet (default: auto-detect)
         - Filters (--where, --bbox) are pushed to the server for efficiency
+          (--bbox applies only to geometry tables)
         - For large tables, use --limit or --where to avoid timeouts
         - Set CARTO_API_KEY env var for authenticated endpoints
 
@@ -3497,6 +3509,7 @@ def extract_carto_cmd(
                 overwrite=overwrite,
                 verbose=verbose,
                 repair_geometry=repair_geometry,
+                geometry=geometry,
             )
         except CartoError as e:
             raise click.ClickException(str(e)) from None

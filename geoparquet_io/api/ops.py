@@ -1034,27 +1034,37 @@ def from_carto(
     api_key: str | None = None,
     timeout: float = 120.0,
     repair_geometry: bool = True,
+    geometry: bool | None = None,
 ) -> pa.Table:
     """
     Fetch Carto SQL API table as PyArrow Table.
 
-    Uses DuckDB's ST_Read for efficient GeoJSON parsing from Carto's SQL API.
-    Filters are pushed to the server for optimal performance.
+    Geometry tables are parsed via DuckDB's ST_Read (GeoJSON) and carry
+    GeoParquet metadata. Geometry-less (tabular) tables are fetched as CSV and
+    returned as a plain table with no ``geo`` metadata. Filters are pushed to
+    the server for optimal performance.
 
     Args:
         url: Carto SQL API URL (e.g., 'https://phl.carto.com/api/v2/sql')
             or base domain (e.g., 'https://phl.carto.com')
         table_name: Name of the table to query
         where: SQL WHERE clause for filtering
-        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84.
+            Ignored for geometry-less tables.
         limit: Maximum rows to fetch
         include_cols: Comma-separated columns to include
         exclude_cols: Comma-separated columns to exclude
         api_key: API key for authenticated requests (or set CARTO_API_KEY env var)
         timeout: Request timeout in seconds (default: 120)
+        repair_geometry: Repair invalid geometry with ST_MakeValid (geometry
+            tables only; default: True)
+        geometry: Extraction mode. ``None`` (default) auto-detects from the
+            table schema; ``True`` forces geometry extraction; ``False`` forces
+            plain/tabular extraction (no ``geo`` metadata).
 
     Returns:
-        PyArrow Table with geometry column named 'geometry'
+        PyArrow Table. For geometry tables, a 'geometry' column with GeoParquet
+        metadata; for tabular tables, a plain table with no ``geo`` metadata.
 
     Note:
         The Carto geometry column 'the_geom' is renamed to 'geometry'
@@ -1091,6 +1101,7 @@ def from_carto(
         api_key=api_key,
         timeout=timeout,
         repair_geometry=repair_geometry,
+        geometry=geometry,
     )
 
 

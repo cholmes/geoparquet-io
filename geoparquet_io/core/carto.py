@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -61,10 +63,12 @@ def _validate_carto_url(url: str) -> str:
     url = url.rstrip("/")
     parsed = urlparse(url)
 
-    if not parsed.scheme:
+    # Restrict to http(s) — rejects empty, file://, and other schemes so the
+    # URL can be safely handed to urllib.request.urlopen (see _carto_sql_json).
+    if parsed.scheme not in ("http", "https"):
         raise InvalidParameterError(
             "url",
-            f"Invalid URL: {url}. Must include scheme (https://)",
+            f"Invalid URL: {url}. Must include an http:// or https:// scheme",
         )
 
     # Accept URLs ending with /api/v2/sql or /api/v1/sql
@@ -114,6 +118,7 @@ def _build_carto_query(
     where: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
+    include_geom: bool = True,
 ) -> str:
     """Build SQL query for Carto API.
 
@@ -123,6 +128,10 @@ def _build_carto_query(
         where: SQL WHERE clause (user-provided, passed through)
         bbox: Bounding box filter (minx, miny, maxx, maxy)
         limit: Maximum rows to return
+        include_geom: When True (geometry extraction), force-include ``the_geom``
+            in an explicit column list and honor the ``bbox`` spatial filter.
+            When False (plain/tabular extraction), neither applies since the
+            table has no geometry column.
 
     Returns:
         SQL query string
@@ -138,8 +147,8 @@ def _build_carto_query(
 
     # Column selection - quote each column name
     if columns:
-        # Always include the_geom for geometry
-        if "the_geom" not in columns:
+        # Always include the_geom for geometry extraction
+        if include_geom and "the_geom" not in columns:
             columns = [*columns, "the_geom"]
         col_str = ", ".join(quote_identifier(c) for c in columns)
     else:
@@ -152,7 +161,7 @@ def _build_carto_query(
     if where:
         # WHERE clause is user-provided - Carto validates on server side
         conditions.append(f"({where})")
-    if bbox:
+    if bbox and include_geom:
         minx, miny, maxx, maxy = bbox
         # Use ST_Intersects with ST_MakeEnvelope for spatial filter
         # the_geom is quoted for safety
@@ -222,6 +231,147 @@ def _get_row_count(
     return int(result[0]) if result else 0
 
 
+def _geometry_column_from_fields(fields: object) -> str | None:
+    """Return the first geometry column from a Carto ``fields`` schema block.
+
+    Carto's SQL API returns a ``fields`` object mapping each column name to a
+    descriptor whose ``type`` is ``"geometry"`` for spatial columns. This pure
+    helper inspects that mapping so callers can decide between geometry and
+    plain/tabular extraction without a second request.
+
+    Args:
+        fields: The ``fields`` value from a Carto SQL API JSON response.
+
+    Returns:
+        Name of the first column whose type is ``"geometry"``, or None if the
+        schema has no geometry column (or is malformed).
+    """
+    if not isinstance(fields, dict):
+        return None
+    for col_name, descriptor in fields.items():
+        if isinstance(descriptor, dict) and descriptor.get("type") == "geometry":
+            return str(col_name)
+    return None
+
+
+def _carto_sql_json(
+    url: str,
+    sql: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Run a SQL query against the Carto API and return the parsed JSON response.
+
+    Used for lightweight metadata/detection probes (schema, existence checks).
+    Bulk data is fetched via DuckDB in :func:`_fetch_with_retry` instead.
+
+    Raises:
+        CartoError: On request/parse failure or an API error payload.
+    """
+    full_url = f"{url}?q={quote(sql)}"
+    if api_key:
+        full_url += f"&api_key={quote(api_key)}"
+
+    try:
+        # url scheme is constrained to http(s) by _validate_carto_url upstream.
+        request = urllib.request.Request(full_url, headers={"User-Agent": "geoparquet-io"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310  # nosec B310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise CartoError(f"Carto SQL request failed: {e}") from e
+
+    if not isinstance(payload, dict):
+        raise CartoError("Unexpected Carto SQL API response (not a JSON object)")
+    if payload.get("error"):
+        raise CartoError(f"Carto API error: {payload['error']}")
+    return payload
+
+
+def _detect_geometry_column(
+    url: str,
+    table_name: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> str | None:
+    """Probe the Carto SQL API for a geometry-typed column.
+
+    Issues ``SELECT * FROM <table> LIMIT 0`` (schema only, no rows) and inspects
+    the ``fields`` block for a column whose ``type`` is ``"geometry"``.
+
+    Note:
+        Carto attaches ``the_geom``/``the_geom_webmercator`` (type ``geometry``)
+        to nearly every managed table, even purely tabular ones where those
+        columns are entirely NULL. A column reported here therefore does *not*
+        guarantee the table actually holds geometry — confirm with
+        :func:`_geometry_column_has_values`.
+
+    Returns:
+        Name of the first geometry-typed column, or None if the schema has none.
+
+    Raises:
+        CartoError: If the probe request fails.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+    payload = _carto_sql_json(url, f"SELECT * FROM {quoted_table} LIMIT 0", api_key, timeout)
+    return _geometry_column_from_fields(payload.get("fields"))
+
+
+def _geometry_column_has_values(
+    url: str,
+    table_name: str,
+    geom_col: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
+    """Probe whether a geometry column holds any non-NULL value.
+
+    Carto attaches an often entirely-NULL ``the_geom`` to managed tabular
+    tables, so the schema alone misclassifies them as spatial. A bounded
+    ``... WHERE <geom> IS NOT NULL LIMIT 1`` probe confirms real geometry
+    (returns instantly for spatial tables; ~sub-second even for large all-NULL
+    tables since Postgres stops at the first match / table statistics).
+
+    Raises:
+        CartoError: If the probe request fails.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+    quoted_geom = quote_identifier(geom_col)
+    sql = f"SELECT 1 AS has_geom FROM {quoted_table} WHERE {quoted_geom} IS NOT NULL LIMIT 1"
+    payload = _carto_sql_json(url, sql, api_key, timeout)
+    return bool(payload.get("rows"))
+
+
+def _table_has_geometry(
+    url: str,
+    table_name: str,
+    api_key: str | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
+    """Decide whether a Carto table should be extracted as geometry.
+
+    Two-step: (1) find a geometry-typed column in the schema; (2) confirm it
+    actually holds non-NULL geometry. Both are needed because Carto adds an
+    often-empty ``the_geom`` to managed tabular tables. If detection is
+    inconclusive (network error, etc.) we fall back to the geometry path so the
+    normal extraction and error handling apply.
+    """
+    try:
+        geom_col = _detect_geometry_column(url, table_name, api_key, timeout)
+        if not geom_col:
+            debug("No geometry-typed column in schema; extracting as plain table")
+            return False
+        if _geometry_column_has_values(url, table_name, geom_col, api_key, timeout):
+            debug(f"Detected populated geometry column: {geom_col}")
+            return True
+        debug(f"Geometry column {geom_col!r} is entirely NULL; extracting as plain table")
+        return False
+    except CartoError as e:
+        debug(f"Geometry detection inconclusive ({e}); assuming geometry present")
+        return True
+
+
 def _create_empty_geoparquet_table(geoparquet_version: str | None = None) -> pa.Table:
     """Create an empty table with proper GeoParquet metadata.
 
@@ -255,6 +405,7 @@ def _fetch_with_retry(
     url: str,
     table_name: str,
     sql: str,
+    fmt: str = "GeoJSON",
     api_key: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -266,21 +417,31 @@ def _fetch_with_retry(
         url: Carto SQL API URL
         table_name: Table name (for error messages)
         sql: SQL query to execute
+        fmt: Carto response format. ``"GeoJSON"`` (default) parses geometry via
+            DuckDB ``ST_Read``; ``"csv"`` reads geometry-less tables via
+            ``read_csv_auto`` for plain/tabular extraction.
         api_key: Optional API key
         timeout: Request timeout in seconds
         max_retries: Number of retry attempts
         retry_delay: Base delay between retries (exponential backoff)
 
     Returns:
-        PyArrow Table from DuckDB ST_Read
+        PyArrow Table from DuckDB
 
     Raises:
         CartoError: On fatal errors or exhausted retries
     """
-    # Construct full URL with GeoJSON format
-    full_url = f"{url}?q={quote(sql)}&format=GeoJSON"
+    # Construct full URL with the requested response format
+    fmt_param = "GeoJSON" if fmt == "GeoJSON" else "csv"
+    full_url = f"{url}?q={quote(sql)}&format={fmt_param}"
     if api_key:
         full_url += f"&api_key={quote(api_key)}"
+
+    # GeoJSON is parsed with ST_Read; CSV (geometry-less) with read_csv_auto.
+    if fmt == "GeoJSON":
+        read_expr = f'ST_Read("{full_url}")'
+    else:
+        read_expr = f"read_csv_auto('{full_url}')"
 
     debug(f"Request URL: {full_url[:100]}...")
 
@@ -292,7 +453,7 @@ def _fetch_with_retry(
             conn.execute("SET allow_asterisks_in_http_paths = true")
             conn.execute(f"SET http_timeout = {int(timeout * 1000)}")  # milliseconds
 
-            table = conn.execute(f'SELECT * FROM ST_Read("{full_url}")').arrow().read_all()
+            table = conn.execute(f"SELECT * FROM {read_expr}").arrow().read_all()
             return table
 
         except Exception as e:
@@ -363,17 +524,22 @@ def carto_to_table(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     repair_geometry: bool = True,
+    geometry: bool | None = None,
 ) -> pa.Table:
     """Extract data from Carto SQL API to PyArrow Table.
 
-    Uses DuckDB's ST_Read to efficiently parse GeoJSON from Carto's
-    SQL API endpoint.
+    For tables with a geometry column, DuckDB's ``ST_Read`` parses Carto's
+    GeoJSON output and the result carries GeoParquet ``geo`` metadata. For
+    geometry-less (tabular) tables, the data is fetched as CSV and returned as a
+    plain table with **no** ``geo`` metadata, mirroring gpio's file-conversion
+    behavior for non-spatial inputs.
 
     Args:
         url: Carto SQL API URL (e.g., https://phl.carto.com/api/v2/sql)
         table_name: Name of the table to query
         where: SQL WHERE clause for filtering
-        bbox: Bounding box filter as (minx, miny, maxx, maxy) in WGS84
+        bbox: Bounding box filter as (minx, miny, maxx, maxy) in WGS84.
+            Ignored for geometry-less tables.
         limit: Maximum number of rows to return
         include_cols: Comma-separated column names to include
         exclude_cols: Comma-separated column names to exclude (applied after fetch)
@@ -382,9 +548,15 @@ def carto_to_table(
         max_retries: Number of retry attempts for transient failures (default: 3)
         geoparquet_version: GeoParquet version for metadata (default: "1.1.0")
         verbose: Enable verbose output
+        repair_geometry: Repair invalid geometry with ST_MakeValid (geometry
+            tables only; default: True).
+        geometry: Extraction mode. ``None`` (default) auto-detects from the
+            table schema; ``True`` forces geometry extraction (GeoParquet);
+            ``False`` forces plain/tabular extraction (no ``geo`` metadata).
 
     Returns:
-        PyArrow Table with WKB geometry column named 'geometry'
+        PyArrow Table. For geometry tables, a WKB geometry column named
+        'geometry' with GeoParquet metadata; for tabular tables, a plain table.
 
     Raises:
         CartoError: If the Carto API request fails
@@ -405,9 +577,62 @@ def carto_to_table(
     include_list = [c.strip() for c in include_cols.split(",")] if include_cols else None
     exclude_set = {c.strip() for c in exclude_cols.split(",")} if exclude_cols else set()
 
+    # Decide between geometry and plain/tabular extraction.
+    if geometry is None:
+        has_geometry = _table_has_geometry(url, table_name, effective_api_key, timeout)
+    else:
+        has_geometry = geometry
+
+    if not has_geometry:
+        if bbox:
+            warn("Ignoring --bbox: table has no geometry column (tabular extraction)")
+        return _carto_plain_table(
+            url,
+            table_name,
+            where=where,
+            limit=limit,
+            include_list=include_list,
+            exclude_set=exclude_set,
+            api_key=effective_api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+
+    return _carto_geo_table(
+        url,
+        table_name,
+        where=where,
+        bbox=bbox,
+        limit=limit,
+        include_list=include_list,
+        exclude_set=exclude_set,
+        api_key=effective_api_key,
+        timeout=timeout,
+        max_retries=max_retries,
+        geoparquet_version=geoparquet_version,
+        repair_geometry=repair_geometry,
+    )
+
+
+def _carto_geo_table(
+    url: str,
+    table_name: str,
+    *,
+    where: str | None,
+    bbox: tuple[float, float, float, float] | None,
+    limit: int | None,
+    include_list: list[str] | None,
+    exclude_set: set[str],
+    api_key: str | None,
+    timeout: float,
+    max_retries: int,
+    geoparquet_version: str | None,
+    repair_geometry: bool,
+) -> pa.Table:
+    """Extract a Carto table with geometry to a GeoParquet-ready PyArrow Table."""
     # Get row count for progress
     try:
-        total_count = _get_row_count(url, table_name, where, bbox, effective_api_key, timeout)
+        total_count = _get_row_count(url, table_name, where, bbox, api_key, timeout)
         info(f"Table: {table_name}")
         info(f"Total rows matching filter: {total_count:,}")
     except Exception as e:
@@ -434,7 +659,8 @@ def carto_to_table(
         url=url,
         table_name=table_name,
         sql=sql,
-        api_key=effective_api_key,
+        fmt="GeoJSON",
+        api_key=api_key,
         timeout=timeout,
         max_retries=max_retries,
     )
@@ -497,6 +723,68 @@ def carto_to_table(
     return table
 
 
+def _carto_plain_table(
+    url: str,
+    table_name: str,
+    *,
+    where: str | None,
+    limit: int | None,
+    include_list: list[str] | None,
+    exclude_set: set[str],
+    api_key: str | None,
+    timeout: float,
+    max_retries: int,
+) -> pa.Table:
+    """Extract a geometry-less Carto table to a plain PyArrow Table.
+
+    Fetches via the SQL API's CSV format (no geometry required) and returns a
+    table with no GeoParquet ``geo`` metadata. ``bbox`` does not apply here.
+    """
+    # Get row count for progress (no spatial filter for tabular tables)
+    try:
+        total_count = _get_row_count(url, table_name, where, None, api_key, timeout)
+        info(f"Table: {table_name} (no geometry — extracting as plain table)")
+        info(f"Total rows matching filter: {total_count:,}")
+    except Exception as e:
+        debug(f"Could not get row count: {e}")
+
+    # Build query without geometry/bbox
+    sql = _build_carto_query(
+        table_name=table_name,
+        columns=include_list,
+        where=where,
+        limit=limit,
+        include_geom=False,
+    )
+    debug(f"SQL: {sql}")
+
+    # Fetch data with retry logic (CSV format)
+    progress("Fetching data from Carto...")
+    table = _fetch_with_retry(
+        url=url,
+        table_name=table_name,
+        sql=sql,
+        fmt="csv",
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
+
+    if table.num_rows == 0:
+        warn("Query returned no rows")
+
+    debug(f"Received {table.num_rows:,} rows")
+
+    # Apply column exclusions (no geometry to protect here)
+    if exclude_set:
+        cols_to_keep = [c for c in table.column_names if c not in exclude_set]
+        table = table.select(cols_to_keep)
+        debug(f"Excluded columns: {exclude_set}")
+
+    success(f"Extracted {table.num_rows:,} rows (plain table, no geometry)")
+    return table
+
+
 def convert_carto_to_geoparquet(
     url: str,
     table_name: str,
@@ -520,23 +808,30 @@ def convert_carto_to_geoparquet(
     overwrite: bool = False,
     verbose: bool = False,
     repair_geometry: bool = True,
+    geometry: bool | None = None,
 ) -> None:
-    """Extract Carto table and save as optimized GeoParquet.
+    """Extract Carto table and save as optimized GeoParquet or plain Parquet.
+
+    Geometry tables are written as optimized GeoParquet (Hilbert-sorted, bbox
+    column). Geometry-less (tabular) tables are written as plain Parquet with no
+    ``geo`` metadata, and Hilbert/bbox steps are skipped since they require
+    geometry.
 
     Args:
         url: Carto SQL API URL
         table_name: Name of the table to query
-        output_file: Output GeoParquet file path
+        output_file: Output Parquet file path
         where: SQL WHERE clause for filtering
-        bbox: Bounding box filter as (minx, miny, maxx, maxy)
+        bbox: Bounding box filter as (minx, miny, maxx, maxy). Ignored for
+            geometry-less tables.
         limit: Maximum rows to extract
         include_cols: Comma-separated columns to include
         exclude_cols: Comma-separated columns to exclude
         api_key: API key for authenticated requests (or set CARTO_API_KEY env var)
         timeout: Request timeout in seconds (default: 120)
         max_retries: Number of retry attempts (default: 3)
-        skip_hilbert: Skip Hilbert curve sorting
-        skip_bbox: Skip adding bbox column
+        skip_hilbert: Skip Hilbert curve sorting (geometry tables only)
+        skip_bbox: Skip adding bbox column (geometry tables only)
         compression: Compression algorithm
         compression_level: Compression level
         row_group_size_mb: Row group size in MB
@@ -546,6 +841,9 @@ def convert_carto_to_geoparquet(
         verbose: Enable verbose output
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
+        geometry: Extraction mode. ``None`` (default) auto-detects from the
+            table schema; ``True`` forces GeoParquet output; ``False`` forces
+            plain/tabular Parquet output.
     """
     configure_verbose(verbose)
 
@@ -569,34 +867,43 @@ def convert_carto_to_geoparquet(
         geoparquet_version=geoparquet_version,
         verbose=verbose,
         repair_geometry=repair_geometry,
+        geometry=geometry,
     )
 
-    # Apply Hilbert ordering (unless skipped)
-    if not skip_hilbert and table.num_rows > 0:
+    # Plain/tabular tables carry no 'geo' metadata; Hilbert/bbox don't apply.
+    is_geo = bool(table.schema.metadata and b"geo" in table.schema.metadata)
+
+    # Apply Hilbert ordering (unless skipped, geometry only)
+    if is_geo and not skip_hilbert and table.num_rows > 0:
         progress("Applying Hilbert curve ordering...")
         from geoparquet_io.core.hilbert_order import hilbert_order_table
 
         table = hilbert_order_table(table, geometry_column="geometry")
         debug("Hilbert sort complete")
 
-    # Add bbox column (unless skipped)
-    if not skip_bbox and table.num_rows > 0:
+    # Add bbox column (unless skipped, geometry only)
+    if is_geo and not skip_bbox and table.num_rows > 0:
         progress("Adding bbox column...")
         from geoparquet_io.core.add.bbox import add_bbox_table
 
         table = add_bbox_table(table, geometry_column="geometry")
         debug("Bbox column added")
 
-    # Write output
+    # Write output. For plain/tabular tables pass an empty geometry_column so
+    # write_geoparquet_table skips its name-based auto-detection (which would
+    # otherwise mistake a Carto 'the_geom' string column for geometry) and emits
+    # plain Parquet with no 'geo' metadata key.
     progress(f"Writing to {output_file}...")
     write_geoparquet_table(
         table,
         output_file,
+        geometry_column=None if is_geo else "",
         compression=compression,
         compression_level=compression_level,
         row_group_size_mb=row_group_size_mb,
         row_group_rows=row_group_rows,
-        geoparquet_version=geoparquet_version,
+        geoparquet_version=geoparquet_version if is_geo else None,
     )
 
-    success(f"Wrote {table.num_rows:,} features to {output_file}")
+    noun = "features" if is_geo else "rows"
+    success(f"Wrote {table.num_rows:,} {noun} to {output_file}")
