@@ -1369,6 +1369,49 @@ gpio extract carto https://phl.carto.com opa_properties_public output.parquet
 
 Carto tables typically have geometry in a column named `the_geom` (WGS84). This is automatically renamed to `geometry` in the output for consistency with other geoparquet-io extractors.
 
+### Non-Geometry (Tabular) Tables
+
+Carto accounts often include geometry-less lookup or demographics tables. `gpio` auto-detects these from the table schema and extracts them as **plain Parquet** (no GeoParquet `geo` metadata key) — the same behavior as converting a non-spatial file. Hilbert ordering, the bbox column, and `--bbox` filtering are skipped (they require geometry); `--where`, `--limit`, `--include-cols`, and `--exclude-cols` are still honored.
+
+Use `--geometry` / `--no-geometry` to override auto-detection:
+
+=== "CLI"
+
+    ```bash
+    # Auto-detect (default): plain Parquet if the table has no geometry
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        my_lookup_table output.parquet
+
+    # Force tabular extraction (plain Parquet, no geo metadata)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        my_lookup_table output.parquet \
+        --no-geometry
+
+    # Force geometry extraction (GeoParquet)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --geometry
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    # Auto-detect (default): returns a plain table for geometry-less sources
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'my_lookup_table',
+    )
+
+    # Force tabular extraction
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'my_lookup_table',
+        geometry=False,
+    )
+    ```
+
 ### Output Optimization
 
 By default, Carto extracts include Hilbert spatial ordering and bbox columns:

@@ -12,6 +12,8 @@ from geoparquet_io.core.carto import (
     CartoError,
     _build_carto_query,
     _create_empty_geoparquet_table,
+    _detect_geometry_column,
+    _geometry_column_from_fields,
     _validate_carto_url,
     _validate_table_name,
     carto_to_table,
@@ -151,6 +153,71 @@ class TestBuildCartoQuery:
         )
         assert "WHERE (status = 'active') AND ST_Intersects" in sql
         assert "LIMIT 100" in sql
+
+    def test_no_geom_does_not_force_the_geom(self):
+        """Tabular query (include_geom=False) does not append the_geom."""
+        sql = _build_carto_query("my_table", columns=["id", "name"], include_geom=False)
+        assert '"id"' in sql
+        assert '"name"' in sql
+        assert '"the_geom"' not in sql
+
+    def test_no_geom_ignores_bbox(self):
+        """Tabular query (include_geom=False) ignores the bbox spatial filter."""
+        sql = _build_carto_query(
+            "my_table",
+            bbox=(-75.2, 39.9, -75.1, 40.0),
+            include_geom=False,
+        )
+        assert "ST_Intersects" not in sql
+        assert "ST_MakeEnvelope" not in sql
+
+    def test_no_geom_honors_where_and_limit(self):
+        """Tabular query still applies where/limit filters."""
+        sql = _build_carto_query(
+            "my_table",
+            where="pop > 1000",
+            limit=50,
+            include_geom=False,
+        )
+        assert "WHERE (pop > 1000)" in sql
+        assert "LIMIT 50" in sql
+
+
+class TestGeometryColumnFromFields:
+    """Tests for the pure Carto fields-schema geometry parser."""
+
+    def test_detects_the_geom(self):
+        """A field with type 'geometry' is detected."""
+        fields = {
+            "cartodb_id": {"type": "number"},
+            "the_geom": {"type": "geometry"},
+            "name": {"type": "string"},
+        }
+        assert _geometry_column_from_fields(fields) == "the_geom"
+
+    def test_no_geometry_returns_none(self):
+        """Schema with only scalar columns returns None."""
+        fields = {
+            "id": {"type": "number"},
+            "name": {"type": "string"},
+            "value": {"type": "number"},
+        }
+        assert _geometry_column_from_fields(fields) is None
+
+    def test_webmercator_geometry_detected(self):
+        """A webmercator geometry column still counts as geometry."""
+        fields = {"the_geom_webmercator": {"type": "geometry"}}
+        assert _geometry_column_from_fields(fields) == "the_geom_webmercator"
+
+    def test_empty_returns_none(self):
+        """Empty fields dict returns None."""
+        assert _geometry_column_from_fields({}) is None
+
+    def test_malformed_returns_none(self):
+        """Non-dict input returns None instead of raising."""
+        assert _geometry_column_from_fields(None) is None
+        assert _geometry_column_from_fields("not a dict") is None
+        assert _geometry_column_from_fields({"x": "not a dict"}) is None
 
 
 class TestEmptyGeoparquetTable:
@@ -328,6 +395,40 @@ class TestCartoToTable:
         # Other columns should be excluded
         assert "cartodb_id" not in table.column_names
 
+    def test_detect_geometry_column_on_geo_table(self):
+        """Detection probe finds the geometry column on a spatial table."""
+        geom_col = _detect_geometry_column(
+            "https://phl.carto.com/api/v2/sql",
+            "opa_properties_public",
+        )
+        assert geom_col is not None
+
+    def test_forced_no_geometry_returns_plain_table(self):
+        """geometry=False extracts as a plain table with no geo metadata."""
+        table = carto_to_table(
+            url="https://phl.carto.com/api/v2/sql",
+            table_name="opa_properties_public",
+            geometry=False,
+            limit=5,
+        )
+        # Plain/tabular output carries no GeoParquet metadata.
+        assert not (table.schema.metadata and b"geo" in table.schema.metadata)
+        # No geom→geometry rename happens on the plain path.
+        assert "geometry" not in table.column_names
+
+    def test_forced_no_geometry_honors_include_cols(self):
+        """Plain extraction respects include_cols without forcing the_geom."""
+        table = carto_to_table(
+            url="https://phl.carto.com/api/v2/sql",
+            table_name="opa_properties_public",
+            geometry=False,
+            include_cols="cartodb_id,parcel_number",
+            limit=5,
+        )
+        assert "cartodb_id" in table.column_names
+        assert "parcel_number" in table.column_names
+        assert "the_geom" not in table.column_names
+
 
 @pytest.mark.network
 class TestCartoCli:
@@ -379,6 +480,31 @@ class TestCartoCli:
                 ],
             )
             assert result.exit_code == 0, result.output
+
+    def test_cli_no_geometry_writes_plain_parquet(self):
+        """--no-geometry writes plain Parquet with no 'geo' metadata key."""
+        import pyarrow.parquet as pq
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "plain.parquet"
+            result = runner.invoke(
+                cli,
+                [
+                    "extract",
+                    "carto",
+                    "https://phl.carto.com/api/v2/sql",
+                    "opa_properties_public",
+                    str(output_file),
+                    "--no-geometry",
+                    "--limit",
+                    "5",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert output_file.exists()
+            metadata = pq.read_table(str(output_file)).schema.metadata or {}
+            assert b"geo" not in metadata
 
     def test_cli_invalid_bbox_format(self):
         """CLI rejects invalid bbox format."""
@@ -434,6 +560,8 @@ class TestCartoCli:
         assert "--timeout" in result.output
         assert "--include-cols" in result.output
         assert "--exclude-cols" in result.output
+        assert "--geometry" in result.output
+        assert "--no-geometry" in result.output
         # Note: --aws-profile is hidden (global option) so not in help
         assert "CARTO_API_KEY" in result.output
 
