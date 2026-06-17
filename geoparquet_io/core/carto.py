@@ -63,10 +63,12 @@ def _validate_carto_url(url: str) -> str:
     url = url.rstrip("/")
     parsed = urlparse(url)
 
-    if not parsed.scheme:
+    # Restrict to http(s) — rejects empty, file://, and other schemes so the
+    # URL can be safely handed to urllib.request.urlopen (see _carto_sql_json).
+    if parsed.scheme not in ("http", "https"):
         raise InvalidParameterError(
             "url",
-            f"Invalid URL: {url}. Must include scheme (https://)",
+            f"Invalid URL: {url}. Must include an http:// or https:// scheme",
         )
 
     # Accept URLs ending with /api/v2/sql or /api/v1/sql
@@ -248,7 +250,7 @@ def _geometry_column_from_fields(fields: object) -> str | None:
         return None
     for col_name, descriptor in fields.items():
         if isinstance(descriptor, dict) and descriptor.get("type") == "geometry":
-            return col_name
+            return str(col_name)
     return None
 
 
@@ -271,8 +273,9 @@ def _carto_sql_json(
         full_url += f"&api_key={quote(api_key)}"
 
     try:
+        # url scheme is constrained to http(s) by _validate_carto_url upstream.
         request = urllib.request.Request(full_url, headers={"User-Agent": "geoparquet-io"})
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310  # nosec B310
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise CartoError(f"Carto SQL request failed: {e}") from e

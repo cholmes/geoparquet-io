@@ -47,8 +47,13 @@ class TestValidateCartoUrl:
 
     def test_missing_scheme_raises(self):
         """URL without scheme raises error."""
-        with pytest.raises(InvalidParameterError, match="Must include scheme"):
+        with pytest.raises(InvalidParameterError, match="http://"):
             _validate_carto_url("phl.carto.com/api/v2/sql")
+
+    def test_non_http_scheme_raises(self):
+        """Non-http(s) schemes (e.g. file://) are rejected."""
+        with pytest.raises(InvalidParameterError, match="http://"):
+            _validate_carto_url("file:///etc/passwd/api/v2/sql")
 
     def test_invalid_path_raises(self):
         """Invalid path raises error."""
