@@ -644,7 +644,7 @@ table = gpio.read('input.parquet').extract(bbox=(-122.5, 37.5, -122.0, 38.0))
 table = gpio.read('input.parquet').extract(where="population > 10000")
 ```
 
-#### `write(path, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, write_strategy=None, write_memory=None)`
+#### `write(path, format=None, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, write_strategy='duckdb-kv', profile=None, verbose=False, ...)`
 
 Write the table to a GeoParquet file. Returns the output `Path` for chaining or confirmation.
 
@@ -675,23 +675,20 @@ table.write('output.parquet', geoparquet_version='2.0')
 
 **Write Strategy Options**
 
-For large files, you can control memory usage with write strategies:
+For large files, choose a write strategy to control memory behavior:
 
 ```python
 # Use streaming strategy (constant memory usage)
 table.write('output.parquet', write_strategy='streaming')
-
-# Limit DuckDB memory for containerized environments
-table.write('output.parquet', write_memory='512MB')
-
-# Combine both options
-table.write('output.parquet', write_strategy='streaming', write_memory='1GB')
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `write_strategy` | str | Write strategy: `duckdb-kv` (default), `streaming`, `disk-rewrite`, or `in-memory` |
-| `write_memory` | str | DuckDB memory limit (e.g., `'2GB'`, `'512MB'`). Auto-detected if not specified |
+
+DuckDB's memory limit is auto-detected and respects container cgroup limits. To
+set it explicitly, use the CLI `gpio extract --write-memory` flag; the Python
+API does not expose a memory-limit argument.
 
 See the [Write Strategies Guide](../guide/write-strategies.md) for detailed information on each strategy.
 

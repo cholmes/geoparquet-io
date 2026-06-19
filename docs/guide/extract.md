@@ -1808,8 +1808,8 @@ For containerized environments or when you need explicit control:
     ```python
     import geoparquet_io as gpio
 
-    # Explicit memory limit
-    gpio.read('input.parquet').write('output.parquet', write_memory='512MB')
+    # Memory limit is auto-detected; select a write strategy if needed
+    gpio.read('input.parquet').write('output.parquet', write_strategy='streaming')
     ```
 
 For detailed information on write strategies, memory configuration, and container environments, see the [Write Strategies Guide](write-strategies.md).

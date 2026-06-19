@@ -137,18 +137,15 @@ Override auto-detection when needed:
 
 === "Python"
 
+    The fluent API auto-detects DuckDB's memory limit (respecting container
+    cgroup limits). Explicit override is currently CLI-only via
+    `--write-memory`; from Python you select the write strategy:
+
     ```python
     import geoparquet_io as gpio
 
-    # Limit DuckDB memory
-    gpio.read('input.parquet').write('output.parquet', write_memory='2GB')
-
-    # Combine with strategy selection
-    gpio.read('input.parquet').write(
-        'output.parquet',
-        write_strategy='streaming',
-        write_memory='1GB'
-    )
+    # Streaming strategy for constant memory usage
+    gpio.read('input.parquet').write('output.parquet', write_strategy='streaming')
     ```
 
 ### Memory Sizing Guidelines
@@ -214,10 +211,10 @@ For serverless environments with tight memory constraints:
     import geoparquet_io as gpio
 
     def handler(event, context):
-        # Lambda with 1GB memory
+        # Memory limit is auto-detected from the Lambda environment
         gpio.read('s3://bucket/input.parquet') \
             .extract(bbox=event['bbox']) \
-            .write('/tmp/output.parquet', write_memory='384MB')
+            .write('/tmp/output.parquet')
     ```
 
 ## Examples
@@ -301,11 +298,11 @@ If you suspect the default strategy is producing incorrect output:
     import geoparquet_io as gpio
     from pathlib import Path
 
-    # Batch processing with explicit memory limit
+    # Batch processing (memory limit auto-detected per environment)
     for input_file in Path('data').glob('*.parquet'):
         gpio.read(input_file) \
             .extract(bbox=(-122.5, 37.5, -122.0, 38.0)) \
-            .write(f'output/{input_file.name}', write_memory='512MB')
+            .write(f'output/{input_file.name}', write_strategy='streaming')
     ```
 
 ## See Also
