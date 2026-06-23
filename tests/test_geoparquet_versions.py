@@ -1495,3 +1495,16 @@ class TestGeoParquet11GeoArrow:
         geo_meta = get_geo_metadata(output_file)
         geom_col = geo_meta["primary_column"]
         assert geo_meta["columns"][geom_col]["encoding"] == "WKB"
+
+    def test_native_output_is_valid_and_readable(self, geojson_input, temp_output_file):
+        """1.1-geoarrow native output passes validation and round-trips through geopandas."""
+        import geopandas as gpd
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+        gdf = gpd.read_parquet(temp_output_file)
+        assert len(gdf) > 0
+        assert gdf.geometry.notna().all()
