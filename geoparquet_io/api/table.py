@@ -968,6 +968,24 @@ class Table:
             local_path = PathLib(path)
 
         try:
+            # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
+            # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
+            # Already-native nested geometry is left on the default strategy.
+            if geoparquet_version == "1.1-geoarrow" and self._geometry_column:
+                geom_field = self._table.schema.field(self._geometry_column)
+                geom_type = geom_field.type
+                is_wkb = (
+                    pa.types.is_binary(geom_type)
+                    or pa.types.is_large_binary(geom_type)
+                    or getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+                )
+                if is_wkb and write_strategy != "streaming":
+                    if verbose:
+                        from geoparquet_io.core.logging_config import debug
+
+                        debug("Routing 1.1-geoarrow WKB input through streaming strategy")
+                    write_strategy = "streaming"
+
             # Get the appropriate write strategy
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)

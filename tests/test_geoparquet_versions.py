@@ -1513,3 +1513,24 @@ class TestGeoParquet11GeoArrow:
         gdf = gpd.read_parquet(temp_output_file)
         assert len(gdf) > 0
         assert gdf.geometry.notna().all()
+
+    def test_python_api_write_produces_native_encoding(self, geojson_input, temp_output_file):
+        """The public Python API (Table.write) must produce native GeoArrow, not WKB.
+
+        Drives the Table.write path (gpio.convert(...).write(...)), which is a
+        different code path from convert_to_geoparquet and was previously emitting WKB.
+        """
+        import json
+
+        import pyarrow.parquet as pq
+
+        import geoparquet_io as gpio
+
+        table = gpio.convert(geojson_input)
+        table.write(temp_output_file, geoparquet_version="1.1-geoarrow")
+
+        schema = pq.read_schema(temp_output_file)
+        geo_meta = json.loads(schema.metadata[b"geo"])
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] == "polygon"
+        assert str(schema.field(geom_col).type) != "binary"

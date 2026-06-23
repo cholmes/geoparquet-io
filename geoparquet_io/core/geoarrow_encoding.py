@@ -9,9 +9,8 @@ from __future__ import annotations
 from geoparquet_io.core.crs_utils import is_default_crs
 from geoparquet_io.core.logging_config import debug
 
-# GeoParquet geometry_types base name -> geoarrow.pyarrow factory attribute.
-# Maps GeoParquet base names (including Multi* types) to geoarrow factory attribute names.
-# geometry_type_common handles promotion and unification.
+# GeoParquet geometry_types base names (including Multi* types) -> geoarrow.pyarrow
+# factory attribute names. geometry_type_common handles promotion and unification.
 _BASE_NAME_TO_FACTORY = {
     "point": "point",
     "linestring": "linestring",

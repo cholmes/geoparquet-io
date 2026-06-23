@@ -493,11 +493,26 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
 
         use_native_geometry = effective_version in ("2.0", "parquet-geo-only")
         should_add_geo_metadata = effective_version != "parquet-geo-only"
+        geoarrow_native = effective_version == "1.1-geoarrow"
+
+        # Compute the geoarrow target type once from the whole-table geometry types,
+        # so every batch is coerced to one physical type (schema is fixed up front).
+        geoarrow_target_type = None
+        geoarrow_encoding = None
 
         geo_meta = None
         if should_add_geo_metadata:
             bbox_info = {"has_bbox_column": False, "bbox_column_name": None}
             geom_types = _compute_geometry_types(table, geometry_column, verbose)
+
+            if geoarrow_native:
+                from geoparquet_io.core.geoarrow_encoding import determine_geoarrow_target_type
+
+                geoarrow_target_type, geoarrow_encoding = determine_geoarrow_target_type(
+                    geom_types, input_crs
+                )
+                if verbose:
+                    debug(f"1.1-geoarrow target encoding: {geoarrow_encoding}")
 
             geo_meta = create_geo_metadata(
                 original_metadata=None,
@@ -512,6 +527,11 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
 
             apply_output_crs(geo_meta["columns"][geometry_column], input_crs)
 
+            # Override encoding when geoarrow_target_type resolved a native encoding.
+            # geoarrow_encoding is "WKB" for mixed/unconvertible geometry — no override.
+            if geoarrow_encoding is not None and geoarrow_encoding != "WKB":
+                geo_meta["columns"][geometry_column]["encoding"] = geoarrow_encoding
+
         schema_with_meta = self._build_streaming_schema(
             schema=table.schema,
             geometry_column=geometry_column,
@@ -520,6 +540,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             input_crs=input_crs,
             geom_types=geo_meta["columns"][geometry_column]["geometry_types"] if geo_meta else [],
             verbose=verbose,
+            geoarrow_target_type=geoarrow_target_type,
         )
 
         writer_kwargs = {"compression": validated_compression or "NONE"}
@@ -539,6 +560,10 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 if use_native_geometry:
                     batch = self._convert_batch_to_geoarrow(
                         batch, geometry_column, geoarrow_type, schema_with_meta
+                    )
+                elif geoarrow_target_type is not None:
+                    batch = self._convert_batch_to_native_geoarrow(
+                        batch, geometry_column, geoarrow_target_type, schema_with_meta
                     )
                 table_batch = pa.Table.from_batches([batch], schema=schema_with_meta)
                 writer.write_table(table_batch)
