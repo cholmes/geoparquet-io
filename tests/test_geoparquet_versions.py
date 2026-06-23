@@ -1412,3 +1412,39 @@ class TestGeoParquet11GeoArrow:
         assert encoding == geom_type, (
             f"Expected '{geom_type}' encoding in metadata, got '{encoding}'"
         )
+
+    def test_wkb_query_via_arrow_streaming_produces_native(self, geojson_input, temp_output_file):
+        """arrow-streaming + 1.1-geoarrow must emit nested GeoArrow, not WKB binary."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        # buildings_test.geojson is polygons
+        convert_to_geoparquet(
+            geojson_input,
+            temp_output_file,
+            geoparquet_version="1.1-geoarrow",
+            verbose=False,
+        )
+        geo_meta = get_geo_metadata(temp_output_file)
+        geom_col = geo_meta["primary_column"]
+        schema = pq.read_schema(temp_output_file)
+        assert str(schema.field(geom_col).type) != "binary"
+        assert geo_meta["columns"][geom_col]["encoding"] == "polygon"
+
+    def test_wkb_parquet_input_converts_to_native(self, test_data_dir, tmp_path):
+        """A WKB-encoded GeoParquet input must become native GeoArrow under 1.1-geoarrow."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = str(test_data_dir / "buildings_test.parquet")  # WKB-encoded
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] != "WKB"
+        assert str(pq.read_schema(output_file).field(geom_col).type) != "binary"
