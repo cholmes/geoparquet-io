@@ -1448,3 +1448,50 @@ class TestGeoParquet11GeoArrow:
         geom_col = geo_meta["primary_column"]
         assert geo_meta["columns"][geom_col]["encoding"] != "WKB"
         assert str(pq.read_schema(output_file).field(geom_col).type) != "binary"
+
+    @pytest.mark.parametrize(
+        "fixture_name",
+        [
+            "buildings_test.geojson",
+            "buildings_test.shp",
+            "buildings_test.gpkg",
+            "buildings_test.parquet",
+        ],
+    )
+    def test_all_input_formats_produce_native_encoding(self, fixture_name, test_data_dir, tmp_path):
+        """Every input format must yield native GeoArrow encoding + valid GeoParquet under 1.1-geoarrow."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import check_bbox_structure
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = str(test_data_dir / fixture_name)
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        encoding = geo_meta["columns"][geom_col]["encoding"]
+        # all buildings_test fixtures contain only Polygon geometries (verified)
+        assert encoding == "polygon", f"{fixture_name}: expected polygon, got {encoding}"
+        assert str(pq.read_schema(output_file).field(geom_col).type) != "binary"
+        # bbox column must be skipped for 1.1-geoarrow
+        assert not check_bbox_structure(output_file)["has_bbox_column"]
+        assert get_geoparquet_version(output_file) == "1.1.0"
+
+    def test_mixed_geometry_falls_back_to_wkb(self, test_data_dir, tmp_path):
+        """A column mixing incompatible geometry types (Point + Polygon) stays WKB under 1.1-geoarrow."""
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        # mixed_geometries.csv has a 'geometry' WKT column with Point and Polygon rows
+        input_file = str(test_data_dir / "mixed_geometries.csv")
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] == "WKB"
