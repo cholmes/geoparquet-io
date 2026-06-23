@@ -388,6 +388,52 @@ Available compression types:
 - `SNAPPY` - Fast compression
 - `UNCOMPRESSED` - No compression
 
+### GeoParquet Version
+
+Control the GeoParquet encoding version written to output:
+
+=== "CLI"
+
+    ```bash
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
+    gpio convert input.geojson output.parquet --geoparquet-version 1.1-geoarrow
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio convert input.shp output.parquet --geoparquet-version 1.0
+
+    # GeoParquet 1.1 with WKB encoding (default)
+    gpio convert input.shp output.parquet --geoparquet-version 1.1
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # Converts geometry from any input (GeoJSON, Shapefile, GeoPackage, CSV, WKB GeoParquet)
+    # to native GeoArrow types. No bbox column is added.
+    # Columns mixing incompatible geometry types fall back to WKB.
+    gpio.convert('input.geojson').write(
+        'output.parquet', geoparquet_version='1.1-geoarrow'
+    )
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio.convert('input.shp').write(
+        'output.parquet', geoparquet_version='1.0'
+    )
+    ```
+
+Available versions:
+- `1.0` — GeoParquet 1.0 with WKB encoding
+- `1.1` — GeoParquet 1.1 with WKB encoding (default)
+- `1.1-geoarrow` — GeoParquet 1.1 with native GeoArrow (nested-coordinate) encoding; no bbox
+  column; compatible geometry type mixes are promoted (e.g. Polygon + MultiPolygon →
+  MultiPolygon); incompatible mixes fall back to WKB
+- `2.0` — GeoParquet 2.0 with native Parquet geo types
+- `parquet-geo-only` — Native Parquet geo types without GeoParquet metadata
+
 ### Verbose Output
 
 Track progress and see detailed information:

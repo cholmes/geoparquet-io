@@ -855,7 +855,9 @@ class Table:
             compression_level: Compression level for GeoParquet
             row_group_size_mb: Target row group size in MB for GeoParquet
             row_group_rows: Exact rows per row group for GeoParquet
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             write_strategy: Write strategy for GeoParquet ('in-memory', 'streaming',
                            'duckdb-kv', 'disk-rewrite'). Default: 'duckdb-kv'
             profile: AWS profile for S3 operations
@@ -1699,7 +1701,9 @@ class Table:
             compression_level: Compression level
             row_group_size_mb: Target row group size in MB
             row_group_rows: Exact rows per row group
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             profile: AWS profile name for S3
             s3_endpoint: Custom S3-compatible endpoint (e.g., "minio.example.com:9000")
             s3_region: S3 region (default: us-east-1 when using custom endpoint)
