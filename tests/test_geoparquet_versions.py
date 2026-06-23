@@ -1478,6 +1478,9 @@ class TestGeoParquet11GeoArrow:
 
     def test_mixed_geometry_falls_back_to_wkb(self, test_data_dir, tmp_path):
         """A column mixing incompatible geometry types (Point + Polygon) stays WKB under 1.1-geoarrow."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
         from geoparquet_io.core.convert import convert_to_geoparquet
 
         # mixed_geometries.csv has a 'geometry' WKT column with Point and Polygon rows
@@ -1490,6 +1493,13 @@ class TestGeoParquet11GeoArrow:
         geo_meta = get_geo_metadata(output_file)
         geom_col = geo_meta["primary_column"]
         assert geo_meta["columns"][geom_col]["encoding"] == "WKB"
+
+        # Verify the physical Arrow column type is binary/WKB (not native nested GeoArrow)
+        schema = pq.read_schema(output_file)
+        geom_type = schema.field(geom_col).type
+        assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type), (
+            f"mixed geometry should stay binary WKB, got {geom_type}"
+        )
 
     def test_native_output_is_valid_and_readable(self, geojson_input, temp_output_file):
         """1.1-geoarrow native output passes validation and round-trips through geopandas."""
