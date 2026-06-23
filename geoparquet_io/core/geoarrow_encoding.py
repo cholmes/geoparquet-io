@@ -10,8 +10,8 @@ from geoparquet_io.core.crs_utils import is_default_crs
 from geoparquet_io.core.logging_config import debug
 
 # GeoParquet geometry_types base name -> geoarrow.pyarrow factory attribute.
-# Multi* and collection types are constructed by promotion, not listed here;
-# geometry_type_common handles unification.
+# Maps GeoParquet base names (including Multi* types) to geoarrow factory attribute names.
+# geometry_type_common handles promotion and unification.
 _BASE_NAME_TO_FACTORY = {
     "point": "point",
     "linestring": "linestring",
@@ -27,7 +27,7 @@ def _normalize_base_name(geometry_type: str) -> str:
     return geometry_type.split(" ")[0].strip().lower()
 
 
-def determine_geoarrow_target_type(geometry_types, input_crs=None):
+def determine_geoarrow_target_type(geometry_types: list[str], input_crs: dict | None = None):
     """Determine the single GeoArrow target type for a dataset.
 
     Args:
@@ -51,7 +51,7 @@ def determine_geoarrow_target_type(geometry_types, input_crs=None):
 
     try:
         common = types[0] if len(types) == 1 else ga.geometry_type_common(types)
-    except Exception as exc:  # incompatible mix (e.g. point + polygon)
+    except (ValueError, TypeError) as exc:  # incompatible mix (e.g. point + polygon)
         debug(f"GeoArrow types not unifiable ({base_names}); falling back to WKB: {exc}")
         return None, "WKB"
 

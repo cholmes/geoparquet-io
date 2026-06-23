@@ -37,6 +37,12 @@ def test_empty_geometry_types_falls_back_to_wkb():
     assert encoding == "WKB"
 
 
+def test_no_crs_attached_when_input_crs_default():
+    """Default path (no input_crs) must not attach a CRS to the target type."""
+    target, _ = determine_geoarrow_target_type(["Point"])
+    assert target.crs is None
+
+
 def test_crs_is_attached_to_target_type():
     crs = {"type": "GeographicCRS", "name": "Custom"}
     target, _ = determine_geoarrow_target_type(["Point"], input_crs=crs)
