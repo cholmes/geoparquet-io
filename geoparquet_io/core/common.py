@@ -1865,6 +1865,24 @@ def write_parquet_with_metadata(
             )
         else:
             # Metadata rewrite needed - use strategy pattern
+
+            # 1.1-geoarrow produces native GeoArrow encoding from WKB/text inputs,
+            # which requires the arrow-streaming strategy (DuckDB COPY TO cannot emit
+            # nested GeoArrow types). Already-native inputs keep their preservation
+            # path (duckdb-kv passes the native column through unchanged).
+            if geoparquet_version == "1.1-geoarrow":
+                primary = (geometry_info or {}).get("primary")
+                input_encoding = (
+                    (geometry_info or {}).get("metadata", {}).get(primary, {}).get("encoding")
+                )
+                already_native = bool(
+                    input_encoding and input_encoding.lower() not in ("wkb", "wkt")
+                )
+                if not already_native and write_strategy != "streaming":
+                    if verbose:
+                        debug("Routing 1.1-geoarrow WKB input through arrow-streaming")
+                    write_strategy = "streaming"
+
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
 
