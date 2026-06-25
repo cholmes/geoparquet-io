@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.inspect_utils import (
+    _columns_that_fit,
     extract_columns_info,
     extract_file_info,
     extract_geo_info,
@@ -1272,3 +1273,30 @@ class TestInspectSubcommands:
 
         assert result.exit_code == 0
         assert "Show first N rows" in result.output
+
+
+def test_columns_that_fit_wide_terminal_shows_more():
+    # width 200, 50 columns -> several columns fit, capped at total
+    n = _columns_that_fit(50, 200)
+    assert 1 < n < 50
+
+
+def test_columns_that_fit_never_exceeds_total():
+    assert _columns_that_fit(3, 500) == 3
+
+
+def test_columns_that_fit_always_at_least_one():
+    assert _columns_that_fit(40, 10) == 1
+
+
+def test_columns_that_fit_honors_max_columns():
+    assert _columns_that_fit(40, 500, max_columns=5) == 5
+
+
+def test_columns_that_fit_max_columns_clamped_to_total():
+    assert _columns_that_fit(3, 500, max_columns=10) == 3
+
+
+def test_columns_that_fit_max_columns_floor_one():
+    # max_columns below 1 should never drop below 1 (Click also guards this)
+    assert _columns_that_fit(40, 500, max_columns=1) == 1

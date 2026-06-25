@@ -816,6 +816,30 @@ def _create_columns_table(columns_info: list[dict[str, Any]]) -> Table:
     return table
 
 
+# Preview table fit-to-width tuning. Approximate rich box geometry: each column
+# costs its content width plus padding (2) and a separator (1); plus one outer border.
+_PREVIEW_MIN_COL_WIDTH = 12
+_PREVIEW_COL_OVERHEAD = 3
+_PREVIEW_BORDER_WIDTH = 1
+
+
+def _columns_that_fit(num_columns: int, console_width: int, max_columns: int | None = None) -> int:
+    """Return how many columns to show in a preview at the given terminal width.
+
+    With max_columns set, returns that count clamped to [1, num_columns]. Otherwise
+    computes how many columns fit console_width at a readable minimum width, always
+    at least 1 and never more than num_columns.
+    """
+    if num_columns <= 0:
+        return 0
+    if max_columns is not None:
+        return max(1, min(max_columns, num_columns))
+    available = max(0, console_width - _PREVIEW_BORDER_WIDTH)
+    per_col = _PREVIEW_MIN_COL_WIDTH + _PREVIEW_COL_OVERHEAD
+    fit = available // per_col
+    return max(1, min(fit, num_columns))
+
+
 def _create_preview_table(
     preview_table: pa.Table,
     columns_info: list[dict[str, Any]],
