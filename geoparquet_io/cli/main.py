@@ -2098,10 +2098,15 @@ def _inspect_summary_impl(parquet_file, json_output, markdown_output, check_all_
         raise _friendly_parquet_error(e, parquet_file) from e
 
 
-def _inspect_preview_impl(parquet_file, count, mode, json_output, markdown_output):
+def _inspect_preview_impl(
+    parquet_file, count, mode, json_output, markdown_output, max_columns=None, no_truncate=False
+):
     """CLI wrapper for inspect head/tail - delegates to core function."""
     if json_output and markdown_output:
         raise click.UsageError("--json and --markdown are mutually exclusive")
+    if no_truncate and max_columns is not None:
+        click.echo("Note: --no-truncate overrides --max-columns; showing all columns.")
+        max_columns = None
 
     _validate_parquet_input(parquet_file)
 
@@ -2113,7 +2118,9 @@ def _inspect_preview_impl(parquet_file, count, mode, json_output, markdown_outpu
             click.echo(click.style(result["partition_notice"], fg="cyan"))
             click.echo()
 
-        output = format_preview_output(result, json_output, markdown_output)
+        output = format_preview_output(
+            result, json_output, markdown_output, max_columns=max_columns, no_truncate=no_truncate
+        )
         if output:
             click.echo(output)
 
@@ -2174,9 +2181,22 @@ def inspect_summary(ctx, parquet_file, json_output, markdown_output, check_all_f
 @click.option(
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
+@click.option(
+    "--max-columns",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum number of columns to display (default: fit terminal width)",
+)
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Show all columns and full values (disable fit-to-width)",
+)
 @verbose_option
 @click.pass_context
-def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose):
+def inspect_head(
+    ctx, parquet_file, count, json_output, markdown_output, max_columns, no_truncate, verbose
+):
     """Show first N rows of data (default: 10).
 
     Examples:
@@ -2186,7 +2206,15 @@ def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose
         gpio inspect head data.parquet 20     # First 20 rows
     """
     with _activate_s3(ctx):
-        _inspect_preview_impl(parquet_file, count, "head", json_output, markdown_output)
+        _inspect_preview_impl(
+            parquet_file,
+            count,
+            "head",
+            json_output,
+            markdown_output,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
 
 
 @inspect.command(name="tail", cls=GlobAwareCommand)
@@ -2196,9 +2224,22 @@ def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose
 @click.option(
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
+@click.option(
+    "--max-columns",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum number of columns to display (default: fit terminal width)",
+)
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Show all columns and full values (disable fit-to-width)",
+)
 @verbose_option
 @click.pass_context
-def inspect_tail(ctx, parquet_file, count, json_output, markdown_output, verbose):
+def inspect_tail(
+    ctx, parquet_file, count, json_output, markdown_output, max_columns, no_truncate, verbose
+):
     """Show last N rows of data (default: 10).
 
     Examples:
@@ -2208,7 +2249,15 @@ def inspect_tail(ctx, parquet_file, count, json_output, markdown_output, verbose
         gpio inspect tail data.parquet 5      # Last 5 rows
     """
     with _activate_s3(ctx):
-        _inspect_preview_impl(parquet_file, count, "tail", json_output, markdown_output)
+        _inspect_preview_impl(
+            parquet_file,
+            count,
+            "tail",
+            json_output,
+            markdown_output,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
 
 
 @inspect.command(name="stats", cls=GlobAwareCommand)

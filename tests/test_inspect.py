@@ -1360,3 +1360,35 @@ def test_create_preview_table_few_columns_no_hidden():
     )
     assert len(rich_table.columns) == 2
     assert hidden == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: CLI --max-columns / --no-truncate for inspect head/tail
+# ---------------------------------------------------------------------------
+
+
+def test_inspect_head_max_columns(runner):
+    test_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+    result = runner.invoke(cli, ["inspect", "head", test_file, "2", "--max-columns", "1"])
+    assert result.exit_code == 0
+    # only one data column shown -> the other columns are reported as hidden
+    assert "more columns" in result.output
+
+
+def test_inspect_head_no_truncate(runner):
+    test_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+    result = runner.invoke(cli, ["inspect", "head", test_file, "1", "--no-truncate"])
+    assert result.exit_code == 0
+    assert "more columns" not in result.output
+
+
+def test_inspect_head_max_columns_rejects_zero(runner):
+    test_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+    result = runner.invoke(cli, ["inspect", "head", test_file, "--max-columns", "0"])
+    assert result.exit_code != 0
+
+
+def test_inspect_tail_no_truncate(runner):
+    test_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+    result = runner.invoke(cli, ["inspect", "tail", test_file, "1", "--no-truncate"])
+    assert result.exit_code == 0

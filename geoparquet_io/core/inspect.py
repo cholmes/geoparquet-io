@@ -246,6 +246,8 @@ def format_preview_output(
     result: dict,
     json_output: bool = False,
     markdown_output: bool = False,
+    max_columns: int | None = None,
+    no_truncate: bool = False,
 ) -> str | None:
     """Format preview result for output.
 
@@ -253,6 +255,8 @@ def format_preview_output(
         result: Dict from inspect_preview
         json_output: Output as JSON
         markdown_output: Output as Markdown
+        max_columns: Maximum number of columns to display (terminal only)
+        no_truncate: Show all columns and full values (terminal only)
 
     Returns:
         Formatted string for json/markdown, or None for terminal (prints directly)
@@ -282,6 +286,8 @@ def format_preview_output(
             result["preview_table"],
             result["preview_mode"],
             None,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
         )
         return None
 
