@@ -1380,6 +1380,20 @@ def test_inspect_head_no_truncate(runner):
     result = runner.invoke(cli, ["inspect", "head", test_file, "1", "--no-truncate"])
     assert result.exit_code == 0
     assert "more columns" not in result.output
+    assert "id" in result.output
+    assert "geometry" in result.output
+
+
+def test_inspect_head_no_truncate_overrides_max_columns(runner):
+    """When both flags are given, --no-truncate wins and warns that --max-columns is ignored."""
+    test_file = os.path.join(os.path.dirname(__file__), "data", "buildings_test.parquet")
+    result = runner.invoke(
+        cli, ["inspect", "head", test_file, "--max-columns", "1", "--no-truncate"]
+    )
+    assert result.exit_code == 0
+    assert "more columns" not in result.output
+    assert "id" in result.output and "geometry" in result.output
+    assert "Note: --no-truncate overrides --max-columns" in result.output
 
 
 def test_inspect_head_max_columns_rejects_zero(runner):
