@@ -3,12 +3,15 @@
 import json
 import os
 
+import pyarrow as pa
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.inspect_utils import (
     _columns_that_fit,
+    _create_preview_table,
     extract_columns_info,
     extract_file_info,
     extract_geo_info,
@@ -1300,3 +1303,60 @@ def test_columns_that_fit_max_columns_clamped_to_total():
 def test_columns_that_fit_max_columns_floor_one():
     # max_columns below 1 should never drop below 1 (Click also guards this)
     assert _columns_that_fit(40, 500, max_columns=1) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 2: width-aware _create_preview_table tests
+# ---------------------------------------------------------------------------
+
+
+def _wide_preview(num_cols=20, num_rows=2):
+    cols = {f"c{i}": [f"val_{i}_{r}" for r in range(num_rows)] for i in range(num_cols)}
+    table = pa.table(cols)
+    columns_info = [
+        {"name": f"c{i}", "type": "string", "is_geometry": False} for i in range(num_cols)
+    ]
+    return table, columns_info
+
+
+def test_create_preview_table_hides_overflow_columns():
+    table, columns_info = _wide_preview(num_cols=20)
+    console = Console(width=80)
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console
+    )
+    assert hidden > 0
+    assert len(rich_table.columns) == 20 - hidden
+    # cells are one line (no fold): ellipsis overflow on the visible columns
+    assert all(c.overflow == "ellipsis" for c in rich_table.columns)
+
+
+def test_create_preview_table_max_columns():
+    table, columns_info = _wide_preview(num_cols=20)
+    console = Console(width=500)
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console, max_columns=4
+    )
+    assert len(rich_table.columns) == 4
+    assert hidden == 16
+
+
+def test_create_preview_table_no_truncate_shows_all():
+    table, columns_info = _wide_preview(num_cols=20)
+    console = Console(width=80)
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console, no_truncate=True
+    )
+    assert len(rich_table.columns) == 20
+    assert hidden == 0
+    assert all(c.overflow == "fold" for c in rich_table.columns)
+
+
+def test_create_preview_table_few_columns_no_hidden():
+    table, columns_info = _wide_preview(num_cols=2)
+    console = Console(width=200)
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console
+    )
+    assert len(rich_table.columns) == 2
+    assert hidden == 0

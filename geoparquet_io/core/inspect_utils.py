@@ -843,11 +843,34 @@ def _columns_that_fit(num_columns: int, console_width: int, max_columns: int | N
 def _create_preview_table(
     preview_table: pa.Table,
     columns_info: list[dict[str, Any]],
-) -> Table:
-    """Create the preview data table."""
+    *,
+    console: Console | None = None,
+    max_columns: int | None = None,
+    no_truncate: bool = False,
+) -> tuple[Table, int]:
+    """Create the preview data table.
+
+    Returns (table, hidden_column_count). In the default mode only the columns that
+    fit the console width (or max_columns) are shown, with one-line ellipsis cells;
+    remaining columns are reported via hidden_column_count. With no_truncate=True every
+    column is shown with full, wrapped values.
+    """
+    if no_truncate:
+        visible = columns_info
+        hidden_count = 0
+        overflow = "fold"
+        no_wrap = False
+    else:
+        width = console.width if console is not None else 80
+        visible_count = _columns_that_fit(len(columns_info), width, max_columns)
+        visible = columns_info[:visible_count]
+        hidden_count = len(columns_info) - visible_count
+        overflow = "ellipsis"
+        no_wrap = True
+
     preview = Table(show_header=True, header_style="bold")
-    for col in columns_info:
-        preview.add_column(col["name"], style="white", overflow="fold")
+    for col in visible:
+        preview.add_column(col["name"], style="white", overflow=overflow, no_wrap=no_wrap)
 
     for i in range(preview_table.num_rows):
         row_data = [
@@ -856,11 +879,11 @@ def _create_preview_table(
                 col["type"],
                 col["is_geometry"],
             )
-            for col in columns_info
+            for col in visible
         ]
         preview.add_row(*row_data)
 
-    return preview
+    return preview, hidden_count
 
 
 def _truncate_stat_value(value: Any) -> str:
@@ -927,6 +950,8 @@ def format_terminal_output(
     preview_mode: str | None = None,
     stats: dict[str, dict[str, Any]] | None = None,
     compression_stats: list[dict] | None = None,
+    max_columns: int | None = None,
+    no_truncate: bool = False,
 ) -> None:
     """
     Format and print terminal output using Rich.
@@ -977,7 +1002,18 @@ def format_terminal_output(
         console.print()
         label = "first" if preview_mode == "head" else "last"
         console.print(f"Preview ({label} {preview_table.num_rows} rows):")
-        console.print(_create_preview_table(preview_table, columns_info))
+        preview, hidden = _create_preview_table(
+            preview_table,
+            columns_info,
+            console=console,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
+        console.print(preview)
+        if hidden > 0:
+            console.print(
+                f"[dim]… +{hidden} more columns (--no-truncate or --json to see all)[/dim]"
+            )
 
     # Statistics table
     if stats:
