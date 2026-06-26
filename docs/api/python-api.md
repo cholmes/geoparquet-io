@@ -325,6 +325,35 @@ results = ops.from_wfs_layers(
 | `page_size` | int | Features per page (default: 100000) |
 | `auto_tile` | bool | Auto-subdivide bbox when server caps (default: True) |
 
+#### ops.aggregate_a5()
+
+Functional API for A5 grid aggregation. Returns a PyArrow Table.
+
+```python
+from geoparquet_io.api import ops
+import pyarrow.parquet as pq
+
+table = pq.read_table('fields.parquet')
+result = ops.aggregate_a5(
+    table,
+    resolution=8,
+    metric="sum:area_ha,avg:yield",
+    breakdown="crop_type",
+)
+```
+
+#### ops.aggregate_admin()
+
+Functional API for admin region aggregation. Returns a PyArrow Table.
+
+```python
+from geoparquet_io.api import ops
+import pyarrow.parquet as pq
+
+table = pq.read_table('fields.parquet')
+result = ops.aggregate_admin(table, level="country", metric="sum:area_ha")
+```
+
 ## Table Class
 
 The `Table` class wraps a PyArrow Table and provides chainable transformation methods.
@@ -803,6 +832,84 @@ stats = table.partition_by_admin(
 # Vecorel-compliant partitions (forces Overture country,region)
 stats = table.partition_by_admin('output/', vecorel=True)
 ```
+
+### Aggregation Methods {#aggregation}
+
+#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+
+Aggregate features into A5 grid cells with per-cell statistics for low-zoom visualization.
+
+```python
+import geoparquet_io as gpio
+
+# Basic cell count at resolution 8
+result = gpio.read('fields.parquet').aggregate_a5(resolution=8)
+result.write('cells.parquet')
+
+# Numeric rollups + category breakdown
+result = gpio.read('fields.parquet').aggregate_a5(
+    resolution=8,
+    metric="sum:area_ha,avg:yield",
+    breakdown="crop_type",
+    breakdown_limit=15,
+)
+result.write('cells.parquet')
+
+# No geometry — plain Parquet (re-join a5_cell to geometry later)
+result = gpio.read('fields.parquet').aggregate_a5(
+    resolution=8,
+    metric="sum:area_ha",
+    out_geometry="none",
+)
+result.write('cells_stats.parquet')
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `resolution` | int | required | A5 resolution level (0–30) |
+| `metric` | str | None | Numeric rollups: `"sum:col,avg:col"`. Bare column = sum. |
+| `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
+| `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
+| `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+
+Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
+
+#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+
+Aggregate features into administrative regions (Overture Maps) with per-region statistics.
+
+```python
+import geoparquet_io as gpio
+
+# Country-level aggregation
+result = gpio.read('fields.parquet').aggregate_admin(level="country")
+result.write('by_country.parquet')
+
+# Region-level with rollups and breakdown
+result = gpio.read('fields.parquet').aggregate_admin(
+    level="region",
+    metric="sum:area_ha,avg:yield",
+    breakdown="crop_type",
+)
+result.write('by_region.parquet')
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `level` | str | `"country"` | Admin level: `"country"` or `"region"` |
+| `metric` | str | None | Numeric rollups: `"sum:col,avg:col"`. Bare column = sum. |
+| `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
+| `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
+| `out_geometry` | str | `"polygon"` | Geometry per region: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+
+Every output row carries `admin_code` and `admin_name` bucket identifiers. Features outside all regions go into an `unassigned` bucket.
+
+!!! note "Known limitation"
+    `admin_name` currently equals the ISO code (same as `admin_code`).
 
 ### Sub-Partitioning Utilities
 
