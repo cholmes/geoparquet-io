@@ -77,8 +77,11 @@ def _index_query(glob_sql: str, bbox_paths: dict[str, str], partition_key: str |
     wanted = ", ".join(f"'{_sql_str(p)}'" for p in bbox_paths.values())
     select_cols = ["file_name"]
     if partition_key:
+        # Normalize Windows backslash separators to '/' before extracting, so the
+        # hive value stops at the path separator on every platform.
+        normalized = "replace(file_name, '\\', '/')"
         select_cols.append(
-            f"regexp_extract(file_name, '{partition_key}=([^/]+)', 1) AS {partition_key}"
+            f"regexp_extract({normalized}, '{partition_key}=([^/]+)', 1) AS {partition_key}"
         )
     aggs = {
         "xmin": f"min(lo) FILTER (WHERE p = '{_sql_str(bbox_paths['xmin'])}') AS xmin",
@@ -149,7 +152,7 @@ def build_partition_index(
         debug(f"Using bbox columns: {bbox_paths}")
         query = _index_query(glob_sql, bbox_paths, partition_key)
         con.execute(f"COPY ({query}) TO '{_sql_str(output)}' (FORMAT PARQUET)")
-        count = con.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0]
+        count = int(con.execute(f"SELECT COUNT(*) FROM ({query})").fetchone()[0])
     finally:
         con.close()
 
