@@ -6740,5 +6740,29 @@ def pmtiles_create(
         raise click.ClickException(str(e)) from e
 
 
+# =============================================================================
+# Process Commands (aggregate, ...)
+# =============================================================================
+
+
+@cli.group()
+@click.pass_context
+def process(ctx):
+    """Transform or reduce GeoParquet data (aggregate, ...)."""
+    pass
+
+
+@process.group(name="aggregate")
+@click.pass_context
+def process_aggregate(ctx):
+    """Aggregate features into spatial buckets with per-bucket statistics.
+
+    Reduces large datasets into a small file of grid cells or admin regions,
+    each carrying a count and optional metric/breakdown columns, for low-zoom
+    visualization. Subcommands choose the bucketing scheme.
+    """
+    pass
+
+
 if __name__ == "__main__":
     cli()
