@@ -36,9 +36,10 @@ def _load_geo(table: pa.Table) -> dict | None:
     if b"geo" not in md:
         return None
     try:
-        return json.loads(md[b"geo"].decode("utf-8"))
+        parsed = json.loads(md[b"geo"].decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _covering_bbox_columns(geo: dict | None, geom_col: str | None) -> list[str]:
