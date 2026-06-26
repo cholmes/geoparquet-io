@@ -104,3 +104,51 @@ def test_aggregate_a5_auto_runs(tmp_path):
     _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 1.0), (10.001, 50.001, "corn", 2.0)])
     aggregate_by_a5(str(src), str(out), auto=True, target_per_cell=1)
     assert out.exists()
+
+
+@pytest.mark.slow
+def test_cli_process_aggregate_a5(tmp_path):
+    src = tmp_path / "f.parquet"
+    out = tmp_path / "o.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 4.0), (10.001, 50.001, "corn", 2.0)])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "process",
+            "aggregate",
+            "a5",
+            str(src),
+            str(out),
+            "--resolution",
+            "5",
+            "--metric",
+            "sum:area",
+            "--breakdown",
+            "crop",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+
+
+def test_cli_process_aggregate_a5_bad_metric(tmp_path):
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 4.0)])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "process",
+            "aggregate",
+            "a5",
+            str(src),
+            str(tmp_path / "o.parquet"),
+            "--resolution",
+            "5",
+            "--metric",
+            "median:area",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "median" in result.output.lower() or "metric" in result.output.lower()
