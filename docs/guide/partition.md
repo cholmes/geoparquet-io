@@ -687,6 +687,42 @@ gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
 
 See [Sub-Partitioning Large Files](sub-partitioning.md) for details.
 
+## Partition bbox Index
+
+Once a dataset is split into one file per partition, build a small
+`file → bbox` index so a client (e.g. a browser tiler) can pick the 1–2 files
+that overlap a query region **without reading the data files**. The index is
+built from parquet footers only (no data scan) and aggregates per-file bounds
+from the bbox covering column.
+
+=== "CLI"
+
+    ```bash
+    # One row per file, with its bounding box
+    gpio publish partition-index 'output/*.parquet' output/_partitions.parquet
+
+    # Extract a hive partition key into its own column
+    gpio publish partition-index 's3://bucket/ds/data/*.parquet' index.parquet \
+      --partition-key provincia
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    ops.build_partition_index(
+        'output/*.parquet',
+        'output/_partitions.parquet',
+        partition_key='provincia',
+    )
+    ```
+
+The files must carry a bbox covering — either a `bbox` struct (see
+[`gpio add bbox`](add.md)) or top-level `xmin/ymin/xmax/ymax` columns. The output
+has one row per file: `file_name`, the optional partition key, and
+`xmin/ymin/xmax/ymax`.
+
 ## See Also
 
 - [CLI Reference](../cli/overview.md) - Full command reference

@@ -1224,6 +1224,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |
+| `ops.build_partition_index(input_glob, output, partition_key=None, profile=None)` | File→bbox index from footers |
 
 ## Pipeline Composition
 
