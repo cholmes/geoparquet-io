@@ -1,11 +1,14 @@
+import duckdb
 import pytest
 
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.aggregate.common import (
     MetricSpec,
     build_breakdown_column_names,
+    build_breakdown_select,
     build_metric_select,
     parse_metrics,
+    resolve_breakdown_values,
     sanitize_value_for_column,
     sql_literal,
 )
@@ -77,3 +80,40 @@ def test_sql_literal():
     assert sql_literal(3.14) == "3.14"
     assert sql_literal(True) == "TRUE"
     assert sql_literal(False) == "FALSE"
+
+
+def _crop_con():
+    con = duckdb.connect()
+    con.execute(
+        """
+        CREATE TABLE features AS
+        SELECT * FROM (VALUES
+            ('wheat'), ('wheat'), ('wheat'),
+            ('corn'), ('corn'),
+            ('rice'), ('barley'), (NULL)
+        ) AS t(crop)
+        """
+    )
+    return con
+
+
+def test_resolve_breakdown_values_top_n_and_other():
+    con = _crop_con()
+    top, has_other = resolve_breakdown_values(con, "SELECT * FROM features", "crop", limit=2)
+    assert top == ["wheat", "corn"]  # most frequent first
+    assert has_other is True
+
+
+def test_resolve_breakdown_values_no_other():
+    con = _crop_con()
+    top, has_other = resolve_breakdown_values(con, "SELECT * FROM features", "crop", limit=10)
+    assert has_other is False
+
+
+def test_build_breakdown_select_counts_and_other():
+    con = _crop_con()
+    colmap = build_breakdown_column_names(["wheat", "corn"], reserved={"count_other"})
+    select = build_breakdown_select("crop", colmap, has_other=True)
+    row = con.execute(f"SELECT {select} FROM features").fetchone()
+    # wheat=3, corn=2, other(rice+barley+null)=3
+    assert row == (3, 2, 3)
