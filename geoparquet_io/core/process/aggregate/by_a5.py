@@ -39,7 +39,10 @@ def _read_source_sql(input_url: str, geom_col: str) -> str:
 def aggregate_by_a5(
     input_parquet: str,
     output_parquet: str,
-    resolution: int,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_per_cell: int = 10000,
+    max_cells: int = 500000,
     metric: str | None = None,
     breakdown: str | None = None,
     breakdown_limit: int = 20,
@@ -52,6 +55,29 @@ def aggregate_by_a5(
     show_sql: bool = False,
 ) -> None:
     configure_verbose(verbose)
+    from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+
+    if auto and resolution is not None:
+        raise InvalidParameterError(
+            "resolution",
+            "Pass either --resolution or --auto, not both",
+        )
+    if not auto and resolution is None:
+        raise InvalidParameterError(
+            "resolution",
+            "A5 aggregation requires --resolution or --auto",
+        )
+    if auto:
+        resolution = calculate_auto_resolution(
+            input_parquet,
+            "a5",
+            target_rows_per_partition=target_per_cell,
+            max_partitions=max_cells,
+            verbose=verbose,
+        )
+        if verbose:
+            debug(f"Auto-selected a5 resolution {resolution}")
+
     if out_geometry not in VALID_OUT_GEOMETRY:
         raise InvalidParameterError(
             "out_geometry",
