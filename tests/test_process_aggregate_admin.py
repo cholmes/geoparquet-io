@@ -62,3 +62,22 @@ def test_cli_process_aggregate_admin_runs(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert out.exists()
+
+
+@pytest.mark.slow
+@pytest.mark.network
+def test_table_aggregate_admin_api(tmp_path):
+    import duckdb
+
+    from geoparquet_io.api.table import Table
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    tbl = (
+        con.execute("SELECT ST_AsWKB(ST_Point(2.35, 48.85)) AS geometry, 'a' AS cls")
+        .arrow()
+        .read_all()
+    )
+    result = Table(tbl).aggregate_admin(level="country")
+    assert "admin_code" in result.column_names
+    assert "count" in result.column_names

@@ -1324,6 +1324,39 @@ class Table:
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
+    def aggregate_admin(
+        self,
+        level: str = "country",
+        metric: str | None = None,
+        breakdown: str | None = None,
+        breakdown_limit: int = 20,
+        out_geometry: str = "polygon",
+    ) -> Table:
+        """
+        Aggregate features into administrative regions with per-region statistics.
+
+        Args:
+            level: Admin level to aggregate by ("country", "region", "subregion")
+            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            breakdown: Column name to pivot into per-category count columns
+            breakdown_limit: Max number of breakdown categories (default: 20)
+            out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+
+        Returns:
+            New Table with one row per admin region
+        """
+        from geoparquet_io.api.ops import aggregate_admin
+
+        result = aggregate_admin(
+            self._table,
+            level=level,
+            metric=metric,
+            breakdown=breakdown,
+            breakdown_limit=breakdown_limit,
+            out_geometry=out_geometry,
+        )
+        return Table(result, "geometry" if out_geometry != "none" else None)
+
     def add_s2(
         self,
         column_name: str = "s2_cell",
