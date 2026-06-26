@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 
 VALID_METRIC_FUNCS = {"sum", "avg", "min", "max"}
@@ -55,7 +56,10 @@ def parse_metrics(metric_str: str | None) -> list[MetricSpec]:
 
 def build_metric_select(metrics: list[MetricSpec]) -> str:
     """Build the comma-joined aggregate expressions for the SELECT (no leading comma)."""
-    return ", ".join(f'{m.func.upper()}("{m.column}") AS "{m.output_name}"' for m in metrics)
+    return ", ".join(
+        f"{m.func.upper()}({quote_identifier(m.column)}) AS {quote_identifier(m.output_name)}"
+        for m in metrics
+    )
 
 
 _UNSAFE_CHARS = re.compile(r"[^0-9a-zA-Z]+")
@@ -108,7 +112,8 @@ def resolve_breakdown_values(con, source_sql: str, column: str, limit: int) -> t
     rolled into ``count_other`` by build_breakdown_select unless it makes the cut.
     """
     rows = con.execute(
-        f'SELECT "{column}" AS v, COUNT(*) AS n FROM ({source_sql}) GROUP BY 1 ORDER BY n DESC, v'
+        f"SELECT {quote_identifier(column)} AS v, COUNT(*) AS n"
+        f" FROM ({source_sql}) GROUP BY 1 ORDER BY n DESC, v"
     ).fetchall()
     top = [r[0] for r in rows[:limit]]
     has_other = len(rows) > limit
@@ -119,12 +124,13 @@ def build_breakdown_select(
     column: str, value_colmap: list[tuple[object, str]], has_other: bool
 ) -> str:
     """Build COUNT(*) FILTER expressions for each kept value, plus count_other."""
+    qcol = quote_identifier(column)
     parts: list[str] = []
     for value, colname in value_colmap:
         if value is None:
-            cond = f'"{column}" IS NULL'
+            cond = f"{qcol} IS NULL"
         else:
-            cond = f'"{column}" = {sql_literal(value)}'
+            cond = f"{qcol} = {sql_literal(value)}"
         parts.append(f'COUNT(*) FILTER (WHERE {cond}) AS "{colname}"')
 
     if has_other:
@@ -136,8 +142,8 @@ def build_breakdown_select(
             kept_conds: list[str] = []
             if kept_non_null:
                 in_list = ", ".join(sql_literal(v) for v in kept_non_null)
-                kept_conds.append(f'"{column}" IN ({in_list})')
-            kept_conds.append(f'"{column}" IS NULL')
+                kept_conds.append(f"{qcol} IN ({in_list})")
+            kept_conds.append(f"{qcol} IS NULL")
             kept_clause = " OR ".join(kept_conds)
             parts.append(f'COUNT(*) FILTER (WHERE NOT ({kept_clause})) AS "count_other"')
         else:
@@ -145,7 +151,7 @@ def build_breakdown_select(
             # Need to use NOT IN with explicit NULL handling since NULL NOT IN (...) = NULL
             if kept_non_null:
                 in_list = ", ".join(sql_literal(v) for v in kept_non_null)
-                other_clause = f'"{column}" NOT IN ({in_list}) OR "{column}" IS NULL'
+                other_clause = f"{qcol} NOT IN ({in_list}) OR {qcol} IS NULL"
             else:
                 # No non-null values kept (shouldn't happen, but handle gracefully)
                 other_clause = "TRUE"

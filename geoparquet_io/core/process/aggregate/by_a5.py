@@ -6,7 +6,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -31,7 +31,7 @@ _POLY_WKB = (
 def _read_source_sql(input_url: str, geom_col: str) -> str:
     """Source relation exposing the original columns plus a parsed __geom geometry."""
     return (
-        f'SELECT *, ST_GeomFromWKB("{geom_col}") AS __geom '
+        f"SELECT *, ST_GeomFromWKB({quote_identifier(geom_col)}) AS __geom "
         f"FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
     )
 
@@ -57,11 +57,18 @@ def _build_a5_query(
     )
 
     # Breakdown columns (resolved against the keyed source so the column exists).
+    # Materialize the keyed relation once when a breakdown is requested so that
+    # resolve_breakdown_values and the aggregation both read from the same temp
+    # table rather than re-running the full key-assignment expression twice.
     breakdown_select = ""
     if breakdown:
-        top_values, has_other = resolve_breakdown_values(con, keyed_sql, breakdown, breakdown_limit)
+        con.execute(f"CREATE TEMP TABLE __agg_keyed AS {keyed_sql}")
+        keyed_ref = "SELECT * FROM __agg_keyed"
+        top_values, has_other = resolve_breakdown_values(con, keyed_ref, breakdown, breakdown_limit)
         colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
         breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
+    else:
+        keyed_ref = keyed_sql
 
     # Aggregate SELECT list.
     agg_parts = [f'__key AS "{a5_column_name}"', "COUNT(*) AS count"]
@@ -70,7 +77,7 @@ def _build_a5_query(
         agg_parts.append(metric_select)
     if breakdown_select:
         agg_parts.append(breakdown_select)
-    agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({keyed_sql}) GROUP BY __key"
+    agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({keyed_ref}) GROUP BY __key"
 
     return _wrap_with_geometry(agg_sql, a5_column_name, out_geometry)
 
@@ -106,6 +113,11 @@ def aggregate_by_a5(
             "resolution",
             "A5 aggregation requires --resolution or --auto",
         )
+    if out_geometry not in VALID_OUT_GEOMETRY:
+        raise InvalidParameterError(
+            "out_geometry",
+            f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
+        )
     if auto:
         resolution = calculate_auto_resolution(
             input_parquet,
@@ -116,12 +128,6 @@ def aggregate_by_a5(
         )
         if verbose:
             debug(f"Auto-selected a5 resolution {resolution}")
-
-    if out_geometry not in VALID_OUT_GEOMETRY:
-        raise InvalidParameterError(
-            "out_geometry",
-            f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
-        )
     if not 0 <= resolution <= 30:
         raise InvalidParameterError(
             "resolution",
@@ -200,8 +206,8 @@ def aggregate_a5_table(
         con.execute("SET geometry_always_xy = true")
         con.register("__agg_input", table)
         source_sql = (
-            f'SELECT * EXCLUDE ("{geom_col}"), '
-            f'ST_GeomFromWKB("{geom_col}") AS __geom FROM __agg_input'
+            f"SELECT * EXCLUDE ({quote_identifier(geom_col)}), "
+            f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS __geom FROM __agg_input"
         )
         final_sql = _build_a5_query(
             con,

@@ -6,7 +6,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -71,15 +71,15 @@ def _build_joined_sql(
         bbox_filter = ""
     return f"""
         SELECT s.*,
-               b."{code_col}" AS __admin_code,
-               b."{name_col}" AS __admin_name,
-               ST_AsWKB(b."{admin_geom_col}") AS __admin_geom
+               b.{quote_identifier(code_col)} AS __admin_code,
+               b.{quote_identifier(name_col)} AS __admin_name,
+               ST_AsWKB(b.{quote_identifier(admin_geom_col)}) AS __admin_geom
         FROM (
-            SELECT *, ST_Centroid(ST_GeomFromWKB("{geom_col}")) AS __cen
+            SELECT *, ST_Centroid(ST_GeomFromWKB({quote_identifier(geom_col)})) AS __cen
             FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
         ) s
         LEFT JOIN {admin_ref} b
-          ON {bbox_filter}ST_Intersects(b."{admin_geom_col}", s.__cen)
+          ON {bbox_filter}ST_Intersects(b.{quote_identifier(admin_geom_col)}, s.__cen)
     """
 
 
@@ -188,15 +188,21 @@ def aggregate_by_admin(
             input_url, geom_col, admin_ref, code_col, name_col, admin_geom_col, admin_bbox_col
         )
 
+        # When a breakdown is requested, materialize the spatial join once so that
+        # resolve_breakdown_values and the aggregation both read from the same temp
+        # table rather than re-running the expensive ST_Intersects join twice.
         breakdown_select = ""
         if breakdown:
+            con.execute(f"CREATE TEMP TABLE __agg_joined AS {joined_sql}")
+            joined_ref = "SELECT * FROM __agg_joined"
             top_values, has_other = resolve_breakdown_values(
-                con, joined_sql, breakdown, breakdown_limit
+                con, joined_ref, breakdown, breakdown_limit
             )
             colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
             breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
-
-        agg_sql = _build_agg_sql(joined_sql, metrics, breakdown_select)
+            agg_sql = _build_agg_sql(joined_ref, metrics, breakdown_select)
+        else:
+            agg_sql = _build_agg_sql(joined_sql, metrics, "")
         final_sql = _wrap_admin_geometry(agg_sql, out_geometry)
 
         if show_sql or verbose:

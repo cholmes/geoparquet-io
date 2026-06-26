@@ -5,6 +5,7 @@ from importlib.metadata import entry_points
 from pathlib import Path
 
 import click
+import duckdb
 from click_plugins import with_plugins
 
 from geoparquet_io.cli.decorators import (
@@ -6865,7 +6866,7 @@ def process_aggregate_a5(
                 verbose=verbose,
                 show_sql=show_sql,
             )
-        except (InvalidParameterError, ValueError) as exc:
+        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
 
 
@@ -6944,7 +6945,7 @@ def process_aggregate_admin(
                 verbose=verbose,
                 show_sql=show_sql,
             )
-        except (InvalidParameterError, ValueError) as exc:
+        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
 
 
