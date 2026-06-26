@@ -297,6 +297,46 @@ def aggregate_a5(
     )
 
 
+def aggregate_admin(
+    table: pa.Table,
+    level: str = "country",
+    metric: str | None = None,
+    breakdown: str | None = None,
+    breakdown_limit: int = 20,
+    out_geometry: str = "polygon",
+) -> pa.Table:
+    """
+    Aggregate an Arrow table into administrative regions with per-region statistics.
+
+    Args:
+        table: Input PyArrow Table with geometry column
+        level: Admin level to aggregate by ("country", "region", "subregion")
+        metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+        breakdown: Column name to pivot into per-category count columns
+        breakdown_limit: Max number of breakdown categories (default: 20)
+        out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+
+    Returns:
+        New PyArrow Table with one row per admin region
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> table = pq.read_table('input.parquet')
+        >>> table = ops.aggregate_admin(table, level="country")
+    """
+    from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
+
+    return _file_round_trip(
+        table,
+        aggregate_by_admin,
+        level=level,
+        metric=metric,
+        breakdown=breakdown,
+        breakdown_limit=breakdown_limit,
+        out_geometry=out_geometry,
+    )
+
+
 def add_kdtree(
     table: pa.Table,
     column_name: str = "kdtree_cell",
