@@ -4,6 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.aggregate.by_a5 import aggregate_by_a5
 
 
@@ -80,3 +81,26 @@ def test_aggregate_a5_out_geometry_none_is_plain_table(tmp_path):
     assert "count" in table.column_names
     assert "geometry" not in table.column_names
     assert b"geo" not in (table.schema.metadata or {})
+
+
+def test_aggregate_a5_requires_resolution_or_auto(tmp_path):
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 1.0)])
+    with pytest.raises(InvalidParameterError):
+        aggregate_by_a5(str(src), str(tmp_path / "o.parquet"))  # neither given
+
+
+def test_aggregate_a5_rejects_resolution_and_auto(tmp_path):
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 1.0)])
+    with pytest.raises(InvalidParameterError):
+        aggregate_by_a5(str(src), str(tmp_path / "o.parquet"), resolution=5, auto=True)
+
+
+@pytest.mark.slow
+def test_aggregate_a5_auto_runs(tmp_path):
+    src = tmp_path / "f.parquet"
+    out = tmp_path / "o.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 1.0), (10.001, 50.001, "corn", 2.0)])
+    aggregate_by_a5(str(src), str(out), auto=True, target_per_cell=1)
+    assert out.exists()
