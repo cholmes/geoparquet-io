@@ -37,7 +37,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
 | `gpio pmtiles` | create | PMTiles generation commands. Generate PMTiles from... |
-| `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
+| `gpio publish` | partition-index, stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
 <!-- END GENERATED: skill-commands -->

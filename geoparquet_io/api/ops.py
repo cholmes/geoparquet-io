@@ -27,6 +27,7 @@ from geoparquet_io.core.add.quadkey import add_quadkey_table
 from geoparquet_io.core.add.s2 import add_s2_table
 from geoparquet_io.core.extract import extract_table
 from geoparquet_io.core.hilbert_order import hilbert_order_table
+from geoparquet_io.core.partition_index import build_partition_index as _build_partition_index
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
@@ -408,6 +409,34 @@ def reproject(
         source_crs=source_crs,
         geometry_column=geometry_column,
         assume_crs84=assume_crs84,
+    )
+
+
+def build_partition_index(
+    input_glob: str,
+    output: str,
+    partition_key: str | None = None,
+    profile: str | None = None,
+) -> int:
+    """Build a file->bbox index over partitioned GeoParquet files (footers only).
+
+    Reads parquet footers (no data scan), aggregates per-file bounds from the bbox
+    covering column, and writes a small index Parquet to ``output``.
+
+    Args:
+        input_glob: File, glob, directory, or remote URL of partitioned GeoParquet.
+        output: Path to write the index Parquet to.
+        partition_key: Hive key to extract from each file path into a column.
+        profile: AWS profile for remote (S3) reads.
+
+    Returns:
+        Number of files indexed.
+    """
+    return _build_partition_index(
+        input_glob,
+        output,
+        partition_key=partition_key,
+        profile=profile,
     )
 
 

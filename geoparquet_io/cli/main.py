@@ -74,6 +74,7 @@ from geoparquet_io.core.partition.by_s2 import partition_by_s2 as partition_by_s
 from geoparquet_io.core.partition.by_string import (
     partition_by_string as partition_by_string_impl,
 )
+from geoparquet_io.core.partition_index import build_partition_index as build_partition_index_impl
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -6021,6 +6022,34 @@ def publish_stac(input, output, bucket, public_url, collection_id, item_id, over
         --public-url https://data.example.com/roads/
     """
     _stac_impl(input, output, bucket, public_url, collection_id, item_id, overwrite, verbose)
+
+
+@publish.command(name="partition-index")
+@handle_geoparquet_errors
+@click.argument("input")
+@click.argument("output", type=click.Path())
+@click.option(
+    "--partition-key",
+    default=None,
+    help="Hive key to extract from each file path into a column (e.g. 'provincia').",
+)
+@aws_profile_option
+@verbose_option
+def publish_partition_index(input, output, partition_key, aws_profile, verbose):
+    """Build a file->bbox index (_partitions.parquet) from parquet footers.
+
+    Reads footers only (no data scan) and writes one row per file with its
+    bounding box, so a tiler can pick the partition files that overlap a tile.
+    Requires a bbox covering column (run 'gpio add bbox' on the files if missing).
+
+    \b
+    Examples:
+      gpio publish partition-index 'data/*.parquet' _partitions.parquet
+      gpio publish partition-index 's3://bkt/v3/ds/data/*.parquet' idx.parquet --partition-key provincia
+    """
+    build_partition_index_impl(
+        input, output, partition_key=partition_key, profile=aws_profile, verbose=verbose
+    )
 
 
 @publish.command(name="upload")
