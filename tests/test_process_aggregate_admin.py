@@ -1,7 +1,9 @@
 import duckdb
 import pyarrow.parquet as pq
 import pytest
+from click.testing import CliRunner
 
+from geoparquet_io.cli.main import cli
 from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
 
 
@@ -38,3 +40,25 @@ def test_aggregate_admin_country_with_unassigned(tmp_path):
     assert "unassigned" in codes
     df = table.to_pandas()
     assert int(df.loc[df["admin_code"] == "unassigned", "count"].iloc[0]) == 1
+
+
+def test_cli_process_aggregate_admin_help():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["process", "aggregate", "admin", "--help"])
+    assert result.exit_code == 0
+    assert "--level" in result.output
+    assert "--out-geometry" in result.output
+
+
+@pytest.mark.slow
+@pytest.mark.network
+def test_cli_process_aggregate_admin_runs(tmp_path):
+    src = tmp_path / "pts.parquet"
+    out = tmp_path / "o.parquet"
+    _write_points_geoparquet(src, [(2.35, 48.85, "a"), (4.85, 45.75, "b")])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["process", "aggregate", "admin", str(src), str(out), "--level", "country"]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.exists()
