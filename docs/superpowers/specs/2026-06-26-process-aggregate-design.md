@@ -106,6 +106,10 @@ Specified via flags; all computed in a single `GROUP BY`.
   pairs. Functions: `sum`, `avg`, `min`, `max`. Each yields one cell-global column
   named `<func>_<column>` (e.g. `sum_area_ha`, `avg_area_ha`). NULLs are skipped
   per standard SQL aggregate semantics (documented in help/docs).
+  - **Bare-column shorthand:** a metric entry with no `func:` prefix (e.g.
+    `--metric area_ha`) is treated as `sum:area_ha`. `sum` is the default because
+    a total (e.g. total hectares per cell) is the most common visualization intent.
+    Bare and `func:` forms can be mixed: `--metric "area_ha,avg:yield"`.
 - **`--breakdown <column>`** — pivots count by the distinct values of a categorical
   or time-bucket column into `count_<value>` columns. Enables class filtering
   (5 crop classes → 5 toggleable columns) and time animation (one column per year).
