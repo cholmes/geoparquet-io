@@ -42,7 +42,8 @@ _BBOX_FIELDS = ("xmin", "ymin", "xmax", "ymax")
 
 def _describe(con, source: str) -> list[tuple]:
     """Return ``(name, type, ...)`` rows describing the columns of ``source``."""
-    return con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+    rows: list[tuple] = con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+    return rows
 
 
 def _detect_geometry_column(con, source: str) -> str:
@@ -199,9 +200,11 @@ def _count_dropped(
         bbox_col=None,
         as_wkb=False,
     )
-    return con.execute(
-        f"SELECT COUNT(*) FROM ({reduced}) WHERE {geom_q} IS NULL OR ST_IsEmpty({geom_q})"
-    ).fetchone()[0]
+    return int(
+        con.execute(
+            f"SELECT COUNT(*) FROM ({reduced}) WHERE {geom_q} IS NULL OR ST_IsEmpty({geom_q})"
+        ).fetchone()[0]
+    )
 
 
 def _resolve_output(input_parquet: str, output_parquet: str | None) -> str | None:
