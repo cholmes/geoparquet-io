@@ -64,6 +64,7 @@ geoparquet_io/
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files |
 | `gpio pmtiles` | create | PMTiles generation commands |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata, cloud uploads) |
+| `gpio reduce-precision` |  | Reduce geometry coordinate precision by snapping to a fixed grid |
 | `gpio skills` |  | List and access LLM skills for gpio |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files |
 <!-- END GENERATED: cli-commands -->

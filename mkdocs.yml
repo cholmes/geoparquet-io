@@ -72,6 +72,7 @@ nav:
     - Write Strategies: guide/write-strategies.md
     - Checking Best Practices: guide/check.md
     - Sorting Data: guide/sort.md
+    - Reducing Precision: guide/reduce-precision.md
     - Adding Spatial Indices: guide/add.md
     - Partitioning Files: guide/partition.md
     - Sub-Partitioning Large Files: guide/sub-partitioning.md

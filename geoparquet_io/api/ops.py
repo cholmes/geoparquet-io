@@ -27,6 +27,7 @@ from geoparquet_io.core.add.quadkey import add_quadkey_table
 from geoparquet_io.core.add.s2 import add_s2_table
 from geoparquet_io.core.extract import extract_table
 from geoparquet_io.core.hilbert_order import hilbert_order_table
+from geoparquet_io.core.reduce_precision import reduce_precision_table
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
@@ -408,6 +409,38 @@ def reproject(
         source_crs=source_crs,
         geometry_column=geometry_column,
         assume_crs84=assume_crs84,
+    )
+
+
+def reduce_precision(
+    table: pa.Table,
+    grid: float,
+    geometry_column: str | None = None,
+    repair: bool = True,
+    drop_empty: bool = True,
+) -> pa.Table:
+    """
+    Reduce geometry coordinate precision by snapping to a fixed grid.
+
+    Snaps coordinates with ST_ReducePrecision, repairs (ST_MakeValid), and drops
+    geometries that collapse to empty. A stored bbox covering column is regenerated.
+
+    Args:
+        table: Input PyArrow Table
+        grid: Grid size in the geometry's CRS units (e.g. 1e-6 ≈ 0.11 m on EPSG:4326)
+        geometry_column: Geometry column name (auto-detected if None)
+        repair: Repair invalid geometry with ST_MakeValid (default: True)
+        drop_empty: Drop geometries that became NULL/empty (default: True)
+
+    Returns:
+        New table with reduced-precision geometry
+    """
+    return reduce_precision_table(
+        table,
+        grid,
+        geometry_column=geometry_column,
+        repair=repair,
+        drop_empty=drop_empty,
     )
 
 

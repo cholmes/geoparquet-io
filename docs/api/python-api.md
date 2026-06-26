@@ -623,6 +623,25 @@ WGS84, use `assume_crs84=True` to treat them as OGC:CRS84 and write the default
 table = gpio.read('unknown_crs.parquet').reproject(assume_crs84=True)
 ```
 
+#### `reduce_precision(grid, repair=True, drop_empty=True)`
+
+Reduce geometry coordinate precision by snapping to a fixed grid (DuckDB's
+`ST_ReducePrecision`). Shrinks the geometry column substantially; the native CRS
+is preserved (no reprojection). Invalid geometry is repaired *before* reducing,
+and geometries that collapse to empty are dropped by default.
+
+```python
+# Snap to ~0.11 m on EPSG:4326 data
+table = gpio.read('input.parquet').reduce_precision(grid=1e-6)
+
+# Projected (metre-based) CRS: snap to 0.1 m, keep collapsed geometries
+table = gpio.read('utm.parquet').reduce_precision(grid=0.1, drop_empty=False)
+```
+
+`grid` is in the geometry's CRS units, so choose it to match the CRS (e.g. `1e-6`
+for degrees, `0.1`/`1.0` for metres). A stored bbox covering column is regenerated
+from the reduced geometry so it stays consistent.
+
 #### `extract(columns=None, exclude_columns=None, bbox=None, where=None, limit=None)`
 
 Filter columns and rows.

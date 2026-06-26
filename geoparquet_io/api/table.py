@@ -1483,6 +1483,34 @@ class Table:
         )
         return Table(result, self._geometry_column)
 
+    def reduce_precision(
+        self,
+        grid: float,
+        repair: bool = True,
+        drop_empty: bool = True,
+    ) -> Table:
+        """
+        Reduce geometry coordinate precision by snapping to a fixed grid.
+
+        Args:
+            grid: Grid size in the geometry's CRS units (e.g. 1e-6 ≈ 0.11 m on EPSG:4326)
+            repair: Repair invalid geometry with ST_MakeValid (default: True)
+            drop_empty: Drop geometries that became NULL/empty (default: True)
+
+        Returns:
+            New Table with reduced-precision geometry
+        """
+        from geoparquet_io.core.reduce_precision import reduce_precision_table
+
+        result = reduce_precision_table(
+            self._table,
+            grid,
+            geometry_column=self._geometry_column,
+            repair=repair,
+            drop_empty=drop_empty,
+        )
+        return Table(result, self._geometry_column)
+
     def partition_by_quadkey(
         self,
         output_dir: str | Path,
