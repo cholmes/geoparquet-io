@@ -99,3 +99,55 @@ def sql_literal(value: object) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def resolve_breakdown_values(con, source_sql: str, column: str, limit: int) -> tuple[list, bool]:
+    """Find the top-N most frequent values of ``column`` in the source.
+
+    Returns (top_values, has_other). NULL is treated as its own value here; it is
+    rolled into ``count_other`` by build_breakdown_select unless it makes the cut.
+    """
+    rows = con.execute(
+        f'SELECT "{column}" AS v, COUNT(*) AS n FROM ({source_sql}) GROUP BY 1 ORDER BY n DESC, v'
+    ).fetchall()
+    top = [r[0] for r in rows[:limit]]
+    has_other = len(rows) > limit
+    return top, has_other
+
+
+def build_breakdown_select(
+    column: str, value_colmap: list[tuple[object, str]], has_other: bool
+) -> str:
+    """Build COUNT(*) FILTER expressions for each kept value, plus count_other."""
+    parts: list[str] = []
+    for value, colname in value_colmap:
+        if value is None:
+            cond = f'"{column}" IS NULL'
+        else:
+            cond = f'"{column}" = {sql_literal(value)}'
+        parts.append(f'COUNT(*) FILTER (WHERE {cond}) AS "{colname}"')
+
+    if has_other:
+        kept_non_null = [v for v, _ in value_colmap if v is not None]
+        kept_null = any(v is None for v, _ in value_colmap)
+
+        if kept_null:
+            # NULL is explicitly kept, so count_other = NOT(kept values including NULL)
+            kept_conds: list[str] = []
+            if kept_non_null:
+                in_list = ", ".join(sql_literal(v) for v in kept_non_null)
+                kept_conds.append(f'"{column}" IN ({in_list})')
+            kept_conds.append(f'"{column}" IS NULL')
+            kept_clause = " OR ".join(kept_conds)
+            parts.append(f'COUNT(*) FILTER (WHERE NOT ({kept_clause})) AS "count_other"')
+        else:
+            # NULL is not explicitly kept, so include it in count_other
+            # Need to use NOT IN with explicit NULL handling since NULL NOT IN (...) = NULL
+            if kept_non_null:
+                in_list = ", ".join(sql_literal(v) for v in kept_non_null)
+                other_clause = f'"{column}" NOT IN ({in_list}) OR "{column}" IS NULL'
+            else:
+                # No non-null values kept (shouldn't happen, but handle gracefully)
+                other_clause = "TRUE"
+            parts.append(f'COUNT(*) FILTER (WHERE {other_clause}) AS "count_other"')
+    return ", ".join(parts)
