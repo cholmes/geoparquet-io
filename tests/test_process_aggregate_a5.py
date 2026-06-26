@@ -132,6 +132,34 @@ def test_cli_process_aggregate_a5(tmp_path):
     assert out.exists()
 
 
+def _points_table():
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    return (
+        con.execute(
+            """
+        SELECT ST_AsWKB(ST_Point(lon, lat)) AS geometry, crop, area FROM (VALUES
+            (10.0, 50.0, 'wheat', 4.0),
+            (10.001, 50.001, 'corn', 2.0)
+        ) AS t(lon, lat, crop, area)
+        """
+        )
+        .arrow()
+        .read_all()
+    )
+
+
+@pytest.mark.slow
+def test_table_aggregate_a5_api():
+    from geoparquet_io.api.table import Table
+
+    result = Table(_points_table()).aggregate_a5(resolution=5, metric="sum:area")
+    assert "a5_cell" in result.column_names
+    assert "count" in result.column_names
+    assert "sum_area" in result.column_names
+    assert "geometry" in result.column_names
+
+
 def test_cli_process_aggregate_a5_bad_metric(tmp_path):
     src = tmp_path / "f.parquet"
     _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 4.0)])

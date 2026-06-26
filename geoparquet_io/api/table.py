@@ -1316,6 +1316,40 @@ class Table:
         )
         return Table(result, self._geometry_column)
 
+    def aggregate_a5(
+        self,
+        resolution: int,
+        metric: str | None = None,
+        breakdown: str | None = None,
+        breakdown_limit: int = 20,
+        out_geometry: str = "polygon",
+    ) -> Table:
+        """
+        Aggregate features into A5 grid cells with per-cell statistics.
+
+        Args:
+            resolution: A5 resolution level 0-30
+            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            breakdown: Column name to pivot into per-category count columns
+            breakdown_limit: Max number of breakdown categories (default: 20)
+            out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+
+        Returns:
+            New Table with one row per A5 cell
+        """
+        from geoparquet_io.core.process.aggregate.by_a5 import aggregate_a5_table
+
+        result = aggregate_a5_table(
+            self._table,
+            resolution=resolution,
+            metric=metric,
+            breakdown=breakdown,
+            breakdown_limit=breakdown_limit,
+            out_geometry=out_geometry,
+            geometry_column=self._geometry_column,
+        )
+        return Table(result, "geometry" if out_geometry != "none" else None)
+
     def add_s2(
         self,
         column_name: str = "s2_cell",
