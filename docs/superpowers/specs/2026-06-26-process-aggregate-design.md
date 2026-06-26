@@ -101,6 +101,11 @@ Core may not import Click; API may not import CLI (enforced by import-linter).
 
 Specified via flags; all computed in a single `GROUP BY`.
 
+- **Bucket identifier** — always present, so the output can be re-joined to
+  geometry later (essential when `--out-geometry none`):
+  - `a5`: `a5_cell` (UBIGINT cell id).
+  - `admin`: the admin code (e.g. 2-char ISO country code at country level, region
+    code at region level) plus an `admin_name` label column.
 - **`count`** — always present. Number of input features in the bucket.
 - **`--metric "sum:area_ha,avg:area_ha"`** — comma-separated `<func>:<column>`
   pairs. Functions: `sum`, `avg`, `min`, `max`. Each yields one cell-global column
@@ -128,7 +133,7 @@ loss in partitioning; we must not repeat that pattern here.)
 
 ## Output Geometry
 
-`--out-geometry polygon|centroid|both` (default **`polygon`**):
+`--out-geometry polygon|centroid|both|none` (default **`polygon`**):
 
 - **`polygon`** — a5 cell boundary (`a5_cell_to_boundary`) / admin region polygon.
   True choropleth: fill each bucket by count / metric / share.
@@ -136,6 +141,15 @@ loss in partitioning; we must not repeat that pattern here.)
   centroid. For proportional-symbol (bubble) maps.
 - **`both`** — polygon as the primary `geometry` column plus an extra `centroid`
   point column (e.g. for label placement).
+- **`none`** — no geometry at all. Output is a plain (non-geo) Parquet table of the
+  bucket identifier + stats, to be joined onto geometry downstream (e.g. join
+  `a5_cell` to a precomputed cell grid, or the ISO code to a country layer).
+  Smallest output; useful for tabular rollups and for pipelines that already have
+  the bucket geometries.
+
+The bucket identifier column (see Aggregation Columns) is present for **every**
+`--out-geometry` value, which is what makes `none` re-joinable. Output is valid
+GeoParquet for `polygon`/`centroid`/`both`, and plain Parquet for `none`.
 
 ## Scheme-Specific Details
 
@@ -180,8 +194,9 @@ loss in partitioning; we must not repeat that pattern here.)
   mutual exclusion.
 - **a5 end-to-end:** small fixture with known points → deterministic cell counts;
   verify `count`, `sum`/`avg`, breakdown columns, `count_other` cap behavior, and
-  each `--out-geometry` variant produces valid GeoParquet with the expected
-  geometry type.
+  each `--out-geometry` variant produces the expected output: valid GeoParquet
+  with the expected geometry type for `polygon`/`centroid`/`both`, and plain
+  Parquet with the bucket id + stats (and no geometry column) for `none`.
 - **admin end-to-end:** a handful of features over a known region (and at least one
   point outside all regions) → verify region buckets, the `unassigned` bucket, and
   logged unassigned count.
