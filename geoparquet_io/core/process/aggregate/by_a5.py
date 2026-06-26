@@ -36,6 +36,45 @@ def _read_source_sql(input_url: str, geom_col: str) -> str:
     )
 
 
+def _build_a5_query(
+    con,
+    source_sql: str,
+    resolution: int,
+    metric: str | None,
+    breakdown: str | None,
+    breakdown_limit: int,
+    out_geometry: str,
+    a5_column_name: str,
+) -> str:
+    """Build the full a5 aggregation SQL from a source SQL relation exposing __geom."""
+    metrics = parse_metrics(metric)
+
+    # Keyed relation: every feature tagged with its a5 cell id.
+    keyed_sql = (
+        f"SELECT *, a5_lonlat_to_cell("
+        f"ST_X(ST_Centroid(__geom)), ST_Y(ST_Centroid(__geom)), {resolution}"
+        f") AS __key FROM ({source_sql})"
+    )
+
+    # Breakdown columns (resolved against the keyed source so the column exists).
+    breakdown_select = ""
+    if breakdown:
+        top_values, has_other = resolve_breakdown_values(con, keyed_sql, breakdown, breakdown_limit)
+        colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
+        breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
+
+    # Aggregate SELECT list.
+    agg_parts = [f'__key AS "{a5_column_name}"', "COUNT(*) AS count"]
+    metric_select = build_metric_select(metrics)
+    if metric_select:
+        agg_parts.append(metric_select)
+    if breakdown_select:
+        agg_parts.append(breakdown_select)
+    agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({keyed_sql}) GROUP BY __key"
+
+    return _wrap_with_geometry(agg_sql, a5_column_name, out_geometry)
+
+
 def aggregate_by_a5(
     input_parquet: str,
     output_parquet: str,
@@ -89,7 +128,6 @@ def aggregate_by_a5(
             f"A5 resolution must be 0-30, got {resolution}",
         )
 
-    metrics = parse_metrics(metric)
     input_url = safe_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
 
@@ -100,33 +138,16 @@ def aggregate_by_a5(
         con.execute("SET geometry_always_xy = true")
 
         source_sql = _read_source_sql(input_url, geom_col)
-
-        # Keyed relation: every feature tagged with its a5 cell id.
-        keyed_sql = (
-            f"SELECT *, a5_lonlat_to_cell("
-            f"ST_X(ST_Centroid(__geom)), ST_Y(ST_Centroid(__geom)), {resolution}"
-            f") AS __key FROM ({source_sql})"
+        final_sql = _build_a5_query(
+            con,
+            source_sql,
+            resolution,
+            metric,
+            breakdown,
+            breakdown_limit,
+            out_geometry,
+            a5_column_name,
         )
-
-        # Breakdown columns (resolved against the keyed source so the column exists).
-        breakdown_select = ""
-        if breakdown:
-            top_values, has_other = resolve_breakdown_values(
-                con, keyed_sql, breakdown, breakdown_limit
-            )
-            colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
-            breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
-
-        # Aggregate SELECT list.
-        agg_parts = [f'__key AS "{a5_column_name}"', "COUNT(*) AS count"]
-        metric_select = build_metric_select(metrics)
-        if metric_select:
-            agg_parts.append(metric_select)
-        if breakdown_select:
-            agg_parts.append(breakdown_select)
-        agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({keyed_sql}) GROUP BY __key"
-
-        final_sql = _wrap_with_geometry(agg_sql, a5_column_name, out_geometry)
         if show_sql or verbose:
             debug(final_sql)
 
@@ -147,6 +168,54 @@ def aggregate_by_a5(
             verbose=verbose,
         )
     success(f"Aggregated to {result.num_rows} a5 cells -> {output_parquet}")
+
+
+def aggregate_a5_table(
+    table,
+    resolution: int,
+    metric: str | None = None,
+    breakdown: str | None = None,
+    breakdown_limit: int = 20,
+    out_geometry: str = "polygon",
+    a5_column_name: str = "a5_cell",
+    geometry_column: str | None = None,
+):
+    """Aggregate an in-memory Arrow table by a5 cell. Returns a new Arrow table."""
+    if out_geometry not in VALID_OUT_GEOMETRY:
+        raise InvalidParameterError(
+            "out_geometry",
+            f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
+        )
+    if not 0 <= resolution <= 30:
+        raise InvalidParameterError(
+            "resolution",
+            f"A5 resolution must be 0-30, got {resolution}",
+        )
+
+    geom_col = geometry_column or "geometry"
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        con.execute("INSTALL a5 FROM community")
+        con.execute("LOAD a5")
+        con.execute("SET geometry_always_xy = true")
+        con.register("__agg_input", table)
+        source_sql = (
+            f'SELECT * EXCLUDE ("{geom_col}"), '
+            f'ST_GeomFromWKB("{geom_col}") AS __geom FROM __agg_input'
+        )
+        final_sql = _build_a5_query(
+            con,
+            source_sql,
+            resolution,
+            metric,
+            breakdown,
+            breakdown_limit,
+            out_geometry,
+            a5_column_name,
+        )
+        return con.execute(final_sql).arrow().read_all()
+    finally:
+        con.close()
 
 
 def _wrap_with_geometry(agg_sql: str, a5_column_name: str, out_geometry: str) -> str:

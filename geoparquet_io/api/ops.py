@@ -260,6 +260,40 @@ def add_a5(
     )
 
 
+def aggregate_a5(
+    table,
+    resolution: int,
+    metric: str | None = None,
+    breakdown: str | None = None,
+    breakdown_limit: int = 20,
+    out_geometry: str = "polygon",
+) -> pa.Table:
+    """
+    Aggregate an Arrow table into A5 grid cells with per-cell statistics.
+
+    Args:
+        table: Input PyArrow Table with geometry column
+        resolution: A5 resolution level 0-30
+        metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+        breakdown: Column name to pivot into per-category count columns
+        breakdown_limit: Max number of breakdown categories (default: 20)
+        out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+
+    Returns:
+        New PyArrow Table with one row per A5 cell
+    """
+    from geoparquet_io.core.process.aggregate.by_a5 import aggregate_a5_table
+
+    return aggregate_a5_table(
+        table,
+        resolution=resolution,
+        metric=metric,
+        breakdown=breakdown,
+        breakdown_limit=breakdown_limit,
+        out_geometry=out_geometry,
+    )
+
+
 def add_kdtree(
     table: pa.Table,
     column_name: str = "kdtree_cell",
