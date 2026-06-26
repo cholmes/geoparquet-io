@@ -41,6 +41,7 @@ from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.check_parquet_structure import check_all as check_structure_impl
 from geoparquet_io.core.check_spatial_order import check_spatial_order as check_spatial_impl
 from geoparquet_io.core.convert import convert_to_geoparquet
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.extract import extract as extract_impl
 from geoparquet_io.core.file_utils import validate_parquet_extension
 from geoparquet_io.core.hilbert_order import hilbert_order as hilbert_impl
@@ -73,6 +74,7 @@ from geoparquet_io.core.partition.by_s2 import partition_by_s2 as partition_by_s
 from geoparquet_io.core.partition.by_string import (
     partition_by_string as partition_by_string_impl,
 )
+from geoparquet_io.core.process.aggregate.by_a5 import aggregate_by_a5 as aggregate_by_a5_impl
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -6762,6 +6764,106 @@ def process_aggregate(ctx):
     visualization. Subcommands choose the bucketing scheme.
     """
     pass
+
+
+@process_aggregate.command(name="a5")
+@click.argument("input_parquet")
+@click.argument("output_parquet")
+@click.option(
+    "--resolution",
+    type=click.IntRange(0, 30),
+    default=None,
+    help="A5 resolution (0-30). Required unless --auto.",
+)
+@click.option("--auto", is_flag=True, help="Auto-select resolution from data size.")
+@click.option(
+    "--target-per-cell",
+    type=int,
+    default=10000,
+    help="Target features per cell when using --auto (default: 10000).",
+)
+@click.option(
+    "--max-cells",
+    type=int,
+    default=500000,
+    help="Maximum output cells when using --auto (default: 500000).",
+)
+@click.option(
+    "--metric",
+    default=None,
+    help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
+)
+@click.option(
+    "--breakdown",
+    default=None,
+    help="Categorical column to pivot count by (one count_<value> column each).",
+)
+@click.option(
+    "--breakdown-limit",
+    type=int,
+    default=20,
+    help="Max breakdown values before remainder rolls into count_other (default: 20).",
+)
+@click.option(
+    "--out-geometry",
+    type=click.Choice(["polygon", "centroid", "both", "none"]),
+    default="polygon",
+    help="Output geometry per cell (default: polygon).",
+)
+@compression_options
+@verbose_option
+@geoparquet_version_option
+@show_sql_option
+@click.pass_context
+def process_aggregate_a5(
+    ctx,
+    input_parquet,
+    output_parquet,
+    resolution,
+    auto,
+    target_per_cell,
+    max_cells,
+    metric,
+    breakdown,
+    breakdown_limit,
+    out_geometry,
+    compression,
+    compression_level,
+    verbose,
+    geoparquet_version,
+    show_sql,
+):
+    """Aggregate features into A5 grid cells.
+
+    Examples:
+
+        gpio process aggregate a5 fields.parquet cells.parquet --resolution 8
+        gpio process aggregate a5 fields.parquet cells.parquet --auto \\
+            --metric "sum:area_ha" --breakdown crop_type
+        gpio process aggregate a5 fields.parquet cells.csv-like.parquet \\
+            --resolution 8 --out-geometry none
+    """
+    with _activate_s3(ctx):
+        try:
+            aggregate_by_a5_impl(
+                input_parquet,
+                output_parquet,
+                resolution=resolution,
+                auto=auto,
+                target_per_cell=target_per_cell,
+                max_cells=max_cells,
+                metric=metric,
+                breakdown=breakdown,
+                breakdown_limit=breakdown_limit,
+                out_geometry=out_geometry,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                geoparquet_version=geoparquet_version,
+                verbose=verbose,
+                show_sql=show_sql,
+            )
+        except (InvalidParameterError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 if __name__ == "__main__":
