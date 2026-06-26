@@ -27,6 +27,7 @@ from geoparquet_io.core.add.quadkey import add_quadkey_table
 from geoparquet_io.core.add.s2 import add_s2_table
 from geoparquet_io.core.extract import extract_table
 from geoparquet_io.core.hilbert_order import hilbert_order_table
+from geoparquet_io.core.normalize_schema import normalize_schema_table
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
@@ -408,6 +409,37 @@ def reproject(
         source_crs=source_crs,
         geometry_column=geometry_column,
         assume_crs84=assume_crs84,
+    )
+
+
+def normalize_schema(
+    table: pa.Table,
+    lowercase: bool = True,
+    descriptions: dict[str, str] | None = None,
+    geometry_column: str | None = None,
+) -> pa.Table:
+    """
+    Normalize a GeoParquet schema for the tri-access layout.
+
+    Lowercases column names, reorders columns (attributes, then geometry, then
+    bbox covering columns last), assigns a contiguous ``PARQUET:field_id`` to each
+    column, and attaches optional per-column descriptions. Geometry encoding/CRS
+    are unchanged.
+
+    Args:
+        table: Input PyArrow Table
+        lowercase: Lowercase all column names (default: True)
+        descriptions: Optional ``{column_name: description}`` (keyed by final name)
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        New table with the normalized schema
+    """
+    return normalize_schema_table(
+        table,
+        lowercase=lowercase,
+        descriptions=descriptions,
+        geometry_column=geometry_column,
     )
 
 

@@ -623,6 +623,19 @@ WGS84, use `assume_crs84=True` to treat them as OGC:CRS84 and write the default
 table = gpio.read('unknown_crs.parquet').reproject(assume_crs84=True)
 ```
 
+#### `normalize_schema(lowercase=True, descriptions=None)`
+
+Normalize the schema for a portable, deterministic layout: lowercase column
+names, order columns as attributes → geometry → bbox covering (last), assign a
+contiguous `PARQUET:field_id` to every column, and attach optional per-column
+descriptions. Geometry encoding and CRS are unchanged.
+
+```python
+table = gpio.read('input.parquet').normalize_schema(
+    descriptions={'name': 'Official feature name'},
+)
+```
+
 #### `extract(columns=None, exclude_columns=None, bbox=None, where=None, limit=None)`
 
 Filter columns and rows.
@@ -1224,6 +1237,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |
+| `ops.normalize_schema(table, lowercase=True, descriptions=None, geometry_column=None)` | Lowercase/reorder/field-id schema layout |
 
 ## Pipeline Composition
 

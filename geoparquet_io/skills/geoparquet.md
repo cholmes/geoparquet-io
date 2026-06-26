@@ -35,6 +35,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio convert` | csv, flatgeobuf, geojson, geopackage, geoparquet, reproject, shapefile | Convert between formats and coordinate systems.... |
 | `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
+| `gpio normalize-schema` |  | Normalize a GeoParquet schema for tri-access layout.... |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
 | `gpio pmtiles` | create | PMTiles generation commands. Generate PMTiles from... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |

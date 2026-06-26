@@ -73,6 +73,7 @@ nav:
     - Checking Best Practices: guide/check.md
     - Sorting Data: guide/sort.md
     - Adding Spatial Indices: guide/add.md
+    - Normalizing Schema Layout: guide/normalize-schema.md
     - Partitioning Files: guide/partition.md
     - Sub-Partitioning Large Files: guide/sub-partitioning.md
     - Remote Files & Authentication: guide/remote-files.md
