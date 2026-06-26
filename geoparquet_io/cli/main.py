@@ -76,6 +76,9 @@ from geoparquet_io.core.partition.by_string import (
     partition_by_string as partition_by_string_impl,
 )
 from geoparquet_io.core.process.aggregate.by_a5 import aggregate_by_a5 as aggregate_by_a5_impl
+from geoparquet_io.core.process.aggregate.by_admin import (
+    aggregate_by_admin as aggregate_by_admin_impl,
+)
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -7097,6 +7100,85 @@ def process_aggregate_a5(
                 auto=auto,
                 target_per_cell=target_per_cell,
                 max_cells=max_cells,
+                metric=metric,
+                breakdown=breakdown,
+                breakdown_limit=breakdown_limit,
+                out_geometry=out_geometry,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                geoparquet_version=geoparquet_version,
+                verbose=verbose,
+                show_sql=show_sql,
+            )
+        except (InvalidParameterError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+
+@process_aggregate.command(name="admin")
+@click.argument("input_parquet")
+@click.argument("output_parquet")
+@click.option(
+    "--level",
+    type=click.Choice(["country", "region"]),
+    default="country",
+    help="Administrative level to aggregate to (default: country).",
+)
+@click.option(
+    "--metric",
+    default=None,
+    help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
+)
+@click.option(
+    "--breakdown",
+    default=None,
+    help="Categorical column to pivot count by.",
+)
+@click.option(
+    "--breakdown-limit",
+    type=int,
+    default=20,
+    help="Max breakdown values before remainder rolls into count_other (default: 20).",
+)
+@click.option(
+    "--out-geometry",
+    type=click.Choice(["polygon", "centroid", "both", "none"]),
+    default="polygon",
+    help="Output geometry per region (default: polygon).",
+)
+@compression_options
+@verbose_option
+@geoparquet_version_option
+@show_sql_option
+@click.pass_context
+def process_aggregate_admin(
+    ctx,
+    input_parquet,
+    output_parquet,
+    level,
+    metric,
+    breakdown,
+    breakdown_limit,
+    out_geometry,
+    compression,
+    compression_level,
+    verbose,
+    geoparquet_version,
+    show_sql,
+):
+    """Aggregate features into administrative regions.
+
+    Examples:
+
+        gpio process aggregate admin fields.parquet by_country.parquet --level country
+        gpio process aggregate admin fields.parquet by_region.parquet \\
+            --level region --metric "sum:area_ha" --breakdown crop_type
+    """
+    with _activate_s3(ctx):
+        try:
+            aggregate_by_admin_impl(
+                input_parquet,
+                output_parquet,
+                level=level,
                 metric=metric,
                 breakdown=breakdown,
                 breakdown_limit=breakdown_limit,
