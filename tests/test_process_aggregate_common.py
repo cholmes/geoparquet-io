@@ -3,8 +3,11 @@ import pytest
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.aggregate.common import (
     MetricSpec,
+    build_breakdown_column_names,
     build_metric_select,
     parse_metrics,
+    sanitize_value_for_column,
+    sql_literal,
 )
 
 
@@ -37,3 +40,40 @@ def test_build_metric_select():
     sql = build_metric_select(specs)
     assert sql == 'SUM("area_ha") AS "sum_area_ha", AVG("yield") AS "avg_yield"'
     assert build_metric_select([]) == ""
+
+
+def test_sanitize_value_for_column():
+    assert sanitize_value_for_column("Wheat") == "wheat"
+    assert sanitize_value_for_column("row crop / cereal") == "row_crop_cereal"
+    assert sanitize_value_for_column("2021") == "2021"
+    assert sanitize_value_for_column(None) == "null"
+    assert sanitize_value_for_column("!!!") == "value"
+    # Test leading/trailing underscores are stripped
+    assert sanitize_value_for_column("  wheat  ") == "wheat"
+    # Test with multiple consecutive special chars
+    assert sanitize_value_for_column("crop---production") == "crop_production"
+
+
+def test_build_breakdown_column_names_disambiguates_collisions():
+    # "a/b" and "a.b" both sanitize to "a_b" -> must not merge
+    mapping = build_breakdown_column_names(["a/b", "a.b"])
+    names = [n for _, n in mapping]
+    assert names == ["count_a_b", "count_a_b_2"]
+    # Test multiple collisions
+    mapping = build_breakdown_column_names(["a/b", "a.b", "a-b"])
+    names = [n for _, n in mapping]
+    assert names == ["count_a_b", "count_a_b_2", "count_a_b_3"]
+
+
+def test_build_breakdown_column_names_respects_reserved():
+    mapping = build_breakdown_column_names(["other"], reserved={"count_other"})
+    assert mapping == [("other", "count_other_2")]
+
+
+def test_sql_literal():
+    assert sql_literal("wheat") == "'wheat'"
+    assert sql_literal("O'Brien") == "'O''Brien'"
+    assert sql_literal(2021) == "2021"
+    assert sql_literal(3.14) == "3.14"
+    assert sql_literal(True) == "TRUE"
+    assert sql_literal(False) == "FALSE"
