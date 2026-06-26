@@ -46,6 +46,7 @@ def _build_joined_sql(
     code_col: str,
     name_col: str,
     admin_geom_col: str,
+    admin_bbox_col: str | None = None,
 ) -> str:
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
@@ -54,7 +55,20 @@ def _build_joined_sql(
     (as written by DuckDB COPY / ST_AsWKB), so ST_GeomFromWKB is applied before
     computing the centroid.  The admin geometry is stored as WKB (ST_AsWKB) so
     that _wrap_admin_geometry can treat __admin_geom uniformly as WKB binary.
+
+    When admin_bbox_col is provided, a cheap bbox prefilter is added to the ON
+    clause so ST_Intersects is only evaluated for admin polygons whose bounding
+    box contains the feature centroid point.
     """
+    if admin_bbox_col:
+        bbox_filter = (
+            f"b.{admin_bbox_col}.xmin <= ST_X(s.__cen) AND "
+            f"b.{admin_bbox_col}.xmax >= ST_X(s.__cen) AND "
+            f"b.{admin_bbox_col}.ymin <= ST_Y(s.__cen) AND "
+            f"b.{admin_bbox_col}.ymax >= ST_Y(s.__cen) AND "
+        )
+    else:
+        bbox_filter = ""
     return f"""
         SELECT s.*,
                b."{code_col}" AS __admin_code,
@@ -65,7 +79,7 @@ def _build_joined_sql(
             FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
         ) s
         LEFT JOIN {admin_ref} b
-          ON ST_Intersects(b."{admin_geom_col}", s.__cen)
+          ON {bbox_filter}ST_Intersects(b."{admin_geom_col}", s.__cen)
     """
 
 
@@ -158,6 +172,7 @@ def aggregate_by_admin(
     # name_col here when get_level_column_mapping returns distinct name keys.
     name_col = code_col
     admin_geom_col = admin_dataset.get_geometry_column()
+    admin_bbox_col = admin_dataset.get_bbox_column()
 
     input_url = safe_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
@@ -170,7 +185,7 @@ def aggregate_by_admin(
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
         joined_sql = _build_joined_sql(
-            input_url, geom_col, admin_ref, code_col, name_col, admin_geom_col
+            input_url, geom_col, admin_ref, code_col, name_col, admin_geom_col, admin_bbox_col
         )
 
         breakdown_select = ""
@@ -188,9 +203,13 @@ def aggregate_by_admin(
             debug(final_sql)
         result = con.execute(final_sql).arrow().read_all()
 
-        unassigned_count = con.execute(
-            f"SELECT COUNT(*) FROM ({joined_sql}) WHERE __admin_code IS NULL"
-        ).fetchone()[0]
+        # Derive unassigned count from the already-materialized result table to
+        # avoid re-executing the (potentially expensive) spatial join a second time.
+        codes = result.column("admin_code").to_pylist()
+        if "unassigned" in codes:
+            unassigned_count = result.column("count")[codes.index("unassigned")].as_py()
+        else:
+            unassigned_count = 0
         if unassigned_count:
             info(f"{unassigned_count} feature(s) fell outside all admin regions (-> 'unassigned')")
     finally:
