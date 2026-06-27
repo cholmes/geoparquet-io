@@ -13,6 +13,26 @@ VALID_METRIC_FUNCS = {"sum", "avg", "min", "max"}
 VALID_OUT_GEOMETRY = {"polygon", "centroid", "both", "none"}
 
 
+def geometry_to_geom_expr(con, relation: str, geom_col: str) -> str:
+    """Return a SQL expression yielding a GEOMETRY for ``geom_col`` in ``relation``.
+
+    DuckDB 1.5 reads a GeoParquet geometry column as a ``GEOMETRY`` type, so it can
+    be used directly. In-memory Arrow tables and plain WKB-blob Parquet expose the
+    column as ``BLOB``, which must be decoded with ``ST_GeomFromWKB``. This inspects
+    the actual column type so callers get a GEOMETRY either way.
+
+    ``relation`` must be usable in a FROM clause (e.g. ``read_parquet('...')`` or a
+    registered relation name). ``con`` must have the spatial extension loaded.
+    """
+    qcol = quote_identifier(geom_col)
+    rows = con.execute(f"DESCRIBE SELECT {qcol} FROM {relation}").fetchall()
+    col_type = (rows[0][1] if rows else "").upper()
+    if "GEOMETRY" in col_type:
+        return qcol
+    # BLOB/BINARY (and anything unrecognized) is treated as WKB.
+    return f"ST_GeomFromWKB({qcol})"
+
+
 @dataclass(frozen=True)
 class MetricSpec:
     """A single numeric rollup: ``func`` over ``column`` -> ``output_name``."""

@@ -10,12 +10,13 @@ from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identif
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
-from geoparquet_io.core.logging_config import configure_verbose, debug, success
+from geoparquet_io.core.logging_config import configure_verbose, debug, info, success
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
+    geometry_to_geom_expr,
     parse_metrics,
     resolve_breakdown_values,
 )
@@ -28,12 +29,15 @@ _POLY_WKB = (
 )
 
 
-def _read_source_sql(input_url: str, geom_col: str) -> str:
-    """Source relation exposing the original columns plus a parsed __geom geometry."""
-    return (
-        f"SELECT *, ST_GeomFromWKB({quote_identifier(geom_col)}) AS __geom "
-        f"FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-    )
+def _read_source_sql(con, input_url: str, geom_col: str) -> str:
+    """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
+
+    Detects whether the input geometry column is read as GEOMETRY (real GeoParquet)
+    or BLOB (plain WKB) so it works on both.
+    """
+    read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+    geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
+    return f"SELECT *, {geom_expr} AS __geom FROM {read_rel}"
 
 
 def _build_a5_query(
@@ -143,7 +147,7 @@ def aggregate_by_a5(
         con.execute("LOAD a5")
         con.execute("SET geometry_always_xy = true")
 
-        source_sql = _read_source_sql(input_url, geom_col)
+        source_sql = _read_source_sql(con, input_url, geom_col)
         final_sql = _build_a5_query(
             con,
             source_sql,
@@ -160,6 +164,12 @@ def aggregate_by_a5(
         result = con.execute(final_sql).arrow().read_all()
     finally:
         con.close()
+
+    # Report features that had no assignable cell (NULL/empty geometry).
+    a5_ids = result.column(a5_column_name).to_pylist()
+    if None in a5_ids:
+        unassigned = result.column("count")[a5_ids.index(None)].as_py()
+        info(f"{unassigned} features had no assignable a5 cell (NULL/empty geometry)")
 
     if out_geometry == "none":
         pq.write_table(result, output_parquet, compression=compression)
@@ -205,9 +215,10 @@ def aggregate_a5_table(
         con.execute("LOAD a5")
         con.execute("SET geometry_always_xy = true")
         con.register("__agg_input", table)
+        geom_expr = geometry_to_geom_expr(con, "__agg_input", geom_col)
         source_sql = (
             f"SELECT * EXCLUDE ({quote_identifier(geom_col)}), "
-            f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS __geom FROM __agg_input"
+            f"{geom_expr} AS __geom FROM __agg_input"
         )
         final_sql = _build_a5_query(
             con,
@@ -225,12 +236,18 @@ def aggregate_a5_table(
 
 
 def _wrap_with_geometry(agg_sql: str, a5_column_name: str, out_geometry: str) -> str:
-    """Add geometry/centroid columns derived from the a5 cell id."""
+    """Add geometry/centroid columns derived from the a5 cell id.
+
+    Rows whose cell id is NULL (features with empty/NULL geometry that could not be
+    assigned a cell) get NULL geometry. The NULL guard is at the output CASE so
+    DuckDB short-circuits and never feeds a degenerate boundary to ST_MakePolygon.
+    """
     if out_geometry == "none":
         return agg_sql
 
-    poly = _POLY_WKB.format(pts="__pts")
-    centroid = "ST_AsWKB(ST_Point(__ll[1], __ll[2]))"
+    qcol = quote_identifier(a5_column_name)
+    poly = f"CASE WHEN {qcol} IS NULL THEN NULL ELSE {_POLY_WKB.format(pts='__pts')} END"
+    centroid = f"CASE WHEN {qcol} IS NULL THEN NULL ELSE ST_AsWKB(ST_Point(__ll[1], __ll[2])) END"
 
     if out_geometry == "polygon":
         geom_cols = f"{poly} AS geometry"
@@ -241,6 +258,6 @@ def _wrap_with_geometry(agg_sql: str, a5_column_name: str, out_geometry: str) ->
 
     return (
         f"SELECT a.* EXCLUDE (__pts, __ll), {geom_cols} "
-        f'FROM (SELECT *, a5_cell_to_boundary("{a5_column_name}") AS __pts, '
-        f'a5_cell_to_lonlat("{a5_column_name}") AS __ll FROM ({agg_sql})) a'
+        f"FROM (SELECT *, a5_cell_to_boundary({qcol}) AS __pts, "
+        f"a5_cell_to_lonlat({qcol}) AS __ll FROM ({agg_sql})) a"
     )
