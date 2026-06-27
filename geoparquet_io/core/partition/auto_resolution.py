@@ -11,10 +11,27 @@ from __future__ import annotations
 
 import math
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, warn
 from geoparquet_io.core.remote import needs_httpfs
+
+# Tuning for the extent-aware probe (issue #524). Sampling a multiple of the
+# target partition count keeps cells near the target resolution well-populated,
+# so the sampled distinct-cell count is a good estimate of the true non-empty
+# count. The floor stabilizes coarse counts; the ceiling bounds probe cost.
+_PROBE_OVERSAMPLE = 100
+_PROBE_MIN_SAMPLE = 50_000
+_PROBE_MAX_SAMPLE = 500_000
+
+# DuckDB extension setup required before each index's cell function is callable.
+_INDEX_EXTENSIONS = {
+    "a5": ["INSTALL a5 FROM community", "LOAD a5"],
+    "h3": ["INSTALL h3 FROM community", "LOAD h3"],
+    "s2": ["INSTALL geography FROM community", "LOAD geography"],
+    "quadkey": [],
+}
 
 
 def _get_total_row_count(
@@ -286,6 +303,160 @@ def _calculate_a5_resolution(
     return resolution
 
 
+def _cell_expr(index_type: str, lon: str, lat: str, resolution: int) -> str:
+    """SQL expression assigning a cell at ``resolution`` (mirrors add/ modules)."""
+    if index_type == "a5":
+        return f"a5_lonlat_to_cell({lon}, {lat}, {resolution})"
+    if index_type == "s2":
+        return f"s2_cell_token(s2_cell_parent(s2_cellfromlonlat({lon}, {lat}), {resolution}))"
+    if index_type == "h3":
+        return f"h3_latlng_to_cell_string({lat}, {lon}, {resolution})"
+    if index_type == "quadkey":
+        return f"lat_lon_to_quadkey({lat}, {lon}, {resolution})"
+    raise ValueError(f"Unsupported spatial index type: {index_type}")
+
+
+def _register_quadkey_udf(con) -> None:
+    """Register the mercantile-based quadkey UDF used by the add-quadkey path."""
+    import mercantile
+
+    def lat_lon_to_quadkey(lat: float, lon: float, level: int) -> str:
+        return mercantile.quadkey(mercantile.tile(lon, lat, level))
+
+    con.create_function(
+        "lat_lon_to_quadkey",
+        lat_lon_to_quadkey,
+        ["DOUBLE", "DOUBLE", "INTEGER"],
+        "VARCHAR",
+    )
+
+
+def _geom_sql(con, url: str, geom_col: str) -> str:
+    """Return a GEOMETRY-typed SQL expression for ``geom_col`` in ``url``.
+
+    DuckDB reads a GeoParquet geometry column as GEOMETRY; WKB-blob columns come
+    back as BLOB and must be decoded. Raises if the column is absent.
+    """
+    qcol = quote_identifier(geom_col)
+    desc = con.execute(f"DESCRIBE SELECT {qcol} FROM '{url}'").fetchall()
+    col_type = (desc[0][1] if desc else "").upper()
+    if "GEOMETRY" in col_type:
+        return qcol
+    return f"ST_GeomFromWKB({qcol})"
+
+
+def _probe_distinct_cell_counts(
+    con, url: str, index_type: str, geom_sql: str, sample_size: int, resolutions: list[int]
+) -> list[int]:
+    """Count distinct non-empty cells per resolution over a bounded sample."""
+    lon = f"ST_X(ST_Centroid({geom_sql}))"
+    lat = f"ST_Y(ST_Centroid({geom_sql}))"
+    sample_cte = f"SELECT {lon} AS lon, {lat} AS lat FROM '{url}' USING SAMPLE {sample_size} ROWS"
+    if index_type == "quadkey":
+        # A level-r quadkey is the length-r prefix of a finer one, so compute the
+        # finest quadkey once per row and take substrings (avoids a UDF call per
+        # resolution per row).
+        max_res = resolutions[-1]
+        cols = ", ".join(
+            f"COUNT(DISTINCT substr(qk, 1, {r})) AS c{i}" for i, r in enumerate(resolutions)
+        )
+        query = (
+            f"WITH sample AS ({sample_cte}), "
+            f"keyed AS (SELECT lat_lon_to_quadkey(lat, lon, {max_res}) AS qk "
+            f"FROM sample WHERE lon IS NOT NULL AND lat IS NOT NULL) "
+            f"SELECT {cols} FROM keyed"
+        )
+    else:
+        cols = ", ".join(
+            f"COUNT(DISTINCT {_cell_expr(index_type, 'lon', 'lat', r)}) AS c{i}"
+            for i, r in enumerate(resolutions)
+        )
+        query = (
+            f"WITH sample AS ({sample_cte}) SELECT {cols} FROM sample "
+            f"WHERE lon IS NOT NULL AND lat IS NOT NULL"
+        )
+    return list(con.execute(query).fetchone())
+
+
+def _select_closest_resolution(
+    resolutions: list[int], counts: list[int], target_partitions: float
+) -> int:
+    """Resolution whose distinct cell count is closest to the target.
+
+    Counts are monotonic non-decreasing in resolution; the strict comparison
+    keeps the coarsest resolution among ties (avoids over-resolving on plateaus).
+    """
+    best_res = resolutions[0]
+    best_diff: float | None = None
+    for res, count in zip(resolutions, counts, strict=False):
+        diff = abs(count - target_partitions)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_res = res
+    return best_res
+
+
+def _probe_extent_resolution(
+    input_parquet: str,
+    spatial_index_type: str,
+    target_partitions: float,
+    min_resolution: int,
+    max_resolution: int,
+    total_rows: int,
+    verbose: bool = False,
+    profile: str | None = None,
+) -> int | None:
+    """Pick the resolution whose non-empty cell count best matches the target.
+
+    Probes distinct cell counts over a bounded sample of the actual data so the
+    chosen resolution reflects the data's real extent rather than global uniform
+    coverage (issue #524). Returns None if the data can't be probed (e.g. no
+    geometry column, sampling error), so the caller can fall back to the global
+    estimate.
+    """
+    from geoparquet_io.core.remote import setup_aws_profile_if_needed
+
+    url = safe_file_url(input_parquet, verbose)
+    resolutions = list(range(min_resolution, max_resolution + 1))
+    con = None
+    try:
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
+        if profile:
+            setup_aws_profile_if_needed(con, profile)
+        for stmt in _INDEX_EXTENSIONS[spatial_index_type]:
+            con.execute(stmt)
+        if spatial_index_type == "quadkey":
+            _register_quadkey_udf(con)
+
+        geom_col = find_primary_geometry_column(input_parquet, verbose)
+        geom_sql = _geom_sql(con, url, geom_col)
+
+        sample_size = min(
+            total_rows,
+            _PROBE_MAX_SAMPLE,
+            max(int(target_partitions * _PROBE_OVERSAMPLE), _PROBE_MIN_SAMPLE),
+        )
+        counts = _probe_distinct_cell_counts(
+            con, url, spatial_index_type, geom_sql, sample_size, resolutions
+        )
+    except Exception as e:
+        if verbose:
+            warn(f"Extent-aware probe unavailable ({e}); using global estimate")
+        return None
+    finally:
+        if con is not None:
+            con.close()
+
+    resolution = _select_closest_resolution(resolutions, counts, target_partitions)
+    if verbose:
+        cell_count = counts[resolutions.index(resolution)]
+        info(
+            f"{spatial_index_type} extent-aware resolution: {resolution} "
+            f"(~{cell_count} non-empty cells, target ~{target_partitions:.0f} partitions)"
+        )
+    return resolution
+
+
 def calculate_auto_resolution(
     input_parquet: str,
     spatial_index_type: str,
@@ -397,7 +568,24 @@ def calculate_auto_resolution(
     if max_resolution is None:
         max_resolution = default_max
 
-    # Calculate optimal resolution
+    # Extent-aware probe (issue #524): size the resolution to the data's actual
+    # extent instead of assuming uniform global coverage. Falls back to the
+    # global-formula estimate below if the data can't be probed.
+    target_partitions = min(total_rows / target_rows_per_partition, max_partitions)
+    probed = _probe_extent_resolution(
+        input_parquet=input_parquet,
+        spatial_index_type=spatial_index_type,
+        target_partitions=target_partitions,
+        min_resolution=min_resolution,
+        max_resolution=max_resolution,
+        total_rows=total_rows,
+        verbose=verbose,
+        profile=profile,
+    )
+    if probed is not None:
+        return probed
+
+    # Fallback: global-formula estimate
     kwargs = {
         "total_rows": total_rows,
         "target_rows_per_partition": target_rows_per_partition,

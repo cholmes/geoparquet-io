@@ -582,3 +582,167 @@ class TestVerboseOutput:
                 verbose=True,
             )
         assert "Quadkey auto-resolution" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Extent-aware resolution (issue #524)
+# ---------------------------------------------------------------------------
+
+
+def _make_clustered_geoparquet(path, n=8000, seed=42):
+    """Write a regionally-clustered point GeoParquet (lon/lat, EPSG:4326).
+
+    Points are confined to a small bbox (roughly the Netherlands) so the data
+    occupies a tiny fraction of the globe. A globally-uniform resolution formula
+    badly under-resolves data like this; this is the core of issue #524.
+    """
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import Point
+
+    rng = np.random.default_rng(seed)
+    lons = rng.uniform(4.0, 7.0, n)
+    lats = rng.uniform(51.0, 53.5, n)
+    gdf = gpd.GeoDataFrame(
+        {"id": range(n), "geometry": [Point(x, y) for x, y in zip(lons, lats, strict=False)]},
+        crs="EPSG:4326",
+    )
+    gdf.to_parquet(path)
+    return str(path)
+
+
+def _count_distinct_cells(parquet_file, index_type, resolution):
+    """Count distinct non-empty cells over the data at a given resolution.
+
+    Independent of the implementation under test: builds the cell expression
+    directly via DuckDB spatial/h3/quadkey functions.
+    """
+    import mercantile
+
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+    con = get_duckdb_connection(load_spatial=True)
+    try:
+        lon = "ST_X(ST_Centroid(geometry))"
+        lat = "ST_Y(ST_Centroid(geometry))"
+        if index_type == "a5":
+            con.execute("INSTALL a5 FROM community")
+            con.execute("LOAD a5")
+            expr = f"a5_lonlat_to_cell({lon}, {lat}, {resolution})"
+        elif index_type == "s2":
+            con.execute("INSTALL geography FROM community")
+            con.execute("LOAD geography")
+            expr = f"s2_cell_token(s2_cell_parent(s2_cellfromlonlat({lon}, {lat}), {resolution}))"
+        elif index_type == "h3":
+            con.execute("INSTALL h3 FROM community")
+            con.execute("LOAD h3")
+            expr = f"h3_latlng_to_cell_string({lat}, {lon}, {resolution})"
+        elif index_type == "quadkey":
+            con.create_function(
+                "lat_lon_to_quadkey",
+                lambda la, lo, lv: mercantile.quadkey(mercantile.tile(lo, la, lv)),
+                ["DOUBLE", "DOUBLE", "INTEGER"],
+                "VARCHAR",
+            )
+            expr = f"lat_lon_to_quadkey({lat}, {lon}, {resolution})"
+        else:
+            raise ValueError(index_type)
+        row = con.execute(f"SELECT COUNT(DISTINCT {expr}) FROM '{parquet_file}'").fetchone()
+        return row[0]
+    finally:
+        con.close()
+
+
+@pytest.fixture
+def clustered_file(tmp_path):
+    """A regionally-clustered point GeoParquet for extent-aware tests."""
+    return _make_clustered_geoparquet(tmp_path / "clustered.parquet")
+
+
+class TestExtentAwareResolution:
+    """Auto-resolution should be sized to the data's actual extent (issue #524).
+
+    A globally-uniform formula picks a far-too-coarse resolution for
+    regional/national data, collapsing it into a handful of giant partitions.
+    These tests pin the extent-aware behavior.
+    """
+
+    @pytest.mark.parametrize("index_type", ["a5", "s2", "h3", "quadkey"])
+    def test_finer_than_global_formula(self, clustered_file, index_type):
+        """Extent-aware resolution must exceed the old global-formula choice."""
+        total_rows = 8000
+        target_rows = 80  # ~100 target partitions
+
+        if index_type in ("a5", "s2"):
+            global_res = _calculate_a5_resolution(total_rows, target_rows)
+        elif index_type == "h3":
+            global_res = _calculate_h3_resolution(total_rows, target_rows)
+        else:
+            global_res = _calculate_quadkey_resolution(total_rows, target_rows)
+
+        extent_res = calculate_auto_resolution(
+            input_parquet=clustered_file,
+            spatial_index_type=index_type,
+            target_rows_per_partition=target_rows,
+        )
+
+        assert extent_res > global_res, (
+            f"{index_type}: extent-aware res {extent_res} should be finer than "
+            f"global-formula res {global_res} for clustered data"
+        )
+
+    @pytest.mark.parametrize("index_type", ["a5", "s2", "h3", "quadkey"])
+    def test_chosen_resolution_near_target_partitions(self, clustered_file, index_type):
+        """The chosen resolution's non-empty cell count is near the target."""
+        total_rows = 8000
+        target_rows = 80
+        target_partitions = total_rows / target_rows  # 100
+
+        res = calculate_auto_resolution(
+            input_parquet=clustered_file,
+            spatial_index_type=index_type,
+            target_rows_per_partition=target_rows,
+        )
+        cells = _count_distinct_cells(clustered_file, index_type, res)
+
+        # Should be within a 4x band of the target partition count, and far
+        # better than the 1-3 partitions the global formula would yield.
+        assert target_partitions / 4 <= cells <= target_partitions * 4, (
+            f"{index_type}: res {res} gave {cells} cells, target ~{target_partitions:.0f}"
+        )
+
+    def test_respects_max_resolution(self, clustered_file):
+        """Probe must not exceed the max_resolution bound."""
+        res = calculate_auto_resolution(
+            input_parquet=clustered_file,
+            spatial_index_type="a5",
+            target_rows_per_partition=1,  # would want a very fine resolution
+            max_resolution=5,
+        )
+        assert res <= 5
+
+    def test_respects_min_resolution(self, clustered_file):
+        """Probe must not go below the min_resolution bound."""
+        res = calculate_auto_resolution(
+            input_parquet=clustered_file,
+            spatial_index_type="a5",
+            target_rows_per_partition=10_000_000,  # would want a coarse resolution
+            min_resolution=4,
+        )
+        assert res >= 4
+
+    def test_falls_back_when_no_geometry(self, tmp_path):
+        """A parquet with no geometry column falls back to the global formula."""
+        import pandas as pd
+
+        non_geo = tmp_path / "non_geo.parquet"
+        pd.DataFrame({"a": range(8000)}).to_parquet(non_geo)
+
+        res = calculate_auto_resolution(
+            input_parquet=str(non_geo),
+            spatial_index_type="a5",
+            target_rows_per_partition=80,
+        )
+        # Falls back to the pure-math global formula for the same row count.
+        expected = _calculate_a5_resolution(8000, 80)
+        assert res == expected
