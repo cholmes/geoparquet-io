@@ -16,19 +16,83 @@ def test_process_aggregate_group_exists():
 
 
 def _write_points_geoparquet(path, rows):
-    """rows: list of (lon, lat, crop, area). Writes a tiny GeoParquet of points."""
+    """rows: list of (lon, lat, crop, area). Writes a tiny GeoParquet of points.
+
+    Writes a real GEOMETRY-typed column (as DuckDB 1.5 produces and reads back for
+    GeoParquet), NOT a plain WKB blob -- so these tests exercise the same
+    geometry typing the tool sees on real input files.
+    """
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
     values = ", ".join(f"({lon}, {lat}, '{crop}', {area})" for lon, lat, crop, area in rows)
     con.execute(
         f"""
         COPY (
-            SELECT ST_AsWKB(ST_Point(lon, lat)) AS geometry, crop, area
+            SELECT ST_Point(lon, lat) AS geometry, crop, area
             FROM (VALUES {values}) AS t(lon, lat, crop, area)
         ) TO '{path}' (FORMAT PARQUET)
         """
     )
     con.close()
+
+
+@pytest.mark.slow
+def test_aggregate_a5_native_geometry_column(tmp_path):
+    """Regression: DuckDB 1.5 reads GeoParquet geometry as GEOMETRY (not WKB BLOB).
+
+    The tool must not unconditionally wrap the column in ST_GeomFromWKB, which only
+    accepts BLOB and raised a Binder Error on real GeoParquet input.
+    """
+    src = tmp_path / "fields.parquet"
+    out = tmp_path / "agg.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 4.0), (10.001, 50.001, "corn", 2.0)])
+    # Confirm the fixture is a GEOMETRY column, matching real GeoParquet input.
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial")
+    desc = con.execute(f"DESCRIBE SELECT geometry FROM read_parquet('{src}')").fetchall()
+    con.close()
+    assert "GEOMETRY" in desc[0][1].upper()
+
+    aggregate_by_a5(str(src), str(out), resolution=5)
+    table = pq.read_table(out)
+    assert "a5_cell" in table.column_names
+    assert "count" in table.column_names
+    assert "geometry" in table.column_names
+
+
+@pytest.mark.slow
+def test_aggregate_a5_null_geometry_feature(tmp_path):
+    """Regression: features with NULL/empty geometry have no assignable cell.
+
+    Their NULL cell id must yield a row with NULL geometry (like admin's
+    'unassigned' bucket), not crash ST_MakePolygon on a degenerate boundary.
+    """
+    src = tmp_path / "f.parquet"
+    out = tmp_path / "o.parquet"
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    con.execute(
+        f"""
+        COPY (
+            SELECT * FROM (VALUES
+                (ST_Point(10.0, 50.0), 'a'),
+                (ST_Point(10.001, 50.001), 'b'),
+                (CAST(NULL AS GEOMETRY), 'c')
+            ) AS t(geometry, cls)
+        ) TO '{src}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    aggregate_by_a5(str(src), str(out), resolution=4)  # must not raise
+    table = pq.read_table(out)
+    df = table.to_pandas()
+    # All 3 input features accounted for: 2 valid (one cell) + 1 null-cell row.
+    assert int(df["count"].sum()) == 3
+    null_rows = df[df["a5_cell"].isna()]
+    assert len(null_rows) == 1
+    assert int(null_rows["count"].iloc[0]) == 1
+    assert null_rows["geometry"].iloc[0] is None
 
 
 @pytest.mark.slow

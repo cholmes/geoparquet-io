@@ -20,6 +20,7 @@ from geoparquet_io.core.process.aggregate.common import (
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
+    geometry_to_geom_expr,
     parse_metrics,
     resolve_breakdown_values,
 )
@@ -41,7 +42,7 @@ def _get_admin_ref(dataset, con, level: str) -> str:
 
 def _build_joined_sql(
     input_url: str,
-    geom_col: str,
+    input_geom_expr: str,
     admin_ref: str,
     code_col: str,
     name_col: str,
@@ -51,10 +52,11 @@ def _build_joined_sql(
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
     The admin geometry column is GEOMETRY type in all supported datasets, so it
-    is used directly in ST_Intersects.  The input geometry column is WKB binary
-    (as written by DuckDB COPY / ST_AsWKB), so ST_GeomFromWKB is applied before
-    computing the centroid.  The admin geometry is stored as WKB (ST_AsWKB) so
-    that _wrap_admin_geometry can treat __admin_geom uniformly as WKB binary.
+    is used directly in ST_Intersects.  ``input_geom_expr`` is a SQL expression
+    that yields a GEOMETRY for the input geometry column (the caller detects
+    whether the column is GEOMETRY or WKB BLOB).  The admin geometry is stored as
+    WKB (ST_AsWKB) so that _wrap_admin_geometry can treat __admin_geom uniformly
+    as WKB binary.
 
     When admin_bbox_col is provided, a cheap bbox prefilter is added to the ON
     clause so ST_Intersects is only evaluated for admin polygons whose bounding
@@ -75,7 +77,7 @@ def _build_joined_sql(
                b.{quote_identifier(name_col)} AS __admin_name,
                ST_AsWKB(b.{quote_identifier(admin_geom_col)}) AS __admin_geom
         FROM (
-            SELECT *, ST_Centroid(ST_GeomFromWKB({quote_identifier(geom_col)})) AS __cen
+            SELECT *, ST_Centroid({input_geom_expr}) AS __cen
             FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
         ) s
         LEFT JOIN {admin_ref} b
@@ -184,8 +186,16 @@ def aggregate_by_admin(
 
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
+        read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+        input_geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
         joined_sql = _build_joined_sql(
-            input_url, geom_col, admin_ref, code_col, name_col, admin_geom_col, admin_bbox_col
+            input_url,
+            input_geom_expr,
+            admin_ref,
+            code_col,
+            name_col,
+            admin_geom_col,
+            admin_bbox_col,
         )
 
         # When a breakdown is requested, materialize the spatial join once so that

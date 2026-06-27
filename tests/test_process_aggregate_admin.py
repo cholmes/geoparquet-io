@@ -8,13 +8,15 @@ from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
 
 
 def _write_points_geoparquet(path, rows):
+    # Writes a real GEOMETRY-typed column (as DuckDB 1.5 produces/reads for
+    # GeoParquet), not a plain WKB blob, so the test matches real input files.
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
     values = ", ".join(f"({lon}, {lat}, '{cls}')" for lon, lat, cls in rows)
     con.execute(
         f"""
         COPY (
-            SELECT ST_AsWKB(ST_Point(lon, lat)) AS geometry, cls
+            SELECT ST_Point(lon, lat) AS geometry, cls
             FROM (VALUES {values}) AS t(lon, lat, cls)
         ) TO '{path}' (FORMAT PARQUET)
         """
