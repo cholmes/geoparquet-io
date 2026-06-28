@@ -139,25 +139,26 @@ def build_spatial_join_condition(
         target_bbox_col: Optional bbox covering column on the target table.
         input_alias: SQL alias for the input table (default "a").
         target_alias: SQL alias for the target table (default "b").
-        input_geom_sql: Optional SQL expression to use for the input geometry in
-            place of ``<input_alias>.<input_geom_col>`` — e.g. an ``ST_Transform``
-            that reprojects a non-CRS84 input to the target's CRS (issue #525).
-            When supplied, the bbox pre-filter is skipped: the input's stored bbox
-            covering is in the *source* CRS and cannot be compared against a
-            target bbox in a different CRS.
 
     Returns:
         A SQL boolean expression for use directly after ``ON``.
     """
-    qi_geom = quote_identifier(input_geom_col)
     qt_geom = quote_identifier(target_geom_col)
-    input_geom_ref = input_geom_sql if input_geom_sql is not None else f"{input_alias}.{qi_geom}"
-    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_geom_ref})"
 
-    # A one-sided bbox cannot form an overlap test, and a reprojected input geom
-    # makes the stored (source-CRS) bbox incomparable — fall back to the precise
-    # predicate alone.
-    if input_geom_sql is not None or not (input_bbox_col and target_bbox_col):
+    # ``input_geom_sql`` is a pre-built input-geometry expression (e.g. wrapped in
+    # ST_Transform to reproject a non-CRS84 input, #525). When supplied, the
+    # stored input bbox is in the *source* CRS and so cannot be used for the
+    # overlap pre-filter — fall back to the precise predicate alone.
+    if input_geom_sql is not None:
+        intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_geom_sql})"
+        return intersects
+
+    qi_geom = quote_identifier(input_geom_col)
+    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
+
+    # A one-sided bbox cannot form an overlap test, so fall back to the
+    # precise predicate alone.
+    if not (input_bbox_col and target_bbox_col):
         return intersects
 
     qi_bbox = quote_identifier(input_bbox_col)

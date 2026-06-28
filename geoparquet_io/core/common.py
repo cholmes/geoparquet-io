@@ -2591,6 +2591,8 @@ def add_computed_column(
 
     # Create DuckDB connection with httpfs if needed
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
+    # Ensure ST_Transform (used by CRS-aware grid keying) emits lon/lat order.
+    con.execute("SET geometry_always_xy = true;")
 
     # Load additional extensions if specified
     if extensions:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import mercantile
 import pyarrow as pa
 
@@ -12,12 +14,12 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.crs_utils import (
-    crs_transform_sql_expr,
-    extract_crs_from_parquet,
-    extract_crs_from_table,
+    get_crs_display_name,
+    source_crs_string,
+    transform_geom_sql,
 )
-from geoparquet_io.core.duckdb_metadata import get_column_names
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_metadata import get_column_names, get_geo_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import (
@@ -45,6 +47,136 @@ from geoparquet_io.core.streaming import (
     is_stdin,
     should_stream_output,
 )
+
+
+def _is_geographic_crs(crs_info: dict | str | None) -> bool | None:
+    """
+    Check if CRS is geographic (lat/long) vs projected.
+
+    Returns:
+        True if geographic, False if projected, None if unknown
+    """
+    if crs_info is None:
+        return None
+
+    if isinstance(crs_info, str):
+        crs_upper = crs_info.upper()
+        # Common geographic CRS codes
+        if any(
+            code in crs_upper for code in ["4326", "CRS84", "CRS:84", "OGC:CRS84", "4269", "4267"]
+        ):
+            return True
+        return None
+
+    if isinstance(crs_info, dict):
+        # Check PROJJSON type
+        crs_type = crs_info.get("type", "")
+        if crs_type == "GeographicCRS":
+            return True
+        if crs_type == "ProjectedCRS":
+            return False
+
+        # Check EPSG code
+        crs_id = crs_info.get("id", {})
+        if isinstance(crs_id, dict):
+            code = crs_id.get("code")
+            if code in [4326, 4269, 4267]:  # Common geographic codes
+                return True
+
+    return None
+
+
+def _validate_crs_from_geo_metadata(
+    geo_meta: dict | None,
+    geom_col: str,
+    verbose: bool,
+    source_description: str = "data",
+) -> None:
+    """
+    Validate CRS from geo metadata dictionary.
+
+    Common helper used by file-based, streaming, and table-based paths.
+
+    Args:
+        geo_meta: Parsed geo metadata dict (from GeoParquet schema)
+        geom_col: Name of the geometry column
+        verbose: Whether to print debug output
+        source_description: Description for error messages (e.g., "file", "stream", "table")
+
+    Raises:
+        GeoParquetError: If CRS is detected as projected
+    """
+    if not geo_meta:
+        if verbose:
+            debug("No GeoParquet metadata found, assuming WGS84 coordinates")
+        return
+
+    columns_meta = geo_meta.get("columns", {})
+    if geom_col not in columns_meta:
+        if verbose:
+            debug(f"Geometry column '{geom_col}' not found in metadata, assuming WGS84")
+        return
+
+    crs_info = columns_meta[geom_col].get("crs")
+
+    # No CRS specified means default (WGS84)
+    if crs_info is None:
+        if verbose:
+            debug("No CRS specified in metadata, using default WGS84")
+        return
+
+    is_geographic = _is_geographic_crs(crs_info)
+
+    if is_geographic is False:
+        crs_name = get_crs_display_name(crs_info)
+        raise GeoParquetError(
+            f"Quadkeys require geographic coordinates (lat/lon), but this {source_description} "
+            f"uses a projected CRS: {crs_name}\n\n"
+            f"Reproject to WGS84 first using:\n"
+            f"  gpio convert reproject <input> <output> --dst-crs EPSG:4326"
+        )
+
+    if verbose and is_geographic:
+        debug("CRS validated as geographic (lat/lon coordinates)")
+
+
+def _validate_crs_for_quadkey(input_parquet: str, geom_col: str, verbose: bool) -> None:
+    """
+    Validate that the file's CRS is geographic (WGS84/CRS84).
+
+    Quadkeys require lat/lon coordinates. Raises ClickException if CRS is projected.
+    """
+    safe_url = safe_file_url(input_parquet, verbose=False)
+
+    # Get CRS from GeoParquet metadata
+    geo_meta = get_geo_metadata(safe_url)
+    _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose, source_description="file")
+
+
+def _parse_geo_metadata_from_schema(metadata: dict | None) -> dict | None:
+    """
+    Parse geo metadata from schema metadata bytes dict.
+
+    Args:
+        metadata: Schema metadata dict (with bytes keys/values)
+
+    Returns:
+        Parsed geo metadata dict, or None if not found
+    """
+    if not metadata:
+        return None
+
+    # Try both bytes and string keys (depends on how metadata was accessed)
+    geo_bytes = metadata.get(b"geo") or metadata.get("geo")
+    if not geo_bytes:
+        return None
+
+    try:
+        if isinstance(geo_bytes, bytes):
+            return json.loads(geo_bytes.decode("utf-8"))
+        return json.loads(geo_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _lat_lon_to_quadkey(lat: float, lon: float, level: int) -> str:
@@ -77,6 +209,7 @@ def add_quadkey_table(
 
     Raises:
         ValueError: If resolution is not an integer between 0 and 23
+        GeoParquetError: If CRS is detected as projected (quadkeys require lat/lon)
     """
     # Validate resolution before any DuckDB operations
     resolution = int(resolution)
@@ -88,15 +221,14 @@ def add_quadkey_table(
     if not geom_col:
         geom_col = "geometry"
 
-    # Quadkeys require lon/lat degrees. A projected input is reprojected to
-    # OGC:CRS84 before keying (issue #525); the stored bbox column is in the
-    # source CRS, so it cannot be used as the keying location when reprojecting.
-    source_crs = extract_crs_from_table(table, geom_col)
+    # Validate CRS is geographic (quadkeys require lat/lon)
+    geo_meta = _parse_geo_metadata_from_schema(table.schema.metadata)
+    _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose=False, source_description="table")
 
     # Check if bbox column exists
     use_bbox = False
     bbox_col = None
-    if not use_centroid and source_crs is None:
+    if not use_centroid:
         for name in ["bbox", "bounds", "bounding_box"]:
             if name in table.column_names:
                 use_bbox = True
@@ -136,9 +268,8 @@ def add_quadkey_table(
             lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
             lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
         else:
-            centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
-            lat_expr = f"ST_Y({centroid})"
-            lon_expr = f"ST_X({centroid})"
+            lat_expr = f'ST_Y(ST_Centroid("{geom_col}"))'
+            lon_expr = f'ST_X(ST_Centroid("{geom_col}"))'
 
         # Get non-geometry columns
         other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
@@ -270,10 +401,6 @@ def _add_quadkey_streaming(
     if not 0 <= resolution <= 23:
         raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
-    # Detect a projected source CRS so the centroid is reprojected to OGC:CRS84
-    # before keying. stdin carries no readable CRS, so it is treated as CRS84.
-    source_crs = None if is_stdin(input_path) else extract_crs_from_parquet(input_path, verbose)
-
     with open_input(input_path, verbose=verbose) as (source, metadata, is_stream, con):
         # Register Python UDF for quadkey generation
         con.create_function(
@@ -296,10 +423,13 @@ def _add_quadkey_streaming(
         if not geom_col:
             geom_col = "geometry"
 
-        # Check for bbox column. The stored bbox is in the source CRS, so it
-        # cannot be used as the keying location when reprojecting.
+        # Validate CRS is geographic (quadkeys require lat/lon)
+        geo_meta = _parse_geo_metadata_from_schema(metadata)
+        _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose, source_description="stream")
+
+        # Check for bbox column
         bbox_col = None
-        if not use_centroid and source_crs is None:
+        if not use_centroid:
             for name in ["bbox", "bounds", "bounding_box"]:
                 if name in col_names:
                     bbox_col = name
@@ -310,9 +440,8 @@ def _add_quadkey_streaming(
             lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
             lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
         else:
-            centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
-            lat_expr = f"ST_Y({centroid})"
-            lon_expr = f"ST_X({centroid})"
+            lat_expr = f'ST_Y(ST_Centroid("{geom_col}"))'
+            lon_expr = f'ST_X(ST_Centroid("{geom_col}"))'
 
         query = f"""
             SELECT *,
@@ -384,10 +513,13 @@ def _add_quadkey_file_based(
     # Get geometry column
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    # Quadkeys require lon/lat degrees. A projected input is reprojected to
-    # OGC:CRS84 before keying (issue #525); the stored bbox column is in the
-    # source CRS, so it cannot be used as the keying location when reprojecting.
-    source_crs = extract_crs_from_parquet(input_parquet, verbose)
+    # Quadkeys require lon/lat degrees. Reproject a known non-CRS84 CRS (#525);
+    # otherwise keep the guard (rejects projected input we can't identify, and
+    # passes through default/unknown which is assumed WGS84).
+    source_crs = source_crs_string(input_parquet, verbose)
+    needs_transform = source_crs is not None
+    if not needs_transform:
+        _validate_crs_for_quadkey(input_parquet, geom_col, verbose)
 
     # Check if column already exists (skip in dry-run)
     if not dry_run:
@@ -398,10 +530,12 @@ def _add_quadkey_file_based(
                 f"Please choose a different name."
             )
 
-    # Determine whether to use bbox or centroid
+    # Determine whether to use bbox or centroid. A stored bbox column is in the
+    # input CRS, so it can't be used when we need to reproject — fall back to the
+    # (reprojected) centroid in that case.
     use_bbox = False
     bbox_col = None
-    if not use_centroid and source_crs is None:
+    if not use_centroid and not needs_transform:
         bbox_advice = get_bbox_advice(input_parquet, "bounds_calculation", verbose)
         if bbox_advice["has_bbox_column"]:
             use_bbox = True
@@ -412,8 +546,6 @@ def _add_quadkey_file_based(
             warn(bbox_advice["message"] + " - using geometry centroid for quadkey calculation")
             for suggestion in bbox_advice["suggestions"]:
                 info(f"Tip: {suggestion}")
-    elif source_crs is not None and verbose:
-        debug("Projected CRS detected — reprojecting centroid to OGC:CRS84 for quadkey keying")
 
     # Dry-run mode header
     if dry_run:
@@ -443,6 +575,8 @@ def _add_quadkey_file_based(
 
     # Create DuckDB connection with httpfs if needed
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
+    # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+    con.execute("SET geometry_always_xy = true;")
 
     try:
         # Register Python UDF for quadkey generation
@@ -458,9 +592,9 @@ def _add_quadkey_file_based(
             lat_expr = f"(({bbox_col}.ymin + {bbox_col}.ymax) / 2.0)"
             lon_expr = f"(({bbox_col}.xmin + {bbox_col}.xmax) / 2.0)"
         else:
-            centroid = crs_transform_sql_expr(f"ST_Centroid({geom_col})", source_crs)
-            lat_expr = f"ST_Y({centroid})"
-            lon_expr = f"ST_X({centroid})"
+            geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
+            lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
+            lon_expr = f"ST_X(ST_Centroid({geom_ref}))"
 
         # Build SELECT query with new column
         query = f"""

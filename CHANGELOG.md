@@ -89,6 +89,15 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   the resolution closest to the target partition count. One fix covers
   `a5`/`h3`/`s2`/`quadkey`; it falls back to the old global estimate when the
   data can't be probed.
+- **Spatial operations are now CRS-aware (#525).** `gpio add`/`partition` for the
+  lon/lat grids (`a5`, `h3`, `s2`, `quadkey`) and the admin spatial joins
+  (`add admin-divisions`, `partition admin`) assumed OGC:CRS84 input. On data in
+  another CRS this either errored (admin joins: `ST_Intersects` CRS mismatch) or
+  silently produced wrong cells (grids: projected metres keyed as degrees). A
+  shared helper now detects the input CRS and reprojects to the operation's
+  expected CRS (lon/lat for grids, OGC:CRS84 for admin) before the spatial work;
+  CRS84/CRS-less input is untouched, so the common path is unchanged. `add quadkey`
+  no longer rejects a known projected CRS — it reprojects instead.
 - Partition commands now route all rows in a **single** `COPY … PARTITION_BY`
   scan instead of re-scanning the input per partition value (#478).
   `gpio partition string`, `gpio partition admin`, and the cell-id partitioners

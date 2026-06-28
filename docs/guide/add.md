@@ -98,6 +98,12 @@ If your file already has a bbox column but lacks covering metadata (e.g., from e
 
 ## H3 Hexagonal Cells
 
+!!! note "Input CRS"
+    The grid commands (`h3`, `s2`, `a5`, `quadkey`) key on lon/lat. Input in a
+    non-CRS84 CRS is reprojected to lon/lat automatically before cell assignment,
+    so projected data (e.g. national grids in metres) keys correctly with no
+    manual reprojection. Input already in OGC:CRS84 / EPSG:4326 is untouched.
+
 Add [H3](https://h3geo.org/) hexagonal cell IDs based on geometry centroids:
 
 === "CLI"
@@ -365,6 +371,8 @@ Add administrative division columns via spatial join with remote boundaries data
 ### How It Works
 
 Performs spatial intersection between your data and remote admin boundaries to add admin division columns. Uses efficient spatial extent filtering to query only relevant boundaries from remote datasets.
+
+Input in a non-CRS84 CRS is reprojected to the boundaries' CRS (OGC:CRS84) before the intersection, so projected data joins correctly instead of erroring on a CRS mismatch. (For a non-CRS84 input the bbox pre-filter is skipped, since the stored bbox is in the source CRS — the extent filter still bounds the query.)
 
 For native-geometry inputs (GeoParquet 2.0 and GeoParquet 1.1 with geoarrow encoding), the spatial join relies on native Parquet column statistics to skip irrelevant data, but this is not quite working yet, so expect those to be a bit slower until [#462](https://github.com/geoparquet/geoparquet-io/issues/462) is implemented. For non-native inputs (GeoParquet 1.x that carry a `bbox` column), a cheap bbox-overlap test is applied before `ST_Intersects` to prune candidates, and using it will be 5-10x faster.
 
