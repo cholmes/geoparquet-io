@@ -449,3 +449,52 @@ def parse_crs_string_to_projjson(crs_string, con=None):
         return crs.to_json_dict()
     except Exception:
         return {"id": {"authority": authority, "code": code}}
+
+
+#: Canonical lon/lat target CRS for grid keying and admin spatial joins.
+#: With ``SET geometry_always_xy = true`` this is interchangeable with EPSG:4326.
+DEFAULT_TARGET_CRS = "OGC:CRS84"
+
+
+def crs_string_for_transform(crs) -> str | None:
+    """Return an ``"AUTH:CODE"`` CRS string for ``ST_Transform``, or ``None``.
+
+    ``None`` means no transform is needed or possible: the CRS is absent, is the
+    default (OGC:CRS84 / EPSG:4326), or is not identifiable as an authority code.
+    ``crs`` may be PROJJSON (as returned by :func:`extract_crs_from_parquet`) or
+    an ``"AUTH:CODE"`` string.
+    """
+    if not crs or is_default_crs(crs):
+        return None
+    identifier = _extract_crs_identifier(crs)
+    if not identifier:
+        return None
+    authority, code = identifier
+    return f"{authority}:{code}"
+
+
+def transform_geom_sql(geom_expr: str, source_crs, target_crs: str = DEFAULT_TARGET_CRS) -> str:
+    """Wrap ``geom_expr`` in ``ST_Transform`` to ``target_crs`` when needed.
+
+    Returns ``geom_expr`` unchanged when the source CRS is absent, the default,
+    or unidentifiable — so CRS-less / already-lon-lat input is untouched and the
+    common (CRS84) path pays nothing. The caller's DuckDB session should have
+    ``geometry_always_xy = true`` so transformed coordinates come out as lon/lat.
+
+    This is the shared "normalize geometry to the operation's expected CRS"
+    utility used by the admin spatial joins and the lon/lat grid keying (#525).
+    """
+    src = crs_string_for_transform(source_crs)
+    if src is None:
+        return geom_expr
+    src_esc = src.replace("'", "''")
+    tgt_esc = target_crs.replace("'", "''")
+    return f"ST_Transform({geom_expr}, '{src_esc}', '{tgt_esc}')"
+
+
+def source_crs_string(parquet_file, verbose: bool = False) -> str | None:
+    """Detect ``parquet_file``'s CRS as an ``"AUTH:CODE"`` transform string.
+
+    Returns ``None`` for CRS84/default/CRS-less input (no transform needed).
+    """
+    return crs_string_for_transform(extract_crs_from_parquet(parquet_file, verbose))

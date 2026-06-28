@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -60,14 +61,16 @@ class GridScheme:
     centroid_wkb_template: str
 
 
-def read_grid_source_sql(con, input_url: str, geom_col: str) -> str:
+def read_grid_source_sql(con, input_url: str, geom_col: str, source_crs: str | None = None) -> str:
     """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
 
     Detects whether the input geometry column is read as GEOMETRY (real GeoParquet)
-    or BLOB (plain WKB) so it works on both.
+    or BLOB (plain WKB) so it works on both. Grid keying expects lon/lat, so a
+    non-CRS84 input is reprojected via ``source_crs`` before keying (#525); the
+    caller's session must have ``geometry_always_xy = true``.
     """
     read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-    geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
+    geom_expr = transform_geom_sql(geometry_to_geom_expr(con, read_rel, geom_col), source_crs)
     return f"SELECT *, {geom_expr} AS __geom FROM {read_rel}"
 
 
@@ -238,6 +241,8 @@ def aggregate_grid_file(
 
     input_url = safe_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
+    # Grid keying expects lon/lat; reproject a non-CRS84 input first (#525).
+    source_crs = source_crs_string(input_parquet, verbose)
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
     try:
@@ -245,7 +250,7 @@ def aggregate_grid_file(
         con.execute(f"LOAD {scheme.extension}")
         con.execute("SET geometry_always_xy = true")
 
-        source_sql = read_grid_source_sql(con, input_url, geom_col)
+        source_sql = read_grid_source_sql(con, input_url, geom_col, source_crs)
         final_sql = build_grid_query(
             con,
             scheme,

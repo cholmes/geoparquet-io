@@ -9,6 +9,7 @@ from typing import cast
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -190,7 +191,13 @@ def aggregate_by_admin(
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
         read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-        input_geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
+        # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input before the
+        # centroid-in-polygon join so ST_Intersects works and the bbox prefilter
+        # (derived from the centroid) is in the right units (#525).
+        input_geom_expr = transform_geom_sql(
+            geometry_to_geom_expr(con, read_rel, geom_col),
+            source_crs_string(input_parquet, verbose),
+        )
         joined_sql = _build_joined_sql(
             input_url,
             input_geom_expr,
