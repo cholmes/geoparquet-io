@@ -748,6 +748,33 @@ class TestExtentAwareResolution:
         expected = _calculate_a5_resolution(8000, 80)
         assert res == expected
 
+    def test_sampling_path_for_large_file(self, tmp_path):
+        """A file larger than the sample budget exercises the reservoir-sample path."""
+        import geopandas as gpd
+        import numpy as np
+        from shapely.geometry import Point
+
+        # 60k rows exceeds the 50k sample floor, so USING SAMPLE is applied
+        # (smaller files take the no-sample branch).
+        n = 60_000
+        rng = np.random.default_rng(7)
+        lons = rng.uniform(4.0, 7.0, n)
+        lats = rng.uniform(51.0, 53.5, n)
+        big = tmp_path / "big.parquet"
+        gpd.GeoDataFrame(
+            {"id": range(n), "geometry": [Point(x, y) for x, y in zip(lons, lats, strict=False)]},
+            crs="EPSG:4326",
+        ).to_parquet(big)
+
+        res = calculate_auto_resolution(
+            input_parquet=str(big),
+            spatial_index_type="a5",
+            target_rows_per_partition=600,  # ~100 target partitions
+        )
+        # Probe ran over a sample and chose a sane, non-degenerate resolution
+        # (not the coarse fallback the global formula would give for clustered data).
+        assert 0 < res <= 30
+
     def test_falls_back_when_all_geometries_null(self, tmp_path):
         """All-NULL geometries probe to zero cells and fall back, not min_resolution."""
         import geopandas as gpd

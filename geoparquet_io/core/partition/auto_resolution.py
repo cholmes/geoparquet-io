@@ -346,12 +346,26 @@ def _geom_sql(con, url: str, geom_col: str) -> str:
 
 
 def _probe_distinct_cell_counts(
-    con, url: str, index_type: str, geom_sql: str, sample_size: int, resolutions: list[int]
+    con, url: str, index_type: str, geom_sql: str, sample_clause: str, resolutions: list[int]
 ) -> list[int]:
-    """Count distinct non-empty cells per resolution over a bounded sample."""
-    lon = f"ST_X(ST_Centroid({geom_sql}))"
-    lat = f"ST_Y(ST_Centroid({geom_sql}))"
-    sample_cte = f"SELECT {lon} AS lon, {lat} AS lat FROM '{url}' USING SAMPLE {sample_size} ROWS"
+    """Count distinct non-empty cells per resolution over a bounded sample.
+
+    ``sample_clause`` is reservoir sampling (``USING SAMPLE n ROWS``) or empty
+    when the whole file fits the budget. Reservoir is deliberate: it draws a
+    uniform random sample regardless of row order. Block/percentage sampling
+    (``TABLESAMPLE``) would be cheaper but, on spatially-sorted data, would only
+    see a contiguous slice of the extent and badly underestimate the non-empty
+    cell count -- the exact failure mode this probe exists to prevent (#524).
+
+    The centroid mirrors the cell assignment in the ``add/`` modules
+    (``ST_X/ST_Y(ST_Centroid(geom))``), so probe counts track real partitioning.
+    It is computed once per sampled row and reused for lon and lat.
+    """
+    centroid = f"ST_Centroid({geom_sql})"
+    sample_cte = (
+        f"SELECT ST_X(c) AS lon, ST_Y(c) AS lat "
+        f"FROM (SELECT {centroid} AS c FROM '{url}'{sample_clause})"
+    )
     if index_type == "quadkey":
         # A level-r quadkey is the length-r prefix of a finer one, so compute the
         # finest quadkey once per row and take substrings (avoids a UDF call per
@@ -436,8 +450,11 @@ def _probe_extent_resolution(
             _PROBE_MAX_SAMPLE,
             max(int(target_partitions * _PROBE_OVERSAMPLE), _PROBE_MIN_SAMPLE),
         )
+        # Skip the reservoir sample (a full scan) when the file already fits the
+        # budget; otherwise draw a uniform sample of sample_size rows.
+        sample_clause = "" if sample_size >= total_rows else f" USING SAMPLE {sample_size} ROWS"
         counts = _probe_distinct_cell_counts(
-            con, url, spatial_index_type, geom_sql, sample_size, resolutions
+            con, url, spatial_index_type, geom_sql, sample_clause, resolutions
         )
     except Exception as e:
         if verbose:
