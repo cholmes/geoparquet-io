@@ -1350,6 +1350,40 @@ class Table:
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
+    def aggregate_h3(
+        self,
+        resolution: int,
+        metric: str | None = None,
+        breakdown: str | None = None,
+        breakdown_limit: int = 20,
+        out_geometry: str = "polygon",
+    ) -> Table:
+        """
+        Aggregate features into H3 grid cells with per-cell statistics.
+
+        Args:
+            resolution: H3 resolution level 0-15
+            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            breakdown: Column name to pivot into per-category count columns
+            breakdown_limit: Max number of breakdown categories (default: 20)
+            out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+
+        Returns:
+            New Table with one row per H3 cell
+        """
+        from geoparquet_io.core.process.aggregate.by_h3 import aggregate_h3_table
+
+        result = aggregate_h3_table(
+            self._table,
+            resolution=resolution,
+            metric=metric,
+            breakdown=breakdown,
+            breakdown_limit=breakdown_limit,
+            out_geometry=out_geometry,
+            geometry_column=self._geometry_column,
+        )
+        return Table(result, "geometry" if out_geometry != "none" else None)
+
     def aggregate_admin(
         self,
         level: str = "country",

@@ -342,6 +342,23 @@ result = ops.aggregate_a5(
 )
 ```
 
+#### ops.aggregate_h3()
+
+Functional API for H3 grid aggregation (resolution 0–15). Returns a PyArrow Table.
+
+```python
+from geoparquet_io.api import ops
+import pyarrow.parquet as pq
+
+table = pq.read_table('fields.parquet')
+result = ops.aggregate_h3(
+    table,
+    resolution=8,
+    metric="sum:area_ha",
+    breakdown="crop_type",
+)
+```
+
 #### ops.aggregate_admin()
 
 Functional API for admin region aggregation. Returns a PyArrow Table.
@@ -875,6 +892,25 @@ result.write('cells_stats.parquet')
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
+
+#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+
+Aggregate features into H3 hexagonal grid cells. Same options as `aggregate_a5`,
+but the resolution range is **0–15** and the bucket id column is `h3_cell` (a
+string).
+
+```python
+import geoparquet_io as gpio
+
+result = gpio.read('fields.parquet').aggregate_h3(
+    resolution=8,
+    metric="sum:area_ha",
+    breakdown="crop_type",
+)
+result.write('cells.parquet')
+```
+
+Every output row carries `h3_cell` (string) as the bucket identifier.
 
 #### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
 

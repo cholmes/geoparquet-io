@@ -4,11 +4,12 @@ The `process aggregate` commands reduce large GeoParquet datasets into compact s
 
 **When to use it:** You have millions of features (fields, buildings, parcels) and want to display them at country or grid-cell scale without transmitting all the raw geometry. Aggregation gives you a small file where every cell or region carries a `count`, optional numeric rollups (`sum`, `avg`, `min`, `max`), and optional per-category breakdowns.
 
-Two bucketing schemes are available:
+Three bucketing schemes are available:
 
 | Command | Buckets | Bucket id column |
 |---------|---------|-----------------|
 | `gpio process aggregate a5` | Equal-area A5 grid cells | `a5_cell` (UBIGINT) |
+| `gpio process aggregate h3` | H3 hexagonal grid cells | `h3_cell` (string) |
 | `gpio process aggregate admin` | Administrative regions (Overture Maps) | `admin_code` + `admin_name` |
 
 Every output row carries the bucket id regardless of the `--out-geometry` setting, so a `--out-geometry none` table can be re-joined to geometry later.
@@ -205,6 +206,39 @@ When `--out-geometry none` is used, the output is a plain (non-geo) Parquet file
             metric="sum:area_ha,avg:yield",
             breakdown="crop_type",
             breakdown_limit=15,
+        ) \
+        .write('cells.parquet')
+    ```
+
+---
+
+## H3 Grid Aggregation
+
+H3 aggregation works exactly like A5 — the same `--metric`, `--breakdown`,
+`--breakdown-limit`, `--out-geometry`, `--resolution`, and `--auto` options apply.
+The differences are that H3 uses Uber's hexagonal grid, its resolution range is
+**0–15** (A5 is 0–30), and the bucket id column is `h3_cell` (a string, e.g.
+`861fa80e7ffffff`).
+
+=== "CLI"
+
+    ```bash
+    gpio process aggregate h3 fields.parquet cells.parquet \
+        --resolution 8 \
+        --metric "sum:area_ha" \
+        --breakdown crop_type
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    gpio.read('fields.parquet') \
+        .aggregate_h3(
+            resolution=8,
+            metric="sum:area_ha",
+            breakdown="crop_type",
         ) \
         .write('cells.parquet')
     ```
