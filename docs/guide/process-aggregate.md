@@ -16,6 +16,44 @@ Every output row carries the bucket id regardless of the `--out-geometry` settin
 
 ---
 
+## Choosing What to Aggregate
+
+Each output cell or region can carry three kinds of statistics. Pick the ones that answer the question you want the map to show — you can combine all three in one run.
+
+| Column | Question it answers | Reach for it when |
+|--------|---------------------|-------------------|
+| `count` *(always present)* | *How much data is here?* | Show density — where features are concentrated vs. sparse. |
+| `--metric func:column` | *What's the total or typical value here?* | Shade cells by a numeric attribute (area, population, price). |
+| `--breakdown column` | *What's the mix of categories here?* | Toggle/filter classes (crop types) or animate over time (year). |
+
+### Which metric function to use
+
+`--metric` takes comma-separated `func:column` pairs. A bare column name is shorthand for `sum`.
+
+| Function | Per-cell result | Use when the quantity is… | Example |
+|----------|-----------------|---------------------------|---------|
+| `sum` | Total across features in the cell | **additive** — area, population, revenue | `sum:area_ha` → total hectares of fields in the cell |
+| `avg` | Mean across features | a **typical value/intensity**, independent of how many features | `avg:yield` → average yield per field |
+| `min` / `max` | Smallest / largest value | an **extreme or range** — oldest, newest, cheapest, peak | `max:price`, `min:built_year` |
+
+Rules of thumb:
+
+- **`sum` scales with `count`** — dense cells naturally get large sums. Use it for "total stuff here," and keep `count` alongside to interpret it.
+- **`avg` does *not* scale with count** — it isolates size/intensity, so a cell with 5 large fields is comparable to one with 5 000 small fields. Best for "typical value" maps.
+- **`min`/`max`** surface outliers; pair `min:year` with `max:year` to show the span of values in a cell.
+- The column must already exist and be numeric. To aggregate a **geometry-derived** value like area, compute it first with `gpio add geometry-metrics` (writes `metrics:area` in m²), then `--metric "sum:metrics:area"`.
+
+### Which breakdown to use
+
+`--breakdown` pivots one categorical (or time-bucket) column into a `count_<value>` column per value — the building block for **filterable** or **animated** maps:
+
+- A class column (`crop_type`) → `count_wheat`, `count_corn`, … that a frontend can toggle on/off.
+- A year column (`harvest_year`) → `count_2021`, `count_2022`, … driving a time slider.
+
+Values beyond `--breakdown-limit` (default 20, ordered by frequency) collapse into `count_other`, so a high-cardinality column won't explode the schema.
+
+---
+
 ## A5 Grid Aggregation
 
 Aggregate into A5 equal-area hexagonal grid cells. A5 cells at lower resolutions cover large areas (useful for global overviews) while higher resolutions approach parcel level.
@@ -52,7 +90,7 @@ Specify a resolution explicitly or let gpio choose one automatically:
 
 ### Metric Rollups
 
-Aggregate numeric columns with `--metric`. Format: `func:column`, comma-separated. Supported functions: `sum`, `avg`, `min`, `max`. A bare column name is shorthand for `sum`.
+Aggregate numeric columns with `--metric` (`func:column`, comma-separated; bare column = `sum`). See [Which metric function to use](#which-metric-function-to-use) for when to pick `sum` vs. `avg` vs. `min`/`max`.
 
 === "CLI"
 
@@ -183,6 +221,8 @@ When `--out-geometry none` is used, the output is a plain (non-geo) Parquet file
     ```
 
 ### Complete A5 Example
+
+Combining all three kinds of statistics. The output cell carries `count`, `sum_area_ha`, `avg_yield`, and a `count_<crop>` column per crop type — so a map can **size** each cell by `count`, **shade** it by `sum_area_ha` (total farmed area) or `avg_yield` (typical productivity), and **filter** by crop.
 
 === "CLI"
 
