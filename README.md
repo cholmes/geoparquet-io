@@ -14,6 +14,7 @@ Fast I/O and transformation tools for [GeoParquet](https://geoparquet.org/) file
 - Read/write to **S3, GCS, Azure, HTTPS** via DuckDB and [obstore](https://github.com/developmentseed/obstore).
 - Automatic **Hilbert sorting**, **ZSTD compression**, **bbox columns**.
 - Add **H3, S2, A5, quadkey, KD-tree** spatial indices.
+- **Aggregate** huge datasets into A5/H3 grid cells or admin regions for low-zoom visualization.
 - **GeoParquet 1.1 and 2.0** support, including Parquet geometry types.
 
 ## Installation
