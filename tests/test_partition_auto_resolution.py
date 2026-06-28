@@ -619,7 +619,7 @@ def _count_distinct_cells(parquet_file, index_type, resolution):
     """
     import mercantile
 
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.common import get_duckdb_connection
 
     con = get_duckdb_connection(load_spatial=True)
     try:
@@ -659,6 +659,7 @@ def clustered_file(tmp_path):
     return _make_clustered_geoparquet(tmp_path / "clustered.parquet")
 
 
+@pytest.mark.network
 class TestExtentAwareResolution:
     """Auto-resolution should be sized to the data's actual extent (issue #524).
 
@@ -746,3 +747,25 @@ class TestExtentAwareResolution:
         # Falls back to the pure-math global formula for the same row count.
         expected = _calculate_a5_resolution(8000, 80)
         assert res == expected
+
+    def test_falls_back_when_all_geometries_null(self, tmp_path):
+        """All-NULL geometries probe to zero cells and fall back, not min_resolution."""
+        import geopandas as gpd
+
+        all_null = tmp_path / "all_null.parquet"
+        gdf = gpd.GeoDataFrame(
+            {"id": range(8000), "geometry": [None] * 8000},
+            crs="EPSG:4326",
+        )
+        gdf.to_parquet(all_null)
+
+        res = calculate_auto_resolution(
+            input_parquet=str(all_null),
+            spatial_index_type="a5",
+            target_rows_per_partition=80,
+        )
+        # The probe finds no non-empty cells, so the global formula is used
+        # instead of silently collapsing to the coarsest (min) resolution.
+        expected = _calculate_a5_resolution(8000, 80)
+        assert res == expected
+        assert res > 0

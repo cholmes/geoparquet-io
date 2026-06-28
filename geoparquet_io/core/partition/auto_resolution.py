@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import math
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, warn
-from geoparquet_io.core.remote import needs_httpfs
 
 # Tuning for the extent-aware probe (issue #524). Sampling a multiple of the
 # target partition count keeps cells near the target resolution well-populated,
@@ -59,7 +59,7 @@ def _get_total_row_count(
 
         # Setup S3 authentication if profile specified
         if profile:
-            setup_aws_profile_if_needed(con, profile)
+            setup_aws_profile_if_needed(profile, input_parquet)
 
         query = f"SELECT COUNT(*) FROM '{input_url}'"
         result = con.execute(query).fetchone()
@@ -422,7 +422,7 @@ def _probe_extent_resolution(
     try:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
         if profile:
-            setup_aws_profile_if_needed(con, profile)
+            setup_aws_profile_if_needed(profile, input_parquet)
         for stmt in _INDEX_EXTENSIONS[spatial_index_type]:
             con.execute(stmt)
         if spatial_index_type == "quadkey":
@@ -446,6 +446,14 @@ def _probe_extent_resolution(
     finally:
         if con is not None:
             con.close()
+
+    # All-zero counts mean the sample held no usable geometries (NULL/invalid).
+    # Treat that like a probe failure so the global estimate is used instead of
+    # silently selecting the coarsest resolution.
+    if not any(counts):
+        if verbose:
+            warn("Extent-aware probe found no non-empty cells; using global estimate")
+        return None
 
     resolution = _select_closest_resolution(resolutions, counts, target_partitions)
     if verbose:
