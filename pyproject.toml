@@ -96,6 +96,11 @@ benchmark = [
     "fiona>=1.9.0",
 ]
 
+[tool.uv]
+# Keep transitive msgpack (pulled via pip-audit -> cachecontrol) above the
+# GHSA-6v7p-g79w-8964 fix so `uv lock --upgrade` cannot reintroduce it.
+constraint-dependencies = ["msgpack>=1.2.1"]
+
 [tool.hatch.metadata]
 allow-direct-references = true
 

@@ -1,1 +1,1 @@
-fix(deps): bump msgpack to 1.2.1 to resolve GHSA-6v7p-g79w-8964 (#518)
+fix(deps): constrain msgpack>=1.2.1 to keep GHSA-6v7p-g79w-8964 fix (#518)
