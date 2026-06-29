@@ -2635,6 +2635,13 @@ def extract_geoparquet(
     default=None,
     help="Features per request. Default: server's maxRecordCount. Auto-reduces on server errors. Use smaller values for layers with complex geometries.",
 )
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0, min_open=True),
+    default=60.0,
+    show_default=True,
+    help="Per-request HTTP timeout in seconds. Increase for layers with very large or complex geometries that the server is slow to serialize.",
+)
 @geoparquet_version_option
 @overwrite_option
 @repair_geometry_option
@@ -2665,6 +2672,7 @@ def extract_arcgis(
     skip_bbox,
     workers,
     batch_size,
+    timeout,
     geoparquet_version,
     overwrite,
     repair_geometry,
@@ -2775,6 +2783,7 @@ def extract_arcgis(
             skip_bbox=skip_bbox,
             max_workers=workers,
             batch_size=batch_size,
+            timeout=timeout,
             compression=compression.upper(),
             compression_level=compression_level,
             verbose=verbose,

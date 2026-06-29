@@ -9,7 +9,7 @@ import json
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -381,6 +381,65 @@ class TestFetchFeaturesPage:
         assert params["f"] == "json"
         assert params["outSR"] == "25830"
         assert params["maxAllowableOffset"] == "0.005"
+
+
+class TestTimeout:
+    """Tests for the configurable HTTP timeout (issue #518)."""
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_default_timeout(self, mock_request):
+        """Default timeout matches DEFAULT_TIMEOUT when not specified."""
+        from geoparquet_io.core.arcgis import DEFAULT_TIMEOUT, fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        assert mock_request.call_args.kwargs["timeout"] == DEFAULT_TIMEOUT
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_custom_timeout_threaded_to_request(self, mock_request):
+        """A custom timeout reaches the underlying HTTP request."""
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            timeout=300.0,
+        )
+
+        assert mock_request.call_args.kwargs["timeout"] == 300.0
+
+    def test_make_request_passes_timeout_to_retry_helper(self):
+        """_make_request forwards the timeout to make_request_with_retry."""
+        from geoparquet_io.core.arcgis import _make_request
+
+        with patch("geoparquet_io.core.arcgis.make_request_with_retry") as mock_retry:
+            mock_retry.return_value = {"ok": True}
+            _make_request("GET", "https://example.com/test", timeout=240.0)
+
+        assert mock_retry.call_args.kwargs["timeout"] == 240.0
+
+    def test_make_request_with_retry_applies_timeout_per_request(self):
+        """The retry helper applies the timeout to the actual httpx call.
+
+        Regression test: the shared client caches its first timeout, so the
+        timeout must also be passed per-request to actually take effect.
+        """
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"ok": True}
+        mock_response.raise_for_status = Mock()
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            make_request_with_retry("GET", "https://example.com/test", timeout=300.0)
+
+        assert mock_client.get.call_args.kwargs["timeout"] == 300.0
 
 
 class TestCrsParsing:
@@ -1053,6 +1112,48 @@ class TestArcgisCliOutputCrs:
 
         assert result.exit_code == 0, result.output
         assert mock_convert.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_timeout(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--timeout",
+                "300",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["timeout"] == 300.0
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_timeout_defaults_to_60(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["timeout"] == 60.0
 
     @patch("geoparquet_io.core.arcgis.get_layer_info")
     def test_cli_invalid_max_allowable_offset_fails_cleanly(self, mock_layer, tmp_path):

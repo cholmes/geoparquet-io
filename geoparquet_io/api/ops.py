@@ -823,6 +823,7 @@ def from_arcgis(
     output_crs: str | None = None,
     max_allowable_offset: float | None = None,
     repair_geometry: bool = True,
+    timeout: float = 60.0,
 ) -> pa.Table:
     """
     Fetch ArcGIS Feature Service as a PyArrow Table.
@@ -843,6 +844,8 @@ def from_arcgis(
             or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
         max_allowable_offset: Server-side geometry generalization tolerance, in
             output-CRS units (degrees on the default WGS84 path).
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that are slow to serialize.
 
     Returns:
         PyArrow Table with WKB geometry column
@@ -875,6 +878,7 @@ def from_arcgis(
         max_allowable_offset=max_allowable_offset,
         verbose=False,
         repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
 

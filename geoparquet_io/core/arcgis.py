@@ -29,6 +29,7 @@ from geoparquet_io.core.exceptions import (
 )
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
+    DEFAULT_TIMEOUT,
     make_request_with_retry,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
@@ -112,6 +113,7 @@ def _make_request(
     data: dict | None = None,
     max_retries: int = 3,
     retry_delay: float = 1.0,
+    timeout: float = DEFAULT_TIMEOUT,
     batch_size: int | None = None,
 ) -> dict:
     """
@@ -126,6 +128,7 @@ def _make_request(
         data: POST data
         max_retries: Number of retry attempts
         retry_delay: Base delay between retries
+        timeout: Request timeout in seconds
         batch_size: Current batch size (for BatchTooLargeError context)
 
     Returns:
@@ -142,6 +145,7 @@ def _make_request(
         data=data,
         max_retries=max_retries,
         retry_delay=retry_delay,
+        timeout=timeout,
         parse_json=True,
         batch_size=batch_size,
     )
@@ -169,6 +173,7 @@ def generate_token(
     password: str,
     portal_url: str | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """
     Generate authentication token via ArcGIS REST API.
@@ -178,6 +183,7 @@ def generate_token(
         password: ArcGIS password
         portal_url: Enterprise portal URL (default: ArcGIS Online)
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         Authentication token string
@@ -198,7 +204,7 @@ def generate_token(
         "expiration": 60,  # 60 minutes
     }
 
-    result = _make_request("POST", token_url, data=data)
+    result = _make_request("POST", token_url, data=data, timeout=timeout)
     result = _handle_arcgis_response(result, "Token generation")
 
     if "token" not in result:
@@ -214,6 +220,7 @@ def resolve_token(
     auth: ArcGISAuth,
     service_url: str,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> str | None:
     """
     Resolve authentication token from various sources.
@@ -227,6 +234,7 @@ def resolve_token(
         auth: ArcGISAuth configuration
         service_url: Service URL (used to detect enterprise portal)
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds (used for token generation)
 
     Returns:
         Token string, or None if no auth provided
@@ -264,7 +272,7 @@ def resolve_token(
                 if verbose:
                     debug(f"Detected enterprise portal: {portal_url}")
 
-        return generate_token(auth.username, auth.password, portal_url, verbose)
+        return generate_token(auth.username, auth.password, portal_url, verbose, timeout=timeout)
 
     return None
 
@@ -334,6 +342,7 @@ def get_layer_info(
     where: str = "1=1",
     bbox: tuple[float, float, float, float] | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> ArcGISLayerInfo:
     """
     Fetch layer metadata from ArcGIS REST service.
@@ -344,6 +353,7 @@ def get_layer_info(
         where: SQL WHERE clause for counting features (default: "1=1" = all)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         ArcGISLayerInfo with layer metadata
@@ -352,11 +362,13 @@ def get_layer_info(
         debug(f"Fetching layer info from {service_url}")
 
     params = _add_token_to_params({"f": "json"}, token)
-    data = _make_request("GET", service_url, params=params)
+    data = _make_request("GET", service_url, params=params, timeout=timeout)
     data = _handle_arcgis_response(data, "Layer info")
 
     # Get feature count (using the WHERE and bbox filters)
-    count = get_feature_count(service_url, where=where, bbox=bbox, token=token, verbose=verbose)
+    count = get_feature_count(
+        service_url, where=where, bbox=bbox, token=token, verbose=verbose, timeout=timeout
+    )
 
     # Servers advertise the layer SR in different places: top-level
     # spatialReference, extent.spatialReference, or sourceSpatialReference.
@@ -385,6 +397,7 @@ def get_feature_count(
     bbox: tuple[float, float, float, float] | None = None,
     token: str | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> int:
     """
     Get total feature count from ArcGIS service.
@@ -395,6 +408,7 @@ def get_feature_count(
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         token: Optional authentication token
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         Feature count
@@ -416,7 +430,7 @@ def get_feature_count(
 
     params = _add_token_to_params(params, token)
 
-    data = _make_request("GET", query_url, params=params)
+    data = _make_request("GET", query_url, params=params, timeout=timeout)
     data = _handle_arcgis_response(data, "Feature count")
 
     count = data.get("count", 0)
@@ -437,6 +451,7 @@ def fetch_features_page(
     output_wkid: int | None = None,
     max_allowable_offset: float | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
     """
     Fetch a single page of features as GeoJSON.
@@ -455,6 +470,8 @@ def fetch_features_page(
             tolerance, in the units of the output CRS (degrees on the default
             WGS84 path). Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds. Raise for layers whose large or
+            complex geometries take the server minutes to serialize per page.
 
     Returns:
         GeoJSON FeatureCollection dict, or EsriJSON dict when output_wkid is set
@@ -493,7 +510,7 @@ def fetch_features_page(
 
     params = _add_token_to_params(params, token)
 
-    data = _make_request("GET", query_url, params=params, batch_size=limit)
+    data = _make_request("GET", query_url, params=params, timeout=timeout, batch_size=limit)
 
     # GeoJSON responses don't have the standard error format
     # Check if we got features or an error
@@ -516,6 +533,7 @@ def fetch_all_features(
     output_wkid: int | None = None,
     max_allowable_offset: float | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Generator[dict, None, None]:
     """
     Generator that yields pages of GeoJSON features.
@@ -533,6 +551,7 @@ def fetch_all_features(
         batch_size: Custom batch size (default: server's maxRecordCount)
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
         verbose: Whether to print debug output
+        timeout: Per-request timeout in seconds
 
     Yields:
         GeoJSON FeatureCollection dicts for each page
@@ -586,6 +605,7 @@ def fetch_all_features(
                     output_wkid=output_wkid,
                     max_allowable_offset=max_allowable_offset,
                     verbose=verbose,
+                    timeout=timeout,
                 )
             except BatchTooLargeError as e:
                 # Server couldn't handle batch size - reduce and retry
@@ -664,6 +684,7 @@ def fetch_all_features(
                         output_wkid=output_wkid,
                         max_allowable_offset=max_allowable_offset,
                         verbose=False,  # Disable per-request verbose to avoid race conditions
+                        timeout=timeout,
                     )
                     futures.append((offset, current_batch, future))
 
@@ -1007,6 +1028,7 @@ def _stream_features_to_parquet(
     output_wkid: int | None = None,
     max_allowable_offset: float | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> tuple[int, dict | None]:
     """
     Stream features from ArcGIS to a Parquet file page by page.
@@ -1029,6 +1051,7 @@ def _stream_features_to_parquet(
         output_wkid: Preserve native CRS. When set (e.g. 25830), fetches
             EsriJSON (f=json) with outSR; default None fetches GeoJSON in WGS84.
         verbose: Whether to print debug output
+        timeout: Per-request timeout in seconds
 
     Returns:
         Tuple of (number of features written, the server's returned
@@ -1075,6 +1098,7 @@ def _stream_features_to_parquet(
             output_wkid=output_wkid,
             max_allowable_offset=max_allowable_offset,
             verbose=verbose,
+            timeout=timeout,
         ):
             features = page.get("features", [])
             if not features:
@@ -1150,6 +1174,7 @@ def arcgis_to_table(
     max_allowable_offset: float | None = None,
     verbose: bool = False,
     repair_geometry: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> pa.Table:
     """
     Convert ArcGIS Feature Service to PyArrow Table.
@@ -1184,6 +1209,9 @@ def arcgis_to_table(
             the units of the output CRS (degrees on the default WGS84 path).
             Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            FeatureServer layers whose large/complex geometries take the server
+            minutes to serialize a single page.
 
     Returns:
         PyArrow Table with WKB geometry column
@@ -1211,10 +1239,12 @@ def arcgis_to_table(
     service_url, layer_id = validate_arcgis_url(service_url)
 
     # Resolve authentication
-    token = resolve_token(auth, service_url, verbose) if auth else None
+    token = resolve_token(auth, service_url, verbose, timeout=timeout) if auth else None
 
     # Get layer info (with WHERE and bbox filters applied to count)
-    layer_info = get_layer_info(service_url, token=token, where=where, bbox=bbox, verbose=verbose)
+    layer_info = get_layer_info(
+        service_url, token=token, where=where, bbox=bbox, verbose=verbose, timeout=timeout
+    )
     debug(f"Layer: {layer_info.name}")
     debug(f"Geometry type: {layer_info.geometry_type}")
     debug(f"Total features matching filter: {layer_info.total_count}")
@@ -1264,6 +1294,7 @@ def arcgis_to_table(
             output_wkid=output_wkid,
             max_allowable_offset=max_allowable_offset,
             verbose=verbose,
+            timeout=timeout,
         )
 
         if total_rows == 0:
@@ -1365,6 +1396,7 @@ def convert_arcgis_to_geoparquet(
     row_group_rows: int | None = None,
     overwrite: bool = False,
     repair_geometry: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> None:
     """
     Convert ArcGIS Feature Service to GeoParquet file.
@@ -1405,6 +1437,9 @@ def convert_arcgis_to_geoparquet(
         profile: AWS profile for S3 output
         row_group_size_mb: Row group size in MB (mutually exclusive with row_group_rows)
         row_group_rows: Row group size in number of rows (mutually exclusive with row_group_size_mb)
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that the server is slow to
+            serialize.
     """
     configure_verbose(verbose)
 
@@ -1443,6 +1478,7 @@ def convert_arcgis_to_geoparquet(
         max_allowable_offset=max_allowable_offset,
         verbose=verbose,
         repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
     # Apply Hilbert ordering if not skipped

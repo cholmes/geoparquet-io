@@ -136,10 +136,13 @@ def make_request_with_retry(
         try:
             client = get_shared_http_client(timeout=timeout)
 
+            # Pass timeout per-request as well: the shared client caches the
+            # timeout it was first created with, so a later call asking for a
+            # longer timeout would otherwise be silently capped at that value.
             if method == "GET":
-                response = client.get(url, params=params, headers=request_headers)
+                response = client.get(url, params=params, headers=request_headers, timeout=timeout)
             else:
-                response = client.post(url, data=data, headers=request_headers)
+                response = client.post(url, data=data, headers=request_headers, timeout=timeout)
 
             response.raise_for_status()
 
