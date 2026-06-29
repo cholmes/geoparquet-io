@@ -1,1 +1,1 @@
-feat(arcgis): add configurable HTTP timeout for extract (#518)
+fix(deps): bump msgpack to 1.2.1 to resolve GHSA-6v7p-g79w-8964 (#518)
