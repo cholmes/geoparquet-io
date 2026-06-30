@@ -854,8 +854,14 @@ def _create_preview_table(
     fit the console width (or max_columns) are shown, with one-line ellipsis cells;
     remaining columns are reported via hidden_column_count. With no_truncate=True every
     column is shown with full, wrapped values.
+
+    Fit-to-width only applies to a real terminal: when output is redirected or piped
+    (console.is_terminal is False) and max_columns was not explicitly requested, every
+    column is shown so scripts and pipes keep seeing all columns as they did before.
     """
-    if no_truncate:
+    non_tty = console is not None and not console.is_terminal
+    full_columns = no_truncate or (non_tty and max_columns is None)
+    if full_columns:
         visible = columns_info
         hidden_count = 0
         overflow = "fold"

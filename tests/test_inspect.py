@@ -1303,6 +1303,8 @@ def test_columns_that_fit_max_columns_clamped_to_total():
 def test_columns_that_fit_max_columns_floor_one():
     # max_columns below 1 should never drop below 1 (Click also guards this)
     assert _columns_that_fit(40, 500, max_columns=1) == 1
+    assert _columns_that_fit(40, 500, max_columns=0) == 1
+    assert _columns_that_fit(40, 500, max_columns=-5) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1321,7 +1323,7 @@ def _wide_preview(num_cols=20, num_rows=2):
 
 def test_create_preview_table_hides_overflow_columns():
     table, columns_info = _wide_preview(num_cols=20)
-    console = Console(width=80)
+    console = Console(width=80, force_terminal=True)
     rich_table, hidden = _create_preview_table(
         columns_info=columns_info, preview_table=table, console=console
     )
@@ -1329,6 +1331,31 @@ def test_create_preview_table_hides_overflow_columns():
     assert len(rich_table.columns) == 20 - hidden
     # cells are one line (no fold): ellipsis overflow on the visible columns
     assert all(c.overflow == "ellipsis" for c in rich_table.columns)
+
+
+def test_create_preview_table_non_tty_shows_all_columns():
+    # Redirected/piped output (is_terminal False) must not silently drop columns.
+    table, columns_info = _wide_preview(num_cols=20)
+    console = Console(width=80)
+    assert console.is_terminal is False
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console
+    )
+    assert hidden == 0
+    assert len(rich_table.columns) == 20
+    assert all(c.overflow == "fold" for c in rich_table.columns)
+
+
+def test_create_preview_table_non_tty_honors_explicit_max_columns():
+    # An explicit --max-columns is still respected when output is piped.
+    table, columns_info = _wide_preview(num_cols=20)
+    console = Console(width=80)
+    assert console.is_terminal is False
+    rich_table, hidden = _create_preview_table(
+        columns_info=columns_info, preview_table=table, console=console, max_columns=4
+    )
+    assert len(rich_table.columns) == 4
+    assert hidden == 16
 
 
 def test_create_preview_table_max_columns():
