@@ -19,7 +19,13 @@ from geoparquet_io.core.crs_utils import (
     source_crs_string,
     transform_geom_sql,
 )
-from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    SPATIAL_JOIN_BBOX_PREFILTER,
+    SPATIAL_JOIN_NATIVE,
+    build_spatial_join_condition,
+    quote_identifier,
+    spatial_join_strategy,
+)
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
@@ -454,6 +460,24 @@ def _build_admin_where_clauses_list(
     return admin_where_clauses
 
 
+def _report_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col, verbose):
+    """Print a status line describing which spatial-join strategy will run.
+
+    Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path, so
+    the old "No bbox columns available, using full geometry intersection..." line
+    misreported them as a degraded fallback (issue #538). Only 1.x files that
+    genuinely lack a bbox column get that warning now.
+    """
+    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col)
+    if strategy == SPATIAL_JOIN_NATIVE:
+        progress("Using native geometry with DuckDB SPATIAL_JOIN...")
+    elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
+        if verbose:
+            debug("Using bbox columns for initial filtering...")
+    else:
+        progress("No bbox columns available, using full geometry intersection...")
+
+
 def _build_query_components(
     con,
     dataset,
@@ -470,6 +494,7 @@ def _build_query_components(
     prefix=None,
     is_table_ref=False,
     source_crs=None,
+    has_native_geometry=False,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -509,10 +534,8 @@ def _build_query_components(
         source_crs=source_crs,
     )
 
-    if input_bbox_col and admin_bbox_col and verbose and not dry_run:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and admin_bbox_col) and not dry_run:
-        progress("No bbox columns available, using full geometry intersection...")
+    if not dry_run:
+        _report_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col, verbose)
 
     query = _build_spatial_join_query(
         input_url,
@@ -541,6 +564,7 @@ def _handle_dry_run_mode(
     query,
     compression,
     compression_level,
+    has_native_geometry=False,
 ):
     """Handle dry-run mode output."""
     if not dry_run:
@@ -557,7 +581,10 @@ def _handle_dry_run_mode(
     )
 
     info("-- Main spatial join query")
-    if input_bbox_col and admin_bbox_col:
+    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col)
+    if strategy == SPATIAL_JOIN_NATIVE:
+        info("-- Using native geometry with DuckDB SPATIAL_JOIN")
+    elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
         info("-- Using bbox columns for optimized spatial join")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
@@ -602,6 +629,7 @@ def _execute_per_level_joins(
     no_cache,
     extra_kv=None,
     source_crs=None,
+    has_native_geometry=False,
 ):
     """Run separate spatial joins per admin level for per-level-source datasets.
 
@@ -633,6 +661,7 @@ def _execute_per_level_joins(
             prefix=prefix,
             is_table_ref=is_table_ref,
             source_crs=source_crs,
+            has_native_geometry=has_native_geometry,
         )
 
         if dry_run:
@@ -756,6 +785,10 @@ def add_admin_divisions_multi(
         if verbose:
             debug(f"Using geometry columns: {input_geom_col} (input), {admin_geom_col} (admin)")
 
+    # Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path
+    # (issue #538); _setup_dataset_and_columns flags them via status == "native".
+    has_native_geometry = input_bbox_info.get("status") == "native"
+
     # Create DuckDB connection with ambient S3 config from dataset
     from geoparquet_io.core.duckdb_utils import s3_config_scope
 
@@ -802,6 +835,7 @@ def add_admin_divisions_multi(
                     no_cache,
                     extra_kv=extra_kv,
                     source_crs=source_crs,
+                    has_native_geometry=has_native_geometry,
                 )
                 if dry_run:
                     return
@@ -821,6 +855,7 @@ def add_admin_divisions_multi(
                     dry_run,
                     prefix=effective_prefix,
                     source_crs=source_crs,
+                    has_native_geometry=has_native_geometry,
                 )
 
                 if _handle_dry_run_mode(
@@ -835,6 +870,7 @@ def add_admin_divisions_multi(
                     query,
                     compression,
                     compression_level,
+                    has_native_geometry=has_native_geometry,
                 ):
                     return
 

@@ -161,3 +161,7 @@ class TestDryRunCommands:
         assert "Bbox columns: none (input)" in result.output
         # No bbox pre-filter in the JOIN ON clause (only ST_Intersects)
         assert "ON ST_Intersects" in result.output
+        # #538: native geometry is the fast SPATIAL_JOIN path, not a degraded
+        # fallback — the misleading "no bbox optimization" note must be gone.
+        assert "Using native geometry with DuckDB SPATIAL_JOIN" in result.output
+        assert "no bbox optimization" not in result.output

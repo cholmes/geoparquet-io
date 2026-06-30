@@ -2314,7 +2314,9 @@ def get_bbox_advice(
     Get version-aware bbox optimization advice.
 
     Provides context-aware recommendations based on file type and operation:
-    - For GeoParquet 2.0/parquet-geo with spatial_filtering: No bbox needed (native stats work)
+    - For GeoParquet 2.0/parquet-geo with spatial_filtering: No bbox pre-filter
+      needed -- a bare ST_Intersects ON clause lets DuckDB's SPATIAL_JOIN operator
+      engage, which is dramatically faster than a bbox-overlap NL join (issue #538).
     - For GeoParquet 2.0/parquet-geo with bounds_calculation: bbox still recommended (faster)
     - For GeoParquet 1.x without bbox: Suggest adding bbox OR upgrading to 2.0
 
@@ -2330,9 +2332,12 @@ def get_bbox_advice(
         dict with:
             - needs_warning: bool - Whether to show a warning to the user
             - skip_bbox_prefilter: bool - Whether to skip bbox pre-filtering in queries.
-              Only True for spatial_filtering with native geometry (where Parquet stats
-              are used automatically). For bounds_calculation, always False since bbox
-              column provides pre-computed values that are faster than geometry stats.
+              Only True for spatial_filtering with native geometry. There a bare
+              ST_Intersects ON clause is recognized by DuckDB's SPATIAL_JOIN operator
+              and is much faster than ANDing a bbox-overlap test in front of it, which
+              defeats SPATIAL_JOIN and forces a BLOCKWISE_NL_JOIN (issue #538). For
+              bounds_calculation, always False since the bbox column provides
+              pre-computed values that are faster than geometry stats.
             - has_native_geometry: bool - Whether file uses native Parquet geometry types
             - message: str - User-facing message (if needs_warning)
             - suggestions: list[str] - Suggested actions for the user
@@ -2363,9 +2368,10 @@ def get_bbox_advice(
 
     if operation == "spatial_filtering":
         if has_native_geo:
-            # Native geometry stats are used automatically - no warning needed
+            # Native geometry -> bare ST_Intersects ON clause engages DuckDB's
+            # SPATIAL_JOIN operator (the fast path, issue #538) - no warning needed.
             if verbose:
-                debug("Using native Parquet geometry statistics for spatial filtering")
+                debug("Native geometry: bare ST_Intersects engages DuckDB SPATIAL_JOIN")
         elif not has_bbox:
             # 1.x without bbox - warn and suggest options
             result["needs_warning"] = True
