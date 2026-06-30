@@ -125,6 +125,35 @@ def test_aggregate_h3_null_geometry_feature(tmp_path):
     assert null_rows["geometry"].iloc[0] is None
 
 
+@pytest.mark.slow
+def test_aggregate_h3_out_geometry_none_forwards_compression_level(tmp_path, monkeypatch):
+    """--compression-level must reach pq.write_table on the out_geometry='none' path."""
+    import geoparquet_io.core.process.aggregate.grid_common as grid_common
+
+    src = tmp_path / "fields.parquet"
+    out = tmp_path / "agg_none.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 4.0)])
+
+    captured = {}
+    real_write_table = grid_common.pq.write_table
+
+    def spy_write_table(table, where, **kwargs):
+        captured.update(kwargs)
+        return real_write_table(table, where, **kwargs)
+
+    monkeypatch.setattr(grid_common.pq, "write_table", spy_write_table)
+    aggregate_by_h3(
+        str(src),
+        str(out),
+        resolution=6,
+        out_geometry="none",
+        compression="ZSTD",
+        compression_level=9,
+    )
+    assert captured.get("compression") == "ZSTD"
+    assert captured.get("compression_level") == 9
+
+
 def test_aggregate_h3_requires_resolution_or_auto(tmp_path):
     src = tmp_path / "f.parquet"
     _write_points_geoparquet(src, [(10.0, 50.0, "wheat", 1.0)])

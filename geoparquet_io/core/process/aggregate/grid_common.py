@@ -250,7 +250,15 @@ def aggregate_grid_file(
         info(f"{unassigned} features had no assignable {scheme.name} cell (NULL/empty geometry)")
 
     if out_geometry == "none":
-        pq.write_table(result, output_parquet, compression=compression)
+        if compression_level is not None:
+            pq.write_table(
+                result,
+                output_parquet,
+                compression=compression,
+                compression_level=compression_level,
+            )
+        else:
+            pq.write_table(result, output_parquet, compression=compression)
     else:
         write_geoparquet_table(
             result,

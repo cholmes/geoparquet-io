@@ -234,7 +234,15 @@ def aggregate_by_admin(
         con.close()
 
     if out_geometry == "none":
-        pq.write_table(result, output_parquet, compression=compression)
+        if compression_level is not None:
+            pq.write_table(
+                result,
+                output_parquet,
+                compression=compression,
+                compression_level=compression_level,
+            )
+        else:
+            pq.write_table(result, output_parquet, compression=compression)
     else:
         write_geoparquet_table(
             result,
