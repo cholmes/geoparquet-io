@@ -6,7 +6,10 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -56,8 +59,7 @@ def add_h3_table(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         # Load H3 extension
-        con.execute("INSTALL h3 FROM community")
-        con.execute("LOAD h3")
+        load_community_extension(con, "h3")
 
         con.register("__input_table", table)
 
@@ -268,8 +270,7 @@ def _add_h3_streaming(
     def make_query(source: str, con) -> str:
         """Build the add H3 query for streaming source."""
         # Load H3 extension
-        con.execute("INSTALL h3 FROM community")
-        con.execute("LOAD h3")
+        load_community_extension(con, "h3")
 
         # Get column names from query result
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description
