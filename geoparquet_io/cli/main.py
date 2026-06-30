@@ -74,6 +74,7 @@ from geoparquet_io.core.partition.by_s2 import partition_by_s2 as partition_by_s
 from geoparquet_io.core.partition.by_string import (
     partition_by_string as partition_by_string_impl,
 )
+from geoparquet_io.core.reduce_precision import reduce_precision as reduce_precision_impl
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -6397,6 +6398,90 @@ def check_optimization_cmd(
             runner.record_result(file_path, result)
 
         runner.print_summary()
+
+
+@cli.command(name="reduce-precision", cls=SingleFileCommand)
+@click.argument("input_parquet")
+@click.argument("output_parquet", required=False, default=None)
+@click.option(
+    "--grid",
+    type=float,
+    required=True,
+    help=(
+        "Grid size to snap coordinates to, in the geometry's CRS units. "
+        "Required (the operation is lossy and CRS-dependent). "
+        "E.g. 1e-6 (~0.11 m on EPSG:4326), or 0.1/1.0 for metre-based projected CRS."
+    ),
+)
+@click.option(
+    "--keep-empty",
+    is_flag=True,
+    help="Keep geometries that collapse to NULL/empty (default: drop them).",
+)
+@repair_geometry_option
+@output_format_options
+@geoparquet_version_option
+@overwrite_option
+@dry_run_option
+@verbose_option
+@aws_profile_option
+@any_extension_option
+@show_sql_option
+@click.pass_context
+def reduce_precision(
+    ctx,
+    input_parquet,
+    output_parquet,
+    grid,
+    keep_empty,
+    repair_geometry,
+    compression,
+    compression_level,
+    row_group_size,
+    row_group_size_mb,
+    write_memory,
+    geoparquet_version,
+    overwrite,
+    dry_run,
+    verbose,
+    aws_profile,
+    any_extension,
+    show_sql,
+):
+    """Reduce geometry coordinate precision by snapping to a fixed grid.
+
+    Repairs invalid geometry (ST_MakeValid), snaps coordinates with
+    ST_ReducePrecision, then drops geometries that collapse to empty. A stored
+    bbox covering column is regenerated from the reduced geometry. The native CRS
+    is preserved (no reprojection).
+
+    If OUTPUT_PARQUET is not provided, creates <input>_reduced.parquet.
+
+    \b
+    Examples:
+        gpio reduce-precision input.parquet output.parquet --grid 1e-6
+        gpio reduce-precision input.parquet --grid 0.1          # projected (metres)
+        gpio reduce-precision in.parquet out.parquet --grid 1e-5 --keep-empty
+    """
+    with _activate_s3(ctx, aws_profile=aws_profile):
+        validate_parquet_extension(output_parquet, any_extension)
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        reduce_precision_impl(
+            input_parquet,
+            output_parquet,
+            grid=grid,
+            repair=repair_geometry,
+            drop_empty=not keep_empty,
+            dry_run=dry_run,
+            verbose=verbose,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            profile=aws_profile,
+            geoparquet_version=geoparquet_version,
+            overwrite=overwrite,
+        )
 
 
 # Skills command (for LLM integration)
