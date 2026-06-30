@@ -10,6 +10,7 @@ module stays a thin descriptor.
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 
 import pyarrow.parquet as pq
@@ -267,6 +268,9 @@ def aggregate_grid_file(
         result = con.execute(final_sql).arrow().read_all()
     finally:
         con.close()
+        # Release GDAL/spatial native handles before the next spatial connection
+        # opens; leaked native state can segfault sibling xdist tests.
+        gc.collect()
 
     # Report features that had no assignable cell (NULL/empty geometry).
     ids = result.column(cell_column).to_pylist()
@@ -275,7 +279,15 @@ def aggregate_grid_file(
         info(f"{unassigned} features had no assignable {scheme.name} cell (NULL/empty geometry)")
 
     if out_geometry == "none":
-        pq.write_table(result, output_parquet, compression=compression)
+        if compression_level is not None:
+            pq.write_table(
+                result,
+                output_parquet,
+                compression=compression,
+                compression_level=compression_level,
+            )
+        else:
+            pq.write_table(result, output_parquet, compression=compression)
     else:
         write_geoparquet_table(
             result,
@@ -340,3 +352,6 @@ def aggregate_grid_table(
         return con.execute(final_sql).arrow().read_all()
     finally:
         con.close()
+        # Release GDAL/spatial native handles before the next spatial connection
+        # opens; leaked native state can segfault sibling xdist tests.
+        gc.collect()

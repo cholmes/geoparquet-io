@@ -206,3 +206,6 @@ cython_debug/
 
 # Agent commit-message scratch buffers
 .agent/
+
+# Internal agentic dev planning artifacts
+docs/superpowers/

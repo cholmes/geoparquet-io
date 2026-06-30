@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import gc
+
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
@@ -236,9 +238,20 @@ def aggregate_by_admin(
             info(f"{unassigned_count} feature(s) fell outside all admin regions (-> 'unassigned')")
     finally:
         con.close()
+        # Release GDAL/spatial native handles before the next spatial connection
+        # opens; leaked native state can segfault sibling xdist tests.
+        gc.collect()
 
     if out_geometry == "none":
-        pq.write_table(result, output_parquet, compression=compression)
+        if compression_level is not None:
+            pq.write_table(
+                result,
+                output_parquet,
+                compression=compression,
+                compression_level=compression_level,
+            )
+        else:
+            pq.write_table(result, output_parquet, compression=compression)
     else:
         write_geoparquet_table(
             result,

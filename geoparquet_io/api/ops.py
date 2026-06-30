@@ -270,6 +270,7 @@ def aggregate_a5(
     breakdown: str | None = None,
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
+    geometry_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into A5 grid cells with per-cell statistics.
@@ -281,6 +282,7 @@ def aggregate_a5(
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+        geometry_column: Geometry column name (defaults to "geometry")
 
     Returns:
         New PyArrow Table with one row per A5 cell
@@ -294,6 +296,7 @@ def aggregate_a5(
         breakdown=breakdown,
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
+        geometry_column=geometry_column,
     )
 
 
@@ -304,6 +307,7 @@ def aggregate_h3(
     breakdown: str | None = None,
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
+    geometry_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into H3 grid cells with per-cell statistics.
@@ -315,6 +319,7 @@ def aggregate_h3(
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+        geometry_column: Geometry column name (defaults to "geometry")
 
     Returns:
         New PyArrow Table with one row per H3 cell
@@ -328,6 +333,7 @@ def aggregate_h3(
         breakdown=breakdown,
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
+        geometry_column=geometry_column,
     )
 
 
