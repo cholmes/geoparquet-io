@@ -6,7 +6,10 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -56,8 +59,7 @@ def add_a5_table(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         # Load A5 extension
-        con.execute("INSTALL a5 FROM community")
-        con.execute("LOAD a5")
+        load_community_extension(con, "a5")
 
         con.register("__input_table", table)
 
@@ -268,8 +270,7 @@ def _add_a5_streaming(
     def make_query(source: str, con) -> str:
         """Build the add A5 query for streaming source."""
         # Load A5 extension
-        con.execute("INSTALL a5 FROM community")
-        con.execute("LOAD a5")
+        load_community_extension(con, "a5")
 
         # Get column names from query result
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description

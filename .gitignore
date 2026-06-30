@@ -201,5 +201,5 @@ cython_debug/
 .claude/worktrees/
 .serena/
 
-# Agent scratch files
+# Agent commit-message scratch buffers
 .agent/

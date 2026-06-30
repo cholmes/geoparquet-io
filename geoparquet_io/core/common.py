@@ -21,6 +21,7 @@ from geoparquet_io.core.duckdb_utils import (
     _get_query_columns,
     _wrap_query_with_wkb_conversion,
     get_duckdb_connection,
+    load_community_extension,
     quote_identifier,
 )
 from geoparquet_io.core.exceptions import (
@@ -2512,8 +2513,7 @@ def add_computed_column(
         for ext in extensions:
             if verbose and not dry_run:
                 debug(f"Loading DuckDB extension: {ext}")
-            con.execute(f"INSTALL {ext} FROM community;")
-            con.execute(f"LOAD {ext};")
+            load_community_extension(con, ext)
 
     # Get total count (skip in dry-run)
     if not dry_run:

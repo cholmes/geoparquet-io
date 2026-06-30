@@ -3,6 +3,7 @@
 import pytest
 
 from geoparquet_io.core.exceptions import (
+    ExtensionUnavailableError,
     FileNotFoundGeoParquetError,
     GeometryError,
     GeoParquetError,
@@ -29,6 +30,20 @@ class TestCoreExceptions:
         with pytest.raises(FileNotFoundGeoParquetError) as exc_info:
             raise FileNotFoundGeoParquetError("test.parquet")
         assert "test.parquet" in str(exc_info.value)
+
+    def test_extension_unavailable_error(self):
+        """ExtensionUnavailableError names the extension and DuckDB version (issue #491)."""
+        exc = ExtensionUnavailableError("geography", "1.5.4")
+        assert isinstance(exc, GeoParquetError)
+        assert exc.name == "geography"
+        assert exc.duckdb_version == "1.5.4"
+        message = str(exc)
+        assert "geography" in message
+        assert "1.5.4" in message
+
+    def test_extension_unavailable_error_with_detail(self):
+        exc = ExtensionUnavailableError("geography", "1.5.4", "HTTP 404")
+        assert "HTTP 404" in str(exc)
 
     def test_file_not_found_error_with_detail(self):
         with pytest.raises(FileNotFoundGeoParquetError) as exc_info:

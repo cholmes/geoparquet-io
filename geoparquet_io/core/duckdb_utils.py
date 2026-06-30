@@ -282,6 +282,32 @@ def get_duckdb_connection(
     return con
 
 
+def load_community_extension(con, name: str) -> None:
+    """INSTALL and LOAD a DuckDB community extension with a clear error message.
+
+    Community extensions (e.g. ``geography`` for S2 support) are built per
+    DuckDB release. When a newer DuckDB version ships before the extension has
+    been rebuilt for it, ``INSTALL ... FROM community`` fails with an opaque
+    HTTP 404. Translate that into an actionable :class:`ExtensionUnavailableError`
+    so users understand the extension simply isn't published for their DuckDB
+    version yet.
+
+    Args:
+        con: An open DuckDB connection.
+        name: Community extension name (e.g. "geography", "h3").
+
+    Raises:
+        ExtensionUnavailableError: If the extension cannot be installed or loaded.
+    """
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    try:
+        con.execute(f"INSTALL {name} FROM community;")
+        con.execute(f"LOAD {name};")
+    except duckdb.Error as e:
+        raise ExtensionUnavailableError(name, duckdb.__version__, str(e)) from e
+
+
 def get_duckdb_connection_for_s3(
     path: str,
     load_spatial: bool = True,
