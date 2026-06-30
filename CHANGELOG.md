@@ -80,6 +80,15 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **`gpio partition … --auto` is now extent-aware (#524).** Auto-resolution
+  previously assumed data was spread uniformly across the entire globe, so
+  regional/national datasets got a far-too-coarse resolution — collapsing into a
+  handful of giant partitions instead of the requested `--target-rows`-sized
+  ones (off by ~2 orders of magnitude). It now probes a bounded sample of the
+  actual data, counts non-empty cells at each candidate resolution, and picks
+  the resolution closest to the target partition count. One fix covers
+  `a5`/`h3`/`s2`/`quadkey`; it falls back to the old global estimate when the
+  data can't be probed.
 - Partition commands now route all rows in a **single** `COPY … PARTITION_BY`
   scan instead of re-scanning the input per partition value (#478).
   `gpio partition string`, `gpio partition admin`, and the cell-id partitioners

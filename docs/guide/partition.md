@@ -41,16 +41,23 @@ gpio partition quadkey input.parquet output/ --auto --max-partitions 1000
 gpio partition a5 input.parquet --auto --preview
 ```
 
-### Resolution Formulas
+### How auto-resolution is chosen
 
-The auto-resolution calculation uses these cell count formulas:
+Auto-resolution is **extent-aware**: gpio probes a bounded sample of your data
+and counts how many cells are actually non-empty at each candidate resolution,
+then picks the resolution whose non-empty cell count is closest to your target
+partition count (`total rows ÷ --target-rows`, capped by `--max-partitions`).
 
-| Index | Formula | Notes |
-|-------|---------|-------|
-| **H3** | `cells ≈ 122 × 7^resolution` | Hexagonal cells |
-| **S2** | `cells = 6 × 4^level` | Spherical cells |
-| **A5** | `cells = 6 × 4^resolution` | Equal-area cells |
-| **Quadkey** | `tiles = 4^zoom` | Square tiles |
+This sizes partitions to where your data actually is. A globally-uniform
+formula (e.g. `cells = 6 × 4^resolution` for A5) assumes the data is spread
+evenly across the whole planet, which badly under-resolves regional or national
+datasets — collapsing them into a handful of giant partitions. If the sample
+probe can't run (for example, the file has no geometry column), gpio falls back
+to the uniform-coverage estimate.
+
+> **Note:** cell assignment currently assumes lon/lat (EPSG:4326-family) input.
+> Projected-CRS data should be reprojected before partitioning so cells — and
+> the auto-resolution probe — line up with the data's real geography.
 
 ## By String Column
 
@@ -176,7 +183,7 @@ Use `--auto` to let gpio calculate the optimal H3 resolution:
 !!! note "CLI-Only Feature"
     Auto-resolution is currently CLI-only. For Python, use `partition_by_h3()` with an explicit `resolution` parameter (see examples above).
 
-Auto-resolution calculates the optimal H3 resolution using the formula: `cells ≈ 122 × 7^resolution`. The algorithm targets your specified rows per partition while respecting the `--max-partitions` constraint.
+Auto-resolution probes your data's actual extent (see [How auto-resolution is chosen](#how-auto-resolution-is-chosen)) to pick the H3 resolution that targets your specified rows per partition, while respecting the `--max-partitions` constraint.
 
 ## By S2 Cells
 
@@ -255,7 +262,7 @@ Use `--auto` to let gpio calculate the optimal S2 level:
 !!! note "CLI-Only Feature"
     Auto-resolution is currently CLI-only. For Python, use `partition_by_s2()` with an explicit `level` parameter (see examples above).
 
-Auto-resolution calculates the optimal S2 level using the formula: `cells = 6 × 4^level`. The algorithm targets your specified rows per partition while respecting the `--max-partitions` constraint.
+Auto-resolution probes your data's actual extent (see [How auto-resolution is chosen](#how-auto-resolution-is-chosen)) to pick the S2 level that targets your specified rows per partition, while respecting the `--max-partitions` constraint.
 
 ## By A5 Cells
 
@@ -322,7 +329,7 @@ Use `--auto` to let gpio calculate the optimal A5 resolution:
 !!! note "CLI-Only Feature"
     Auto-resolution is currently CLI-only. A5 partitioning in Python is not yet available.
 
-Auto-resolution calculates the optimal A5 resolution using the formula: `cells = 6 × 4^resolution`. The algorithm targets your specified rows per partition while respecting the `--max-partitions` constraint.
+Auto-resolution probes your data's actual extent (see [How auto-resolution is chosen](#how-auto-resolution-is-chosen)) to pick the A5 resolution that targets your specified rows per partition, while respecting the `--max-partitions` constraint.
 
 ## By Quadkey Cells
 
@@ -403,7 +410,7 @@ Use `--auto` to let gpio calculate the optimal quadkey zoom level:
 !!! note "CLI-Only Feature"
     Auto-resolution is currently CLI-only. For Python, use `partition_by_quadkey()` with an explicit `partition_resolution` parameter (see examples above).
 
-Auto-resolution calculates the optimal quadkey zoom level using the formula: `tiles = 4^zoom`. The algorithm targets your specified rows per partition while respecting the `--max-partitions` constraint.
+Auto-resolution probes your data's actual extent (see [How auto-resolution is chosen](#how-auto-resolution-is-chosen)) to pick the quadkey zoom level that targets your specified rows per partition, while respecting the `--max-partitions` constraint.
 
 ## By KD-Tree
 
