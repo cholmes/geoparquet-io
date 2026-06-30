@@ -198,6 +198,7 @@ def spatial_join_strategy(
     has_native_geometry: bool,
     input_bbox_col: str | None,
     target_bbox_col: str | None,
+    input_geom_rewritten: bool = False,
 ) -> str:
     """Classify which spatial-join strategy :func:`build_spatial_join_condition` uses.
 
@@ -205,17 +206,34 @@ def spatial_join_strategy(
     runs (issue #538), instead of misreporting the native-geometry fast path as a
     degraded "no bbox" fallback.
 
+    Args:
+        has_native_geometry: True when the input exposes a native geometry type
+            (GeoParquet 2.x / geo-typed Parquet) rather than a 1.x bbox covering.
+        input_bbox_col: Input-side bbox covering column, or ``None``.
+        target_bbox_col: Target-side bbox covering column, or ``None``.
+        input_geom_rewritten: True when the input geometry is rewritten in the ON
+            clause (e.g. an ``ST_Transform`` reprojecting a non-CRS84 input, issue
+            #525). :func:`build_spatial_join_condition` then drops the bbox
+            pre-filter because the stored (source-CRS) input bbox is incomparable
+            to the target bbox, so the emitted predicate is a bare ``ST_Intersects``
+            even though ``input_bbox_col`` is populated. The classifier must mirror
+            that or it misreports a reprojected 1.x-with-bbox input as a
+            bbox-prefilter join (issue #538).
+
     Returns:
         - ``SPATIAL_JOIN_NATIVE``: native-geometry input. The ON clause is a bare
           ``ST_Intersects``, which DuckDB's ``SPATIAL_JOIN`` operator recognizes
           and accelerates. This is the fast path, not a fallback.
         - ``SPATIAL_JOIN_BBOX_PREFILTER``: 1.x input with a bbox covering on both
           sides; the cheap bbox-overlap test is ANDed in front of ``ST_Intersects``.
-        - ``SPATIAL_JOIN_NO_BBOX``: 1.x input without a bbox column; no pre-filter
-          is possible and the precise check runs against every candidate.
+        - ``SPATIAL_JOIN_NO_BBOX``: no bbox pre-filter is applied — either a 1.x
+          input without a bbox column, or a reprojected input whose stored bbox is
+          incomparable. The precise check runs against every candidate.
     """
     if has_native_geometry:
         return SPATIAL_JOIN_NATIVE
+    if input_geom_rewritten:
+        return SPATIAL_JOIN_NO_BBOX
     if input_bbox_col and target_bbox_col:
         return SPATIAL_JOIN_BBOX_PREFILTER
     return SPATIAL_JOIN_NO_BBOX

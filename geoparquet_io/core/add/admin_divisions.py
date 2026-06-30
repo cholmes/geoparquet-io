@@ -460,15 +460,24 @@ def _build_admin_where_clauses_list(
     return admin_where_clauses
 
 
-def _report_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col, verbose):
+def _report_join_strategy(
+    has_native_geometry, input_bbox_col, admin_bbox_col, verbose, input_geom_rewritten=False
+):
     """Print a status line describing which spatial-join strategy will run.
 
     Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path, so
     the old "No bbox columns available, using full geometry intersection..." line
     misreported them as a degraded fallback (issue #538). Only 1.x files that
     genuinely lack a bbox column get that warning now.
+
+    A reprojected (non-CRS84) input also gets a bare ST_Intersects — its stored
+    bbox is in the source CRS and is dropped from the predicate (#525) — so
+    ``input_geom_rewritten`` keeps the message from claiming a bbox pre-filter
+    that the emitted SQL does not contain.
     """
-    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col)
+    strategy = spatial_join_strategy(
+        has_native_geometry, input_bbox_col, admin_bbox_col, input_geom_rewritten
+    )
     if strategy == SPATIAL_JOIN_NATIVE:
         progress("Using native geometry with DuckDB SPATIAL_JOIN...")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
@@ -535,7 +544,14 @@ def _build_query_components(
     )
 
     if not dry_run:
-        _report_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col, verbose)
+        input_geom_rewritten = _reprojected_input_geom_sql(input_geom_col, source_crs) is not None
+        _report_join_strategy(
+            has_native_geometry,
+            input_bbox_col,
+            admin_bbox_col,
+            verbose,
+            input_geom_rewritten=input_geom_rewritten,
+        )
 
     query = _build_spatial_join_query(
         input_url,
@@ -565,6 +581,7 @@ def _handle_dry_run_mode(
     compression,
     compression_level,
     has_native_geometry=False,
+    input_geom_rewritten=False,
 ):
     """Handle dry-run mode output."""
     if not dry_run:
@@ -581,7 +598,9 @@ def _handle_dry_run_mode(
     )
 
     info("-- Main spatial join query")
-    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, admin_bbox_col)
+    strategy = spatial_join_strategy(
+        has_native_geometry, input_bbox_col, admin_bbox_col, input_geom_rewritten
+    )
     if strategy == SPATIAL_JOIN_NATIVE:
         info("-- Using native geometry with DuckDB SPATIAL_JOIN")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
@@ -871,6 +890,9 @@ def add_admin_divisions_multi(
                     compression,
                     compression_level,
                     has_native_geometry=has_native_geometry,
+                    input_geom_rewritten=(
+                        _reprojected_input_geom_sql(input_geom_col, source_crs) is not None
+                    ),
                 ):
                     return
 

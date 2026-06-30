@@ -165,3 +165,35 @@ class TestDryRunCommands:
         # fallback — the misleading "no bbox optimization" note must be gone.
         assert "Using native geometry with DuckDB SPATIAL_JOIN" in result.output
         assert "no bbox optimization" not in result.output
+
+    def test_dry_run_with_reprojected_bbox_input(self, austria_bbox_covering_file):
+        """Reprojected (non-CRS84) 1.x-with-bbox input must not claim a bbox prefilter.
+
+        Regression for #538/#525: a projected 1.x input has a stored bbox column,
+        but admin boundaries are CRS84 so the input geometry is wrapped in
+        ST_Transform (#525). build_spatial_join_condition then drops the source-CRS
+        bbox pre-filter and emits a bare ST_Intersects — so the status message must
+        report "no bbox optimization", not "Using bbox columns for optimized
+        spatial join", which would mismatch the predicate that actually runs.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            [
+                "admin-divisions",
+                austria_bbox_covering_file,
+                "output.parquet",
+                "--dry-run",
+                "--no-cache",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "DRY RUN MODE" in result.output
+        # Input is reprojected to CRS84, so the ON clause is a bare ST_Intersects
+        # wrapping the input geometry in ST_Transform — no bbox-overlap pre-filter.
+        assert "ON ST_Intersects" in result.output
+        assert "ST_Transform" in result.output
+        # The message must match the bare predicate, not claim a bbox prefilter.
+        assert "Using full geometry intersection (no bbox optimization)" in result.output
+        assert "Using bbox columns for optimized spatial join" not in result.output
