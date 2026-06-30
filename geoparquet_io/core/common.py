@@ -760,10 +760,23 @@ def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None)
                         f"Column '{field.name}' cast from {col.type} to {field.type} "
                         f"may lose precision for large values"
                     )
-                # Cast to target type with error context
+                # PyArrow cannot cast int32 → timestamp directly (it needs int64 as
+                # an intermediate) and raises ArrowNotImplementedError. This happens
+                # when a source (e.g. DuckDB) infers an epoch-zero/null date column as
+                # int32 while the target schema declares timestamp. Upcast to int64
+                # first so the timestamp cast below succeeds (issue #516).
+                if (
+                    pa.types.is_timestamp(field.type)
+                    and pa.types.is_integer(col.type)
+                    and col.type.bit_width < 64
+                ):
+                    col = col.cast(pa.int64())
+                # Cast to target type with error context. pa.cast() raises siblings
+                # ArrowInvalid (bad value) and ArrowNotImplementedError (unsupported
+                # conversion); catch both so neither escapes uncontextualized.
                 try:
                     col = col.cast(field.type, safe=True)
-                except pa.ArrowInvalid as e:
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as e:
                     context = f" ({page_info})" if page_info else ""
                     raise ValueError(
                         f"Failed to cast column '{field.name}' from {col.type} to "

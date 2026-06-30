@@ -5,6 +5,7 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import datetime
 import json
 import tempfile
 import uuid
@@ -1613,6 +1614,43 @@ class TestCastTableToSchema:
 
         assert result.schema.field("geometry").type == pa.binary()
         assert result.column("geometry").to_pylist() == [b"\x01\x02", b"\x03\x04"]
+
+    def test_int32_column_upcast_to_timestamp(self):
+        """int32 → timestamp is upcast via int64 instead of crashing (issue #516).
+
+        DuckDB can infer an epoch-zero/null date column as int32 while the layer
+        metadata declares timestamp. PyArrow cannot cast int32 → timestamp
+        directly (it raises ArrowNotImplementedError), so the helper upcasts to
+        int64 first.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"valid_on": pa.array([0, 1000], type=pa.int32())})
+        target_schema = pa.schema([pa.field("valid_on", pa.timestamp("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("valid_on").type == pa.timestamp("ms")
+        # 0 ms = epoch, 1000 ms = one second past epoch
+        assert result.column("valid_on").to_pylist() == [
+            datetime.datetime(1970, 1, 1, 0, 0, 0),
+            datetime.datetime(1970, 1, 1, 0, 0, 1),
+        ]
+
+    def test_int16_column_upcast_to_timestamp(self):
+        """Any sub-64-bit integer column is upcast before the timestamp cast."""
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"valid_on": pa.array([0, 500], type=pa.int16())})
+        target_schema = pa.schema([pa.field("valid_on", pa.timestamp("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("valid_on").type == pa.timestamp("ms")
+        assert result.column("valid_on").to_pylist() == [
+            datetime.datetime(1970, 1, 1, 0, 0, 0),
+            datetime.datetime(1970, 1, 1, 0, 0, 0, 500000),
+        ]
 
     def test_cast_failure_reports_page_context(self):
         """An impossible cast raises ValueError carrying the page/column context.
