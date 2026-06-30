@@ -19,7 +19,11 @@ import pytest
 from geoparquet_io.core.streaming import (
     STREAM_MARKER,
     StreamingError,
+    _rebatch_wkb_under_byte_limit,
+    _split_array_under_byte_limit,
+    _wkb_chunk_data_nbytes,
     apply_geo_metadata,
+    apply_geoarrow_extension_type,
     apply_metadata_to_table,
     extract_geo_metadata,
     find_geometry_column_from_metadata,
@@ -643,3 +647,176 @@ class TestVersionExtraction:
         assert detect_version_for_output(None, table) is None
         assert detect_version_for_output({}, table) is None
         assert detect_version_for_output(None, None) is None
+
+
+def _wkb_polygon(npts: int) -> bytes:
+    """Build a little-endian WKB Polygon with one ring of ``npts`` vertices.
+
+    Each vertex is 16 bytes, so the WKB size scales ~linearly with ``npts`` —
+    used to manufacture large geometry payloads in tests (issue #511).
+    """
+    import struct
+
+    hdr = struct.pack("<BII", 1, 3, 1) + struct.pack("<I", npts)
+    coords = bytearray()
+    for i in range(npts - 1):
+        coords += struct.pack("<dd", (i % 1000) * 1e-4, (i % 997) * 1e-4)
+    coords += struct.pack("<dd", 0.0, 0.0)  # close the ring
+    return hdr + bytes(coords)
+
+
+class TestWkbByteRebatching:
+    """Tests for the 32-bit WKB offset-overflow guard (issue #511)."""
+
+    def test_data_nbytes_sums_value_lengths(self):
+        """_wkb_chunk_data_nbytes counts value bytes, not offset/validity bytes."""
+        blobs = [b"abc", b"de", b""]
+        arr = pa.array(blobs, type=pa.large_binary())
+        assert _wkb_chunk_data_nbytes(arr) == 5
+
+    def test_data_nbytes_empty_array(self):
+        """An empty array has zero value bytes."""
+        arr = pa.array([], type=pa.large_binary())
+        assert _wkb_chunk_data_nbytes(arr) == 0
+
+    def test_split_respects_byte_budget(self):
+        """Each emitted slice stays within the byte budget and rows are preserved."""
+        blobs = [b"x" * 1000 for _ in range(10)]
+        arr = pa.array(blobs, type=pa.large_binary())
+
+        slices = _split_array_under_byte_limit(arr, max_bytes=2500)
+
+        # 2500-byte budget fits two 1000-byte values per slice.
+        assert all(_wkb_chunk_data_nbytes(s) <= 2500 for s in slices)
+        assert sum(len(s) for s in slices) == 10
+        # Reassembling yields the original values in order.
+        rejoined = pa.concat_arrays(slices)
+        assert rejoined.to_pylist() == arr.to_pylist()
+
+    def test_split_oversized_single_value(self):
+        """A single value above the budget is emitted alone (no empty slices)."""
+        arr = pa.array([b"y" * 100, b"z" * 5000, b"y" * 100], type=pa.large_binary())
+
+        slices = _split_array_under_byte_limit(arr, max_bytes=1000)
+
+        assert all(len(s) > 0 for s in slices)
+        assert sum(len(s) for s in slices) == 3
+        # The oversized value lands in a slice on its own.
+        assert any(len(s) == 1 and _wkb_chunk_data_nbytes(s) == 5000 for s in slices)
+
+    def test_rebatch_noop_when_under_limit(self):
+        """Arrays already under the limit are returned unchanged (identity)."""
+        arr = pa.chunked_array([pa.array([b"abc", b"def"], type=pa.large_binary())])
+        result = _rebatch_wkb_under_byte_limit(arr, max_bytes=1_000_000)
+        assert result is arr
+
+    def test_rebatch_splits_oversized_chunk(self):
+        """Oversized chunks are split while preserving row order and values."""
+        blobs = [b"q" * 1000 for _ in range(10)]
+        arr = pa.chunked_array([pa.array(blobs, type=pa.large_binary())])
+
+        result = _rebatch_wkb_under_byte_limit(arr, max_bytes=2500)
+
+        assert isinstance(result, pa.ChunkedArray)
+        assert result.num_chunks > 1
+        assert all(_wkb_chunk_data_nbytes(c) <= 2500 for c in result.chunks)
+        assert result.combine_chunks().to_pylist() == arr.combine_chunks().to_pylist()
+
+
+class TestApplyGeoArrowExtensionType:
+    """Tests for apply_geoarrow_extension_type, including the #511 overflow fix."""
+
+    def _wkb_table(self, n: int = 6, npts: int = 64):
+        """Build a table whose geometry column is large_binary WKB polygons."""
+        blob = _wkb_polygon(npts)
+        return pa.table(
+            {
+                "id": list(range(n)),
+                "geometry": pa.array([blob] * n, type=pa.large_binary()),
+            }
+        )
+
+    def test_converts_to_geoarrow_wkb(self):
+        """A normal WKB column becomes a geoarrow.wkb extension type."""
+        table = self._wkb_table()
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        geom_type = result.column("geometry").type
+        assert getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == table.num_rows
+
+    def test_missing_column_returns_table_unchanged(self):
+        """Absent geometry column is a no-op."""
+        table = pa.table({"id": [1, 2]})
+        assert apply_geoarrow_extension_type(table, "geometry") is table
+
+    def test_rebatches_when_chunk_exceeds_limit(self, monkeypatch):
+        """A chunk above the byte budget is split before conversion and survives.
+
+        Drives the #511 overflow path with a tiny budget so it runs without the
+        ~2.2 GB of RAM the real-size reproduction requires.
+        """
+        import geoparquet_io.core.streaming as streaming
+
+        table = self._wkb_table(n=8, npts=64)
+        blob_size = len(_wkb_polygon(64))
+        # Budget that holds ~2 polygons per chunk, forcing multiple sub-chunks.
+        monkeypatch.setattr(streaming, "_MAX_WKB_CHUNK_BYTES", blob_size * 2)
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        geom = result.column("geometry")
+        assert getattr(geom.type, "extension_name", "") == "geoarrow.wkb"
+        # The single oversized chunk was split into several before conversion.
+        assert geom.num_chunks > 1
+        assert result.num_rows == table.num_rows
+        # WKB values survive the split + re-encode unchanged.
+        storage = pa.chunked_array([c.storage for c in geom.chunks])
+        assert storage.to_pylist() == table.column("geometry").to_pylist()
+
+    def test_preserves_crs(self):
+        """A provided CRS is attached to the resulting geoarrow type."""
+        table = self._wkb_table()
+        result = apply_geoarrow_extension_type(table, "geometry", crs="EPSG:4326")
+
+        geom_type = result.column("geometry").type
+        assert getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+        assert geom_type.crs is not None
+
+    def test_conversion_failure_raises_clear_error(self, monkeypatch):
+        """A geoarrow failure surfaces as StreamingError, not a silent passthrough.
+
+        Regression guard for the masked "No data received on stdin" bug: a
+        forced conversion failure must raise with the true cause rather than
+        returning un-converted geometry (issue #511).
+        """
+        import geoarrow.pyarrow as ga
+
+        def _boom(_arr):
+            # Mimic geoarrow's GeoArrowCException (a RuntimeError subclass).
+            raise RuntimeError("push_batch() failed (75)")
+
+        monkeypatch.setattr(ga, "as_wkb", _boom)
+
+        table = self._wkb_table()
+        with pytest.raises(StreamingError, match="GeoArrow"):
+            apply_geoarrow_extension_type(table, "geometry")
+
+    @pytest.mark.slow
+    def test_real_overflow_succeeds(self):
+        """End-to-end: a >2 GB large_binary WKB batch converts without overflow.
+
+        Reproduces issue #511 at real scale: ga.as_wkb alone raises
+        GeoArrowCException on this input, but apply_geoarrow_extension_type
+        re-chunks it first and succeeds. Needs ~2.2 GB RAM, hence ``slow``.
+        """
+        blob = _wkb_polygon(65536)  # ~1 MB each
+        int32_max = 2_147_483_647
+        n = int32_max // len(blob) + 50  # push the batch just over 2 GB
+        table = pa.table({"geometry": pa.array([blob] * n, type=pa.large_binary())})
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        geom = result.column("geometry")
+        assert getattr(geom.type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == n
