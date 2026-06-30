@@ -55,9 +55,11 @@ datasets — collapsing them into a handful of giant partitions. If the sample
 probe can't run (for example, the file has no geometry column), gpio falls back
 to the uniform-coverage estimate.
 
-> **Note:** cell assignment currently assumes lon/lat (EPSG:4326-family) input.
-> Projected-CRS data should be reprojected before partitioning so cells — and
-> the auto-resolution probe — line up with the data's real geography.
+> **Note:** cell assignment is CRS-aware — a projected input (e.g. EPSG:5070) is
+> reprojected to OGC:CRS84 before the grid cell is computed, and `partition admin`
+> reprojects the input to the admin boundaries' CRS before the spatial join. The
+> auto-resolution probe still samples the input's own coordinates, so its
+> estimate is most accurate for lon/lat data.
 
 ## By String Column
 

@@ -14,12 +14,31 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
+from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
 from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
+
+
+def _reprojected_input_geom_sql(input_geom_col, source_crs, alias="a"):
+    """Return the input geometry expression reprojected to the admin CRS.
+
+    Admin boundaries are OGC:CRS84, so a non-CRS84 input must be reprojected
+    before ``ST_Intersects`` (issue #525) — DuckDB 1.5 otherwise refuses the
+    join with a CRS-mismatch error. Returns ``None`` when no transform is needed
+    (input already CRS84 / CRS-less), so callers keep the original behavior.
+
+    ``alias`` is the SQL table alias prefix; pass ``None`` for a bare column
+    reference (e.g. an aggregate extent query with no alias).
+    """
+    base = (
+        f"{alias}.{quote_identifier(input_geom_col)}" if alias else quote_identifier(input_geom_col)
+    )
+    transformed = crs_transform_sql_expr(base, source_crs)
+    return transformed if transformed != base else None
 
 
 def _build_admin_subquery(
@@ -101,6 +120,7 @@ def _build_spatial_join_query(
     admin_geom_col,
     *,
     is_table_ref=False,
+    source_crs=None,
 ):
     """Build the per-level admin spatial join query.
 
@@ -120,9 +140,16 @@ def _build_spatial_join_query(
     """
     input_ref = _format_input_ref(input_url, is_table_ref)
 
+    # Reproject a non-CRS84 input to the admin CRS before ST_Intersects (#525).
+    input_geom_sql = _reprojected_input_geom_sql(input_geom_col, source_crs)
+
     # Shared, fully-quoted ON clause (bbox pre-filter + ST_Intersects).
     join_clause = "ON " + build_spatial_join_condition(
-        input_geom_col, admin_geom_col, input_bbox_col, admin_bbox_col
+        input_geom_col,
+        admin_geom_col,
+        input_bbox_col,
+        admin_bbox_col,
+        input_geom_sql=input_geom_sql,
     )
 
     return f"""
@@ -136,15 +163,29 @@ def _build_spatial_join_query(
 
 
 def _add_extent_filter(
-    con, input_url, input_bbox_col, input_geom_col, admin_bbox_col, verbose, is_table_ref=False
+    con,
+    input_url,
+    input_bbox_col,
+    input_geom_col,
+    admin_bbox_col,
+    verbose,
+    is_table_ref=False,
+    source_crs=None,
 ):
-    """Add bbox extent filter to admin where clauses."""
+    """Add bbox extent filter to admin where clauses.
+
+    When the input is reprojected to the admin CRS (``source_crs`` non-default),
+    the extent is computed from the *reprojected* geometry so the resulting
+    bounds are comparable to the admin (CRS84) bbox; the stored input bbox column
+    is in the source CRS and is therefore ignored.
+    """
     if not admin_bbox_col:
         return None
 
     input_ref = _format_input_ref(input_url, is_table_ref)
+    input_geom_sql = _reprojected_input_geom_sql(input_geom_col, source_crs, alias=None)
 
-    if input_bbox_col:
+    if input_bbox_col and input_geom_sql is None:
         q_input_bbox = quote_identifier(input_bbox_col)
         extent_query = f"""
             SELECT
@@ -155,13 +196,13 @@ def _add_extent_filter(
             FROM {input_ref}
         """
     else:
-        q_input_geom = quote_identifier(input_geom_col)
+        geom_expr = input_geom_sql or f"{quote_identifier(input_geom_col)}"
         extent_query = f"""
             SELECT
-                MIN(ST_XMin({q_input_geom})) as xmin,
-                MAX(ST_XMax({q_input_geom})) as xmax,
-                MIN(ST_YMin({q_input_geom})) as ymin,
-                MAX(ST_YMax({q_input_geom})) as ymax
+                MIN(ST_XMin({geom_expr})) as xmin,
+                MAX(ST_XMax({geom_expr})) as xmax,
+                MIN(ST_YMin({geom_expr})) as ymin,
+                MAX(ST_YMax({geom_expr})) as ymax
             FROM {input_ref}
         """
 
@@ -291,6 +332,13 @@ def _setup_dataset_and_columns(
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     admin_geom_col = dataset.get_geometry_column()
 
+    # Detect a projected input CRS: admin boundaries are OGC:CRS84, so a non-CRS84
+    # input is reprojected before ST_Intersects (issue #525). DuckDB 1.5 otherwise
+    # refuses the join with a CRS-mismatch error.
+    source_crs = extract_crs_from_parquet(input_parquet, verbose)
+    if source_crs is not None and verbose:
+        debug("Projected input CRS detected — reprojecting to OGC:CRS84 for admin join")
+
     # Check if we should skip bbox pre-filtering (for native geometry files)
     input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
     if input_bbox_advice["skip_bbox_prefilter"]:
@@ -314,6 +362,7 @@ def _setup_dataset_and_columns(
         input_bbox_info,
         input_bbox_col,
         admin_bbox_col,
+        source_crs,
     )
 
 
@@ -358,6 +407,7 @@ def _build_admin_where_clauses_list(
     verbose,
     dry_run,
     is_table_ref=False,
+    source_crs=None,
 ):
     """Build WHERE clauses for admin boundaries."""
     admin_where_clauses = []
@@ -375,6 +425,7 @@ def _build_admin_where_clauses_list(
         admin_bbox_col,
         verbose and not dry_run,
         is_table_ref=is_table_ref,
+        source_crs=source_crs,
     )
     if extent_filter:
         admin_where_clauses.append(extent_filter)
@@ -397,6 +448,7 @@ def _build_query_components(
     dry_run,
     prefix=None,
     is_table_ref=False,
+    source_crs=None,
 ):
     """Build all query components."""
     # Use provided admin_source (may be cached local path or remote URL)
@@ -419,6 +471,7 @@ def _build_query_components(
         verbose,
         dry_run,
         is_table_ref=is_table_ref,
+        source_crs=source_crs,
     )
 
     admin_select_clause = _build_admin_select_clause(
@@ -448,6 +501,7 @@ def _build_query_components(
         input_geom_col,
         admin_geom_col,
         is_table_ref=is_table_ref,
+        source_crs=source_crs,
     )
 
     return query, admin_source
@@ -525,12 +579,17 @@ def _execute_per_level_joins(
     prefix,
     no_cache,
     extra_kv=None,
+    source_crs=None,
 ):
     """Run separate spatial joins per admin level for per-level-source datasets.
 
     Each level joins against its own cache file, chaining results through DuckDB
     temp tables. Per-level caches are non-overlapping, so each plain LEFT JOIN
     normally preserves the row count.
+
+    The input geometry is carried through the chained temp tables unchanged (in
+    its source CRS), so ``source_crs`` reprojection is applied at every level,
+    not just the first (issue #525).
     """
     current_source = input_url
 
@@ -555,6 +614,7 @@ def _execute_per_level_joins(
             dry_run,
             prefix=prefix,
             is_table_ref=is_table_ref,
+            source_crs=source_crs,
         )
 
         if dry_run:
@@ -658,6 +718,7 @@ def add_admin_divisions_multi(
         input_bbox_info,
         input_bbox_col,
         admin_bbox_col,
+        source_crs,
     ) = _setup_dataset_and_columns(
         input_parquet, dataset_name, dataset_source, levels, verbose, no_cache=no_cache
     )
@@ -719,6 +780,7 @@ def add_admin_divisions_multi(
                     effective_prefix,
                     no_cache,
                     extra_kv=extra_kv,
+                    source_crs=source_crs,
                 )
                 if dry_run:
                     return
@@ -737,6 +799,7 @@ def add_admin_divisions_multi(
                     verbose,
                     dry_run,
                     prefix=effective_prefix,
+                    source_crs=source_crs,
                 )
 
                 if _handle_dry_run_mode(

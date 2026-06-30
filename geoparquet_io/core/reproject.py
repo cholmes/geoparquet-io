@@ -21,12 +21,12 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import (
     NULL_CRS_NO_FLAG_ERROR,
-    _extract_crs_identifier,
     apply_target_crs_to_geo_meta,
     crs_is_explicitly_null,
     extract_crs_from_parquet,
     geoparquet_crs_is_null,
     parse_crs_string_to_projjson,
+    resolve_crs_to_string,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.file_utils import safe_file_url
@@ -78,31 +78,10 @@ def _detect_geometry_column_from_table(table: pa.Table) -> str:
 def _resolve_crs_to_string(crs_info) -> str | None:
     """Resolve CRS info (PROJJSON dict or string) to a CRS string for ST_Transform.
 
-    Tries authority identifier first, then pyproj resolution, then raw PROJJSON.
-
-    Returns:
-        CRS string like "EPSG:4326" or PROJJSON string, or None if unresolvable
+    Thin wrapper over :func:`crs_utils.resolve_crs_to_string` (single source of
+    truth) kept for the module-local callers below.
     """
-    if not crs_info:
-        return None
-
-    identifier = _extract_crs_identifier(crs_info)
-    if identifier:
-        authority, code = identifier
-        return f"{authority}:{code}"
-
-    if isinstance(crs_info, dict):
-        try:
-            from pyproj import CRS
-
-            authority = CRS.from_json_dict(crs_info).to_authority()
-            if authority:
-                return f"{authority[0]}:{authority[1]}"
-        except Exception:
-            pass
-        return json.dumps(crs_info)
-
-    return None
+    return resolve_crs_to_string(crs_info)
 
 
 def _detect_crs_from_table(table: pa.Table, geom_col: str) -> str:
