@@ -348,8 +348,14 @@ class TestS2ResolutionCalculation:
 class TestAutoResolutionIntegration:
     """Test the main calculate_auto_resolution function with real files."""
 
+    @pytest.mark.network
     def test_calculate_auto_resolution_h3_with_real_file(self, fields_5070_file):
-        """Test auto-resolution calculation with a real GeoParquet file (H3)."""
+        """Test auto-resolution calculation with a real GeoParquet file (H3).
+
+        Network-marked: the extent-aware probe runs ``INSTALL h3 FROM community``
+        + ``LOAD``, which a cold-cache runner must download. The quadkey
+        integration test below covers the probe's success path offline.
+        """
         resolution = calculate_auto_resolution(
             input_parquet=fields_5070_file,
             spatial_index_type="h3",
@@ -361,7 +367,12 @@ class TestAutoResolutionIntegration:
         assert 0 <= resolution <= 15
 
     def test_calculate_auto_resolution_quadkey_with_real_file(self, fields_5070_file):
-        """Test auto-resolution calculation with a real GeoParquet file (quadkey)."""
+        """Test auto-resolution calculation with a real GeoParquet file (quadkey).
+
+        Intentionally *not* network-marked: quadkey's probe needs only mercantile
+        (no ``INSTALL ... FROM community``), so this exercises the extent-aware
+        probe's success path in the offline fast suite.
+        """
         resolution = calculate_auto_resolution(
             input_parquet=fields_5070_file,
             spatial_index_type="quadkey",
@@ -372,8 +383,12 @@ class TestAutoResolutionIntegration:
         # Should return a valid quadkey zoom level
         assert 0 <= resolution <= 23
 
+    @pytest.mark.network
     def test_calculate_auto_resolution_a5_with_real_file(self, fields_5070_file):
-        """Test auto-resolution calculation with a real GeoParquet file (A5)."""
+        """Test auto-resolution calculation with a real GeoParquet file (A5).
+
+        Network-marked: the extent-aware probe runs ``INSTALL a5 FROM community``.
+        """
         resolution = calculate_auto_resolution(
             input_parquet=fields_5070_file,
             spatial_index_type="a5",
@@ -384,8 +399,13 @@ class TestAutoResolutionIntegration:
         # Should return a valid A5 resolution
         assert 0 <= resolution <= 30
 
+    @pytest.mark.network
     def test_calculate_auto_resolution_s2_with_real_file(self, fields_5070_file):
-        """Test auto-resolution calculation with a real GeoParquet file (S2)."""
+        """Test auto-resolution calculation with a real GeoParquet file (S2).
+
+        Network-marked: the extent-aware probe runs
+        ``INSTALL geography FROM community``.
+        """
         resolution = calculate_auto_resolution(
             input_parquet=fields_5070_file,
             spatial_index_type="s2",
@@ -422,8 +442,12 @@ class TestAutoResolutionIntegration:
                 target_rows_per_partition=100,
             )
 
+    @pytest.mark.network
     def test_calculate_auto_resolution_custom_bounds(self, fields_5070_file):
-        """Test custom min/max resolution bounds."""
+        """Test custom min/max resolution bounds.
+
+        Network-marked: uses H3, whose probe runs ``INSTALL h3 FROM community``.
+        """
         resolution = calculate_auto_resolution(
             input_parquet=fields_5070_file,
             spatial_index_type="h3",
