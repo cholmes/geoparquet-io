@@ -76,6 +76,33 @@ Shows:
     preview = table.head(100).add_bbox()
     ```
 
+### Fitting to Terminal Width
+
+When writing to an interactive terminal, `gpio inspect head` and `gpio inspect tail` fit the preview to your terminal width, showing as many whole columns as fit on screen. Cell values are truncated with ellipsis (`…`) to one line per cell. When columns are hidden, a note appears: `… +N more columns (--no-truncate or --json to see all)`.
+
+When output is redirected or piped (e.g. `gpio inspect head data.parquet | cat`), width fitting is disabled and all columns are shown with full values, so scripts and pipes always see every column. Pass `--max-columns N` to limit columns even when piping.
+
+Use `--max-columns N` to show exactly N columns instead of auto-fitting:
+
+```bash
+# Show exactly 3 columns
+gpio inspect head data.parquet --max-columns 3
+```
+
+Use `--no-truncate` to disable width fitting and show all columns with full (untrimmed) values:
+
+```bash
+# Show all columns with complete values
+gpio inspect head data.parquet --no-truncate
+```
+
+For machine-readable output with all columns and full values, use `--json`:
+
+```bash
+# Complete data as JSON
+gpio inspect head data.parquet --json
+```
+
 ## Statistics
 
 === "CLI"
