@@ -20,6 +20,9 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+constraints = [{ name = "msgpack", specifier = ">=1.2.1" }]
+
 [[package]]
 name = "aiobotocore"
 version = "3.7.0"

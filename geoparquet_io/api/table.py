@@ -346,6 +346,7 @@ def extract_arcgis(
     output_crs: str | None = None,
     max_allowable_offset: float | None = None,
     repair_geometry: bool = True,
+    timeout: float = 60.0,
 ) -> Table:
     """
     Extract features from an ArcGIS Feature Service to a Table.
@@ -380,6 +381,8 @@ def extract_arcgis(
             or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
         max_allowable_offset: Server-side geometry generalization tolerance, in
             output-CRS units (degrees on the default WGS84 path).
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that are slow to serialize.
 
     Returns:
         Table for chaining operations
@@ -425,6 +428,7 @@ def extract_arcgis(
         max_allowable_offset=max_allowable_offset,
         verbose=False,
         repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
     return Table(arrow_table, geometry_column="geometry")

@@ -238,6 +238,10 @@ gpio.extract_arcgis(
 | `include_cols` | str | Comma-separated columns to include |
 | `exclude_cols` | str | Comma-separated columns to exclude |
 | `limit` | int | Maximum number of features |
+| `max_workers` | int | Number of parallel fetch workers (default: 1) |
+| `output_crs` | str | Output CRS (e.g. `EPSG:25830`) or `native`; default reprojects to WGS84 |
+| `max_allowable_offset` | float | Server-side geometry generalization tolerance in output CRS units |
+| `timeout` | float | Per-request HTTP timeout in seconds (default: 60); increase for slow, heavy-geometry layers |
 
 !!! note "No automatic Hilbert sorting"
     Unlike the CLI `gpio extract arcgis` command, the Python API does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if you want spatial ordering.

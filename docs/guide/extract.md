@@ -1058,6 +1058,32 @@ Some layers have very large or vertex-dense polygons that are slow to download o
 
 The tolerance is in the units of the request's output CRS. With `--output-crs` set, that is the chosen CRS's unit, degrees for a geographic CRS and the projected unit (often meters) for a projected CRS. Without `--output-crs` the request is anchored to WGS84, so the tolerance is in degrees. The value must be positive, a bad value fails fast before any network call.
 
+### Slow servers and timeouts
+
+Each HTTP request defaults to a 60-second timeout. FeatureServer layers with very large or vertex-dense polygons (e.g. national or regional boundaries with detailed coastlines) can take the server several minutes to serialize a single page, which fails with an HTTP timeout. Use `--timeout` to raise the per-request limit:
+
+=== "CLI"
+
+    ```bash
+    # Allow up to 5 minutes per request for heavy polygon layers
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --timeout 300
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        timeout=300,
+    )
+    table.write("out.parquet")
+    ```
+
+Combine `--timeout` with `--batch-size` (smaller pages) or `--max-allowable-offset` (fewer vertices per feature) when a layer is both slow and heavy.
+
 ### Finding Service URLs
 
 ArcGIS Feature Service URLs follow this pattern:

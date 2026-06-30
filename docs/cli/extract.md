@@ -85,6 +85,11 @@ gpio extract arcgis https://services.arcgis.com/.../FeatureServer/0 output.parqu
 - `--include-cols` - Comma-separated columns to include (pushed to server)
 - `--exclude-cols` - Comma-separated columns to exclude (applied after download)
 - `--limit` - Maximum number of features to extract
+- `--output-crs` - Output CRS such as `EPSG:25830`, or `native` for the layer's advertised SR (default reprojects to WGS84)
+- `--max-allowable-offset` - Server-side geometry generalization tolerance in output CRS units
+- `--workers` - Parallel requests for large datasets (1-10, default: 1)
+- `--batch-size` - Features per request (default: server's maxRecordCount, auto-reduces on errors)
+- `--timeout` - Per-request HTTP timeout in seconds (default: 60). Increase for layers with very large/complex geometries that are slow to serialize
 - `--skip-hilbert` - Skip Hilbert spatial ordering
 - `--skip-bbox` - Skip adding bbox column
 
