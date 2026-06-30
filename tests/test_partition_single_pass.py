@@ -359,3 +359,69 @@ class TestOverwrite:
         for f, mtime in mtimes.items():
             assert os.path.exists(f)
             assert os.path.getmtime(f) == mtime  # untouched
+
+
+def _write_two_column(path, rows):
+    """Write a GeoParquet with two partitionable columns from ``rows`` of
+    (country, subdivision, x, y)."""
+    from geoparquet_io.core.common import write_parquet_with_metadata
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute("CREATE TABLE t (country VARCHAR, subdivision VARCHAR, geometry GEOMETRY)")
+    for country, subdivision, x, y in rows:
+        con.execute("INSERT INTO t VALUES (?, ?, ST_Point(?, ?))", [country, subdivision, x, y])
+    write_parquet_with_metadata(con, "SELECT * FROM t", path)
+    con.close()
+    return path
+
+
+class TestRepartitionNoLeak:
+    """Regression for #490: the internal ``__gpio_part`` alias must never leak
+    into output files, and re-partitioning a partition must not compound it
+    (``__gpio_part``, then ``__gpio_part_1``, …)."""
+
+    def test_repartition_of_partition_has_no_alias_column(self, temp_output_dir):
+        src = _write_two_column(
+            os.path.join(temp_output_dir, "src.parquet"),
+            [
+                ("US", "US-NY", 1, 1),
+                ("US", "US-NY", 2, 2),
+                ("US", "US-CA", 3, 3),
+                ("CA", "CA-ON", 4, 4),
+            ],
+        )
+
+        # Pass 1: partition by country.
+        out1 = os.path.join(temp_output_dir, "out1")
+        partition_by_column(
+            input_parquet=src,
+            output_folder=out1,
+            column_name="country",
+            keep_partition_column=True,
+            skip_analysis=True,
+        )
+        first_files = _rglob_parquet(out1)
+        for f in first_files:
+            names = pq.ParquetFile(f).schema_arrow.names
+            assert not any(n.startswith("__gpio_part") for n in names), names
+
+        # Pass 2: re-partition the US output (carried via SELECT *) by subdivision.
+        us_file = os.path.join(out1, "US.parquet")
+        assert us_file in first_files
+        out2 = os.path.join(temp_output_dir, "out2")
+        partition_by_column(
+            input_parquet=us_file,
+            output_folder=out2,
+            column_name="subdivision",
+            keep_partition_column=True,
+            skip_analysis=True,
+        )
+        second_files = _rglob_parquet(out2)
+        assert second_files
+        for f in second_files:
+            names = pq.ParquetFile(f).schema_arrow.names
+            # No alias from either pass: __gpio_part, __gpio_part_1, …
+            assert not any(n.startswith("__gpio_part") for n in names), names
+        # Rows reconcile across the re-partition (only the 3 US rows).
+        assert sum(_row_count(f) for f in second_files) == 3
