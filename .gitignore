@@ -200,3 +200,6 @@ cython_debug/
 .menard/symbols_cache.json
 .claude/worktrees/
 .serena/
+
+# Agent scratch files
+.agent/
