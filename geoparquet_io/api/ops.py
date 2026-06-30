@@ -277,7 +277,7 @@ def aggregate_a5(
     Args:
         table: Input PyArrow Table with geometry column
         resolution: A5 resolution level 0-30
-        metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+        metric: Aggregation metric, e.g. "sum:area" or "avg:value"
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
@@ -311,7 +311,7 @@ def aggregate_h3(
     Args:
         table: Input PyArrow Table with geometry column
         resolution: H3 resolution level 0-15
-        metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+        metric: Aggregation metric, e.g. "sum:area" or "avg:value"
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
@@ -344,8 +344,8 @@ def aggregate_admin(
 
     Args:
         table: Input PyArrow Table with geometry column
-        level: Admin level to aggregate by ("country", "region", "subregion")
-        metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+        level: Admin level to aggregate by ("country", "region")
+        metric: Aggregation metric, e.g. "sum:area" or "avg:value"
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"

@@ -1329,7 +1329,7 @@ class Table:
 
         Args:
             resolution: A5 resolution level 0-30
-            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            metric: Aggregation metric, e.g. "sum:area" or "avg:value"
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
@@ -1363,7 +1363,7 @@ class Table:
 
         Args:
             resolution: H3 resolution level 0-15
-            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            metric: Aggregation metric, e.g. "sum:area" or "avg:value"
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
@@ -1396,8 +1396,8 @@ class Table:
         Aggregate features into administrative regions with per-region statistics.
 
         Args:
-            level: Admin level to aggregate by ("country", "region", "subregion")
-            metric: Aggregation metric, e.g. "sum:area" or "mean:value"
+            level: Admin level to aggregate by ("country", "region")
+            metric: Aggregation metric, e.g. "sum:area" or "avg:value"
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
