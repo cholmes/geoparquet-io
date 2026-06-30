@@ -6,6 +6,7 @@ from __future__ import annotations
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -187,7 +188,12 @@ def aggregate_by_admin(
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
         read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-        input_geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
+        # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input so ST_Intersects
+        # does not fail on a CRS mismatch and the centroid lands correctly (#525).
+        source_crs = extract_crs_from_parquet(input_parquet, verbose)
+        input_geom_expr = crs_transform_sql_expr(
+            geometry_to_geom_expr(con, read_rel, geom_col), source_crs
+        )
         joined_sql = _build_joined_sql(
             input_url,
             input_geom_expr,

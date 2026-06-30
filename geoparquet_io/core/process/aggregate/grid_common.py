@@ -15,6 +15,11 @@ from dataclasses import dataclass
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.crs_utils import (
+    crs_transform_sql_expr,
+    extract_crs_from_parquet,
+    extract_crs_from_table,
+)
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -76,14 +81,16 @@ def _exclude_reserved(con, relation: str, extra: tuple[str, ...] = ()) -> str:
     return f" EXCLUDE ({', '.join(quote_identifier(c) for c in drop)})" if drop else ""
 
 
-def read_grid_source_sql(con, input_url: str, geom_col: str) -> str:
+def read_grid_source_sql(con, input_url: str, geom_col: str, source_crs=None) -> str:
     """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
 
     Detects whether the input geometry column is read as GEOMETRY (real GeoParquet)
-    or BLOB (plain WKB) so it works on both.
+    or BLOB (plain WKB) so it works on both. Grid keying expects lon/lat, so a
+    non-CRS84 ``source_crs`` is reprojected to OGC:CRS84 before keying (#525); a
+    CRS-less / already-CRS84 input is left untouched.
     """
     read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-    geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
+    geom_expr = crs_transform_sql_expr(geometry_to_geom_expr(con, read_rel, geom_col), source_crs)
     return f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom FROM {read_rel}"
 
 
@@ -235,6 +242,7 @@ def aggregate_grid_file(
 
     input_url = safe_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
+    source_crs = extract_crs_from_parquet(input_parquet, verbose)
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
     try:
@@ -242,7 +250,7 @@ def aggregate_grid_file(
         con.execute(f"LOAD {scheme.extension}")
         con.execute("SET geometry_always_xy = true")
 
-        source_sql = read_grid_source_sql(con, input_url, geom_col)
+        source_sql = read_grid_source_sql(con, input_url, geom_col, source_crs)
         final_sql = build_grid_query(
             con,
             scheme,
@@ -310,7 +318,10 @@ def aggregate_grid_table(
         con.execute(f"LOAD {scheme.extension}")
         con.execute("SET geometry_always_xy = true")
         con.register("__agg_input", table)
-        geom_expr = geometry_to_geom_expr(con, "__agg_input", geom_col)
+        source_crs = extract_crs_from_table(table, geom_col)
+        geom_expr = crs_transform_sql_expr(
+            geometry_to_geom_expr(con, "__agg_input", geom_col), source_crs
+        )
         source_sql = (
             f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col,))}, "
             f"{geom_expr} AS __geom FROM __agg_input"
