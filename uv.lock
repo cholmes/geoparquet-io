@@ -1358,7 +1358,7 @@ requires-dist = [
     { name = "codespell", marker = "extra == 'dev'", specifier = ">=2.2" },
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.25.0" },
-    { name = "duckdb", specifier = ">=1.5.0,<1.5.2" },
+    { name = "duckdb", specifier = ">=1.5.0" },
     { name = "fiona", marker = "extra == 'benchmark'", specifier = ">=1.9.0" },
     { name = "fsspec", specifier = ">=2023.9.0" },
     { name = "geoarrow-pyarrow", specifier = ">=0.1.0" },

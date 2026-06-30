@@ -1,0 +1,1 @@
+chore: relax duckdb pin, clear error on missing extension (#491)

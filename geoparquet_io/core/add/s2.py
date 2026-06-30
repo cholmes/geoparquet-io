@@ -17,7 +17,7 @@ from geoparquet_io.core.constants import (
     DEFAULT_S2_COLUMN_NAME,
     DEFAULT_S2_LEVEL,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, load_community_extension
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -36,8 +36,7 @@ from geoparquet_io.core.streaming import (
 
 def _load_geography_extension(con):
     """Load DuckDB geography extension for S2 support."""
-    con.execute("INSTALL geography FROM community")
-    con.execute("LOAD geography")
+    load_community_extension(con, "geography")
 
 
 def _create_geometry_view(con, table, geom_col):
@@ -308,8 +307,7 @@ def _add_s2_streaming(
     def make_query(source: str, con) -> str:
         """Build the add S2 query for streaming source."""
         # Load geography extension
-        con.execute("INSTALL geography FROM community")
-        con.execute("LOAD geography")
+        _load_geography_extension(con)
 
         # Get column names from query result
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description

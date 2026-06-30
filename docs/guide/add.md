@@ -194,6 +194,14 @@ s2_cell_token(
 Cell IDs are stored as hex strings (e.g., `"89c25901"`) rather than integers for
 maximum portability across systems.
 
+!!! note "DuckDB version and the geography extension"
+    The `geography` extension is a [DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html)
+    that is built per DuckDB release. If you install a DuckDB version for which it
+    has not been published yet, `gpio add s2` (and `gpio partition s2`) fail with a
+    clear message telling you the extension is unavailable for that version. All other
+    `gpio` commands continue to work; either wait for the extension to be rebuilt or
+    install a DuckDB version that provides it.
+
 ## A5 Cells
 
 Add [A5](https://a5geo.org/) spatial cell IDs based on geometry centroids.
