@@ -2,6 +2,15 @@
 
 The `add` commands enhance GeoParquet files with spatial indices, geometry metrics, and administrative metadata.
 
+!!! note "Coordinate Reference Systems"
+    The grid-index commands (`h3`, `s2`, `a5`, `quadkey`) and `admin-divisions` are
+    **CRS-aware**. If your input declares a projected CRS (e.g. EPSG:5070 or
+    EPSG:28992), the geometry centroid is reprojected to OGC:CRS84 (lon/lat
+    degrees) before the cell is computed, and the input is reprojected to the
+    admin boundaries' CRS before the spatial join — so you no longer need to run
+    `gpio convert reproject` first. Inputs without a declared CRS are treated as
+    OGC:CRS84 per the GeoParquet spec.
+
 ## Bounding Boxes
 
 Add precomputed bounding boxes for faster spatial queries:
