@@ -9,7 +9,9 @@ import pytest
 
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
+    _crs_short,
     _detect_geometry_from_query,
+    _summarize_geo_metadata,
     detect_parquet_geometry_column,
     find_primary_geometry_column,
 )
@@ -329,3 +331,43 @@ class TestGeometryDetectionEdgeCases:
         result = find_primary_geometry_column(output_path)
         # Falls back to 'geometry' since no valid detection possible
         assert result == "geometry"
+
+
+class TestGeoMetadataSummary:
+    """Verbose geo-metadata output is a concise one-liner, not a full CRS dump."""
+
+    def test_summary_is_concise_single_line(self):
+        meta = {
+            "version": "1.1.0",
+            "primary_column": "geom",
+            "columns": {
+                "geom": {
+                    "encoding": "WKB",
+                    "crs": {
+                        "name": "Amersfoort / RD New",
+                        "id": {"authority": "EPSG", "code": 28992},
+                    },
+                    "geometry_types": ["Polygon"],
+                }
+            },
+        }
+        summary = _summarize_geo_metadata(meta)
+        assert "\n" not in summary
+        assert "version=1.1.0" in summary
+        assert "primary_column=geom" in summary
+        assert "encoding=WKB" in summary
+        assert "EPSG:28992" in summary
+        assert "Polygon" in summary
+        # The verbose CRS internals must not leak into the summary.
+        assert "projjson" not in summary.lower()
+        assert "ellipsoid" not in summary.lower()
+
+    def test_crs_short_handles_variants(self):
+        assert _crs_short(None) == "none"
+        assert _crs_short("OGC:CRS84") == "OGC:CRS84"
+        assert _crs_short({"id": {"authority": "EPSG", "code": 4326}}) == "EPSG:4326"
+        assert _crs_short({"name": "Custom CRS"}) == "Custom CRS"
+
+    def test_summary_handles_non_dict_metadata(self):
+        # Older/list-form metadata should not raise.
+        assert _summarize_geo_metadata([{"name": "geometry"}])
