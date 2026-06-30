@@ -508,6 +508,59 @@ def compute_geometry_types_via_sql(
     return sorted(set(types))
 
 
+# DuckDB ST_ZMFlag codes -> geoarrow.types.Dimensions values.
+# DuckDB: 0=XY, 1=XYM, 2=XYZ, 3=XYZM. geoarrow: 1=XY, 2=XYZ, 3=XYM, 4=XYZM.
+_DUCKDB_ZMFLAG_TO_GEOARROW_DIM = {0: 1, 1: 3, 2: 2, 3: 4}
+
+
+def compute_geometry_dimensions_via_sql(
+    con,
+    query: str,
+    geometry_column: str,
+) -> set[int]:
+    """Compute the distinct coordinate dimensions of a geometry column via DuckDB.
+
+    Used by the 1.1-geoarrow native path to pick a Z/M-aware GeoArrow type rather
+    than silently coercing 3D/measured coordinates down to 2D.
+
+    Returns:
+        Set of geoarrow dimension codes (1=XY, 2=XYZ, 3=XYM, 4=XYZM). Empty set when
+        the column is absent, native nested (STRUCT), or the dimension is undetectable.
+    """
+    try:
+        columns = _get_query_columns(con, query)
+        if geometry_column not in columns:
+            return set()
+    except (duckdb.Error, RuntimeError, ValueError, AttributeError):
+        return set()
+
+    # Native nested GeoArrow (STRUCT) cannot use ST_ZMFlag; leave dimension unknown.
+    col_type = _get_query_column_type(con, query, geometry_column) or ""
+    if "STRUCT" in col_type:
+        return set()
+
+    escaped_col = geometry_column.replace('"', '""')
+    geom_expr = f'"{escaped_col}"'
+    if "BLOB" in col_type or "BINARY" in col_type:
+        geom_expr = f"ST_GeomFromWKB({geom_expr})"
+
+    dims_query = f"""
+        SELECT DISTINCT ST_ZMFlag({geom_expr}) AS zm
+        FROM ({query})
+        WHERE "{escaped_col}" IS NOT NULL
+    """
+    try:
+        results = con.execute(dims_query).fetchall()
+    except (duckdb.Error, RuntimeError, ValueError):
+        return set()
+
+    dims: set[int] = set()
+    for (zm,) in results:
+        if zm is not None and zm in _DUCKDB_ZMFLAG_TO_GEOARROW_DIM:
+            dims.add(_DUCKDB_ZMFLAG_TO_GEOARROW_DIM[zm])
+    return dims
+
+
 def _rebuild_array_with_type(
     chunked_array,
     new_type,
@@ -1865,6 +1918,24 @@ def write_parquet_with_metadata(
             )
         else:
             # Metadata rewrite needed - use strategy pattern
+
+            # 1.1-geoarrow produces native GeoArrow encoding from WKB/text inputs,
+            # which requires the arrow-streaming strategy (DuckDB COPY TO cannot emit
+            # nested GeoArrow types). Already-native inputs keep their preservation
+            # path (duckdb-kv passes the native column through unchanged).
+            if geoparquet_version == "1.1-geoarrow":
+                primary = (geometry_info or {}).get("primary")
+                input_encoding = (
+                    (geometry_info or {}).get("metadata", {}).get(primary, {}).get("encoding")
+                )
+                already_native = bool(
+                    input_encoding and input_encoding.lower() not in ("wkb", "wkt")
+                )
+                if not already_native and write_strategy != "streaming":
+                    if verbose:
+                        debug("Routing 1.1-geoarrow WKB input through arrow-streaming")
+                    write_strategy = "streaming"
+
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
 

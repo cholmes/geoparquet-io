@@ -1451,7 +1451,9 @@ def convert_to_geoparquet(
         skip_invalid: Skip rows with invalid geometries instead of failing
         allow_no_geometry: Allow conversion to plain Parquet if no geometry detected
         profile: AWS profile name for S3 operations
-        geoparquet_version: GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only)
+        geoparquet_version: GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only).
+            1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+            encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
 

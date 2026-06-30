@@ -855,7 +855,9 @@ class Table:
             compression_level: Compression level for GeoParquet
             row_group_size_mb: Target row group size in MB for GeoParquet
             row_group_rows: Exact rows per row group for GeoParquet
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             write_strategy: Write strategy for GeoParquet ('in-memory', 'streaming',
                            'duckdb-kv', 'disk-rewrite'). Default: 'duckdb-kv'
             profile: AWS profile for S3 operations
@@ -966,9 +968,36 @@ class Table:
             local_path = PathLib(path)
 
         try:
+            # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
+            # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
+            # Already-native nested geometry is left on the default strategy.
+            if geoparquet_version == "1.1-geoarrow" and self._geometry_column:
+                geom_field = self._table.schema.field(self._geometry_column)
+                geom_type = geom_field.type
+                is_wkb = (
+                    pa.types.is_binary(geom_type)
+                    or pa.types.is_large_binary(geom_type)
+                    or getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+                )
+                if is_wkb and write_strategy != "streaming":
+                    if verbose:
+                        from geoparquet_io.core.logging_config import debug
+
+                        debug("Routing 1.1-geoarrow WKB input through streaming strategy")
+                    write_strategy = "streaming"
+
             # Get the appropriate write strategy
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
+
+            # Forward the input CRS so a non-default CRS survives the write (otherwise
+            # the geometry silently defaults to OGC:CRS84). write_from_table expects a
+            # PROJJSON dict, so normalise a string identifier (e.g. "EPSG:3857").
+            input_crs = self.crs
+            if isinstance(input_crs, str):
+                from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+
+                input_crs = parse_crs_string_to_projjson(input_crs)
 
             strategy.write_from_table(
                 table=self._table,
@@ -980,6 +1009,7 @@ class Table:
                 row_group_size_mb=row_group_size_mb,
                 row_group_rows=row_group_rows,
                 verbose=verbose,
+                input_crs=input_crs,
             )
 
             # Upload to remote if needed
@@ -1699,7 +1729,9 @@ class Table:
             compression_level: Compression level
             row_group_size_mb: Target row group size in MB
             row_group_rows: Exact rows per row group
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             profile: AWS profile name for S3
             s3_endpoint: Custom S3-compatible endpoint (e.g., "minio.example.com:9000")
             s3_region: S3 region (default: us-east-1 when using custom endpoint)

@@ -427,6 +427,49 @@ def test_preview_data_returns_wkt():
     assert "POLYGON" in geom_value or "POINT" in geom_value or "LINESTRING" in geom_value
 
 
+def test_preview_data_returns_wkt_for_native_geoarrow():
+    """get_preview_data must convert native GeoArrow geometry to WKT (not crash).
+
+    Native GeoArrow geometry is exposed by DuckDB as a raw STRUCT/LIST, which
+    ST_AsText cannot handle. head/tail must detect this and convert via geoarrow.
+    """
+    test_file = os.path.join(
+        os.path.dirname(__file__), "data", "data-polygon-encoding_native.parquet"
+    )
+    table, mode = get_preview_data(test_file, head=1)
+
+    geom_value = table.column("geometry")[0].as_py()
+    assert isinstance(geom_value, str), f"Expected WKT str but got {type(geom_value)}"
+    assert "POLYGON" in geom_value
+
+
+@pytest.mark.parametrize(
+    "geom_type,wkt_prefix",
+    [
+        ("point", "POINT"),
+        ("linestring", "LINESTRING"),
+        ("polygon", "POLYGON"),
+        ("multipoint", "MULTIPOINT"),
+        ("multilinestring", "MULTILINESTRING"),
+        ("multipolygon", "MULTIPOLYGON"),
+    ],
+)
+def test_preview_native_geoarrow_all_types(geom_type, wkt_prefix):
+    """All native GeoArrow geometry types render to WKT in head, including NULLs."""
+    test_file = os.path.join(
+        os.path.dirname(__file__), "data", f"data-{geom_type}-encoding_native.parquet"
+    )
+    table, _ = get_preview_data(test_file, head=10)
+    values = table.column("geometry").to_pylist()
+    # Every non-null value is a WKT string of the expected type; NULLs pass through.
+    non_null = [v for v in values if v is not None]
+    assert non_null, "expected at least one non-null geometry"
+    assert all(isinstance(v, str) for v in non_null)
+    assert all(v.startswith(wkt_prefix) for v in non_null), (
+        f"every non-null value must render as {wkt_prefix} WKT, got {non_null}"
+    )
+
+
 def test_format_markdown_output():
     """Test markdown output formatting function."""
     file_info = {

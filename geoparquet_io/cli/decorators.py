@@ -264,7 +264,9 @@ def geoparquet_version_option(func):
     Allows specifying the GeoParquet version for output files:
     - 1.0: GeoParquet 1.0 with WKB encoding
     - 1.1: GeoParquet 1.1 with WKB encoding
-    - 1.1-geoarrow: GeoParquet 1.1 with native GeoArrow encoding (no bbox column)
+    - 1.1-geoarrow: GeoParquet 1.1 with native GeoArrow (nested-coordinate) encoding
+      and no bbox column. Geometry is converted to native GeoArrow types from any
+      input; columns mixing incompatible geometry types fall back to WKB.
     - 2.0: GeoParquet 2.0 with native Parquet geo types
     - parquet-geo-only: Native Parquet geo types without GeoParquet metadata
 

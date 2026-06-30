@@ -696,6 +696,38 @@ API does not expose a memory-limit argument.
 
 See the [Write Strategies Guide](../guide/write-strategies.md) for detailed information on each strategy.
 
+**GeoParquet Version Options**
+
+Control the GeoParquet encoding version when writing:
+
+=== "Python"
+
+    ```python
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
+    table.write('output.parquet', geoparquet_version='1.1-geoarrow')
+
+    # GeoParquet 1.0 with WKB encoding
+    table.write('output.parquet', geoparquet_version='1.0')
+
+    # GeoParquet 1.1 with WKB encoding (default)
+    table.write('output.parquet', geoparquet_version='1.1')
+    ```
+
+=== "CLI"
+
+    ```bash
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    gpio convert input.geojson output.parquet --geoparquet-version 1.1-geoarrow
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio convert input.shp output.parquet --geoparquet-version 1.0
+    ```
+
+`1.1-geoarrow` converts geometry from any input to native GeoArrow (nested-coordinate) types.
+Compatible geometry type mixes are promoted (e.g. Polygon + MultiPolygon → MultiPolygon).
+Incompatible mixes (e.g. Point + Polygon) fall back to WKB. No bbox column is added.
+
 #### `to_arrow()`
 
 Get the underlying PyArrow Table for interop with other Arrow-based tools.
