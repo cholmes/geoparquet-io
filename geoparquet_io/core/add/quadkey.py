@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import mercantile
 import pyarrow as pa
 
@@ -14,7 +12,9 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.crs_utils import (
+    crs_string_from_table,
     get_crs_display_name,
+    parse_geo_metadata_from_schema,
     source_crs_string,
     transform_geom_sql,
 )
@@ -154,29 +154,8 @@ def _validate_crs_for_quadkey(input_parquet: str, geom_col: str, verbose: bool) 
 
 
 def _parse_geo_metadata_from_schema(metadata: dict | None) -> dict | None:
-    """
-    Parse geo metadata from schema metadata bytes dict.
-
-    Args:
-        metadata: Schema metadata dict (with bytes keys/values)
-
-    Returns:
-        Parsed geo metadata dict, or None if not found
-    """
-    if not metadata:
-        return None
-
-    # Try both bytes and string keys (depends on how metadata was accessed)
-    geo_bytes = metadata.get(b"geo") or metadata.get("geo")
-    if not geo_bytes:
-        return None
-
-    try:
-        if isinstance(geo_bytes, bytes):
-            return json.loads(geo_bytes.decode("utf-8"))
-        return json.loads(geo_bytes)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
+    """Parse geo metadata from schema metadata bytes dict (shared helper)."""
+    return parse_geo_metadata_from_schema(metadata)
 
 
 def _lat_lon_to_quadkey(lat: float, lon: float, level: int) -> str:
@@ -221,14 +200,22 @@ def add_quadkey_table(
     if not geom_col:
         geom_col = "geometry"
 
-    # Validate CRS is geographic (quadkeys require lat/lon)
+    # Quadkeys require lon/lat degrees. Reproject a known non-CRS84 CRS (#525);
+    # otherwise keep the guard (rejects projected input we can't identify, and
+    # passes through default/unknown which is assumed WGS84).
     geo_meta = _parse_geo_metadata_from_schema(table.schema.metadata)
-    _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose=False, source_description="table")
+    source_crs = crs_string_from_table(table, geom_col)
+    needs_transform = source_crs is not None
+    if not needs_transform:
+        _validate_crs_from_geo_metadata(
+            geo_meta, geom_col, verbose=False, source_description="table"
+        )
 
-    # Check if bbox column exists
+    # Check if bbox column exists. A stored bbox is in the input CRS, so it can't
+    # be used when we need to reproject — fall back to the (reprojected) centroid.
     use_bbox = False
     bbox_col = None
-    if not use_centroid:
+    if not use_centroid and not needs_transform:
         for name in ["bbox", "bounds", "bounding_box"]:
             if name in table.column_names:
                 use_bbox = True
@@ -237,6 +224,9 @@ def add_quadkey_table(
 
     # Register table and execute query using context manager for safe cleanup
     with get_duckdb_connection(load_spatial=True, load_httpfs=False) as con:
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         # Register Python UDF
         con.create_function(
             "lat_lon_to_quadkey",
@@ -263,13 +253,14 @@ def add_quadkey_table(
         else:
             source_ref = "__input_table"
 
-        # Build lat/lon expressions
+        # Build lat/lon expressions (reproject to lon/lat when source is non-CRS84)
         if use_bbox and bbox_col:
             lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
             lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
         else:
-            lat_expr = f'ST_Y(ST_Centroid("{geom_col}"))'
-            lon_expr = f'ST_X(ST_Centroid("{geom_col}"))'
+            geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+            lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
+            lon_expr = f"ST_X(ST_Centroid({geom_ref}))"
 
         # Get non-geometry columns
         other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]

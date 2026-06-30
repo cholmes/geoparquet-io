@@ -17,7 +17,11 @@ from geoparquet_io.core.constants import (
     DEFAULT_S2_COLUMN_NAME,
     DEFAULT_S2_LEVEL,
 )
-from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
+from geoparquet_io.core.crs_utils import (
+    crs_string_from_table,
+    source_crs_string,
+    transform_geom_sql,
+)
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, load_community_extension
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
@@ -60,18 +64,25 @@ def _create_geometry_view(con, table, geom_col):
     return "__input_table"
 
 
-def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level):
+def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level, geom_ref=None):
     """Build SELECT query to add S2 column to table.
+
+    Args:
+        geom_ref: SQL geometry expression for keying (defaults to the raw column;
+            pass a reprojected expression for non-CRS84 input).
 
     Returns:
         str: Complete SELECT query with S2 expression
     """
-    # Build S2 cell expression
+    if geom_ref is None:
+        geom_ref = f'"{geom_col}"'
+
+    # Build S2 cell expression (keyed on lon/lat, reprojected when needed)
     s2_expr = f"""s2_cell_token(
         s2_cell_parent(
             s2_cellfromlonlat(
-                ST_X(ST_Centroid("{geom_col}")),
-                ST_Y(ST_Centroid("{geom_col}"))
+                ST_X(ST_Centroid({geom_ref})),
+                ST_Y(ST_Centroid({geom_ref}))
             ),
             {level}
         )
@@ -126,14 +137,23 @@ def add_s2_table(
     if not geom_col:
         geom_col = "geometry"
 
+    # S2 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    source_crs = crs_string_from_table(table, geom_col)
+
     # Register table and execute query
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         _load_geography_extension(con)
         con.register("__input_table", table)
 
         source_ref = _create_geometry_view(con, table, geom_col)
-        query = _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level)
+        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+        query = _build_s2_select_query(
+            table, source_ref, geom_col, s2_column_name, level, geom_ref=geom_ref
+        )
         result = con.execute(query).arrow().read_all()
 
         # Preserve metadata

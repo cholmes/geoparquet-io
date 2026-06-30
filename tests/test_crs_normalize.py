@@ -86,6 +86,38 @@ class TestSourceCrsString:
         assert source_crs_string(buildings_test_file) is None
 
 
+class TestCrsStringFromTable:
+    """Table-API CRS detection must be independent of ``geoarrow.pyarrow`` import.
+
+    Importing ``geoarrow.pyarrow`` (which many code paths and tests do
+    transitively) registers its extension types, so ``pyarrow.parquet`` returns
+    a parquet-geo-only geometry as a registered extension type — the CRS then
+    lives on ``field.type.crs`` and the raw ``ARROW:extension:metadata`` key is
+    consumed off ``field.metadata``. Detection must work either way; otherwise
+    the table-API grid ops silently skip reprojection (#525).
+    """
+
+    def _read_table(self, parquet_file):
+        import pyarrow.parquet as pq
+
+        return pq.read_table(parquet_file)
+
+    def test_detects_projected_without_geoarrow_extension(self, fields_5070_file):
+        from geoparquet_io.core.crs_utils import crs_string_from_table
+
+        table = self._read_table(fields_5070_file)
+        assert crs_string_from_table(table, "geometry") == "EPSG:5070"
+
+    def test_detects_projected_with_geoarrow_extension_registered(self, fields_5070_file):
+        # Force the registered-extension-type carrier (Case 1).
+        import geoarrow.pyarrow  # noqa: F401
+
+        from geoparquet_io.core.crs_utils import crs_string_from_table
+
+        table = self._read_table(fields_5070_file)
+        assert crs_string_from_table(table, "geometry") == "EPSG:5070"
+
+
 class TestHotPathUnchanged:
     """Regression guard (#525 perf): CRS84 input must not pay for reprojection.
 
@@ -176,6 +208,61 @@ class TestGridKeyingIsCrsAware:
         assert mismatches <= max(1, len(proj_cells) // 100)
         # And the keying actually produced a cell for every row (not null).
         assert all(c is not None for c in proj_cells)
+
+
+class TestGridKeyingTableApiIsCrsAware:
+    """Class B (#525), Python API: the table-centric grid ops must reproject too.
+
+    ``gpio.read(projected).add_h3(...)`` routes through ``add_*_table`` (not the
+    file path). These must reproject projected input to lon/lat before keying,
+    exactly like the CLI/file path — otherwise the public API silently emits
+    wrong cells (metres fed to ``*_lonlat_to_cell`` as degrees), and quadkey
+    rejects projected input outright.
+    """
+
+    @pytest.fixture
+    def reprojected_4326(self, fields_5070_file, tmp_path):
+        from geoparquet_io.core.reproject import reproject
+
+        out = tmp_path / "fields_4326.parquet"
+        reproject(fields_5070_file, str(out), target_crs="EPSG:4326")
+        return str(out)
+
+    @pytest.mark.parametrize(
+        "op_name,column,kwargs",
+        [
+            ("add_a5", "a5_cell", {"resolution": 12}),
+            ("add_h3", "h3_cell", {"resolution": 9}),
+            ("add_s2", "s2_cell", {"level": 14}),
+            ("add_quadkey", "quadkey", {"resolution": 16}),
+        ],
+    )
+    def test_projected_table_cells_match_reprojected(
+        self, fields_5070_file, reprojected_4326, op_name, column, kwargs
+    ):
+        import geoparquet_io as gpio
+        from geoparquet_io.api import ops
+
+        op = getattr(ops, op_name)
+        proj_cells = op(gpio.read(fields_5070_file)._table, **kwargs).column(column).to_pylist()
+        wgs_cells = op(gpio.read(reprojected_4326)._table, **kwargs).column(column).to_pylist()
+
+        # Reprojecting internally must agree with keying a reprojected copy. Allow
+        # a tiny boundary-cell tolerance (same as the file-path oracle); without
+        # the fix ~every projected cell differs (metres keyed as degrees).
+        assert len(proj_cells) == len(wgs_cells)
+        mismatches = sum(1 for a, b in zip(proj_cells, wgs_cells, strict=True) if a != b)
+        assert mismatches <= max(1, len(proj_cells) // 100)
+        assert all(c is not None for c in proj_cells)
+
+    def test_projected_quadkey_table_does_not_raise(self, fields_5070_file):
+        """Projected input must reproject, not raise GeoParquetError (the old guard)."""
+        import geoparquet_io as gpio
+        from geoparquet_io.api import ops
+
+        result = ops.add_quadkey(gpio.read(fields_5070_file)._table, resolution=16)
+        assert "quadkey" in result.column_names
+        assert all(c is not None for c in result.column("quadkey").to_pylist())
 
 
 def _con_with_admin():

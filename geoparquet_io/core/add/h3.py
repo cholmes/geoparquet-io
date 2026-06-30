@@ -6,7 +6,11 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
-from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
+from geoparquet_io.core.crs_utils import (
+    crs_string_from_table,
+    source_crs_string,
+    transform_geom_sql,
+)
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
@@ -56,9 +60,15 @@ def add_h3_table(
     if not 0 <= resolution <= 15:
         raise ValueError(f"H3 resolution must be between 0 and 15, got {resolution}")
 
+    # H3 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    source_crs = crs_string_from_table(table, geom_col)
+
     # Register table and execute query
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         # Load H3 extension
         load_community_extension(con, "h3")
 
@@ -81,10 +91,11 @@ def add_h3_table(
         else:
             source_ref = "__input_table"
 
-        # Build H3 column query
+        # Build H3 column query (reproject to lon/lat when source is non-CRS84)
+        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
         h3_expr = f"""h3_latlng_to_cell_string(
-            ST_Y(ST_Centroid("{geom_col}")),
-            ST_X(ST_Centroid("{geom_col}")),
+            ST_Y(ST_Centroid({geom_ref})),
+            ST_X(ST_Centroid({geom_ref})),
             {resolution}
         )"""
 
