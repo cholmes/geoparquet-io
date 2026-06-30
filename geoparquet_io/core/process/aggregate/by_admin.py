@@ -40,7 +40,8 @@ def _get_admin_ref(dataset, con, level: str) -> str:
         path = dataset.get_source_for_level(level)
         return f"read_parquet('{path}')"
     admin_source = dataset.prepare_data_source(con)
-    return _build_admin_table_reference(dataset, admin_source)
+    admin_ref: str = _build_admin_table_reference(dataset, admin_source)
+    return admin_ref
 
 
 def _build_joined_sql(
