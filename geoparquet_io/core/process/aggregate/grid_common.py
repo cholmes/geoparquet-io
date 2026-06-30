@@ -188,6 +188,24 @@ def _validate_out_geometry(out_geometry: str) -> None:
         )
 
 
+# Column names produced by the engine (``count``, the ``geometry``/``centroid``
+# outputs) and the internal intermediates dropped by ``wrap_grid_geometry``'s
+# EXCLUDE. A caller-chosen ``cell_column`` matching any of these would make the
+# output schema ambiguous or silently drop the cell id, so reject them up front.
+_RESERVED_CELL_COLUMNS = frozenset(
+    {"count", "geometry", "centroid", "__geom", "__key", "__bnd", "__ll"}
+)
+
+
+def _validate_cell_column(cell_column: str) -> None:
+    if cell_column in _RESERVED_CELL_COLUMNS:
+        raise InvalidParameterError(
+            "cell_column",
+            f"'{cell_column}' is reserved by the aggregation output; choose another name. "
+            f"Reserved: {', '.join(sorted(_RESERVED_CELL_COLUMNS))}",
+        )
+
+
 def aggregate_grid_file(
     scheme: GridScheme,
     input_parquet: str,
@@ -211,6 +229,7 @@ def aggregate_grid_file(
     """Aggregate a GeoParquet file into grid cells. Writes the output file."""
     configure_verbose(verbose)
     cell_column = cell_column or scheme.default_column
+    _validate_cell_column(cell_column)
     _validate_out_geometry(out_geometry)
     resolution = _resolve_resolution(
         scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose
@@ -286,6 +305,7 @@ def aggregate_grid_table(
 ):
     """Aggregate an in-memory Arrow table into grid cells. Returns a new Arrow table."""
     cell_column = cell_column or scheme.default_column
+    _validate_cell_column(cell_column)
     _validate_out_geometry(out_geometry)
     if not scheme.min_resolution <= resolution <= scheme.max_resolution:
         raise InvalidParameterError(

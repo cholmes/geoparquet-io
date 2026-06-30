@@ -37,6 +37,7 @@ def _write_points_geoparquet(path, rows):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_native_geometry_column(tmp_path):
     """Regression: DuckDB 1.5 reads GeoParquet geometry as GEOMETRY (not WKB BLOB).
 
@@ -61,6 +62,7 @@ def test_aggregate_a5_native_geometry_column(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_null_geometry_feature(tmp_path):
     """Regression: features with NULL/empty geometry have no assignable cell.
 
@@ -96,6 +98,7 @@ def test_aggregate_a5_null_geometry_feature(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_count_metric_breakdown(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg.parquet"
@@ -135,6 +138,7 @@ def test_aggregate_a5_count_metric_breakdown(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_out_geometry_none_is_plain_table(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg_none.parquet"
@@ -162,6 +166,7 @@ def test_aggregate_a5_rejects_resolution_and_auto(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_auto_runs(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -171,6 +176,7 @@ def test_aggregate_a5_auto_runs(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_cli_process_aggregate_a5(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -214,6 +220,7 @@ def _points_table():
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_table_aggregate_a5_api():
     from geoparquet_io.api.table import Table
 
@@ -222,6 +229,19 @@ def test_table_aggregate_a5_api():
     assert "count" in result.column_names
     assert "sum_area" in result.column_names
     assert "geometry" in result.column_names
+
+
+@pytest.mark.slow
+@pytest.mark.network
+def test_ops_aggregate_a5_honors_geometry_column():
+    """ops.aggregate_a5 must forward a non-default geometry column name; otherwise
+    it falls back to 'geometry' and fails on tables that name it differently."""
+    from geoparquet_io.api import ops
+
+    table = _points_table().rename_columns(["geom", "crop", "area"])
+    result = ops.aggregate_a5(table, resolution=5, geometry_column="geom")
+    assert "a5_cell" in result.column_names
+    assert "count" in result.column_names
 
 
 def test_cli_process_aggregate_a5_bad_metric(tmp_path):

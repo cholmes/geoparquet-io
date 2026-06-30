@@ -117,3 +117,17 @@ def test_build_breakdown_select_counts_and_other():
     row = con.execute(f"SELECT {select} FROM features").fetchone()
     # wheat=3, corn=2, other(rice+barley+null)=3
     assert row == (3, 2, 3)
+
+
+@pytest.mark.parametrize("reserved", ["count", "geometry", "centroid", "__key", "__geom"])
+def test_aggregate_grid_table_rejects_reserved_cell_column(reserved):
+    """A caller-chosen cell column that collides with generated/internal columns
+    must be rejected up front (before any DuckDB work), not silently corrupt the
+    output schema."""
+    import pyarrow as pa
+
+    from geoparquet_io.core.process.aggregate.by_a5 import aggregate_a5_table
+
+    table = pa.table({"geometry": [b""], "value": [1]})
+    with pytest.raises(InvalidParameterError):
+        aggregate_a5_table(table, resolution=5, a5_column_name=reserved)

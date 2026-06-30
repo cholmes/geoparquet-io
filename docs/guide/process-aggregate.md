@@ -378,7 +378,7 @@ Regardless of the chosen bucket scheme, every output file contains:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `a5_cell` or `admin_code` | UBIGINT / VARCHAR | Bucket identifier |
+| `a5_cell`, `h3_cell`, or `admin_code` | UBIGINT / VARCHAR | Bucket identifier |
 | `admin_name` | VARCHAR | Human-readable name (admin only; currently equals `admin_code`) |
 | `count` | BIGINT | Number of input features in the bucket |
 | `sum_<col>`, `avg_<col>`, etc. | DOUBLE | Numeric rollups from `--metric` |
@@ -390,7 +390,7 @@ Regardless of the chosen bucket scheme, every output file contains:
 
 ## Common Options
 
-Both commands support the standard output options:
+All three commands support the standard output options:
 
 ```bash
 --compression SNAPPY      # Output compression (default: ZSTD)

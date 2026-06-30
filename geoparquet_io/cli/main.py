@@ -11,6 +11,7 @@ from click_plugins import with_plugins
 from geoparquet_io.cli.decorators import (
     GlobAwareCommand,
     SingleFileCommand,
+    aggregate_metric_options,
     any_extension_option,
     aws_profile_option,
     check_partition_options,
@@ -7001,7 +7002,7 @@ def pmtiles_create(
 @cli.group()
 @click.pass_context
 def process(ctx):
-    """Transform or reduce GeoParquet data (aggregate, ...)."""
+    """Transform or reduce GeoParquet data."""
     pass
 
 
@@ -7158,28 +7159,7 @@ def process_aggregate_h3(
     default="country",
     help="Administrative level to aggregate to (default: country).",
 )
-@click.option(
-    "--metric",
-    default=None,
-    help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
-)
-@click.option(
-    "--breakdown",
-    default=None,
-    help="Categorical column to pivot count by.",
-)
-@click.option(
-    "--breakdown-limit",
-    type=int,
-    default=20,
-    help="Max breakdown values before remainder rolls into count_other (default: 20).",
-)
-@click.option(
-    "--out-geometry",
-    type=click.Choice(["polygon", "centroid", "both", "none"]),
-    default="polygon",
-    help="Output geometry per region (default: polygon).",
-)
+@aggregate_metric_options
 @compression_options
 @verbose_option
 @geoparquet_version_option

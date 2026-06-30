@@ -350,12 +350,11 @@ def partition_options_base(func):
     return func
 
 
-def grid_aggregate_options(func):
-    """Add the options shared by `gpio process aggregate <grid>` commands.
+def aggregate_metric_options(func):
+    """Add the metric/breakdown/out-geometry options shared by every aggregate command.
 
-    Adds (the per-scheme ``--resolution`` is declared on each command, since its
-    valid range differs between grids):
-    - --auto, --target-per-cell, --max-cells
+    Shared by `gpio process aggregate <grid>` (via :func:`grid_aggregate_options`)
+    and `gpio process aggregate admin`, so the option definitions never drift apart:
     - --metric, --breakdown, --breakdown-limit
     - --out-geometry
     """
@@ -363,7 +362,7 @@ def grid_aggregate_options(func):
         "--out-geometry",
         type=click.Choice(["polygon", "centroid", "both", "none"]),
         default="polygon",
-        help="Output geometry per cell (default: polygon).",
+        help="Output geometry per bucket (default: polygon).",
     )(func)
     func = click.option(
         "--breakdown-limit",
@@ -381,6 +380,18 @@ def grid_aggregate_options(func):
         default=None,
         help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
     )(func)
+    return func
+
+
+def grid_aggregate_options(func):
+    """Add the options shared by `gpio process aggregate <grid>` commands.
+
+    Adds (the per-scheme ``--resolution`` is declared on each command, since its
+    valid range differs between grids):
+    - --auto, --target-per-cell, --max-cells
+    - --metric, --breakdown, --breakdown-limit, --out-geometry (shared with admin)
+    """
+    func = aggregate_metric_options(func)
     func = click.option(
         "--max-cells",
         type=int,
