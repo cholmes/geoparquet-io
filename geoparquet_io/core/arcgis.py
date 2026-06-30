@@ -84,6 +84,21 @@ class ArcGISLayerInfo:
 BATCH_SIZE_FALLBACKS = [1000, 500, 100, 50, 10, 1]
 
 
+def _disable_gdal_geojson_size_limit() -> None:
+    """Lift GDAL's per-feature GeoJSON object size limit before ST_Read.
+
+    GDAL's GeoJSON/ESRIJSON drivers cap a single feature object at 200 MB by
+    default (``OGR_GEOJSON_MAX_OBJ_SIZE``, in megabytes) and raise an
+    ``IOException`` ("GeoJSON object too complex/large") when a feature exceeds
+    it. Large, complex polygon layers — e.g. national admin boundaries with
+    detailed coastlines — blow past this even at ``batch_size=1``, so the
+    batch-size fallback ladder cannot recover. GDAL reads the option from the
+    process environment; "0" removes the limit. Idempotent and harmless to call
+    on every page conversion. See issue #517.
+    """
+    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
+
+
 def _get_reduced_batch_size(current_batch: int) -> int | None:
     """
     Get the next smaller batch size from the fallback sequence.
@@ -953,6 +968,10 @@ def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Tab
     try:
         with open(temp_file, "w") as f:
             json.dump(doc, f)
+
+        # Allow arbitrarily large/complex single features through GDAL's parser
+        # (issue #517) — must be in effect before ST_Read reads the temp file.
+        _disable_gdal_geojson_size_limit()
 
         query = f"""
             SELECT

@@ -1280,6 +1280,38 @@ class TestStreamingConversion:
         result = _geojson_page_to_table([])
         assert result is None
 
+    def test_disable_gdal_geojson_size_limit_sets_env(self, monkeypatch):
+        """Helper removes GDAL's per-feature GeoJSON size limit (issue #517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+
+        monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
+        _disable_gdal_geojson_size_limit()
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
+    def test_disable_gdal_geojson_size_limit_overrides_existing(self, monkeypatch):
+        """A prior nonzero limit is lifted unconditionally (issue #517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+
+        monkeypatch.setenv("OGR_GEOJSON_MAX_OBJ_SIZE", "200")
+        _disable_gdal_geojson_size_limit()
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
+    def test_geojson_page_to_table_lifts_size_limit(self, monkeypatch):
+        """Converting a page sets the GDAL size limit before ST_Read (#517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _geojson_page_to_table
+
+        monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
+        table = _geojson_page_to_table(MOCK_FEATURES_PAGE["features"])
+
+        assert table is not None
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
     @patch("geoparquet_io.core.arcgis.fetch_all_features")
     def test_stream_features_to_parquet_single_page(self, mock_fetch, output_file):
         """Test streaming a single page to parquet."""
