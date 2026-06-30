@@ -7,6 +7,8 @@ These helpers produce the SQL needed to reproject non-CRS84 input to the
 operation's expected CRS before the spatial work happens.
 """
 
+from unittest import mock
+
 import pytest
 
 from geoparquet_io.core.crs_utils import (
@@ -208,6 +210,57 @@ class TestGridKeyingIsCrsAware:
         assert mismatches <= max(1, len(proj_cells) // 100)
         # And the keying actually produced a cell for every row (not null).
         assert all(c is not None for c in proj_cells)
+
+
+class TestGridKeyingStreamingIsCrsAware:
+    """Class B (#530), streaming path: stdout streaming must reproject too.
+
+    ``gpio add quadkey projected.parquet -`` routes through the streaming path
+    (output ``-``). It must reproject projected input to lon/lat before keying,
+    exactly like the file path — otherwise the documented stdin/stdout feature
+    silently emits wrong cells (metres keyed as degrees) for projected input.
+    """
+
+    def _stream_quadkeys(self, input_file, monkeypatch, resolution):
+        """Run the streaming quadkey path to stdout and read the cells back."""
+        import io
+
+        import pyarrow.ipc as ipc
+
+        from geoparquet_io.core.add.quadkey import add_quadkey_column
+
+        buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.buffer = buffer
+        monkeypatch.setattr("sys.stdout", mock_stdout)
+
+        add_quadkey_column(input_file, "-", resolution=resolution)
+
+        buffer.seek(0)
+        table = ipc.open_stream(buffer).read_all()
+        return table.column("quadkey").to_pylist()
+
+    def test_projected_streaming_matches_file_path(self, fields_5070_file, tmp_path, monkeypatch):
+        from geoparquet_io.core.add.quadkey import add_quadkey_column
+
+        # File-based path (already CRS-aware) is the oracle.
+        file_out = tmp_path / "file.parquet"
+        add_quadkey_column(fields_5070_file, str(file_out), resolution=16)
+        file_cells = _read_column(str(file_out), "quadkey")
+
+        stream_cells = self._stream_quadkeys(fields_5070_file, monkeypatch, resolution=16)
+
+        assert len(stream_cells) == len(file_cells)
+        assert all(c is not None for c in stream_cells)
+        # The streaming path must reproject like the file path, not key metres as
+        # degrees — so the same set of cells comes out (file oracle is sorted).
+        assert sorted(stream_cells) == file_cells
+
+    def test_projected_streaming_does_not_raise(self, fields_5070_file, monkeypatch):
+        """Projected input must reproject, not raise GeoParquetError (the old guard)."""
+        cells = self._stream_quadkeys(fields_5070_file, monkeypatch, resolution=16)
+        assert all(c is not None for c in cells)
 
 
 class TestGridKeyingTableApiIsCrsAware:

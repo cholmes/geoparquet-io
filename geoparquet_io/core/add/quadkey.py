@@ -12,6 +12,7 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.crs_utils import (
+    crs_string_from_geo_meta,
     crs_string_from_table,
     get_crs_display_name,
     parse_geo_metadata_from_schema,
@@ -156,6 +157,24 @@ def _validate_crs_for_quadkey(input_parquet: str, geom_col: str, verbose: bool) 
 def _parse_geo_metadata_from_schema(metadata: dict | None) -> dict | None:
     """Parse geo metadata from schema metadata bytes dict (shared helper)."""
     return parse_geo_metadata_from_schema(metadata)
+
+
+def _streaming_source_crs(
+    input_path: str, metadata: dict | None, geom_col: str, verbose: bool
+) -> str | None:
+    """Detect the streaming input's CRS as an ``"AUTH:CODE"`` transform string.
+
+    Returns ``None`` for CRS84/default/CRS-less input (no reprojection needed).
+
+    - File input streamed to stdout (``gpio add quadkey file.parquet -``): detect
+      from the file, covering both the GeoParquet ``geo`` metadata and the
+      parquet-geo native geometry type — same as the file-based path (#530).
+    - True stdin: detect from the ``geo`` metadata carried on the Arrow stream.
+    """
+    if not is_stdin(input_path):
+        return source_crs_string(input_path, verbose)
+    geo_meta = _parse_geo_metadata_from_schema(metadata)
+    return crs_string_from_geo_meta(geo_meta, geom_col)
 
 
 def _lat_lon_to_quadkey(lat: float, lon: float, level: int) -> str:
@@ -393,6 +412,9 @@ def _add_quadkey_streaming(
         raise InvalidParameterError("resolution", f"must be between 0 and 23, got {resolution}")
 
     with open_input(input_path, verbose=verbose) as (source, metadata, is_stream, con):
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         # Register Python UDF for quadkey generation
         con.create_function(
             "lat_lon_to_quadkey",
@@ -414,25 +436,34 @@ def _add_quadkey_streaming(
         if not geom_col:
             geom_col = "geometry"
 
-        # Validate CRS is geographic (quadkeys require lat/lon)
-        geo_meta = _parse_geo_metadata_from_schema(metadata)
-        _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose, source_description="stream")
+        # Quadkeys require lon/lat degrees. Reproject a known non-CRS84 CRS (#525,
+        # #530); otherwise keep the guard (rejects projected input we can't
+        # identify, passes through default/unknown which is assumed WGS84).
+        source_crs = _streaming_source_crs(input_path, metadata, geom_col, verbose)
+        needs_transform = source_crs is not None
+        if not needs_transform:
+            geo_meta = _parse_geo_metadata_from_schema(metadata)
+            _validate_crs_from_geo_metadata(
+                geo_meta, geom_col, verbose, source_description="stream"
+            )
 
-        # Check for bbox column
+        # Check for bbox column. A stored bbox is in the input CRS, so it can't be
+        # used when we need to reproject — fall back to the (reprojected) centroid.
         bbox_col = None
-        if not use_centroid:
+        if not use_centroid and not needs_transform:
             for name in ["bbox", "bounds", "bounding_box"]:
                 if name in col_names:
                     bbox_col = name
                     break
 
-        # Build lat/lon expressions
+        # Build lat/lon expressions (reproject to lon/lat when source is non-CRS84)
         if bbox_col:
             lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
             lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
         else:
-            lat_expr = f'ST_Y(ST_Centroid("{geom_col}"))'
-            lon_expr = f'ST_X(ST_Centroid("{geom_col}"))'
+            geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+            lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
+            lon_expr = f"ST_X(ST_Centroid({geom_ref}))"
 
         query = f"""
             SELECT *,
