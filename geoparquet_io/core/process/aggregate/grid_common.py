@@ -10,6 +10,7 @@ module stays a thin descriptor.
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 
 import pyarrow.parquet as pq
@@ -261,6 +262,10 @@ def aggregate_grid_file(
         result = con.execute(final_sql).arrow().read_all()
     finally:
         con.close()
+        # Force GC so GDAL/spatial native handles are released before the next
+        # spatial connection opens. Leaked native state is a known trigger for
+        # segfaults in sibling xdist tests. See convert.py and issues #322, #401.
+        gc.collect()
 
     # Report features that had no assignable cell (NULL/empty geometry).
     ids = result.column(cell_column).to_pylist()
@@ -340,3 +345,7 @@ def aggregate_grid_table(
         return con.execute(final_sql).arrow().read_all()
     finally:
         con.close()
+        # Force GC so GDAL/spatial native handles are released before the next
+        # spatial connection opens. Leaked native state is a known trigger for
+        # segfaults in sibling xdist tests. See convert.py and issues #322, #401.
+        gc.collect()

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 from typing import cast
 
 import pyarrow.parquet as pq
@@ -232,6 +233,10 @@ def aggregate_by_admin(
             info(f"{unassigned_count} feature(s) fell outside all admin regions (-> 'unassigned')")
     finally:
         con.close()
+        # Force GC so GDAL/spatial native handles are released before the next
+        # spatial connection opens. Leaked native state is a known trigger for
+        # segfaults in sibling xdist tests. See convert.py and issues #322, #401.
+        gc.collect()
 
     if out_geometry == "none":
         if compression_level is not None:
