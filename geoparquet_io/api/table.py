@@ -990,6 +990,15 @@ class Table:
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
 
+            # Forward the input CRS so a non-default CRS survives the write (otherwise
+            # the geometry silently defaults to OGC:CRS84). write_from_table expects a
+            # PROJJSON dict, so normalise a string identifier (e.g. "EPSG:3857").
+            input_crs = self.crs
+            if isinstance(input_crs, str):
+                from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+
+                input_crs = parse_crs_string_to_projjson(input_crs)
+
             strategy.write_from_table(
                 table=self._table,
                 output_path=str(local_path),
@@ -1000,6 +1009,7 @@ class Table:
                 row_group_size_mb=row_group_size_mb,
                 row_group_rows=row_group_rows,
                 verbose=verbose,
+                input_crs=input_crs,
             )
 
             # Upload to remote if needed

@@ -140,10 +140,15 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geoarrow_target_type = None
         geoarrow_encoding = None
         if geoarrow_native and should_add_geo_metadata:
+            from geoparquet_io.core.common import compute_geometry_dimensions_via_sql
             from geoparquet_io.core.geoarrow_encoding import determine_geoarrow_target_type
 
+            # Detect Z/M dimensionality so 3D/measured coordinates select a
+            # dimension-aware native type (or fall back to WKB) rather than being
+            # silently coerced down to 2D.
+            dimensions = compute_geometry_dimensions_via_sql(con, query, geometry_column)
             geoarrow_target_type, geoarrow_encoding = determine_geoarrow_target_type(
-                precomputed_geom_types, input_crs
+                precomputed_geom_types, input_crs, dimensions=dimensions
             )
             if verbose:
                 debug(f"1.1-geoarrow target encoding: {geoarrow_encoding}")
@@ -506,10 +511,17 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             geom_types = _compute_geometry_types(table, geometry_column, verbose)
 
             if geoarrow_native:
-                from geoparquet_io.core.geoarrow_encoding import determine_geoarrow_target_type
+                from geoparquet_io.core.geoarrow_encoding import (
+                    detect_wkb_dimensions,
+                    determine_geoarrow_target_type,
+                )
 
+                # Detect Z/M dimensionality from the actual geometry so 3D/measured
+                # coordinates select a dimension-aware native type (or fall back to
+                # WKB) instead of being silently coerced down to 2D.
+                dimensions = detect_wkb_dimensions(table.column(geometry_column))
                 geoarrow_target_type, geoarrow_encoding = determine_geoarrow_target_type(
-                    geom_types, input_crs
+                    geom_types, input_crs, dimensions=dimensions
                 )
                 if verbose:
                     debug(f"1.1-geoarrow target encoding: {geoarrow_encoding}")

@@ -465,7 +465,9 @@ def test_preview_native_geoarrow_all_types(geom_type, wkt_prefix):
     non_null = [v for v in values if v is not None]
     assert non_null, "expected at least one non-null geometry"
     assert all(isinstance(v, str) for v in non_null)
-    assert any(wkt_prefix in v for v in non_null)
+    assert all(v.startswith(wkt_prefix) for v in non_null), (
+        f"every non-null value must render as {wkt_prefix} WKT, got {non_null}"
+    )
 
 
 def test_format_markdown_output():
