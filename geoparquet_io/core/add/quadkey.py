@@ -47,43 +47,6 @@ from geoparquet_io.core.streaming import (
 )
 
 
-def _is_geographic_crs(crs_info: dict | str | None) -> bool | None:
-    """
-    Check if CRS is geographic (lat/long) vs projected.
-
-    Returns:
-        True if geographic, False if projected, None if unknown
-    """
-    if crs_info is None:
-        return None
-
-    if isinstance(crs_info, str):
-        crs_upper = crs_info.upper()
-        # Common geographic CRS codes
-        if any(
-            code in crs_upper for code in ["4326", "CRS84", "CRS:84", "OGC:CRS84", "4269", "4267"]
-        ):
-            return True
-        return None
-
-    if isinstance(crs_info, dict):
-        # Check PROJJSON type
-        crs_type = crs_info.get("type", "")
-        if crs_type == "GeographicCRS":
-            return True
-        if crs_type == "ProjectedCRS":
-            return False
-
-        # Check EPSG code
-        crs_id = crs_info.get("id", {})
-        if isinstance(crs_id, dict):
-            code = crs_id.get("code")
-            if code in [4326, 4269, 4267]:  # Common geographic codes
-                return True
-
-    return None
-
-
 def _lat_lon_to_quadkey(lat: float, lon: float, level: int) -> str:
     """Convert latitude and longitude to a quadkey string using mercantile."""
     tile = mercantile.tile(lon, lat, level)

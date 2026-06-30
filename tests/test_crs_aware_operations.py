@@ -16,6 +16,7 @@ fixtures, which are the same fields as the CRS84 fixture in a different CRS.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import duckdb
 import pyarrow.parquet as pq
@@ -280,3 +281,113 @@ def test_admin_divisions_reprojects_projected_input(
     countries = _column(out, "current_country")
     assert len(countries) == 100
     assert all(c == "XX" for c in countries)
+
+
+def test_partition_admin_reprojects_projected_input_single_source(
+    fields_5070_file, local_admin_dataset, tmp_path, monkeypatch
+):
+    """``partition admin`` joins a projected input against CRS84 boundaries.
+
+    Exercises the single-source enrichment path (``_perform_enrichment_join``):
+    without reprojecting the projected (EPSG:5070) input to the admin CRS the
+    join raises a CRS-mismatch error; with it every feature falls inside the
+    covering ``XX`` polygon and lands in a single partition.
+    """
+    from geoparquet_io.core.admin_datasets import CurrentAdminDataset
+    from geoparquet_io.core.partition.admin_hierarchical import (
+        partition_by_admin_hierarchical,
+    )
+
+    def fake_create(dataset_name, source_path=None, verbose=False):
+        return CurrentAdminDataset(source_path=local_admin_dataset, verbose=verbose)
+
+    monkeypatch.setattr(
+        "geoparquet_io.core.partition.admin_hierarchical.AdminDatasetFactory.create",
+        staticmethod(fake_create),
+    )
+
+    out_dir = str(tmp_path / "out_single")
+    count = partition_by_admin_hierarchical(
+        fields_5070_file,
+        out_dir,
+        dataset_name="current",
+        levels=["country"],
+        hive=True,
+    )
+
+    assert count == 1
+    files = list(Path(out_dir).rglob("*.parquet"))
+    assert len(files) == 1
+    assert "country=XX" in str(files[0])
+    assert pq.ParquetFile(str(files[0])).metadata.num_rows == 100
+
+
+def test_partition_admin_reprojects_projected_input_per_level(
+    fields_5070_file, tmp_path, monkeypatch
+):
+    """``partition admin`` reprojects a projected input on the per-level path.
+
+    Exercises the chained temp-table enrichment path
+    (``_perform_per_level_enrichment_join``) used by Overture-shaped datasets:
+    each level's join must see the input reprojected to the admin (CRS84) CRS.
+    The fields fixture lies within lon 16-20 / lat 45-49 (in CRS84), split here
+    into two regions; every feature must be attributed to the covering country
+    and one of the two regions.
+    """
+    import duckdb
+
+    from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+    from geoparquet_io.core.partition.admin_hierarchical import (
+        partition_by_admin_hierarchical,
+    )
+
+    admin_file = str(tmp_path / "overture_admin.parquet")
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute(
+        f"""
+        COPY (
+            SELECT subtype, country, region, geometry,
+                {{'xmin': ST_XMin(geometry), 'xmax': ST_XMax(geometry),
+                  'ymin': ST_YMin(geometry), 'ymax': ST_YMax(geometry)}} AS bbox
+            FROM (VALUES
+                ('country', 'XX', NULL,
+                 ST_GeomFromText('POLYGON((16 45, 20 45, 20 49, 16 49, 16 45))')),
+                ('region', 'XX', 'XX-W',
+                 ST_GeomFromText('POLYGON((16 45, 18 45, 18 49, 16 49, 16 45))')),
+                ('region', 'XX', 'XX-E',
+                 ST_GeomFromText('POLYGON((18 45, 20 45, 20 49, 18 49, 18 45))'))
+            ) AS t(subtype, country, region, geometry)
+        ) TO '{admin_file}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+
+    def fake_create(dataset_name, source_path=None, verbose=False):
+        return OvertureAdminDataset(source_path=admin_file, verbose=verbose)
+
+    monkeypatch.setattr(
+        "geoparquet_io.core.partition.admin_hierarchical.AdminDatasetFactory.create",
+        staticmethod(fake_create),
+    )
+
+    out_dir = str(tmp_path / "out_per_level")
+    count = partition_by_admin_hierarchical(
+        fields_5070_file,
+        out_dir,
+        dataset_name="overture",
+        levels=["country", "region"],
+        hive=True,
+    )
+
+    files = list(Path(out_dir).rglob("*.parquet"))
+    assert files, "no partitions were created"
+    assert count == len(files)
+    # No row multiplication: per-level chaining emits one row per input feature.
+    assert sum(pq.ParquetFile(str(f)).metadata.num_rows for f in files) == 100
+    # Every feature attributed to the covering country and a known region.
+    assert all("country=XX" in str(f) for f in files)
+    assert {p.name for f in files for p in Path(f).parents if p.name.startswith("region=")} <= {
+        "region=XX-W",
+        "region=XX-E",
+    }
