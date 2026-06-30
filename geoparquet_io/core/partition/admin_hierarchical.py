@@ -74,7 +74,7 @@ def _build_enrichment_query(
 
     input_ref = input_url if input_is_table_ref else f"'{input_url}'"
 
-    input_geom_sql = transform_geom_sql(f'a."{input_geom_col}"', source_crs)
+    input_geom_sql = transform_geom_sql(f"a.{quote_identifier(input_geom_col)}", source_crs)
 
     if input_bbox_col and admin_bbox_col and not source_crs:
         bbox_filter = f"""

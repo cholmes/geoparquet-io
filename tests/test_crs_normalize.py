@@ -105,10 +105,46 @@ class TestCrsStringFromTable:
         return pq.read_table(parquet_file)
 
     def test_detects_projected_without_geoarrow_extension(self, fields_5070_file):
-        from geoparquet_io.core.crs_utils import crs_string_from_table
+        # geoarrow.pyarrow's extension-type registration is global and
+        # irreversible, and several tests in the suite import it; under -n auto
+        # the import order is nondeterministic. Run in a fresh subprocess that
+        # never imports geoarrow.pyarrow, so this provably exercises the raw
+        # ARROW:extension:metadata (Case 2) branch rather than the registered
+        # extension type (Case 1).
+        import subprocess
+        import sys
+        import textwrap
 
-        table = self._read_table(fields_5070_file)
-        assert crs_string_from_table(table, "geometry") == "EPSG:5070"
+        script = textwrap.dedent(
+            """
+            import sys
+            import pyarrow.parquet as pq
+            from geoparquet_io.core.crs_utils import crs_string_from_table
+
+            table = pq.read_table(sys.argv[1])
+            field = table.schema.field("geometry")
+            # Guard: confirm we are actually in Case 2 (plain binary field with
+            # raw extension metadata), not the registered-extension-type Case 1.
+            assert getattr(field.type, "extension_name", None) is None, (
+                "expected a plain binary geometry field (Case 2), got a "
+                "registered extension type"
+            )
+            md = field.metadata or {}
+            assert md.get(b"ARROW:extension:metadata"), (
+                "expected raw ARROW:extension:metadata on the geometry field"
+            )
+            assert "geoarrow.pyarrow" not in sys.modules
+            assert crs_string_from_table(table, "geometry") == "EPSG:5070"
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, fields_5070_file],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
     def test_detects_projected_with_geoarrow_extension_registered(self, fields_5070_file):
         # Force the registered-extension-type carrier (Case 1).
