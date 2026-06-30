@@ -59,6 +59,23 @@ class GridScheme:
     centroid_wkb_template: str
 
 
+# Internal column aliases used while building the aggregation. Any input column
+# with one of these names is dropped from the SELECT * passthrough so a generated
+# column can never be shadowed by a same-named user column.
+_RESERVED_INTERNAL = ("__geom", "__key", "__bnd", "__ll")
+
+
+def _exclude_reserved(con, relation: str, extra: tuple[str, ...] = ()) -> str:
+    """Return an `` EXCLUDE (...)`` clause dropping input columns that would collide
+    with the internal aliases (or names in ``extra``); empty string if none clash."""
+    cols = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+    drop: list[str] = []
+    for name in (*extra, *_RESERVED_INTERNAL):
+        if name in cols and name not in drop:
+            drop.append(name)
+    return f" EXCLUDE ({', '.join(quote_identifier(c) for c in drop)})" if drop else ""
+
+
 def read_grid_source_sql(con, input_url: str, geom_col: str) -> str:
     """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
 
@@ -67,7 +84,7 @@ def read_grid_source_sql(con, input_url: str, geom_col: str) -> str:
     """
     read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
     geom_expr = geometry_to_geom_expr(con, read_rel, geom_col)
-    return f"SELECT *, {geom_expr} AS __geom FROM {read_rel}"
+    return f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom FROM {read_rel}"
 
 
 def build_grid_query(
@@ -295,7 +312,7 @@ def aggregate_grid_table(
         con.register("__agg_input", table)
         geom_expr = geometry_to_geom_expr(con, "__agg_input", geom_col)
         source_sql = (
-            f"SELECT * EXCLUDE ({quote_identifier(geom_col)}), "
+            f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col,))}, "
             f"{geom_expr} AS __geom FROM __agg_input"
         )
         final_sql = build_grid_query(

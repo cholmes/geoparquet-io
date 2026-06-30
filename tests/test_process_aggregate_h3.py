@@ -37,6 +37,7 @@ def test_process_aggregate_h3_help():
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_h3_native_geometry_column(tmp_path):
     """Real GeoParquet geometry is read as GEOMETRY (not WKB BLOB); must work."""
     src = tmp_path / "fields.parquet"
@@ -56,6 +57,7 @@ def test_aggregate_h3_native_geometry_column(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_h3_count_metric_breakdown(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg.parquet"
@@ -85,6 +87,7 @@ def test_aggregate_h3_count_metric_breakdown(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_h3_out_geometry_none_is_plain_table(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg_none.parquet"
@@ -98,6 +101,7 @@ def test_aggregate_h3_out_geometry_none_is_plain_table(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_h3_null_geometry_feature(tmp_path):
     """Features with NULL geometry -> NULL-cell row, not a crash."""
     src = tmp_path / "f.parquet"
@@ -148,6 +152,7 @@ def test_aggregate_h3_rejects_out_of_range_resolution(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_h3_auto_runs(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -157,6 +162,7 @@ def test_aggregate_h3_auto_runs(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_cli_process_aggregate_h3(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -194,6 +200,7 @@ def test_cli_process_aggregate_h3_bad_resolution(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_table_aggregate_h3_api():
     from geoparquet_io.api.table import Table
 

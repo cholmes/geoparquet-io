@@ -37,6 +37,7 @@ def _write_points_geoparquet(path, rows):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_native_geometry_column(tmp_path):
     """Regression: DuckDB 1.5 reads GeoParquet geometry as GEOMETRY (not WKB BLOB).
 
@@ -61,6 +62,7 @@ def test_aggregate_a5_native_geometry_column(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_null_geometry_feature(tmp_path):
     """Regression: features with NULL/empty geometry have no assignable cell.
 
@@ -96,6 +98,7 @@ def test_aggregate_a5_null_geometry_feature(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_count_metric_breakdown(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg.parquet"
@@ -135,6 +138,7 @@ def test_aggregate_a5_count_metric_breakdown(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_out_geometry_none_is_plain_table(tmp_path):
     src = tmp_path / "fields.parquet"
     out = tmp_path / "agg_none.parquet"
@@ -162,6 +166,7 @@ def test_aggregate_a5_rejects_resolution_and_auto(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_aggregate_a5_auto_runs(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -171,6 +176,7 @@ def test_aggregate_a5_auto_runs(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_cli_process_aggregate_a5(tmp_path):
     src = tmp_path / "f.parquet"
     out = tmp_path / "o.parquet"
@@ -214,6 +220,7 @@ def _points_table():
 
 
 @pytest.mark.slow
+@pytest.mark.network
 def test_table_aggregate_a5_api():
     from geoparquet_io.api.table import Table
 
@@ -244,3 +251,55 @@ def test_cli_process_aggregate_a5_bad_metric(tmp_path):
     )
     assert result.exit_code != 0
     assert "median" in result.output.lower() or "metric" in result.output.lower()
+
+
+@pytest.mark.slow
+@pytest.mark.network
+def test_aggregate_a5_input_with_reserved_column_names(tmp_path):
+    """Input columns named like internal aliases (__geom/__key) must not shadow
+    the generated grid columns."""
+    src = tmp_path / "f.parquet"
+    out = tmp_path / "o.parquet"
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    con.execute(
+        f"""
+        COPY (
+            SELECT ST_Point(lon, lat) AS geometry, area, 'junk' AS __geom, 99 AS __key
+            FROM (VALUES (10.0, 50.0, 4.0), (10.001, 50.001, 2.0)) AS t(lon, lat, area)
+        ) TO '{src}' (FORMAT PARQUET)
+        """
+    )
+    con.close()
+    aggregate_by_a5(str(src), str(out), resolution=5, metric="sum:area")
+    df = pq.read_table(out).to_pandas()
+    # The real geometry is produced (not shadowed by the 'junk' __geom user column).
+    assert int(df["count"].sum()) == 2
+    assert df["geometry"].iloc[0] is not None
+    assert float(df["sum_area"].sum()) == 6.0
+
+
+@pytest.mark.slow
+@pytest.mark.network
+def test_aggregate_a5_table_tolerates_bad_wkb():
+    """A malformed WKB value becomes an unassigned (NULL-cell) row, not a crash."""
+    from geoparquet_io.api.table import Table
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    tbl = (
+        con.execute(
+            """
+            SELECT * FROM (VALUES
+                (ST_AsWKB(ST_Point(10.0, 50.0)), 'a'),
+                (CAST('notwkb' AS BLOB), 'b')
+            ) AS t(geometry, cls)
+            """
+        )
+        .arrow()
+        .read_all()
+    )
+    result = Table(tbl).aggregate_a5(resolution=5)  # must not raise
+    df = result.table.to_pandas()
+    assert int(df["count"].sum()) == 2
+    assert df["a5_cell"].isna().any()  # the bad-WKB row -> unassigned

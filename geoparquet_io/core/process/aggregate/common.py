@@ -29,8 +29,10 @@ def geometry_to_geom_expr(con, relation: str, geom_col: str) -> str:
     col_type = (rows[0][1] if rows else "").upper()
     if "GEOMETRY" in col_type:
         return qcol
-    # BLOB/BINARY (and anything unrecognized) is treated as WKB.
-    return f"ST_GeomFromWKB({qcol})"
+    # BLOB/BINARY (and anything unrecognized) is treated as WKB. Wrap in TRY so a
+    # single malformed value becomes NULL (-> unassigned bucket) instead of
+    # aborting the whole aggregation.
+    return f"TRY(ST_GeomFromWKB({qcol}))"
 
 
 @dataclass(frozen=True)
