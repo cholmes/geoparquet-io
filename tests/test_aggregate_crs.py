@@ -33,6 +33,8 @@ class TestGridAggregateIsCrsAware:
         reproject(fields_5070_file, str(out), target_crs="EPSG:4326")
         return str(out)
 
+    @pytest.mark.slow
+    @pytest.mark.network
     def test_a5_aggregate_cells_match_reprojected(
         self, fields_5070_file, reprojected_4326, tmp_path
     ):
