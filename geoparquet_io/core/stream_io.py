@@ -354,10 +354,51 @@ def _write_file_output(
     )
 
 
+def _detect_transform_source_crs(
+    input_path: str, metadata: dict | None, is_stream: bool
+) -> str | None:
+    """Detect the input's CRS as an ``ST_Transform`` source string, or ``None``.
+
+    Streamed input carries its CRS in the Arrow ``geo`` schema metadata; file
+    input is read directly. Best-effort: detection runs for every caller (incl.
+    ones whose query fn ignores CRS), so a failure must never break the transform.
+    ``None`` means CRS84/CRS-less input (no reprojection needed).
+    """
+    from geoparquet_io.core.crs_utils import (
+        crs_string_from_geo_meta,
+        parse_geo_metadata_from_schema,
+        source_crs_string,
+    )
+
+    try:
+        if is_stream:
+            return crs_string_from_geo_meta(parse_geo_metadata_from_schema(metadata), None)
+        return source_crs_string(input_path)
+    except Exception:
+        return None
+
+
+def _call_transform_query_fn(transform_query_fn, source, con, source_crs):
+    """Call the query builder, passing ``source_crs`` only if it accepts it.
+
+    Keeps the ``(source, con)`` contract for existing callers (sort, bbox, …)
+    while letting CRS-aware builders opt in with a third ``source_crs`` parameter.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(transform_query_fn).parameters
+    except (TypeError, ValueError):
+        return transform_query_fn(source, con)
+    if len(params) >= 3:
+        return transform_query_fn(source, con, source_crs)
+    return transform_query_fn(source, con)
+
+
 def execute_transform(
     input_path: str,
     output_path: str | None,
-    transform_query_fn: Callable[[str, duckdb.DuckDBPyConnection], str],
+    transform_query_fn: Callable[..., str],
     verbose: bool = False,
     dry_run: bool = False,
     compression: str = "ZSTD",
@@ -405,8 +446,11 @@ def execute_transform(
         verbose = False
 
     with open_input(input_path, verbose=verbose) as (source, metadata, is_stream, con):
-        # Generate the transform query
-        query = transform_query_fn(source, con)
+        # Detect the input's CRS once so a transform-aware query fn can reproject
+        # non-CRS84 input (e.g. lon/lat grid keying, #525). Streamed input is an
+        # Arrow IPC stream, so its CRS comes from the schema metadata, not a file.
+        source_crs = _detect_transform_source_crs(input_path, metadata, is_stream)
+        query = _call_transform_query_fn(transform_query_fn, source, con, source_crs)
 
         if dry_run:
             warn("\n=== DRY RUN MODE - SQL that would be executed ===\n")

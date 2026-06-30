@@ -20,7 +20,11 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     get_parquet_metadata,
 )
-from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
+from geoparquet_io.core.crs_utils import (
+    reproject_to_source_sql,
+    source_crs_string,
+    transform_geom_sql,
+)
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -74,16 +78,41 @@ def _build_enrichment_query(
 
     input_ref = input_url if input_is_table_ref else f"'{input_url}'"
 
-    input_geom_sql = transform_geom_sql(f"a.{quote_identifier(input_geom_col)}", source_crs)
-
-    if input_bbox_col and admin_bbox_col and not source_crs:
-        bbox_filter = f"""
+    q_input_geom = quote_identifier(input_geom_col)
+    bbox_filter = f"""
             (a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
              a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
              a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
              a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)
         """
 
+    if source_crs and input_bbox_col and admin_bbox_col:
+        # Non-CRS84 input with bboxes on both sides: reproject the (small) admin
+        # polygons into the input CRS and synthesize their source-CRS bbox, so the
+        # join runs in one CRS and keeps the cheap bbox pre-filter — instead of
+        # transforming the (large) input per row and degrading to a nested-loop
+        # ST_Intersects (#525, preserving the #460 pre-filter).
+        radmin = reproject_to_source_sql(f'"{admin_geom_col}"', source_crs)
+        bbox_struct = (
+            f"struct_pack(xmin := ST_XMin({radmin}), xmax := ST_XMax({radmin}), "
+            f"ymin := ST_YMin({radmin}), ymax := ST_YMax({radmin})) AS {admin_bbox_col}"
+        )
+        return f"""
+            CREATE TEMP TABLE {enriched_table} AS
+            SELECT
+                a.*,
+                {admin_select_clause}
+            FROM {input_ref} a
+            LEFT JOIN (
+                SELECT {radmin} AS {admin_geom_col}, {bbox_struct}, {subquery_cols_str}
+                FROM {admin_table_ref}
+                {admin_where_clause}
+            ) b
+            ON {bbox_filter}
+                AND ST_Intersects(b.{admin_geom_col}, a.{q_input_geom})
+        """
+
+    if input_bbox_col and admin_bbox_col and not source_crs:
         return f"""
             CREATE TEMP TABLE {enriched_table} AS
             SELECT
@@ -96,10 +125,13 @@ def _build_enrichment_query(
                 {admin_where_clause}
             ) b
             ON {bbox_filter}
-                AND ST_Intersects(b.{admin_geom_col}, {input_geom_sql})
+                AND ST_Intersects(b.{admin_geom_col}, a.{q_input_geom})
         """
-    else:
-        return f"""
+
+    # No bbox on one side: reproject the input geometry inline (no pre-filter to
+    # preserve either way).
+    input_geom_sql = transform_geom_sql(f"a.{q_input_geom}", source_crs)
+    return f"""
             CREATE TEMP TABLE {enriched_table} AS
             SELECT
                 a.*,

@@ -133,11 +133,17 @@ def _make_add_h3_query(
     geometry_column: str,
     h3_column_name: str,
     resolution: int,
+    source_crs: str | None = None,
 ) -> str:
-    """Build query to add H3 column to a source."""
+    """Build query to add H3 column to a source.
+
+    ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
+    (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
+    """
+    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
     h3_expr = f"""h3_latlng_to_cell_string(
-        ST_Y(ST_Centroid("{geometry_column}")),
-        ST_X(ST_Centroid("{geometry_column}")),
+        ST_Y(ST_Centroid({geom_ref})),
+        ST_X(ST_Centroid({geom_ref})),
         {resolution}
     )"""
     return f'SELECT *, {h3_expr} AS "{h3_column_name}" FROM {source}'
@@ -282,8 +288,12 @@ def _add_h3_streaming(
     if should_stream_output(output_path):
         verbose = False
 
-    def make_query(source: str, con) -> str:
-        """Build the add H3 query for streaming source."""
+    def make_query(source: str, con, source_crs: str | None = None) -> str:
+        """Build the add H3 query for streaming source.
+
+        ``source_crs`` is the streamed input's CRS (from its Arrow geo metadata),
+        used to reproject non-CRS84 input to lon/lat before keying (#525).
+        """
         # Load H3 extension
         load_community_extension(con, "h3")
 
@@ -303,7 +313,7 @@ def _add_h3_streaming(
         if verbose:
             debug(f"Using geometry column: {geom_col}")
 
-        return _make_add_h3_query(source, geom_col, h3_column_name, resolution)
+        return _make_add_h3_query(source, geom_col, h3_column_name, resolution, source_crs)
 
     execute_transform(
         input_path,

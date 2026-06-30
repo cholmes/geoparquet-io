@@ -601,6 +601,27 @@ def source_crs_string(parquet_file, verbose: bool = False) -> str | None:
     return crs_string_for_transform(extract_crs_from_parquet(parquet_file, verbose))
 
 
+def reproject_to_source_sql(geom_expr: str, source_crs, base_crs: str = DEFAULT_TARGET_CRS) -> str:
+    """Wrap ``geom_expr`` to reproject FROM ``base_crs`` (default CRS84) TO ``source_crs``.
+
+    The inverse direction of :func:`transform_geom_sql`. Used to bring the
+    (small) OGC:CRS84 admin polygons into a non-CRS84 input's CRS so the spatial
+    join and its bbox pre-filter run in one CRS *without* transforming the large
+    input per row — this restores the cheap bbox pre-filter on non-CRS84 admin
+    joins instead of degrading to a full nested-loop ``ST_Intersects`` (#525).
+
+    Returns ``geom_expr`` unchanged when ``source_crs`` is absent/default.
+    """
+    if not source_crs or is_default_crs(source_crs):
+        return geom_expr
+    src = resolve_crs_to_string(source_crs)
+    if not src:
+        return geom_expr
+    src_lit = _escape_sql_string(src)
+    base_lit = _escape_sql_string(base_crs)
+    return f"ST_Transform({geom_expr}, '{base_lit}', '{src_lit}')"
+
+
 def parse_geo_metadata_from_schema(metadata: dict | None) -> dict | None:
     """Parse GeoParquet ``geo`` metadata from an Arrow schema metadata dict.
 

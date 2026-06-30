@@ -170,14 +170,20 @@ def _make_add_s2_query(
     geometry_column: str,
     s2_column_name: str,
     level: int,
+    source_crs: str | None = None,
 ) -> str:
-    """Build query to add S2 column to a source."""
+    """Build query to add S2 column to a source.
+
+    ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
+    (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
+    """
+    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
     # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get desired level
     s2_expr = f"""s2_cell_token(
         s2_cell_parent(
             s2_cellfromlonlat(
-                ST_X(ST_Centroid("{geometry_column}")),
-                ST_Y(ST_Centroid("{geometry_column}"))
+                ST_X(ST_Centroid({geom_ref})),
+                ST_Y(ST_Centroid({geom_ref}))
             ),
             {level}
         )
@@ -328,8 +334,12 @@ def _add_s2_streaming(
     if should_stream_output(output_path):
         verbose = False
 
-    def make_query(source: str, con) -> str:
-        """Build the add S2 query for streaming source."""
+    def make_query(source: str, con, source_crs: str | None = None) -> str:
+        """Build the add S2 query for streaming source.
+
+        ``source_crs`` is the streamed input's CRS (from its Arrow geo metadata),
+        used to reproject non-CRS84 input to lon/lat before keying (#525).
+        """
         # Load geography extension
         _load_geography_extension(con)
 
@@ -349,7 +359,7 @@ def _add_s2_streaming(
         if verbose:
             debug(f"Using geometry column: {geom_col}")
 
-        return _make_add_s2_query(source, geom_col, s2_column_name, level)
+        return _make_add_s2_query(source, geom_col, s2_column_name, level, source_crs)
 
     execute_transform(
         input_path,

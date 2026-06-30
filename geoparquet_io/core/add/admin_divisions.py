@@ -14,13 +14,28 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
+from geoparquet_io.core.crs_utils import (
+    reproject_to_source_sql,
+    source_crs_string,
+    transform_geom_sql,
+)
 from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
+
+
+def _admin_reprojected(source_crs, admin_bbox_col) -> bool:
+    """Whether the admin side is reprojected into the input CRS (#525).
+
+    Only when there is a non-CRS84 input *and* the admin dataset has a bbox to
+    base a pre-filter on. Reprojecting the (small) admin side instead of the
+    large input keeps the join's bbox pre-filter usable (both sides share the
+    input CRS) — see :func:`reproject_to_source_sql`.
+    """
+    return bool(source_crs) and bool(admin_bbox_col)
 
 
 def _build_admin_subquery(
@@ -31,8 +46,17 @@ def _build_admin_subquery(
     admin_geom_col,
     admin_bbox_col,
     admin_where_clauses,
+    source_crs=None,
 ):
-    """Build admin data subquery with filters."""
+    """Build admin data subquery with filters.
+
+    When ``source_crs`` is set (non-CRS84 input) and the admin data has a bbox,
+    the admin polygons are reprojected into the input's CRS and a matching
+    source-CRS bbox struct is synthesized, so the downstream join keeps its cheap
+    bbox pre-filter without transforming the input per row (#525). The admin
+    ``WHERE`` extent filter still runs on the original (CRS84) bbox before the
+    reprojection.
+    """
     admin_where_clause = ""
     if admin_where_clauses:
         admin_where_clause = "WHERE " + " AND ".join(admin_where_clauses)
@@ -47,6 +71,22 @@ def _build_admin_subquery(
     subquery_cols_str = ", ".join(subquery_cols)
 
     geom_select = quote_identifier(admin_geom_col)
+
+    if _admin_reprojected(source_crs, admin_bbox_col):
+        radmin = reproject_to_source_sql(geom_select, source_crs)
+        bbox_q = quote_identifier(admin_bbox_col)
+        # Reproject the polygon (M rows, cheap) and rebuild its bbox in the input
+        # CRS so the join can pre-filter against the input's stored bbox.
+        bbox_struct = (
+            f"struct_pack(xmin := ST_XMin({radmin}), xmax := ST_XMax({radmin}), "
+            f"ymin := ST_YMin({radmin}), ymax := ST_YMax({radmin})) AS {bbox_q}"
+        )
+        return f"""(
+        SELECT {radmin} AS {geom_select}, {bbox_struct}, {subquery_cols_str}
+        FROM {admin_table_ref}
+        {admin_where_clause}
+    )"""
+
     bbox_select = quote_identifier(admin_bbox_col) if admin_bbox_col else geom_select
 
     return f"""(
@@ -122,10 +162,14 @@ def _build_spatial_join_query(
     """
     input_ref = _format_input_ref(input_url, is_table_ref)
 
-    # Reproject a non-CRS84 input to the admin CRS (OGC:CRS84) before the
-    # predicate, else DuckDB errors on the CRS mismatch / matches nothing (#525).
+    # CRS handling for a non-CRS84 input (#525):
+    #  - If the admin side was reprojected into the input CRS (it has a bbox), the
+    #    join runs entirely in the input CRS, so the input geometry is left
+    #    untouched and the cheap bbox pre-filter is kept (avoids the #460 hang).
+    #  - Otherwise (admin has no bbox) reproject the input geometry inline; without
+    #    a bbox there is no pre-filter to preserve either way.
     input_geom_sql = None
-    if source_crs:
+    if source_crs and not _admin_reprojected(source_crs, admin_bbox_col):
         input_geom_sql = transform_geom_sql(f"a.{quote_identifier(input_geom_col)}", source_crs)
 
     # Shared, fully-quoted ON clause (bbox pre-filter + ST_Intersects).
@@ -462,6 +506,7 @@ def _build_query_components(
         admin_geom_col,
         admin_bbox_col,
         admin_where_clauses,
+        source_crs=source_crs,
     )
 
     if input_bbox_col and admin_bbox_col and verbose and not dry_run:

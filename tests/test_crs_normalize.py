@@ -298,6 +298,56 @@ class TestGridKeyingStreamingIsCrsAware:
         cells = self._stream_quadkeys(fields_5070_file, monkeypatch, resolution=16)
         assert all(c is not None for c in cells)
 
+    @staticmethod
+    def _stream_grid(input_file, monkeypatch, module, func_name, column, res_kw):
+        """Run a grid add to stdout (streaming) and read the cells back."""
+        import importlib
+        import io
+
+        import pyarrow.ipc as ipc
+
+        buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.buffer = buffer
+        monkeypatch.setattr("sys.stdout", mock_stdout)
+
+        add_func = getattr(importlib.import_module(f"geoparquet_io.core.add.{module}"), func_name)
+        add_func(input_file, "-", **res_kw)
+
+        buffer.seek(0)
+        return ipc.open_stream(buffer).read_all().column(column).to_pylist()
+
+    @pytest.mark.parametrize(
+        "module,func_name,column,res_kw",
+        [
+            ("a5", "add_a5_column", "a5_cell", {"a5_resolution": 12}),
+            ("h3", "add_h3_column", "h3_cell", {"h3_resolution": 9}),
+            ("s2", "add_s2_column", "s2_cell", {"s2_level": 14}),
+        ],
+    )
+    def test_a5_h3_s2_streaming_matches_file_path(
+        self, fields_5070_file, tmp_path, monkeypatch, module, func_name, column, res_kw
+    ):
+        import importlib
+
+        add_func = getattr(importlib.import_module(f"geoparquet_io.core.add.{module}"), func_name)
+
+        # File-based path (already CRS-aware) is the oracle.
+        file_out = tmp_path / f"file_{module}.parquet"
+        add_func(fields_5070_file, str(file_out), **res_kw)
+        file_cells = _read_column(str(file_out), column)
+
+        stream_cells = self._stream_grid(
+            fields_5070_file, monkeypatch, module, func_name, column, res_kw
+        )
+
+        assert len(stream_cells) == len(file_cells)
+        assert all(c is not None for c in stream_cells)
+        # Streaming must reproject like the file path (not key metres as degrees),
+        # so the same multiset of cells comes out.
+        assert sorted(stream_cells) == sorted(file_cells)
+
 
 class TestGridKeyingTableApiIsCrsAware:
     """Class B (#525), Python API: the table-centric grid ops must reproject too.
@@ -420,6 +470,112 @@ class TestAdminJoinIsCrsAware:
                 input_geom_col="geometry",
                 input_bbox_col=None,
                 enriched_table="_enriched",
+                source_crs="EPSG:5070",
+            )
+            con.execute(sql)
+            assigned = con.execute(
+                "SELECT COUNT(*) FROM _enriched WHERE region IS NOT NULL"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert assigned > 0
+
+
+class TestAdminReprojectsAdminSideWithBbox:
+    """Class A perf (#525): with bboxes on both sides the admin side is reprojected.
+
+    Reprojecting the (small) admin polygons into the input CRS — instead of the
+    large input into CRS84 — keeps the cheap bbox pre-filter, so the join does
+    not degrade to a full nested-loop ST_Intersects (the #460 regression). The
+    input geometry must be left untransformed.
+    """
+
+    def test_join_query_keeps_bbox_prefilter_and_leaves_input_untransformed(self):
+        from geoparquet_io.core.add.admin_divisions import _build_spatial_join_query
+
+        sql = _build_spatial_join_query(
+            input_url="x.parquet",
+            admin_subquery="(SELECT geom, bbox, region FROM admin)",
+            admin_select_clause='b."region" AS region',
+            input_bbox_col="bbox",
+            admin_bbox_col="bbox",
+            input_geom_col="geometry",
+            admin_geom_col="geom",
+            source_crs="EPSG:5070",
+        )
+        # The join itself does not transform the input (admin reproject lives in
+        # the subquery); the bbox pre-filter is retained.
+        assert "ST_Transform" not in sql
+        assert ".xmin" in sql and ".xmax" in sql
+
+    def test_admin_subquery_reprojects_admin_and_synthesizes_bbox(self):
+        from geoparquet_io.core.add.admin_divisions import _build_admin_subquery
+
+        sq = _build_admin_subquery(
+            dataset=None,
+            levels=None,
+            boundary_columns=["region"],
+            admin_table_ref="'admin.parquet'",
+            admin_geom_col="geom",
+            admin_bbox_col="bbox",
+            admin_where_clauses=[],
+            source_crs="EPSG:5070",
+        )
+        assert "ST_Transform" in sq  # admin polygons reprojected into input CRS
+        assert "struct_pack" in sq  # source-CRS bbox synthesized for the pre-filter
+
+    def test_enrichment_query_reprojects_admin_side_keeps_prefilter(self):
+        from geoparquet_io.core.partition.admin_hierarchical import _build_enrichment_query
+
+        sql = _build_enrichment_query(
+            input_url="x.parquet",
+            admin_table_ref="admin",
+            admin_where_clause="",
+            admin_select_clause='b."region" AS region',
+            admin_geom_col="geom",
+            admin_bbox_col="bbox",
+            boundary_columns=["region"],
+            input_geom_col="geometry",
+            input_bbox_col="bbox",
+            enriched_table="_enriched",
+            source_crs="EPSG:5070",
+        )
+        assert "ST_Transform" in sql  # admin reprojected
+        assert 'ST_Intersects(b.geom, a."geometry")' in sql  # input untransformed
+        assert "a.bbox.xmin <= b.bbox.xmax" in sql  # bbox pre-filter restored
+        assert "struct_pack" in sql
+
+    def test_enrichment_reproject_path_runs_and_assigns(self, fields_5070_file):
+        """The reproject-admin SQL executes in DuckDB and assigns via the prefilter."""
+        from geoparquet_io.core.partition.admin_hierarchical import _build_enrichment_query
+
+        con = _con_with_admin()
+        try:
+            # Admin polygon with a CRS84 bbox struct.
+            con.execute(
+                "CREATE TEMP TABLE _admin_b AS SELECT geom, region, "
+                "struct_pack(xmin := ST_XMin(geom), xmax := ST_XMax(geom), "
+                "ymin := ST_YMin(geom), ymax := ST_YMax(geom)) AS bbox FROM _admin"
+            )
+            # Projected input with a source-CRS bbox struct.
+            con.execute(
+                "CREATE TEMP TABLE _inp AS SELECT geometry, "
+                "struct_pack(xmin := ST_XMin(geometry), xmax := ST_XMax(geometry), "
+                "ymin := ST_YMin(geometry), ymax := ST_YMax(geometry)) AS bbox "
+                f"FROM '{fields_5070_file}'"
+            )
+            sql = _build_enrichment_query(
+                input_url="_inp",
+                admin_table_ref="_admin_b",
+                admin_where_clause="",
+                admin_select_clause='b."region" AS region',
+                admin_geom_col="geom",
+                admin_bbox_col="bbox",
+                boundary_columns=["region"],
+                input_geom_col="geometry",
+                input_bbox_col="bbox",
+                enriched_table="_enriched",
+                input_is_table_ref=True,
                 source_crs="EPSG:5070",
             )
             con.execute(sql)
