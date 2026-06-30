@@ -82,7 +82,9 @@ def test_sql_literal():
     assert sql_literal(False) == "FALSE"
 
 
-def _crop_con():
+@pytest.fixture
+def crop_con():
+    # Yield-and-close so the connection does not linger in the shared xdist worker.
     con = duckdb.connect()
     con.execute(
         """
@@ -94,27 +96,27 @@ def _crop_con():
         ) AS t(crop)
         """
     )
-    return con
+    try:
+        yield con
+    finally:
+        con.close()
 
 
-def test_resolve_breakdown_values_top_n_and_other():
-    con = _crop_con()
-    top, has_other = resolve_breakdown_values(con, "SELECT * FROM features", "crop", limit=2)
+def test_resolve_breakdown_values_top_n_and_other(crop_con):
+    top, has_other = resolve_breakdown_values(crop_con, "SELECT * FROM features", "crop", limit=2)
     assert top == ["wheat", "corn"]  # most frequent first
     assert has_other is True
 
 
-def test_resolve_breakdown_values_no_other():
-    con = _crop_con()
-    top, has_other = resolve_breakdown_values(con, "SELECT * FROM features", "crop", limit=10)
+def test_resolve_breakdown_values_no_other(crop_con):
+    top, has_other = resolve_breakdown_values(crop_con, "SELECT * FROM features", "crop", limit=10)
     assert has_other is False
 
 
-def test_build_breakdown_select_counts_and_other():
-    con = _crop_con()
+def test_build_breakdown_select_counts_and_other(crop_con):
     colmap = build_breakdown_column_names(["wheat", "corn"], reserved={"count_other"})
     select = build_breakdown_select("crop", colmap, has_other=True)
-    row = con.execute(f"SELECT {select} FROM features").fetchone()
+    row = crop_con.execute(f"SELECT {select} FROM features").fetchone()
     # wheat=3, corn=2, other(rice+barley+null)=3
     assert row == (3, 2, 3)
 

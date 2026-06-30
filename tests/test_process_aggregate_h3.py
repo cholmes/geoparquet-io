@@ -236,18 +236,24 @@ def test_table_aggregate_h3_api():
 
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
-    tbl = (
-        con.execute(
-            """
+    try:
+        tbl = (
+            con.execute(
+                """
             SELECT ST_AsWKB(ST_Point(lon, lat)) AS geometry, crop, area FROM (VALUES
                 (10.0, 50.0, 'wheat', 4.0),
                 (10.001, 50.001, 'corn', 2.0)
             ) AS t(lon, lat, crop, area)
             """
+            )
+            .arrow()
+            .read_all()
         )
-        .arrow()
-        .read_all()
-    )
+    finally:
+        # Close the spatial-loaded connection before using the materialized table
+        # so it does not linger in the shared xdist worker; leaked DuckDB/GDAL
+        # global state is a known trigger for native crashes in sibling tests.
+        con.close()
     result = Table(tbl).aggregate_h3(resolution=6, metric="sum:area")
     assert "h3_cell" in result.column_names
     assert "count" in result.column_names

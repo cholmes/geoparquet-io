@@ -205,18 +205,24 @@ def test_cli_process_aggregate_a5(tmp_path):
 def _points_table():
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
-    return (
-        con.execute(
-            """
+    try:
+        return (
+            con.execute(
+                """
         SELECT ST_AsWKB(ST_Point(lon, lat)) AS geometry, crop, area FROM (VALUES
             (10.0, 50.0, 'wheat', 4.0),
             (10.001, 50.001, 'corn', 2.0)
         ) AS t(lon, lat, crop, area)
         """
+            )
+            .arrow()
+            .read_all()
         )
-        .arrow()
-        .read_all()
-    )
+    finally:
+        # Close the spatial-loaded connection before returning so it does not
+        # linger in the shared xdist worker. Leaked DuckDB/GDAL global state is a
+        # known trigger for native crashes in sibling tests (see test_convert_layer).
+        con.close()
 
 
 @pytest.mark.slow
