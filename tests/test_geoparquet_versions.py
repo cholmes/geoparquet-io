@@ -27,6 +27,21 @@ from tests.conftest import (
 )
 
 
+def _is_wkb_type(arrow_type) -> bool:
+    """True when an Arrow type is WKB (plain/large binary or a geoarrow.wkb extension).
+
+    Uses pyarrow type predicates rather than a string comparison so it also catches
+    large_binary and geoarrow.wkb, which a ``str(type) != "binary"`` check would miss.
+    """
+    import pyarrow as pa
+
+    return (
+        pa.types.is_binary(arrow_type)
+        or pa.types.is_large_binary(arrow_type)
+        or getattr(arrow_type, "extension_name", "") == "geoarrow.wkb"
+    )
+
+
 class TestGeoParquetVersionConstants:
     """Test version configuration constants."""
 
@@ -1268,9 +1283,10 @@ class TestPartitionGeoParquetVersion:
 class TestGeoParquet11GeoArrow:
     """Tests for --geoparquet-version 1.1-geoarrow output.
 
-    This version writes GeoParquet 1.1 metadata but skips the bbox column,
-    keeping the geometry in its native Arrow encoding (no WKB blob conversion).
-    Useful for GeoArrow-native parquet files that don't benefit from bbox columns.
+    This version writes GeoParquet 1.1.0 metadata, skips the bbox column, and
+    encodes geometry using native GeoArrow nested-coordinate types. Native input
+    encoding is preserved; WKB/text inputs are converted to native GeoArrow
+    (falling back to WKB only for geometry-type mixes that cannot be unified).
     """
 
     def test_version_constant_exists(self):
@@ -1340,7 +1356,7 @@ class TestGeoParquet11GeoArrow:
         schema = pq.read_schema(output_file)
         geom_field = schema.field("geometry")
         # Native geometry should NOT be a plain binary blob
-        assert str(geom_field.type) != "binary", "geometry should remain native, not WKB blob"
+        assert not _is_wkb_type(geom_field.type), "geometry should remain native, not WKB blob"
 
     def test_native_input_metadata_encoding_preserved(self, test_data_dir, tmp_path):
         """GeoParquet metadata must record the actual native encoding, not WKB."""
@@ -1357,34 +1373,28 @@ class TestGeoParquet11GeoArrow:
             f"Expected 'multipolygon' encoding in metadata, got '{encoding}'"
         )
 
-    def test_wkb_input_writes_binary_geometry(self, geojson_input, temp_output_file):
-        """WKB-encoded input (GeoJSON) with 1.1-geoarrow must write binary WKB, not native type."""
+    def test_wkb_input_writes_native_geometry(self, geojson_input, temp_output_file):
+        """WKB-encoded input (GeoJSON) with 1.1-geoarrow is converted to native GeoArrow."""
         import pyarrow.parquet as pq
 
         convert_to_geoparquet(
             geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
         )
-
         geo_meta = get_geo_metadata(temp_output_file)
         geom_col = geo_meta["primary_column"]
-        schema = pq.read_schema(temp_output_file)
-        geom_field = schema.field(geom_col)
-        assert str(geom_field.type) == "binary", (
-            f"WKB input should remain binary blob, got {geom_field.type}"
+        geom_field = pq.read_schema(temp_output_file).field(geom_col)
+        assert not _is_wkb_type(geom_field.type), (
+            f"WKB input should become native GeoArrow, got {geom_field.type}"
         )
 
-    def test_wkb_input_metadata_encoding_is_wkb(self, geojson_input, temp_output_file):
-        """WKB-encoded input with 1.1-geoarrow must record 'WKB' in geo metadata."""
+    def test_wkb_input_metadata_encoding_is_native(self, geojson_input, temp_output_file):
+        """WKB-encoded polygon input records a native encoding (not 'WKB')."""
         convert_to_geoparquet(
             geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
         )
-
         geo_meta = get_geo_metadata(temp_output_file)
         geom_col = geo_meta["primary_column"]
-        encoding = geo_meta["columns"][geom_col]["encoding"]
-        assert encoding == "WKB", (
-            f"Expected 'WKB' encoding in metadata for WKB input, got '{encoding}'"
-        )
+        assert geo_meta["columns"][geom_col]["encoding"] == "polygon"
 
     @pytest.mark.parametrize(
         "geom_type",
@@ -1403,7 +1413,7 @@ class TestGeoParquet11GeoArrow:
 
         schema = pq.read_schema(output_file)
         geom_field = schema.field("geometry")
-        assert str(geom_field.type) != "binary", (
+        assert not _is_wkb_type(geom_field.type), (
             f"{geom_type}: geometry should remain native, not WKB blob"
         )
 
@@ -1412,3 +1422,210 @@ class TestGeoParquet11GeoArrow:
         assert encoding == geom_type, (
             f"Expected '{geom_type}' encoding in metadata, got '{encoding}'"
         )
+
+    def test_wkb_query_via_arrow_streaming_produces_native(self, geojson_input, temp_output_file):
+        """arrow-streaming + 1.1-geoarrow must emit nested GeoArrow, not WKB binary."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        # buildings_test.geojson is polygons
+        convert_to_geoparquet(
+            geojson_input,
+            temp_output_file,
+            geoparquet_version="1.1-geoarrow",
+            verbose=False,
+        )
+        geo_meta = get_geo_metadata(temp_output_file)
+        geom_col = geo_meta["primary_column"]
+        schema = pq.read_schema(temp_output_file)
+        assert not _is_wkb_type(schema.field(geom_col).type)
+        assert geo_meta["columns"][geom_col]["encoding"] == "polygon"
+
+    def test_wkb_parquet_input_converts_to_native(self, test_data_dir, tmp_path):
+        """A WKB-encoded GeoParquet input must become native GeoArrow under 1.1-geoarrow."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = str(test_data_dir / "buildings_test.parquet")  # WKB-encoded
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] != "WKB"
+        assert not _is_wkb_type(pq.read_schema(output_file).field(geom_col).type)
+
+    @pytest.mark.parametrize(
+        "fixture_name",
+        [
+            "buildings_test.geojson",
+            "buildings_test.shp",
+            "buildings_test.gpkg",
+            "buildings_test.parquet",
+        ],
+    )
+    def test_all_input_formats_produce_native_encoding(self, fixture_name, test_data_dir, tmp_path):
+        """Every input format must yield native GeoArrow encoding + valid GeoParquet under 1.1-geoarrow."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import check_bbox_structure
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        input_file = str(test_data_dir / fixture_name)
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        encoding = geo_meta["columns"][geom_col]["encoding"]
+        # all buildings_test fixtures contain only Polygon geometries (verified)
+        assert encoding == "polygon", f"{fixture_name}: expected polygon, got {encoding}"
+        assert not _is_wkb_type(pq.read_schema(output_file).field(geom_col).type)
+        # bbox column must be skipped for 1.1-geoarrow
+        assert not check_bbox_structure(output_file)["has_bbox_column"]
+        assert get_geoparquet_version(output_file) == "1.1.0"
+
+    def test_mixed_geometry_falls_back_to_wkb(self, test_data_dir, tmp_path):
+        """A column mixing incompatible geometry types (Point + Polygon) stays WKB under 1.1-geoarrow."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        # mixed_geometries.csv has a 'geometry' WKT column with Point and Polygon rows
+        input_file = str(test_data_dir / "mixed_geometries.csv")
+        output_file = str(tmp_path / "out.parquet")
+        convert_to_geoparquet(
+            input_file, output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+
+        geo_meta = get_geo_metadata(output_file)
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] == "WKB"
+
+        # Verify the physical Arrow column type is binary/WKB (not native nested GeoArrow)
+        schema = pq.read_schema(output_file)
+        geom_type = schema.field(geom_col).type
+        assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type), (
+            f"mixed geometry should stay binary WKB, got {geom_type}"
+        )
+
+    def test_native_output_is_valid_and_readable(self, geojson_input, temp_output_file):
+        """1.1-geoarrow native output passes validation and round-trips through geopandas."""
+        import geopandas as gpd
+
+        from geoparquet_io.core.convert import convert_to_geoparquet
+
+        convert_to_geoparquet(
+            geojson_input, temp_output_file, geoparquet_version="1.1-geoarrow", verbose=False
+        )
+        gdf = gpd.read_parquet(temp_output_file)
+        assert len(gdf) > 0
+        assert gdf.geometry.notna().all()
+
+    def test_python_api_write_produces_native_encoding(self, geojson_input, temp_output_file):
+        """The public Python API (Table.write) must produce native GeoArrow, not WKB.
+
+        Drives the Table.write path (gpio.convert(...).write(...)), which is a
+        different code path from convert_to_geoparquet and was previously emitting WKB.
+        """
+        import json
+
+        import pyarrow.parquet as pq
+
+        import geoparquet_io as gpio
+
+        table = gpio.convert(geojson_input)
+        table.write(temp_output_file, geoparquet_version="1.1-geoarrow")
+
+        schema = pq.read_schema(temp_output_file)
+        geo_meta = json.loads(schema.metadata[b"geo"])
+        geom_col = geo_meta["primary_column"]
+        assert geo_meta["columns"][geom_col]["encoding"] == "polygon"
+        assert not _is_wkb_type(schema.field(geom_col).type)
+
+    def test_3d_input_preserves_z(self, tmp_path):
+        """3D (Point Z) WKB input must keep its Z ordinate under 1.1-geoarrow.
+
+        Regression for silent Z/M data loss: the native target type was always 2D,
+        so a forced conversion dropped the Z. Either Z survives in a native XYZ type
+        or the column falls back to WKB — never a silent 2D coercion.
+        """
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import shapely.wkb
+        from shapely.geometry import Point
+
+        import geoparquet_io as gpio
+
+        arr = pa.array(
+            [shapely.wkb.dumps(Point(1, 2, 3)), shapely.wkb.dumps(Point(4, 5, 6))],
+            type=pa.binary(),
+        )
+        table = gpio.Table(pa.table({"geometry": arr}), geometry_column="geometry")
+
+        output_file = str(tmp_path / "out_3d.parquet")
+        table.write(output_file, geoparquet_version="1.1-geoarrow")
+
+        schema = pq.read_schema(output_file)
+        geom_type = schema.field("geometry").type
+        if _is_wkb_type(geom_type):
+            # WKB fallback is acceptable — Z is preserved verbatim in the WKB bytes.
+            return
+
+        # Native encoding must carry the Z ordinate (XYZ storage with a z field).
+        import geoarrow.pyarrow as ga
+
+        col = pq.read_table(output_file).column("geometry").combine_chunks()
+        wkt = ga.format_wkt(ga.as_geoarrow(col))[0].as_py()
+        assert "POINT Z" in wkt, f"Z ordinate dropped, got {wkt}"
+
+    def test_python_api_write_preserves_crs(self, tmp_path):
+        """A non-default CRS must survive Table.write(1.1-geoarrow) (no silent CRS84).
+
+        Regression for dropped CRS: write_from_table was never given self.crs, so the
+        native type and geo metadata both lost a non-default CRS.
+        """
+        import json
+
+        import pyarrow as pa
+        import shapely.wkb
+        from pyproj import CRS
+        from shapely.geometry import Point
+
+        import geoparquet_io as gpio
+
+        projjson = CRS.from_epsg(3857).to_json_dict()
+        arr = pa.array(
+            [shapely.wkb.dumps(Point(1, 2)), shapely.wkb.dumps(Point(3, 4))],
+            type=pa.binary(),
+        )
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {
+                    "encoding": "WKB",
+                    "geometry_types": ["Point"],
+                    "crs": projjson,
+                }
+            },
+        }
+        tbl = pa.table({"geometry": arr}).replace_schema_metadata(
+            {b"geo": json.dumps(geo).encode("utf-8")}
+        )
+        table = gpio.Table(tbl, geometry_column="geometry")
+
+        output_file = str(tmp_path / "out_crs.parquet")
+        table.write(output_file, geoparquet_version="1.1-geoarrow")
+
+        geo_out = get_geo_metadata(output_file)
+        crs_out = geo_out["columns"]["geometry"].get("crs")
+        assert crs_out is not None, "non-default CRS was dropped"
+        assert crs_out.get("id", {}).get("code") == 3857

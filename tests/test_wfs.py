@@ -12,11 +12,16 @@ import pytest
 
 # Module-level imports for WFS functions (avoids per-test imports)
 from geoparquet_io.core.wfs import (
+    EmptyLayerError,
+    LayerNotFoundError,
+    WFSAuthenticationError,
     WFSError,
     WFSLayerInfo,
     _build_bbox_param,
     _build_local_bbox_filter,
+    _build_wfs_url,
     _detect_best_output_format,
+    _detect_sortable_attribute,
     _determine_bbox_strategy,
     _negotiate_crs,
     _normalize_crs,
@@ -596,6 +601,73 @@ class TestErrorHandling:
             get_layer_info("http://mock.wfs.server/wfs", "nonexistent:data")
 
 
+class TestWFSExceptionHierarchy:
+    """Test typed WFS exception subclasses for downstream consumers."""
+
+    def test_empty_layer_error_is_wfs_error(self):
+        """EmptyLayerError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(EmptyLayerError, WFSError)
+
+    def test_layer_not_found_error_is_wfs_error(self):
+        """LayerNotFoundError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(LayerNotFoundError, WFSError)
+
+    def test_auth_error_is_wfs_error(self):
+        """WFSAuthenticationError should be catchable as WFSError (backward compatible)."""
+        assert issubclass(WFSAuthenticationError, WFSError)
+
+    def test_empty_layer_error_has_typename(self):
+        """EmptyLayerError should expose typename attribute."""
+        err = EmptyLayerError("ns:layername")
+        assert err.typename == "ns:layername"
+        assert "ns:layername" in str(err)
+        assert "No features returned" in str(err)
+
+    def test_layer_not_found_error_has_typename_and_available(self):
+        """LayerNotFoundError should expose typename and available layers."""
+        err = LayerNotFoundError("ns:missing", ["ns:layer1", "ns:layer2"])
+        assert err.typename == "ns:missing"
+        assert err.available == ["ns:layer1", "ns:layer2"]
+        assert "ns:missing" in str(err)
+        assert "not found" in str(err)
+
+    def test_layer_not_found_error_with_no_available(self):
+        """LayerNotFoundError should work without available layers."""
+        err = LayerNotFoundError("ns:missing")
+        assert err.typename == "ns:missing"
+        assert err.available == []
+        assert "ns:missing" in str(err)
+
+    def test_auth_error_has_url_and_status_code(self):
+        """WFSAuthenticationError should expose url and status_code."""
+        err = WFSAuthenticationError("http://example.com/wfs", 401, "Auth required")
+        assert err.url == "http://example.com/wfs"
+        assert err.status_code == 401
+        assert "Auth required" in str(err)
+
+    def test_empty_layer_error_caught_as_wfs_error(self):
+        """Verify backward compatibility - catching as WFSError works."""
+        try:
+            raise EmptyLayerError("test:layer")
+        except WFSError as e:
+            assert isinstance(e, EmptyLayerError)
+            assert e.typename == "test:layer"
+
+    @patch("owslib.wfs.WebFeatureService")
+    def test_layer_not_found_raises_typed_error(self, mock_wfs_class):
+        """LayerNotFoundError is raised when layer doesn't exist."""
+        mock_wfs = MagicMock()
+        mock_wfs.contents = {"ns:cities": MagicMock(), "ns:roads": MagicMock()}
+        mock_wfs_class.return_value = mock_wfs
+
+        with pytest.raises(LayerNotFoundError) as exc_info:
+            get_layer_info("http://mock.wfs.server/wfs", "nonexistent:data")
+
+        assert exc_info.value.typename == "nonexistent:data"
+        assert "ns:cities" in exc_info.value.available
+        assert "ns:roads" in exc_info.value.available
+
+
 # Helper Data Structures for Tests
 # =============================================================================
 
@@ -759,17 +831,111 @@ class TestBboxFilters:
         assert sql.count("-122.5 37.5") == 2
 
     def test_bbox_with_crs_suffix(self):
-        """WFS 1.1.0 bbox includes CRS suffix."""
+        """WFS 1.1.0 bbox always uses EPSG:4326 regardless of output CRS.
+
+        Many WFS servers (especially GeoServer) only accept bbox in WGS84,
+        so we always send bbox with EPSG:4326 suffix regardless of output CRS.
+        """
         bbox = (-122.5, 37.5, -122.0, 38.0)
-        crs = "urn:ogc:def:crs:EPSG::4326"
+        crs = "urn:ogc:def:crs:EPSG::4326"  # Output CRS (ignored for bbox)
         result = _build_bbox_param(bbox, crs, "1.1.0")
-        assert result.endswith(crs)
+        # Bbox should always end with EPSG:4326, not the output CRS
+        assert result.endswith("EPSG:4326")
+        assert result == "-122.5,37.5,-122.0,38.0,EPSG:4326"
 
     def test_invalid_geometry_column_rejected(self):
         """Invalid geometry column names with SQL injection characters are rejected."""
         bbox = (-122.5, 37.5, -122.0, 38.0)
         with pytest.raises(WFSError, match="Invalid geometry column name"):
             _build_local_bbox_filter(bbox, 'geom"; DROP TABLE --')
+
+
+# =============================================================================
+# Unit Tests - Sort By Parameter (Issue #488)
+# =============================================================================
+
+
+class TestSortByParameter:
+    """Test sortBy parameter for stable pagination on PK-less layers.
+
+    GeoServer requires sortBy for pagination on layers without a primary key.
+    """
+
+    def test_build_wfs_url_includes_sortby_when_provided(self):
+        """sortBy parameter is included in URL when specified."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="2.0.0",
+            max_features=1000,
+            start_index=10000,
+            sort_by="gid",
+        )
+        assert "sortBy=gid" in url
+
+    def test_build_wfs_url_no_sortby_when_not_provided(self):
+        """sortBy parameter is omitted when not specified."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="2.0.0",
+            max_features=1000,
+            start_index=10000,
+        )
+        assert "sortBy" not in url
+
+    def test_build_wfs_url_no_sortby_for_wfs_1_0(self):
+        """sortBy is not included for WFS 1.0.0 (not supported)."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="1.0.0",
+            max_features=1000,
+            sort_by="gid",
+        )
+        assert "sortBy" not in url
+
+    def test_detect_sortable_attribute_picks_first_non_geometry(self):
+        """_detect_sortable_attribute returns first non-geometry attribute."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {
+            "geometry_column": "the_geom",
+            "properties": {
+                "gid": "int",
+                "name": "string",
+                "the_geom": "geometry",
+            },
+        }
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result == "gid"
+
+    def test_detect_sortable_attribute_skips_geometry_types(self):
+        """_detect_sortable_attribute skips columns with geometry types."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {
+            "geometry_column": "geom",
+            "properties": {
+                "geom": "gml:PointPropertyType",
+                "boundary": "gml:MultiPolygonPropertyType",
+                "id": "int",
+            },
+        }
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result == "id"
+
+    def test_detect_sortable_attribute_returns_none_when_no_properties(self):
+        """_detect_sortable_attribute returns None if no properties."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.return_value = {"geometry_column": "geom"}
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result is None
+
+    def test_detect_sortable_attribute_handles_exception(self):
+        """_detect_sortable_attribute returns None on schema fetch error."""
+        mock_wfs = MagicMock()
+        mock_wfs.get_schema.side_effect = Exception("Schema unavailable")
+        result = _detect_sortable_attribute(mock_wfs, "test:layer")
+        assert result is None
 
 
 # =============================================================================
@@ -1820,6 +1986,20 @@ class TestAxisOrder:
         assert _is_geographic_crs("EPSG:3857") is False  # Web Mercator (projected)
         assert _is_geographic_crs("EPSG:3035") is False  # LAEA (projected)
 
+    def test_is_geographic_crs_handles_codes_outside_allowlist(self):
+        """Geographic CRSs beyond the small allowlist must not be called projected.
+
+        pyproj-backed detection identifies any geographic CRS; a hardcoded list
+        would misclassify these and trigger a false coordinate mismatch.
+        """
+        from geoparquet_io.core.wfs import _is_geographic_crs
+
+        assert _is_geographic_crs("EPSG:4171") is True  # RGF93 (geographic)
+        assert _is_geographic_crs("EPSG:4258") is True  # ETRS89 (geographic)
+        assert _is_geographic_crs("urn:ogc:def:crs:EPSG::4171") is True
+        assert _is_geographic_crs("EPSG:22174") is False  # POSGAR 98 (projected)
+        assert _is_geographic_crs("EPSG:25830") is False  # ETRS89 / UTM 30N (projected)
+
     @pytest.mark.parametrize(
         "crs,version,axis_order,expected_swap",
         [
@@ -1855,7 +2035,8 @@ class TestAxisOrder:
         [
             # WFS 1.0.0: no CRS suffix
             ((-122.5, 37.5, -122.0, 38.0), "EPSG:4326", "1.0.0", "auto", "-122.5,37.5,-122.0,38.0"),
-            # WFS 1.1.0 with simple CRS: XY order with CRS suffix
+            # WFS 1.1.0+: Always EPSG:4326 with XY order (bbox is always WGS84)
+            # This ensures compatibility with servers that only accept WGS84 bbox
             (
                 (-122.5, 37.5, -122.0, 38.0),
                 "EPSG:4326",
@@ -1863,34 +2044,34 @@ class TestAxisOrder:
                 "auto",
                 "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
-            # WFS 1.1.0 with URN CRS: YX order (lat,lon) with CRS suffix
+            # Even with URN output CRS, bbox uses simple EPSG:4326
             (
                 (-122.5, 37.5, -122.0, 38.0),
                 "urn:ogc:def:crs:EPSG::4326",
                 "1.1.0",
                 "auto",
-                "37.5,-122.5,38.0,-122.0,urn:ogc:def:crs:EPSG::4326",
+                "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
-            # WFS 2.0.0 with URN CRS: YX order
+            # WFS 2.0.0 also uses EPSG:4326 for bbox
             (
                 (4.82, 50.44, 4.92, 50.48),
                 "urn:ogc:def:crs:EPSG::4326",
                 "2.0.0",
                 "auto",
-                "50.44,4.82,50.48,4.92,urn:ogc:def:crs:EPSG::4326",
+                "4.82,50.44,4.92,50.48,EPSG:4326",
             ),
-            # Forced XY order ignores URN format
+            # Projected output CRS still uses WGS84 bbox
             (
                 (-122.5, 37.5, -122.0, 38.0),
-                "urn:ogc:def:crs:EPSG::4326",
+                "EPSG:3857",
                 "1.1.0",
-                "xy",
-                "-122.5,37.5,-122.0,38.0,urn:ogc:def:crs:EPSG::4326",
+                "auto",
+                "-122.5,37.5,-122.0,38.0,EPSG:4326",
             ),
         ],
     )
     def test_build_bbox_param_axis_order(self, bbox, crs, version, axis_order, expected):
-        """Bbox parameter string should have correct axis order."""
+        """Bbox parameter string should always use WGS84 for server compatibility."""
         from geoparquet_io.core.wfs import _build_bbox_param
 
         result = _build_bbox_param(bbox, crs, version, axis_order)
@@ -2111,6 +2292,73 @@ class TestCRSValidation:
         assert is_valid is False
         assert detected == "EPSG:3035"
 
+    def test_validate_crs_coordinates_does_not_override_projected_crs(self):
+        """Should NOT override a server-honored projected CRS on a bbox guess (issue #499).
+
+        EPSG:22174 (POSGAR 98 / Argentina 4) and EPSG:3857 both use large metric
+        coordinates that the bbox heuristic cannot distinguish. When the server
+        honored the requested projected CRS, we must trust it rather than relabel
+        it as the heuristic's guess, which silently corrupts downstream reprojection.
+        """
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Real EPSG:22174 coordinates from IDECOR (Córdoba, Argentina)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(4527586.01, 6386852.32)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # Requested and server-returned 22174 — heuristic would guess 3857, but
+        # both are projected, so there is no real (category) mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:22174", strict=False)
+        assert is_valid is True
+        assert detected is None
+
+    def test_validate_crs_coordinates_detects_projected_data_for_geographic_request(self):
+        """Should still flag a real category mismatch: geographic requested, metric data."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Projected (metric) coordinates returned for a non-4326 geographic request
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(4527586.01, 6386852.32)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # EPSG:4258 (ETRS89) is geographic — metric values are a real mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:4258", strict=False)
+        assert is_valid is False
+        assert detected == "EPSG:3857"
+
+    def test_validate_crs_coordinates_detects_geographic_data_for_projected_request(self):
+        """Should flag a real category mismatch: projected requested, degree data."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import _validate_crs_coordinates
+
+        # Degree-range coordinates returned for a projected request
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute("""
+                SELECT ST_AsWKB(ST_Point(-62.7, -32.6)) as geometry
+            """).arrow()
+            table = result.read_all()
+        finally:
+            con.close()
+
+        # EPSG:22174 is projected — degree values are a real mismatch.
+        is_valid, detected = _validate_crs_coordinates(table, "EPSG:22174", strict=False)
+        assert is_valid is False
+        assert detected == "EPSG:4326"
+
     def test_validate_crs_coordinates_raises_on_strict_mismatch(self):
         """Should raise error in strict mode when CRS doesn't match."""
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
@@ -2284,6 +2532,419 @@ class TestCRSValidation:
             assert "Failed to reproject" in str(exc_info.value)
             assert "EPSG:3035" in str(exc_info.value)
             assert "EPSG:4326" in str(exc_info.value)
+
+
+class TestServerDeclaredCRS:
+    """The server's GeoJSON ``crs`` member is authoritative (issue #499).
+
+    When a WFS server echoes the CRS it actually used in the FeatureCollection
+    ``crs`` member, we must read and trust it rather than guessing from the
+    bounding box — the bbox heuristic cannot tell two projected CRSs apart.
+    """
+
+    def _make_mock_stream(self, geojson_bytes: bytes):
+        """Create a mock httpx stream response yielding the given bytes."""
+        import httpx
+
+        def mock_stream(*args, **kwargs):
+            class MockResponse:
+                status_code = 200
+                headers = {"content-type": "application/json"}
+
+                def raise_for_status(self):
+                    pass
+
+                def iter_bytes(self, chunk_size=None):
+                    yield geojson_bytes
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockResponse()
+
+        return patch.object(httpx.Client, "stream", mock_stream)
+
+    def _geojson_with_crs(self, crs_name: str | None) -> bytes:
+        import json
+
+        feature_collection: dict = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [4527586.01, 6386852.32]},
+                    "properties": {"name": "a"},
+                }
+            ],
+        }
+        if crs_name is not None:
+            feature_collection["crs"] = {"type": "name", "properties": {"name": crs_name}}
+        return json.dumps(feature_collection).encode()
+
+    def test_fetch_wfs_page_extracts_server_crs(self):
+        """_fetch_wfs_page records the server-declared CRS in schema metadata."""
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY, _fetch_wfs_page
+
+        body = self._geojson_with_crs("urn:ogc:def:crs:EPSG::22174")
+        with self._make_mock_stream(body):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert table.schema.metadata is not None
+        assert table.schema.metadata[_SERVER_CRS_METADATA_KEY] == b"EPSG:22174"
+
+    def test_fetch_wfs_page_no_crs_member(self):
+        """No ``crs`` member (RFC 7946 GeoJSON) leaves no server-CRS metadata."""
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY, _fetch_wfs_page
+
+        with self._make_mock_stream(self._geojson_with_crs(None)):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        metadata = table.schema.metadata or {}
+        assert _SERVER_CRS_METADATA_KEY not in metadata
+
+    def test_fetch_wfs_page_empty_response_carries_crs(self):
+        """An empty FeatureCollection still propagates its declared CRS."""
+        import json
+
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY, _fetch_wfs_page
+
+        body = json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::22174"}},
+                "features": [],
+            }
+        ).encode()
+        with self._make_mock_stream(body):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert table.num_rows == 0
+        assert (table.schema.metadata or {}).get(_SERVER_CRS_METADATA_KEY) == b"EPSG:22174"
+
+    def test_fetch_wfs_page_unrecognized_crs_shape(self):
+        """A ``crs`` member without a name (e.g. a link CRS) yields no metadata.
+
+        ``json_extract_string`` returns NULL rather than raising on an
+        unexpected shape, so extraction falls back to the bbox heuristic.
+        """
+        import json
+
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY, _fetch_wfs_page
+
+        body = json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "link", "properties": {"href": "http://example/crs"}},
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [4527586.01, 6386852.32]},
+                        "properties": {"name": "a"},
+                    }
+                ],
+            }
+        ).encode()
+        with self._make_mock_stream(body):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert table.num_rows == 1
+        assert _SERVER_CRS_METADATA_KEY not in (table.schema.metadata or {})
+
+    def test_read_and_with_server_crs_roundtrip(self):
+        """_with_server_crs / _read_server_crs round-trip through metadata."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _read_server_crs, _with_server_crs
+
+        table = pa.table({"geometry": pa.array([], type=pa.binary())})
+        assert _read_server_crs(table) is None
+
+        tagged = _with_server_crs(table, "EPSG:22174")
+        assert _read_server_crs(tagged) == "EPSG:22174"
+
+        # No-op when CRS is None.
+        assert _read_server_crs(_with_server_crs(table, None)) is None
+
+    def test_fetch_all_features_propagates_server_crs(self):
+        """Server CRS survives the single-request fetch path."""
+        from unittest.mock import patch
+
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import (
+            _read_server_crs,
+            _with_server_crs,
+            fetch_all_features_duckdb,
+        )
+
+        page = _with_server_crs(
+            pa.table({"geometry": pa.array([b"\x00"], type=pa.binary())}),
+            "EPSG:22174",
+        )
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=1),
+            patch("geoparquet_io.core.wfs._fetch_wfs_page", return_value=page),
+            patch("geoparquet_io.core.wfs._infer_column_types", side_effect=lambda t: t),
+        ):
+            result = fetch_all_features_duckdb("http://mock.wfs/wfs", "layer", version="2.0.0")
+
+        assert _read_server_crs(result) == "EPSG:22174"
+
+
+class TestResolveCRSForOutput:
+    """wfs_to_table CRS resolution: trust the server, guess only as a fallback."""
+
+    def _point_table(self, x: float, y: float):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            result = con.execute(f"SELECT ST_AsWKB(ST_Point({x}, {y})) as geometry").arrow()
+            return result.read_all()
+        finally:
+            con.close()
+
+    def test_trusts_matching_server_crs_without_guessing(self):
+        """Issue #499: server honored EPSG:22174 → keep it, never guess EPSG:3857."""
+        from unittest.mock import patch
+
+        from geoparquet_io.core.wfs import _resolve_crs_for_output, _with_server_crs
+
+        # Argentine Gauss-Krüger coords the bbox heuristic would misread as 3857.
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with patch("geoparquet_io.core.wfs._validate_crs_coordinates") as mock_validate:
+            out_table, crs = _resolve_crs_for_output(table, "EPSG:22174", None, False)
+
+        assert crs == "EPSG:22174"
+        # The heuristic validator must not even run when the server declared a CRS.
+        mock_validate.assert_not_called()
+
+    def test_server_crs_contradiction_labels_with_server_crs(self):
+        """Server ignored srsName (returned 3857 for 22174) and no output_crs → label 3857."""
+        from geoparquet_io.core.wfs import _resolve_crs_for_output, _with_server_crs
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:3857")
+
+        out_table, crs = _resolve_crs_for_output(table, "EPSG:22174", None, False)
+
+        # Authoritative server CRS wins over the requested label; no bbox guess.
+        assert crs == "EPSG:3857"
+        assert out_table is table
+
+    def test_server_crs_contradiction_reprojects_to_output_crs(self):
+        """Contradiction with output_crs set → reproject from the server CRS."""
+        from unittest.mock import patch
+
+        from geoparquet_io.core.wfs import _resolve_crs_for_output, _with_server_crs
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:3857")
+
+        with patch(
+            "geoparquet_io.core.wfs.reproject_table", return_value="REPROJECTED"
+        ) as mock_reproject:
+            out_table, crs = _resolve_crs_for_output(table, "EPSG:22174", "EPSG:4326", False)
+
+        assert crs == "EPSG:4326"
+        assert out_table == "REPROJECTED"
+        mock_reproject.assert_called_once()
+        assert mock_reproject.call_args.kwargs["source_crs"] == "EPSG:3857"
+        assert mock_reproject.call_args.kwargs["target_crs"] == "EPSG:4326"
+
+    def test_server_crs_contradiction_strict_raises(self):
+        """Contradiction under strict_crs → WFSError, even with no output_crs."""
+        from geoparquet_io.core.wfs import WFSError, _resolve_crs_for_output, _with_server_crs
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:3857")
+
+        with pytest.raises(WFSError, match="server may have ignored srsName"):
+            _resolve_crs_for_output(table, "EPSG:22174", None, True)
+
+    def test_falls_back_to_heuristic_without_server_crs(self):
+        """No server CRS → fall back to coordinate-range guessing (degrees for 4326)."""
+        from unittest.mock import patch
+
+        from geoparquet_io.core.wfs import _resolve_crs_for_output
+
+        # Projected metric coords but WGS84 requested, no server CRS declared.
+        table = self._point_table(3900000, 3000000)
+
+        with patch("geoparquet_io.core.wfs.debug") as mock_debug:
+            out_table, crs = _resolve_crs_for_output(table, "EPSG:4326", None, False)
+
+        # Heuristic detects projected data and relabels (fallback path preserved).
+        assert crs == "EPSG:3035"
+        # The fallback to coordinate inference is announced (visible under --verbose).
+        assert any("declared no CRS" in str(call.args[0]) for call in mock_debug.call_args_list)
+
+    def test_wfs_to_table_trusts_server_crs_end_to_end(self):
+        """End-to-end #499 regression: declared EPSG:22174 stays EPSG:22174."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+        from geoparquet_io.core.wfs import _with_server_crs, wfs_to_table
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+            patch("geoparquet_io.core.wfs._validate_crs_coordinates") as mock_validate,
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:22174"],
+                default_crs="EPSG:22174",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                output_crs="EPSG:22174",
+            )
+
+        mock_validate.assert_not_called()
+        # Output metadata must encode EPSG:22174, not a bbox guess.
+        geo = json.loads(result.schema.metadata[b"geo"])
+        expected = parse_crs_string_to_projjson("EPSG:22174")
+        assert geo["columns"]["geometry"]["crs"] == expected
+
+    def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self):
+        """Issue #499: local bbox filtering must not drop the server CRS.
+
+        The local-filter path round-trips the table through DuckDB, which
+        strips Arrow schema metadata. If the server-declared CRS is lost there,
+        resolution silently falls back to the bbox heuristic — the exact bug
+        #499 fixes — so we assert the heuristic validator is never consulted.
+        """
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+        from geoparquet_io.core.wfs import _with_server_crs, wfs_to_table
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+            patch("geoparquet_io.core.wfs._validate_crs_coordinates") as mock_validate,
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:22174"],
+                default_crs="EPSG:22174",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                bbox=(4_000_000, 6_000_000, 5_000_000, 7_000_000),
+                bbox_mode="local",
+            )
+
+        # Server CRS survived the local-filter roundtrip → no heuristic guess.
+        mock_validate.assert_not_called()
+        assert result.num_rows == 1
+        geo = json.loads(result.schema.metadata[b"geo"])
+        assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
+
+    def test_local_bbox_filter_reprojects_bbox_to_server_crs(self):
+        """Issue #499: a bbox in the requested CRS must be aligned to the CRS the
+        server actually returned, or local filtering drops valid rows.
+
+        Requested EPSG:4326 (bbox in degrees), but the server returns EPSG:22174
+        geometry. The degree bbox would not intersect the metric point unless it
+        is reprojected into EPSG:22174 first.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.wfs import _with_server_crs, wfs_to_table
+
+        # EPSG:22174 point near Córdoba, AR (= -62.7059, -32.6603 in EPSG:4326).
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+        deg_bbox = (-62.8059, -32.7603, -62.6059, -32.5603)
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                bbox=deg_bbox,
+                bbox_mode="local",
+            )
+
+        # The point is retained because the bbox was reprojected to EPSG:22174.
+        assert result.num_rows == 1
+
+    def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
+        """The internal server-CRS marker never leaks into the output schema.
+
+        Even when no geo metadata is written (projjson unavailable for the
+        resolved CRS), the ``_wfs_server_crs`` marker must be removed.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from geoparquet_io.core.wfs import (
+            _SERVER_CRS_METADATA_KEY,
+            _with_server_crs,
+            wfs_to_table,
+        )
+
+        table = _with_server_crs(self._point_table(4527586.01, 6386852.32), "EPSG:22174")
+
+        with (
+            patch("geoparquet_io.core.wfs.negotiate_wfs_version") as mock_version,
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_layer_info,
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=table),
+            patch("geoparquet_io.core.wfs.parse_crs_string_to_projjson", return_value=None),
+        ):
+            mock_version.return_value = ("2.0.0", MagicMock())
+            mock_layer_info.return_value = MagicMock(
+                typename="mock:layer",
+                title="Mock Layer",
+                crs_list=["EPSG:22174"],
+                default_crs="EPSG:22174",
+                available_formats=["application/json"],
+                sortable_attribute=None,
+                bbox=None,
+            )
+            result = wfs_to_table(
+                service_url="https://mock.wfs.server/wfs",
+                typename="mock:layer",
+                output_crs="EPSG:22174",
+            )
+
+        metadata = result.schema.metadata or {}
+        assert _SERVER_CRS_METADATA_KEY not in metadata
+        assert b"geo" not in metadata
 
 
 # =============================================================================
@@ -2712,6 +3373,51 @@ class TestSrsNameWithoutBbox:
         assert 49.0 <= y <= 52.0, f"Y coord {y} not in Belgium latitude range"
 
 
+@pytest.mark.integration
+@pytest.mark.network
+@pytest.mark.slow
+class TestProjectedCRSPreservedIntegration:
+    """Live regression for #499: a server-honored projected CRS must be kept.
+
+    IDECOR (Córdoba, Argentina) serves all layers in EPSG:22174 (an Argentine
+    Gauss-Krüger zone). The old bbox heuristic saw the large metric coordinates
+    (~4.5M, ~6.4M) and relabeled the output EPSG:3857, silently corrupting any
+    downstream reprojection. The geometry was correct, so this can only be
+    caught by asserting on the stored CRS metadata, not coordinate ranges.
+    """
+
+    IDECOR_WFS = "https://idecor-ws.mapascordoba.gob.ar/geoserver/idecor/wfs"
+    IDECOR_LAYER = "idecor:puntos_interes_bv"
+
+    @pytest.mark.xfail(
+        reason="External WFS service may be unavailable",
+        strict=False,
+        raises=(Exception,),  # Only xfail on connection/service errors
+    )
+    def test_projected_crs_not_relabeled(self):
+        """Output metadata must report EPSG:22174, never the bbox-guessed 3857."""
+        import json
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        table = wfs_to_table(
+            self.IDECOR_WFS,
+            self.IDECOR_LAYER,
+            output_crs="EPSG:22174",
+            limit=5,
+        )
+
+        assert table.num_rows > 0
+
+        geo = json.loads(table.schema.metadata[b"geo"])
+        crs = geo["columns"]["geometry"]["crs"]
+        # PROJJSON for EPSG:22174 — the authoritative code must be preserved.
+        assert crs["id"]["authority"] == "EPSG"
+        assert int(crs["id"]["code"]) == 22174, (
+            f"Output mislabeled as {crs['id']}; expected EPSG:22174 (issue #499)"
+        )
+
+
 # =============================================================================
 # Spatial Tiling Tests (startIndex limit workaround)
 # =============================================================================
@@ -3112,3 +3818,333 @@ class TestFetchWithSpatialTiles:
 
         mock_fetch.assert_called_once()
         mock_tile.assert_not_called()
+
+
+class TestServerCapDetection:
+    """Cap detection must tolerate slight count drift (issue #503).
+
+    Parallel workers retry pages on transient errors, which can nudge the total
+    a few features past an exact server cap (e.g. 1,000,002 instead of
+    1,000,000). The detector must still recognise these as caps so reactive
+    auto-tiling fires.
+    """
+
+    def test_exact_common_caps_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        for cap in (1000000, 500000, 100000, 50000, 10000):
+            assert _looks_like_server_cap(cap) is True
+
+    def test_slight_drift_above_cap_detected(self):
+        """The core #503 bug: parallel-worker drift past a round cap."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1000002) is True
+        assert _looks_like_server_cap(1000500) is True  # +0.05%
+
+    def test_slight_drift_below_cap_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(999998) is True
+        assert _looks_like_server_cap(49997) is True
+
+    def test_outside_tolerance_not_detected(self):
+        """Counts beyond ±0.1% of a cap (and not round) are real totals."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1002000) is False  # +0.2%, not round
+        assert _looks_like_server_cap(1234567) is False
+
+    def test_round_numbers_still_detected(self):
+        """Existing divisible-by-10000 heuristic is preserved."""
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(1230000) is True
+        assert _looks_like_server_cap(40000) is True
+
+    def test_zero_and_negative_not_detected(self):
+        from geoparquet_io.core.wfs import _looks_like_server_cap
+
+        assert _looks_like_server_cap(0) is False
+        assert _looks_like_server_cap(-5) is False
+
+    def test_reactive_tiling_triggers_on_drifted_cap(self):
+        """End-to-end: a capped response of 10,005 (drifted from 10,000) with a
+        higher 2.0.0 count must trigger reactive spatial tiling (issue #503)."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        # Build a real table whose row count looks like a drifted server cap.
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            capped_table = (
+                con.execute("SELECT ST_AsWKB(ST_Point(0, 0)) AS geometry FROM range(10005)")
+                .arrow()
+                .read_all()
+            )
+        finally:
+            con.close()
+
+        tiled_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["full"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            # 2.0.0 reports the true count; the capped fetch returns fewer.
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=11000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=capped_table),
+            patch(
+                "geoparquet_io.core.wfs._fetch_with_spatial_tiles", return_value=tiled_table
+            ) as mock_tile,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_tile.assert_called_once()
+
+
+class TestCountThreadedToFetch:
+    """The trusted 2.0.0 count must be threaded into the fetch (issue #503).
+
+    Previously ``fetch_all_features_duckdb`` re-queried the count at the
+    requested version (e.g. 1.1.0), which on some GeoServer instances returns a
+    DIFFERENT (capped) number than 2.0.0 — so pagination stopped early.
+    """
+
+    def test_fetch_uses_provided_total_count(self):
+        """When total_count is passed, fetch must not re-query the count."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import fetch_all_features_duckdb
+
+        # Table size must match total_count to avoid fallback to pagination
+        small_table = pa.table({"geometry": pa.array([b"\x01"], type=pa.binary())})
+
+        with (
+            patch("geoparquet_io.core.wfs._get_feature_count") as mock_count,
+            patch("geoparquet_io.core.wfs._single_fetch_mode", return_value=small_table),
+        ):
+            fetch_all_features_duckdb("http://mock/wfs", "layer", version="1.1.0", total_count=1)
+
+        mock_count.assert_not_called()
+
+    def test_wfs_to_table_threads_count_into_fetch(self):
+        """wfs_to_table must pass the 2.0.0 expected_count as total_count."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info") as mock_info,
+            patch("geoparquet_io.core.wfs._get_feature_count", return_value=20000),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch(
+                "geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=mock_table
+            ) as mock_fetch,
+        ):
+            mock_info.return_value = MagicMock(
+                typename="layer",
+                title="Layer",
+                crs_list=["EPSG:4326"],
+                default_crs="EPSG:4326",
+                available_formats=["application/json"],
+                bbox=(3.0, 50.0, 7.0, 54.0),
+            )
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        mock_fetch.assert_called_once()
+        assert mock_fetch.call_args.kwargs.get("total_count") == 20000
+
+
+class TestMultiLayerExtraction:
+    """Tests for multi-layer parallel extraction."""
+
+    def test_convert_wfs_layers_creates_directory(self, tmp_path):
+        """Multi-layer extraction should create output directory and files."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            results = convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["layer1", "layer2"],
+                output_dir=str(output_dir),
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        assert len(results) == 2
+        assert "layer1" in results
+        assert "layer2" in results
+        assert output_dir.exists()
+        assert (output_dir / "layer1.parquet").exists()
+        assert (output_dir / "layer2.parquet").exists()
+
+    def test_convert_wfs_layers_parallel_mode(self, tmp_path):
+        """Multi-layer extraction with parallel_layers > 1 should use ThreadPoolExecutor."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            results = convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["layer1", "layer2", "layer3"],
+                output_dir=str(output_dir),
+                parallel_layers=3,
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        assert len(results) == 3
+
+    def test_cli_parses_comma_separated_typenames(self, tmp_path):
+        """CLI should parse comma-separated typenames for multi-layer mode."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        runner = CliRunner()
+
+        # Just test that the CLI parses correctly - don't actually extract
+        # Patch at the import location inside the function
+        with patch("geoparquet_io.core.wfs.convert_wfs_layers_to_directory") as mock_extract:
+            result = runner.invoke(
+                cli,
+                [
+                    "extract",
+                    "wfs",
+                    "http://mock/wfs",
+                    "layer1,layer2,layer3",
+                    str(output_dir),
+                    "--skip-hilbert",
+                    "--skip-bbox",
+                ],
+            )
+
+        # Should have called multi-layer function with parsed typenames
+        assert result.exit_code == 0
+        mock_extract.assert_called_once()
+        call_kwargs = mock_extract.call_args[1]
+        assert call_kwargs["typenames"] == ["layer1", "layer2", "layer3"]
+
+    def test_cli_rejects_empty_typenames(self, tmp_path):
+        """CLI should error (not IndexError) when typename parses to an empty list."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "extract",
+                "wfs",
+                "http://mock/wfs",
+                ", ,",  # whitespace/comma-only -> no valid typenames
+                str(tmp_path / "out.parquet"),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "No valid typename" in result.output
+
+    def test_sanitizes_typename_for_filename(self, tmp_path):
+        """Typenames with colons should be sanitized for filenames."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array(
+                    [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\xf0?"
+                    ],
+                    type=pa.binary(),
+                ),
+                "name": pa.array(["test"]),
+            }
+        )
+
+        output_dir = tmp_path / "output"
+
+        with (
+            patch("geoparquet_io.core.wfs.wfs_to_table", return_value=mock_table),
+            patch("geoparquet_io.core.wfs.configure_verbose"),
+        ):
+            convert_wfs_layers_to_directory(
+                service_url="http://mock/wfs",
+                typenames=["ns:layer_name"],
+                output_dir=str(output_dir),
+                skip_hilbert=True,
+                skip_bbox=True,
+            )
+
+        # Colons should be replaced with underscores in filename
+        assert (output_dir / "ns_layer_name.parquet").exists()

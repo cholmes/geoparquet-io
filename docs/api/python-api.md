@@ -238,6 +238,10 @@ gpio.extract_arcgis(
 | `include_cols` | str | Comma-separated columns to include |
 | `exclude_cols` | str | Comma-separated columns to exclude |
 | `limit` | int | Maximum number of features |
+| `max_workers` | int | Number of parallel fetch workers (default: 1) |
+| `output_crs` | str | Output CRS (e.g. `EPSG:25830`) or `native`; default reprojects to WGS84 |
+| `max_allowable_offset` | float | Server-side geometry generalization tolerance in output CRS units |
+| `timeout` | float | Per-request HTTP timeout in seconds (default: 60); increase for slow, heavy-geometry layers |
 
 !!! note "No automatic Hilbert sorting"
     Unlike the CLI `gpio extract arcgis` command, the Python API does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if you want spatial ordering.
@@ -284,9 +288,10 @@ table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
 | `bbox` | tuple | Bounding box filter (xmin, ymin, xmax, ymax) |
 | `limit` | int | Maximum number of features |
 | `max_workers` | int | Number of parallel fetch workers (default: 1) |
-| `page_size` | int | Features per WFS request page (default: 10000) |
+| `page_size` | int | Features per WFS request page (default: 100000) |
 | `axis_order` | str | Bbox axis order: `auto` (default), `xy`, `latlon`. Auto detects from CRS format. |
-| `strict_crs` | bool | Fail on CRS mismatch (default: False, warns instead) |
+| `auto_tile` | bool | Auto-subdivide bbox when server caps response (default: False) |
+| `strict_crs` | bool | Fail when the server returns a different CRS than requested (default: False, warns and uses the server's actual CRS instead). gpio trusts the CRS the server declares in its GeoJSON response and never guesses from coordinates. |
 
 !!! note "No automatic Hilbert sorting"
     Like other Python API extraction methods, `from_wfs()` does NOT apply Hilbert sorting by default. Chain `.sort_hilbert()` explicitly if needed.
@@ -336,6 +341,35 @@ import pyarrow.parquet as pq
 table = pq.read_table('fields.parquet')
 result = ops.aggregate_admin(table, level="country", metric="sum:area_ha")
 ```
+
+#### ops.from_wfs_layers()
+
+Extract multiple WFS layers in parallel to a directory:
+
+```python
+from geoparquet_io.api import ops
+
+results = ops.from_wfs_layers(
+    'https://geo.example.com/wfs',
+    ['cities', 'roads', 'buildings'],
+    './output/',
+    parallel_layers=3,
+    max_workers=2
+)
+# Returns: {'cities': Path('output/cities.parquet'), ...}
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `service_url` | str | WFS service URL |
+| `typenames` | list[str] | Layer names to extract |
+| `output_dir` | str \| Path | Output directory for parquet files |
+| `parallel_layers` | int | Concurrent layer extraction (default: 1) |
+| `max_workers` | int | Parallel fetch workers per layer (default: 1) |
+| `page_size` | int | Features per page (default: 100000) |
+| `auto_tile` | bool | Auto-subdivide bbox when server caps (default: True) |
 
 ## Table Class
 
@@ -660,7 +694,7 @@ table = gpio.read('input.parquet').extract(bbox=(-122.5, 37.5, -122.0, 38.0))
 table = gpio.read('input.parquet').extract(where="population > 10000")
 ```
 
-#### `write(path, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, write_strategy=None, write_memory=None)`
+#### `write(path, format=None, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, write_strategy='duckdb-kv', profile=None, verbose=False, ...)`
 
 Write the table to a GeoParquet file. Returns the output `Path` for chaining or confirmation.
 
@@ -676,27 +710,69 @@ table.write('output.parquet', compression='GZIP', compression_level=6)
 table.write('output.parquet', row_group_size_mb=128)
 ```
 
+**GeoParquet Version**
+
+Control the GeoParquet spec version written into the file metadata:
+
+```python
+# Write GeoParquet 2.0
+table.write('output.parquet', geoparquet_version='2.0')
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `geoparquet_version` | str | Spec version to write: `1.0`, `1.1`, `1.1-geoarrow`, `2.0`, or `parquet-geo-only`. Defaults to `None`, which lets gpio select the version (normally `1.1`). |
+
 **Write Strategy Options**
 
-For large files, you can control memory usage with write strategies:
+For large files, choose a write strategy to control memory behavior:
 
 ```python
 # Use streaming strategy (constant memory usage)
 table.write('output.parquet', write_strategy='streaming')
-
-# Limit DuckDB memory for containerized environments
-table.write('output.parquet', write_memory='512MB')
-
-# Combine both options
-table.write('output.parquet', write_strategy='streaming', write_memory='1GB')
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `write_strategy` | str | Write strategy: `duckdb-kv` (default), `streaming`, `disk-rewrite`, or `in-memory` |
-| `write_memory` | str | DuckDB memory limit (e.g., `'2GB'`, `'512MB'`). Auto-detected if not specified |
+
+DuckDB's memory limit is auto-detected and respects container cgroup limits. To
+set it explicitly, use the CLI `gpio extract --write-memory` flag; the Python
+API does not expose a memory-limit argument.
 
 See the [Write Strategies Guide](../guide/write-strategies.md) for detailed information on each strategy.
+
+**GeoParquet Version Options**
+
+Control the GeoParquet encoding version when writing:
+
+=== "Python"
+
+    ```python
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
+    table.write('output.parquet', geoparquet_version='1.1-geoarrow')
+
+    # GeoParquet 1.0 with WKB encoding
+    table.write('output.parquet', geoparquet_version='1.0')
+
+    # GeoParquet 1.1 with WKB encoding (default)
+    table.write('output.parquet', geoparquet_version='1.1')
+    ```
+
+=== "CLI"
+
+    ```bash
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    gpio convert input.geojson output.parquet --geoparquet-version 1.1-geoarrow
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio convert input.shp output.parquet --geoparquet-version 1.0
+    ```
+
+`1.1-geoarrow` converts geometry from any input to native GeoArrow (nested-coordinate) types.
+Compatible geometry type mixes are promoted (e.g. Polygon + MultiPolygon → MultiPolygon).
+Incompatible mixes (e.g. Point + Polygon) fall back to WKB. No bbox column is added.
 
 #### `to_arrow()`
 
@@ -1105,7 +1181,7 @@ if result.passed():
 result = table.validate(version='1.1')
 ```
 
-#### `upload(destination, compression='ZSTD', profile=None, s3_endpoint=None, ...)`
+#### `upload(destination, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, profile=None, s3_endpoint=None, ...)`
 
 Write and upload the table to cloud object storage (S3, GCS, Azure).
 
@@ -1128,6 +1204,9 @@ table.upload(
 
 # Upload to GCS
 table.upload('gs://bucket/data.parquet')
+
+# Upload as GeoParquet 2.0
+table.upload('s3://bucket/data.parquet', geoparquet_version='2.0')
 ```
 
 ## Converting Other Formats
@@ -1332,7 +1411,8 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
 | `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
-| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=10000, axis_order='auto', strict_crs=False)` | Fetch from WFS service |
+| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
+| `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

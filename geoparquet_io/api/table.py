@@ -279,6 +279,7 @@ def convert(
     skip_invalid: bool = False,
     profile: str | None = None,
     layer: str | None = None,
+    repair_geometry: bool = True,
 ) -> Table:
     """
     Convert a geospatial file to a Table.
@@ -322,6 +323,7 @@ def convert(
         profile=profile,
         geometry_column=geometry_column,
         layer=layer,
+        repair_geometry=repair_geometry,
     )
 
     return Table(arrow_table, geometry_column=geom_col)
@@ -341,6 +343,10 @@ def extract_arcgis(
     exclude_cols: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
+    repair_geometry: bool = True,
+    timeout: float = 60.0,
 ) -> Table:
     """
     Extract features from an ArcGIS Feature Service to a Table.
@@ -371,6 +377,12 @@ def extract_arcgis(
         exclude_cols: Comma-separated column names to exclude (client-side)
         limit: Maximum number of features to return
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS. 'native' uses the layer's advertised SR,
+            or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            output-CRS units (degrees on the default WGS84 path).
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that are slow to serialize.
 
     Returns:
         Table for chaining operations
@@ -412,7 +424,11 @@ def extract_arcgis(
         exclude_cols=exclude_cols,
         limit=limit,
         max_workers=max_workers,
+        output_crs=output_crs,
+        max_allowable_offset=max_allowable_offset,
         verbose=False,
+        repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
     return Table(arrow_table, geometry_column="geometry")
@@ -470,6 +486,7 @@ class Table:
         geography_column: str | None = None,
         geometry_format: str = "wkt",
         edges: str | None = None,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Read data from a BigQuery table.
@@ -552,6 +569,7 @@ class Table:
             geometry_format=geometry_format,
             edges=edges,
             verbose=False,
+            repair_geometry=repair_geometry,
         )
 
         if arrow_table is None:
@@ -578,6 +596,7 @@ class Table:
         axis_order: str = "auto",
         strict_crs: bool = False,
         auto_tile: bool = False,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Create Table from WFS layer.
@@ -596,8 +615,11 @@ class Table:
             page_size: Features per page when using parallel mode (default: 10000)
             axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
                 CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
-            strict_crs: If True, fail when server returns coordinates that don't match
-                requested CRS. If False (default), warn and use detected CRS.
+            strict_crs: If True, fail when the server returns a different CRS than
+                requested. If False (default), warn and use the server's actual
+                CRS. The CRS the server declares in its GeoJSON response is
+                authoritative; gpio never guesses from coordinates when the
+                server states it (#499).
             auto_tile: Automatically subdivide into spatial tiles for servers with
                 startIndex limits (default: False)
 
@@ -623,6 +645,7 @@ class Table:
             axis_order=axis_order,
             strict_crs=strict_crs,
             auto_tile=auto_tile,
+            repair_geometry=repair_geometry,
         )
         return cls(table)
 
@@ -832,7 +855,9 @@ class Table:
             compression_level: Compression level for GeoParquet
             row_group_size_mb: Target row group size in MB for GeoParquet
             row_group_rows: Exact rows per row group for GeoParquet
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             write_strategy: Write strategy for GeoParquet ('in-memory', 'streaming',
                            'duckdb-kv', 'disk-rewrite'). Default: 'duckdb-kv'
             profile: AWS profile for S3 operations
@@ -943,9 +968,36 @@ class Table:
             local_path = PathLib(path)
 
         try:
+            # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
+            # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
+            # Already-native nested geometry is left on the default strategy.
+            if geoparquet_version == "1.1-geoarrow" and self._geometry_column:
+                geom_field = self._table.schema.field(self._geometry_column)
+                geom_type = geom_field.type
+                is_wkb = (
+                    pa.types.is_binary(geom_type)
+                    or pa.types.is_large_binary(geom_type)
+                    or getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+                )
+                if is_wkb and write_strategy != "streaming":
+                    if verbose:
+                        from geoparquet_io.core.logging_config import debug
+
+                        debug("Routing 1.1-geoarrow WKB input through streaming strategy")
+                    write_strategy = "streaming"
+
             # Get the appropriate write strategy
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
+
+            # Forward the input CRS so a non-default CRS survives the write (otherwise
+            # the geometry silently defaults to OGC:CRS84). write_from_table expects a
+            # PROJJSON dict, so normalise a string identifier (e.g. "EPSG:3857").
+            input_crs = self.crs
+            if isinstance(input_crs, str):
+                from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+
+                input_crs = parse_crs_string_to_projjson(input_crs)
 
             strategy.write_from_table(
                 table=self._table,
@@ -957,6 +1009,7 @@ class Table:
                 row_group_size_mb=row_group_size_mb,
                 row_group_rows=row_group_rows,
                 verbose=verbose,
+                input_crs=input_crs,
             )
 
             # Upload to remote if needed
@@ -1215,6 +1268,7 @@ class Table:
         bbox: tuple[float, float, float, float] | None = None,
         where: str | None = None,
         limit: int | None = None,
+        repair_geometry: bool = True,
     ) -> Table:
         """
         Extract columns and rows with optional filtering.
@@ -1225,6 +1279,7 @@ class Table:
             bbox: Bounding box filter (xmin, ymin, xmax, ymax)
             where: SQL WHERE clause
             limit: Maximum rows to return
+            repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
         Returns:
             New filtered Table
@@ -1239,6 +1294,7 @@ class Table:
             where=where,
             limit=limit,
             geometry_column=self._geometry_column,
+            repair_geometry=repair_geometry,
         )
         return Table(result, self._geometry_column)
 
@@ -1774,7 +1830,9 @@ class Table:
             compression_level: Compression level
             row_group_size_mb: Target row group size in MB
             row_group_rows: Exact rows per row group
-            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve)
+            geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
+                1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
+                encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
             profile: AWS profile name for S3
             s3_endpoint: Custom S3-compatible endpoint (e.g., "minio.example.com:9000")
             s3_region: S3 region (default: us-east-1 when using custom endpoint)
@@ -2107,6 +2165,7 @@ class Table:
         precision: int = 7,
         write_bbox: bool = False,
         id_field: str | None = None,
+        repair_geometry: bool = True,
     ) -> str | None:
         """
         Convert the table to GeoJSON.
@@ -2138,6 +2197,7 @@ class Table:
             precision=precision,
             write_bbox=write_bbox,
             id_field=id_field,
+            repair_geometry=repair_geometry,
         )
 
     def _with_temp_file(self, func, *args, **kwargs):

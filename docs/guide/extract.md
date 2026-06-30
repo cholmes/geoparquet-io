@@ -985,6 +985,105 @@ By default, ArcGIS extracts include bbox metadata and Hilbert spatial ordering f
         The CLI applies Hilbert sorting and bbox by default (use `--skip-hilbert` and `--skip-bbox` to disable).
         The Python API does NOT apply these by default—chain `.sort_hilbert()` and `.add_bbox()` explicitly if needed.
 
+### Output CRS
+
+By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WGS84 (CRS84). Use `--output-crs` to preserve the layer's native coordinate reference system or request a specific CRS instead.
+
+=== "CLI"
+
+    ```bash
+    # Preserve the layer's native CRS (fetches EsriJSON with the layer's advertised SR)
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs native
+
+    # Request a specific CRS (fetches EsriJSON with outSR set to EPSG:25830)
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs EPSG:25830
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Preserve the layer's native CRS
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="native"
+    )
+    table.write("out.parquet")
+
+    # Request a specific CRS
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="EPSG:25830"
+    )
+    table.write("out.parquet")
+    ```
+
+The output GeoParquet is tagged with the CRS the server actually returned. If the server returns a different CRS than the one requested, a warning is emitted and the file is tagged with the actual CRS. Legacy Esri codes are normalized to their EPSG equivalents (102100 becomes 3857), and layers that advertise an Esri-specific WKID with no EPSG equivalent (for example 102039) are tagged with the `ESRI` authority so the CRS stays resolvable. A WKID that resolves to neither an EPSG nor an ESRI definition is left untagged rather than labeled with a code no reader can resolve.
+
+With `--output-crs native`, the layer's spatial reference is taken from its advertised WKID, or recovered from its WKT when no WKID is published. If the WKT maps to no EPSG code, the extraction fails with a clear message so you can pass an explicit `--output-crs EPSG:<code>` instead.
+
+| Value | Behavior |
+|-------|----------|
+| *(omitted)* | Fetches GeoJSON, outputs WGS84 (default) |
+| `native` | Fetches EsriJSON with the layer's advertised spatial reference |
+| `EPSG:<code>` | Fetches EsriJSON with `outSR` set to the requested EPSG code |
+
+### Geometry generalization
+
+Some layers have very large or vertex-dense polygons that are slow to download or that overwhelm a server. Use `--max-allowable-offset` to ask the server to simplify each geometry before it is sent (the ArcGIS `maxAllowableOffset` parameter, a Douglas-Peucker tolerance). This reduces the vertex count per feature, which is different from `--limit`, which only caps the number of features.
+
+=== "CLI"
+
+    ```bash
+    # Generalize heavy polygons to a 0.005 unit tolerance in the output CRS
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --output-crs native --max-allowable-offset 0.005
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        output_crs="native",
+        max_allowable_offset=0.005,
+    )
+    table.write("out.parquet")
+    ```
+
+The tolerance is in the units of the request's output CRS. With `--output-crs` set, that is the chosen CRS's unit, degrees for a geographic CRS and the projected unit (often meters) for a projected CRS. Without `--output-crs` the request is anchored to WGS84, so the tolerance is in degrees. The value must be positive, a bad value fails fast before any network call.
+
+### Slow servers and timeouts
+
+Each HTTP request defaults to a 60-second timeout. FeatureServer layers with very large or vertex-dense polygons (e.g. national or regional boundaries with detailed coastlines) can take the server several minutes to serialize a single page, which fails with an HTTP timeout. Use `--timeout` to raise the per-request limit:
+
+=== "CLI"
+
+    ```bash
+    # Allow up to 5 minutes per request for heavy polygon layers
+    gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
+      --timeout 300
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    table = gpio.extract_arcgis(
+        service_url="https://services.arcgis.com/.../FeatureServer/0",
+        timeout=300,
+    )
+    table.write("out.parquet")
+    ```
+
+Combine `--timeout` with `--batch-size` (smaller pages) or `--max-allowable-offset` (fewer vertices per feature) when a layer is both slow and heavy.
+
 ### Finding Service URLs
 
 ArcGIS Feature Service URLs follow this pattern:
@@ -1071,8 +1170,11 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     ```bash
     # Parallel extraction with 4 workers
     gpio extract wfs https://geo.example.com/wfs large_layer output.parquet \
-        --workers 4 \
-        --page-size 10000
+        --workers 4
+
+    # Extract multiple layers in parallel to a directory
+    gpio extract wfs https://geo.example.com/wfs layer1,layer2,layer3 ./output/ \
+        --parallel-layers 3
 
     # For most datasets under 100K features, single-stream is faster
     gpio extract wfs https://geo.example.com/wfs cities output.parquet
@@ -1086,15 +1188,31 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     table = Table.from_wfs(
         'https://geo.example.com/wfs',
         'large_layer',
-        max_workers=4,
-        page_size=10000
+        max_workers=4
+    )
+
+    # Extract multiple layers (tune defaults for large datasets)
+    from geoparquet_io.api import ops
+    results = ops.from_wfs_layers(
+        'https://geo.example.com/wfs',
+        ['layer1', 'layer2', 'layer3'],
+        './output/',
+        parallel_layers=3,
+        max_workers=2,        # parallel page fetches per layer
+        page_size=100000,     # features per WFS request page
+        auto_tile=True        # subdivide bbox when the server caps responses
     )
     ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--workers` | 1 | Number of parallel requests (1-10) |
-| `--page-size` | 10000 | Features per page when using `--workers > 1` |
+| `--page-size` | 100000 | Features per WFS request page |
+| `--parallel-layers` | 1 | Concurrent layer extraction for multi-layer requests |
+| `--auto-tile` | enabled | Auto-subdivide bbox when server caps response |
+
+!!! tip "Auto-Tiling for Capped Servers"
+    Many WFS servers impose maxFeatures limits (e.g., 1M features). When gpio detects a capped response, it automatically subdivides the bbox and fetches all features. Disable with `--no-auto-tile` if you want the capped response.
 
 !!! tip "When to use parallel"
     - **Single stream (default)**: Fastest for datasets under ~100K features
@@ -1154,10 +1272,22 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --output-crs EPSG:3857
 ```
 
-Some servers ignore `srsName` and return data in their native CRS. gpio detects this and warns:
+When a server reports the CRS it actually used (GeoServer and most WFS servers
+echo it in the GeoJSON `crs` member), gpio trusts that declaration verbatim —
+it never second-guesses a server-honored CRS by inspecting coordinates. This
+matters for projected systems: a bounding box alone cannot distinguish, say,
+EPSG:22174 (Argentine Gauss-Krüger) from EPSG:3857 (Web Mercator), so guessing
+would silently mislabel the output and corrupt any later reprojection (#499).
+
+If a server ignores `srsName` and returns a *different* CRS than requested,
+gpio honors the real CRS rather than the one you asked for:
+
+- with `--output-crs`, it reprojects from the server's actual CRS to your target;
+- without `--output-crs`, it labels the output with the server's actual CRS and warns;
+- with `--strict-crs`, it fails instead of proceeding.
 
 ```bash
-# Fail instead of warn on CRS mismatch
+# Fail instead of warn when the server returns a different CRS than requested
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --strict-crs
 ```
@@ -1264,6 +1394,52 @@ gpio extract carto https://phl.carto.com opa_properties_public output.parquet
 ### Geometry Column
 
 Carto tables typically have geometry in a column named `the_geom` (WGS84). This is automatically renamed to `geometry` in the output for consistency with other geoparquet-io extractors.
+
+### Non-Geometry (Tabular) Tables
+
+Carto accounts often include geometry-less lookup or demographics tables. `gpio` auto-detects these and extracts them as **plain Parquet** (no GeoParquet `geo` metadata key) — the same behavior as converting a non-spatial file. Hilbert ordering, the bbox column, and `--bbox` filtering are skipped (they require geometry); `--where`, `--limit`, `--include-cols`, and `--exclude-cols` are still honored.
+
+!!! note "How detection works"
+    Carto attaches a `the_geom` column (type `geometry`) to nearly every managed table — even purely tabular ones, where it is entirely `NULL`. So inspecting the schema alone isn't enough. `gpio` first checks the schema for a geometry-typed column, then runs a fast `WHERE the_geom IS NOT NULL LIMIT 1` probe to confirm the column actually holds geometry before choosing the GeoParquet path.
+
+Use `--geometry` / `--no-geometry` to override auto-detection:
+
+=== "CLI"
+
+    ```bash
+    # Auto-detect (default): plain Parquet if the table has no geometry
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        my_lookup_table output.parquet
+
+    # Force tabular extraction (plain Parquet, no geo metadata)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        my_lookup_table output.parquet \
+        --no-geometry
+
+    # Force geometry extraction (GeoParquet)
+    gpio extract carto https://phl.carto.com/api/v2/sql \
+        opa_properties_public output.parquet \
+        --geometry
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    # Auto-detect (default): returns a plain table for geometry-less sources
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'my_lookup_table',
+    )
+
+    # Force tabular extraction
+    table = ops.from_carto(
+        'https://phl.carto.com/api/v2/sql',
+        'my_lookup_table',
+        geometry=False,
+    )
+    ```
 
 ### Output Optimization
 
@@ -1658,8 +1834,8 @@ For containerized environments or when you need explicit control:
     ```python
     import geoparquet_io as gpio
 
-    # Explicit memory limit
-    gpio.read('input.parquet').write('output.parquet', write_memory='512MB')
+    # Memory limit is auto-detected; select a write strategy if needed
+    gpio.read('input.parquet').write('output.parquet', write_strategy='streaming')
     ```
 
 For detailed information on write strategies, memory configuration, and container environments, see the [Write Strategies Guide](write-strategies.md).

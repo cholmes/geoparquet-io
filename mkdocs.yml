@@ -82,6 +82,7 @@ nav:
     - STAC Generation: guide/stac.md
     - Benchmarking: guide/benchmarks.md
     - Plugins: guide/plugins.md
+    - fiboa Plugin: guide/fiboa.md
     - LLM Integration: guide/llm-integration.md
   - CLI Reference:
     - Overview: cli/overview.md

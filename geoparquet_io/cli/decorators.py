@@ -176,6 +176,23 @@ def overwrite_option(func):
     return click.option("--overwrite", is_flag=True, help="Overwrite existing files")(func)
 
 
+def repair_geometry_option(func):
+    """
+    Add --repair-geometry/--no-repair-geometry option to a command.
+
+    Repairs invalid geometry with ST_MakeValid by default. Users who need to
+    preserve invalid geometry exactly can opt out with --no-repair-geometry.
+    """
+    return click.option(
+        "--repair-geometry/--no-repair-geometry",
+        default=True,
+        help=(
+            "Repair invalid geometry with ST_MakeValid (default: on). "
+            "Use --no-repair-geometry to preserve invalid geometry exactly."
+        ),
+    )(func)
+
+
 def write_memory_option(func):
     """
     Add --write-memory option to a command.
@@ -247,7 +264,9 @@ def geoparquet_version_option(func):
     Allows specifying the GeoParquet version for output files:
     - 1.0: GeoParquet 1.0 with WKB encoding
     - 1.1: GeoParquet 1.1 with WKB encoding
-    - 1.1-geoarrow: GeoParquet 1.1 with native GeoArrow encoding (no bbox column)
+    - 1.1-geoarrow: GeoParquet 1.1 with native GeoArrow (nested-coordinate) encoding
+      and no bbox column. Geometry is converted to native GeoArrow types from any
+      input; columns mixing incompatible geometry types fall back to WKB.
     - 2.0: GeoParquet 2.0 with native Parquet geo types
     - parquet-geo-only: Native Parquet geo types without GeoParquet metadata
 

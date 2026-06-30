@@ -91,6 +91,37 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **`gpio partition … --auto` is now extent-aware (#524).** Auto-resolution
+  previously assumed data was spread uniformly across the entire globe, so
+  regional/national datasets got a far-too-coarse resolution — collapsing into a
+  handful of giant partitions instead of the requested `--target-rows`-sized
+  ones (off by ~2 orders of magnitude). It now probes a bounded sample of the
+  actual data, counts non-empty cells at each candidate resolution, and picks
+  the resolution closest to the target partition count. One fix covers
+  `a5`/`h3`/`s2`/`quadkey`; it falls back to the old global estimate when the
+  data can't be probed.
+- Partition commands now route all rows in a **single** `COPY … PARTITION_BY`
+  scan instead of re-scanning the input per partition value (#478).
+  `gpio partition string`, `gpio partition admin`, and the cell-id partitioners
+  (`a5`/`h3`/`s2`/`quadkey`/`kdtree`) all shared an
+  `O(num_partitions × input_size)` per-value loop that made partitioning large
+  datasets into many partitions infeasible (e.g. ~195 country partitions of a
+  220 GB input meant ~43 TB of reads). They now stream into a staging dir, then
+  rewrite each (small) partition into its final file with correct per-partition
+  metadata. Output layout, naming, flags, and per-partition
+  `geo`/`bbox`/`covering` metadata (plus passthrough KV like vecorel
+  `collection` and non-nullable vecorel columns) are unchanged.
+  - Distinct partition values that sanitize to the **same** filename (e.g.
+    `"São Paulo"` / `"São-Paulo"`) now raise a clear error instead of silently
+    dropping or overwriting rows; values that sanitize to empty fall back to
+    `_empty` rather than `.parquet`.
+  - `gpio partition admin` warns when features match a coarser admin level but
+    are missing a finer one (they cannot be placed in any partition).
+  - Note: row order *within* a partition is no longer guaranteed (sort each
+    output afterward if needed); with `--no-overwrite` the returned/printed
+    partition count reflects only files actually written this run; and when
+    partition analysis runs (the default) the input is read once more for that
+    cheap aggregate before the COPY.
 - Distinguish an explicit `crs: null` (CRS *unknown*) from an omitted `crs` key
   (defaults to OGC:CRS84), per the GeoParquet spec:
   - Reading a file with `crs: null` now logs a warning (once per input) from the
@@ -101,6 +132,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
     output geo metadata. Affected the Arrow/Python-API and streaming paths.
 - Fix out-of-memory crash in `gpio add admin-divisions --dataset overture` on
   large inputs (#461)
+- Fix `gpio add admin-divisions`/`gpio partition admin` with the Overture
+  dataset producing ~2.6x as many output rows as the input. Overture stores a
+  separate maritime (EEZ) polygon per division whose geometry spans the entire
+  territory including the landmass, so every land feature matched both the land
+  and maritime polygon at each level (~2x for country, ~1.3x for region). The
+  per-level caches are now filtered to land polygons (`is_land IS NOT FALSE`),
+  making them genuinely non-overlapping so the memory-safe plain spatial join no
+  longer multiplies rows. Cache files gain a `-land` suffix, which invalidates
+  stale maritime-contaminated caches automatically (the old unsuffixed files are
+  also removed on the next download).
+  - `gpio partition admin` now joins each level against its own land-only cache
+    (chained per-level joins), the same memory-bounded approach as
+    `gpio add admin-divisions`; previously it joined the raw remote dataset and
+    still multiplied rows / risked OOM.
+  - Behavior change: genuinely offshore features (outside any land polygon, e.g.
+    buoys or platforms that previously matched the surrounding EEZ) now receive
+    no admin code — `ZZ` in `--vecorel` mode, `NULL` otherwise. This is correct
+    for land datasets; a maritime opt-in could be added later if needed.
   - Overture now uses a **per-level cache** (separate country and region cache
     files instead of one combined file), with simplified boundaries, to keep
     memory bounded.
@@ -138,6 +187,52 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Comprehensive test coverage improvements
 - Plugin system documentation
 - Dependency updates (actions/checkout v6, astral-sh/setup-uv v7, etc.)
+
+## v1.3.0 (2026-06-11)
+
+### Feat
+
+- **extract arcgis**: add --max-allowable-offset for server-side generalization
+- **api**: add output_crs to from_arcgis and extract_arcgis
+- **extract arcgis**: add --output-crs CLI option
+- **arcgis**: thread output_crs through convert_arcgis_to_geoparquet
+- **arcgis**: tag native CRS from returned SR with mismatch warning
+- **arcgis**: thread output_crs through streaming and capture returned SR
+- **arcgis**: add EsriJSON page-to-table converter via ST_Read
+- **arcgis**: request EsriJSON+outSR in fetch_features_page when output_crs set
+- **arcgis**: add CRS parsing helpers for output-crs
+- **wfs**: add typed exception subclasses for downstream consumers
+- add fiboa plugin (gpio fiboa) (#451)
+- add Vecorel specification support (#450)
+- fetch latest Overture Maps release dynamically (#455)
+- **convert**: add --geoparquet-version 1.1-geoarrow output format (#436)
+- **extract**: add Carto SQL API extractor
+
+### Fix
+
+- **test**: xfail GeoPackage sequential conversion test on Windows/macOS
+- **arcgis**: anchor maxAllowableOffset units by setting outSR
+- **arcgis**: unset CRS for unresolvable WKID, resolve native WKT to EPSG
+- **partition**: single-pass COPY PARTITION_BY instead of per-value re-scan (#478) (#480)
+- **check**: assert dict result to satisfy mypy in optimization check
+- **arcgis**: read layer SR from extent/sourceSpatialReference fallbacks
+- **check**: scale locality threshold by row-group count, report uncomputed metrics as None
+- **arcgis**: normalize WKIDs, validate output-crs upfront, dedupe page converters
+- **deps**: update mutmut config for 3.6.0 breaking changes
+- **deps**: pin duckdb<1.5.2 for geography extension compatibility
+- **check**: use spatial locality metrics instead of row-count heuristic (#456)
+- **add**: filter Overture admin caches to land — stop ~2.6x row multiplication (#474)
+- **wfs**: handle uint64 overflow in type promotion
+- **wfs**: harden schema unification with edge case handling
+- **wfs**: handle type mismatches across paginated pages
+- **crs**: distinguish null CRS (unknown) from omitted CRS (default) (#471)
+- **ci**: repair recurring slow-tests failures on main (#472)
+- **add**: admin-divisions OOM fix — restore plain spatial join, retire in-join dedup (#461)
+- **add**: restore bbox pre-filter in spatial join ON clause (#460)
+- **add**: remove bbox pre-filter from spatial join ON clauses (#457)
+- **ci**: separate blocking security checks from proactive CVE alerts
+- **carto**: address code review findings
+- **carto**: address security and robustness issues in Carto extractor
 
 ## v1.2.0 (2026-06-02)
 

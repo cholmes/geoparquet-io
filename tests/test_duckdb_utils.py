@@ -1,5 +1,8 @@
 """Tests for core/duckdb_utils.py module."""
 
+import duckdb
+import pytest
+
 from geoparquet_io.core.duckdb_utils import (
     _add_bucket_needing_auth,
     _bucket_needs_auth,
@@ -8,9 +11,11 @@ from geoparquet_io.core.duckdb_utils import (
     build_spatial_join_condition,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
+    load_community_extension,
     quote_identifier,
     s3_config_scope,
 )
+from geoparquet_io.core.exceptions import ExtensionUnavailableError
 
 
 class TestEscapeSqlString:
@@ -169,6 +174,43 @@ class TestGetDuckdbConnection:
             assert con.execute("SELECT 1").fetchone() == (1,)
         finally:
             con.close()
+
+
+class TestLoadCommunityExtension:
+    """Tests for community extension loading with clear errors (issue #491)."""
+
+    @pytest.mark.network
+    def test_unavailable_extension_raises_clear_error(self):
+        """A missing/unpublished community extension yields ExtensionUnavailableError.
+
+        DuckDB raises an opaque HTTP 404 when a community extension is not
+        published for the running DuckDB version. We translate that into an
+        actionable error rather than leaking the raw HTTP failure.
+        """
+        con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
+        try:
+            with pytest.raises(ExtensionUnavailableError) as exc_info:
+                load_community_extension(con, "definitely_not_a_real_extension_491")
+        finally:
+            con.close()
+
+        message = str(exc_info.value)
+        assert "definitely_not_a_real_extension_491" in message
+        assert duckdb.__version__ in message
+        assert exc_info.value.name == "definitely_not_a_real_extension_491"
+
+    def test_duckdb_error_is_wrapped(self):
+        """Any DuckDB error during INSTALL/LOAD becomes ExtensionUnavailableError."""
+
+        class _FakeConnection:
+            def execute(self, sql):
+                raise duckdb.IOException("simulated HTTP 404 for community extension")
+
+        with pytest.raises(ExtensionUnavailableError) as exc_info:
+            load_community_extension(_FakeConnection(), "geography")
+
+        assert "geography" in str(exc_info.value)
+        assert "simulated HTTP 404" in str(exc_info.value)
 
 
 class TestS3CacheThreadSafety:

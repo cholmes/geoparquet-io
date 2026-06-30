@@ -114,6 +114,30 @@ class ValidationError(GeoParquetError):
     pass
 
 
+class ExtensionUnavailableError(GeoParquetError):
+    """Raised when a required DuckDB community extension cannot be installed/loaded.
+
+    Community extensions (e.g. ``geography`` for S2 support) are built per
+    DuckDB release. When a new DuckDB version ships before an extension has
+    been rebuilt for it, ``INSTALL ... FROM community`` fails with an opaque
+    HTTP 404. This exception surfaces an actionable message instead.
+    """
+
+    def __init__(self, name: str, duckdb_version: str, detail: str | None = None) -> None:
+        self.name = name
+        self.duckdb_version = duckdb_version
+        msg = (
+            f"Could not load the DuckDB community extension '{name}' for "
+            f"DuckDB {duckdb_version}. Community extensions are built per DuckDB "
+            f"release, so '{name}' may not be published for this version yet. "
+            f"Install a DuckDB version that provides it (see "
+            f"https://community-extensions.duckdb.org/extensions/{name}.html)."
+        )
+        if detail:
+            msg = f"{msg} Original error: {detail}"
+        super().__init__(msg)
+
+
 class BatchTooLargeError(GeoParquetError):
     """Raised when server returns non-JSON response due to batch size limits.
 

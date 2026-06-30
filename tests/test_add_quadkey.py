@@ -8,7 +8,6 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.core.add.quadkey import (
-    _is_geographic_crs,
     _lat_lon_to_quadkey,
 )
 from geoparquet_io.core.crs_utils import get_crs_display_name
@@ -40,64 +39,6 @@ class TestLatLonToQuadkey:
         assert len(qk_high) == 15
         # Higher resolution should start with the lower resolution key
         assert qk_high.startswith(qk_low)
-
-
-class TestIsGeographicCrs:
-    """Tests for _is_geographic_crs function."""
-
-    def test_none_crs(self):
-        """Test with None CRS."""
-        assert _is_geographic_crs(None) is None
-
-    def test_epsg_4326_string(self):
-        """Test WGS84 EPSG:4326 string."""
-        assert _is_geographic_crs("EPSG:4326") is True
-        assert _is_geographic_crs("epsg:4326") is True
-
-    def test_crs84_string(self):
-        """Test CRS84 string."""
-        assert _is_geographic_crs("OGC:CRS84") is True
-        assert _is_geographic_crs("CRS:84") is True
-
-    def test_unknown_string(self):
-        """Test unknown CRS string."""
-        assert _is_geographic_crs("EPSG:3857") is None  # Web Mercator
-
-    def test_geographic_crs_dict(self):
-        """Test GeographicCRS type in dict."""
-        crs_dict = {"type": "GeographicCRS", "name": "WGS 84"}
-        assert _is_geographic_crs(crs_dict) is True
-
-    def test_projected_crs_dict(self):
-        """Test ProjectedCRS type in dict."""
-        crs_dict = {"type": "ProjectedCRS", "name": "Web Mercator"}
-        assert _is_geographic_crs(crs_dict) is False
-
-    def test_crs_dict_with_epsg_code(self):
-        """Test CRS dict with EPSG code."""
-        crs_dict = {"id": {"authority": "EPSG", "code": 4326}}
-        assert _is_geographic_crs(crs_dict) is True
-
-
-class TestValidateCrsForQuadkey:
-    """Tests for CRS validation."""
-
-    def test_none_crs_returns_true(self):
-        """Test with None CRS (assumes WGS84)."""
-        assert _is_geographic_crs(None) is None
-
-    def test_epsg_4269_is_geographic(self):
-        """Test EPSG:4269 (NAD83) is recognized as geographic."""
-        assert _is_geographic_crs("EPSG:4269") is True
-
-    def test_epsg_4267_is_geographic(self):
-        """Test EPSG:4267 (NAD27) is recognized as geographic."""
-        assert _is_geographic_crs("EPSG:4267") is True
-
-    def test_dict_with_epsg_4269(self):
-        """Test dict with NAD83 code."""
-        crs_dict = {"id": {"authority": "EPSG", "code": 4269}}
-        assert _is_geographic_crs(crs_dict) is True
 
 
 class TestGetCrsDisplayName:

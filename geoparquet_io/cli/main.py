@@ -26,6 +26,7 @@ from geoparquet_io.cli.decorators import (
     partition_input_options,
     partition_options,
     partition_options_base,
+    repair_geometry_option,
     row_group_options,
     show_sql_option,
     verbose_option,
@@ -1258,6 +1259,7 @@ def convert(ctx):
     is_flag=True,
     help="Allow conversion to plain Parquet when no geometry column is detected (default: error)",
 )
+@repair_geometry_option
 @geoparquet_version_option
 @verbose_option
 @output_format_options
@@ -1279,6 +1281,7 @@ def convert_to_geoparquet_cmd(
     skip_invalid,
     csv_max_line_size,
     allow_no_geometry,
+    repair_geometry,
     geoparquet_version,
     verbose,
     compression,
@@ -1351,6 +1354,7 @@ def convert_to_geoparquet_cmd(
                 compression_level=compression_level,
                 row_group_rows=row_group_size,
                 row_group_size_mb=row_group_mb,
+                repair_geometry=repair_geometry,
             )
         else:
             convert_to_geoparquet(
@@ -1372,6 +1376,7 @@ def convert_to_geoparquet_cmd(
                 allow_no_geometry=allow_no_geometry,
                 profile=aws_profile,
                 geoparquet_version=geoparquet_version,
+                repair_geometry=repair_geometry,
             )
 
 
@@ -1392,6 +1397,7 @@ def _convert_streaming(
     compression_level=15,
     row_group_rows=None,
     row_group_size_mb=None,
+    repair_geometry=True,
 ):
     """Handle streaming output for convert command."""
     import tempfile
@@ -1424,6 +1430,7 @@ def _convert_streaming(
             skip_invalid=skip_invalid,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            repair_geometry=repair_geometry,
         )
 
         # Read and stream to stdout
@@ -1631,6 +1638,7 @@ def convert_reproject(
     is_flag=True,
     help="Keep original CRS instead of reprojecting to WGS84 (EPSG:4326)",
 )
+@repair_geometry_option
 @verbose_option
 @aws_profile_option
 @show_sql_option
@@ -1648,6 +1656,7 @@ def convert_geojson(
     no_seq,
     pretty,
     keep_crs,
+    repair_geometry,
     verbose,
     aws_profile,
     show_sql,
@@ -1710,6 +1719,7 @@ def convert_geojson(
                 overwrite=overwrite,
                 verbose=verbose,
                 profile=aws_profile,
+                repair_geometry=repair_geometry,
             )
         else:
             # Streaming mode - use convert_to_geojson directly
@@ -1726,6 +1736,7 @@ def convert_geojson(
                 verbose=verbose,
                 profile=aws_profile,
                 keep_crs=keep_crs,
+                repair_geometry=repair_geometry,
             )
 
 
@@ -2095,10 +2106,15 @@ def _inspect_summary_impl(parquet_file, json_output, markdown_output, check_all_
         raise _friendly_parquet_error(e, parquet_file) from e
 
 
-def _inspect_preview_impl(parquet_file, count, mode, json_output, markdown_output):
+def _inspect_preview_impl(
+    parquet_file, count, mode, json_output, markdown_output, max_columns=None, no_truncate=False
+):
     """CLI wrapper for inspect head/tail - delegates to core function."""
     if json_output and markdown_output:
         raise click.UsageError("--json and --markdown are mutually exclusive")
+    if no_truncate and max_columns is not None:
+        click.echo("Note: --no-truncate overrides --max-columns; showing all columns.")
+        max_columns = None
 
     _validate_parquet_input(parquet_file)
 
@@ -2110,7 +2126,9 @@ def _inspect_preview_impl(parquet_file, count, mode, json_output, markdown_outpu
             click.echo(click.style(result["partition_notice"], fg="cyan"))
             click.echo()
 
-        output = format_preview_output(result, json_output, markdown_output)
+        output = format_preview_output(
+            result, json_output, markdown_output, max_columns=max_columns, no_truncate=no_truncate
+        )
         if output:
             click.echo(output)
 
@@ -2171,9 +2189,22 @@ def inspect_summary(ctx, parquet_file, json_output, markdown_output, check_all_f
 @click.option(
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
+@click.option(
+    "--max-columns",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum number of columns to display (default: fit terminal width)",
+)
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Show all columns and full values (disable fit-to-width)",
+)
 @verbose_option
 @click.pass_context
-def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose):
+def inspect_head(
+    ctx, parquet_file, count, json_output, markdown_output, max_columns, no_truncate, verbose
+):
     """Show first N rows of data (default: 10).
 
     Examples:
@@ -2183,7 +2214,15 @@ def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose
         gpio inspect head data.parquet 20     # First 20 rows
     """
     with _activate_s3(ctx):
-        _inspect_preview_impl(parquet_file, count, "head", json_output, markdown_output)
+        _inspect_preview_impl(
+            parquet_file,
+            count,
+            "head",
+            json_output,
+            markdown_output,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
 
 
 @inspect.command(name="tail", cls=GlobAwareCommand)
@@ -2193,9 +2232,22 @@ def inspect_head(ctx, parquet_file, count, json_output, markdown_output, verbose
 @click.option(
     "--markdown", "markdown_output", is_flag=True, help="Output as Markdown for README files"
 )
+@click.option(
+    "--max-columns",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum number of columns to display (default: fit terminal width)",
+)
+@click.option(
+    "--no-truncate",
+    is_flag=True,
+    help="Show all columns and full values (disable fit-to-width)",
+)
 @verbose_option
 @click.pass_context
-def inspect_tail(ctx, parquet_file, count, json_output, markdown_output, verbose):
+def inspect_tail(
+    ctx, parquet_file, count, json_output, markdown_output, max_columns, no_truncate, verbose
+):
     """Show last N rows of data (default: 10).
 
     Examples:
@@ -2205,7 +2257,15 @@ def inspect_tail(ctx, parquet_file, count, json_output, markdown_output, verbose
         gpio inspect tail data.parquet 5      # Last 5 rows
     """
     with _activate_s3(ctx):
-        _inspect_preview_impl(parquet_file, count, "tail", json_output, markdown_output)
+        _inspect_preview_impl(
+            parquet_file,
+            count,
+            "tail",
+            json_output,
+            markdown_output,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
 
 
 @inspect.command(name="stats", cls=GlobAwareCommand)
@@ -2396,6 +2456,7 @@ def extract(ctx):
 @overwrite_option
 @write_strategy_option
 @partition_input_options
+@repair_geometry_option
 @dry_run_option
 @show_sql_option
 @verbose_option
@@ -2424,6 +2485,7 @@ def extract_geoparquet(
     write_memory,
     allow_schema_diff,
     hive_input,
+    repair_geometry,
     dry_run,
     show_sql,
     verbose,
@@ -2545,6 +2607,7 @@ def extract_geoparquet(
             write_strategy=write_strategy,
             memory_limit=write_memory,
             overwrite=overwrite,
+            repair_geometry=repair_geometry,
         )
 
 
@@ -2595,6 +2658,19 @@ def extract_geoparquet(
     help="Maximum number of features to extract",
 )
 @click.option(
+    "--output-crs",
+    help="Output CRS such as EPSG:25830, or 'native' for the layer's "
+    "advertised SR. Default reprojects to WGS84.",
+)
+@click.option(
+    "--max-allowable-offset",
+    type=float,
+    default=None,
+    help="Server-side geometry generalization tolerance in output CRS units "
+    "(ArcGIS maxAllowableOffset). Reduces vertices per feature, useful for very "
+    "large or dense polygons.",
+)
+@click.option(
     "--skip-hilbert",
     is_flag=True,
     help="Skip Hilbert spatial ordering (faster but less optimal for spatial queries)",
@@ -2616,8 +2692,16 @@ def extract_geoparquet(
     default=None,
     help="Features per request. Default: server's maxRecordCount. Auto-reduces on server errors. Use smaller values for layers with complex geometries.",
 )
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0, min_open=True),
+    default=60.0,
+    show_default=True,
+    help="Per-request HTTP timeout in seconds. Increase for layers with very large or complex geometries that the server is slow to serialize.",
+)
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @verbose_option
 @compression_options
 @row_group_options
@@ -2639,12 +2723,16 @@ def extract_arcgis(
     include_cols,
     exclude_cols,
     limit,
+    output_crs,
+    max_allowable_offset,
     skip_hilbert,
     skip_bbox,
     workers,
     batch_size,
+    timeout,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     verbose,
     compression,
     compression_level,
@@ -2746,10 +2834,13 @@ def extract_arcgis(
             include_cols=include_cols,
             exclude_cols=exclude_cols,
             limit=limit,
+            output_crs=output_crs,
+            max_allowable_offset=max_allowable_offset,
             skip_hilbert=skip_hilbert,
             skip_bbox=skip_bbox,
             max_workers=workers,
             batch_size=batch_size,
+            timeout=timeout,
             compression=compression.upper(),
             compression_level=compression_level,
             verbose=verbose,
@@ -2758,6 +2849,7 @@ def extract_arcgis(
             row_group_size_mb=row_group_mb,
             row_group_rows=row_group_size,
             overwrite=overwrite,
+            repair_geometry=repair_geometry,
         )
 
 
@@ -2834,6 +2926,7 @@ def extract_arcgis(
 @output_format_options
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @dry_run_option
 @show_sql_option
 @verbose_option
@@ -2860,6 +2953,7 @@ def extract_bigquery_cmd(
     write_memory,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     dry_run,
     show_sql,
     verbose,
@@ -2963,6 +3057,7 @@ def extract_bigquery_cmd(
         row_group_rows=row_group_size,
         geoparquet_version=geoparquet_version,
         overwrite=overwrite,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -3042,15 +3137,28 @@ def _deprecated_version_callback(ctx, param, value):
 )
 @click.option(
     "--page-size",
-    type=click.IntRange(1000, 100000),
-    default=10000,
-    help="Features per page when using --workers > 1. Default: 10000.",
+    type=click.IntRange(1000, 500000),
+    default=100000,
+    help="Features per page when using --workers > 1. Default: 100000.",
 )
 @click.option(
-    "--auto-tile",
-    is_flag=True,
-    help="Automatically subdivide into spatial tiles to work around server "
-    "startIndex limits. Use for large datasets on servers that cap pagination.",
+    "--parallel-layers",
+    type=click.IntRange(min=1, max=10),
+    default=1,
+    help="Number of layers to extract concurrently when extracting multiple layers. "
+    "Default: 1 (sequential). Use with comma-separated typename for parallel extraction.",
+)
+@click.option(
+    "--auto-tile/--no-auto-tile",
+    default=True,
+    help="Automatically subdivide into spatial tiles when server caps responses "
+    "(e.g., maxFeatures or startIndex limits). Enabled by default. "
+    "Use --no-auto-tile to disable and accept partial data.",
+)
+@click.option(
+    "--sort-by",
+    help="Attribute to sort by for stable pagination. Required for layers without a "
+    "primary key on GeoServer. If not specified, auto-detected from DescribeFeatureType.",
 )
 @click.option(
     "--skip-hilbert",
@@ -3062,6 +3170,7 @@ def _deprecated_version_callback(ctx, param, value):
     is_flag=True,
     help="Skip adding bbox column (faster, but no per-geometry bbox)",
 )
+@repair_geometry_option
 @compression_options
 @row_group_options
 @geoparquet_version_option
@@ -3082,9 +3191,12 @@ def extract_wfs_cmd(
     output_crs,
     workers,
     page_size,
+    parallel_layers,
     auto_tile,
+    sort_by,
     skip_hilbert,
     skip_bbox,
+    repair_geometry,
     compression,
     compression_level,
     row_group_size,
@@ -3100,9 +3212,11 @@ def extract_wfs_cmd(
     SERVICE_URL is the WFS service endpoint URL.
 
     TYPENAME is the layer to extract (e.g., 'roads', 'buildings').
+    Use comma-separated names for multiple layers (e.g., 'roads,buildings,parcels').
     If omitted, lists available layers.
 
-    OUTPUT_FILE is the output GeoParquet file path. Required when TYPENAME is specified.
+    OUTPUT_FILE is the output path. For single layer, this is the output file.
+    For multiple layers, this is the output directory (each layer saved as typename.parquet).
 
     \b
     Examples:
@@ -3112,8 +3226,13 @@ def extract_wfs_cmd(
         gpio extract wfs https://geo.example.com/wfs
 
         \b
-        # Extract entire layer
+        # Extract single layer
         gpio extract wfs https://geo.example.com/wfs cities output.parquet
+
+        \b
+        # Extract multiple layers in parallel to a directory
+        gpio extract wfs https://geo.example.com/wfs roads,buildings,parcels ./output/ \\
+            --workers 2 --parallel-layers 3
 
         \b
         # With bbox filter (server-side when supported)
@@ -3132,6 +3251,7 @@ def extract_wfs_cmd(
     """
     from geoparquet_io.core.wfs import (
         WFSError,
+        convert_wfs_layers_to_directory,
         convert_wfs_to_geoparquet,
         list_available_layers,
         negotiate_wfs_version,
@@ -3181,8 +3301,25 @@ def extract_wfs_cmd(
             f"Usage: gpio extract wfs {service_url} {typename} OUTPUT_FILE"
         )
 
-    # Validate .parquet extension
-    validate_parquet_extension(output_file, any_extension)
+    # Parse comma-separated typenames
+    typenames = [t.strip() for t in typename.split(",") if t.strip()]
+    if not typenames:
+        raise click.ClickException(
+            "No valid typename(s) provided. Specify one or more comma-separated layer names."
+        )
+    is_multi_layer = len(typenames) > 1
+
+    # Validate output path based on single/multi layer mode
+    if is_multi_layer:
+        # Multi-layer mode: output_file is a directory
+        if output_file.endswith(".parquet"):
+            raise click.ClickException(
+                f"Multiple layers specified ({len(typenames)}), but output looks like a file: {output_file}\n"
+                "For multi-layer extraction, provide a directory path (e.g., ./output/)."
+            )
+    else:
+        # Single layer mode: validate .parquet extension
+        validate_parquet_extension(output_file, any_extension)
 
     # Parse row group options
     row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
@@ -3202,30 +3339,63 @@ def extract_wfs_cmd(
             ) from e
 
     try:
-        convert_wfs_to_geoparquet(
-            service_url=service_url,
-            typename=typename,
-            output_file=output_file,
-            version=wfs_version,
-            bbox=bbox_tuple,
-            bbox_mode=bbox_mode,
-            output_crs=output_crs,
-            limit=limit,
-            max_workers=workers,
-            page_size=page_size,
-            axis_order=axis_order,
-            strict_crs=strict_crs,
-            skip_hilbert=skip_hilbert,
-            skip_bbox=skip_bbox,
-            compression=compression.upper(),
-            compression_level=compression_level,
-            row_group_size_mb=row_group_mb,
-            row_group_rows=row_group_size,
-            geoparquet_version=geoparquet_version,
-            overwrite=overwrite,
-            verbose=verbose,
-            auto_tile=auto_tile,
-        )
+        if is_multi_layer:
+            # Multi-layer parallel extraction
+            convert_wfs_layers_to_directory(
+                service_url=service_url,
+                typenames=typenames,
+                output_dir=output_file,
+                parallel_layers=parallel_layers,
+                max_workers=workers,
+                page_size=page_size,
+                version=wfs_version,
+                bbox=bbox_tuple,
+                bbox_mode=bbox_mode,
+                output_crs=output_crs,
+                limit=limit,
+                axis_order=axis_order,
+                strict_crs=strict_crs,
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+                auto_tile=auto_tile,
+                sort_by=sort_by,
+                repair_geometry=repair_geometry,
+            )
+        else:
+            # Single layer extraction
+            convert_wfs_to_geoparquet(
+                service_url=service_url,
+                typename=typenames[0],
+                output_file=output_file,
+                version=wfs_version,
+                bbox=bbox_tuple,
+                bbox_mode=bbox_mode,
+                output_crs=output_crs,
+                limit=limit,
+                max_workers=workers,
+                page_size=page_size,
+                axis_order=axis_order,
+                strict_crs=strict_crs,
+                skip_hilbert=skip_hilbert,
+                skip_bbox=skip_bbox,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                geoparquet_version=geoparquet_version,
+                overwrite=overwrite,
+                verbose=verbose,
+                auto_tile=auto_tile,
+                sort_by=sort_by,
+                repair_geometry=repair_geometry,
+            )
     except WFSError as e:
         raise click.ClickException(str(e)) from None
 
@@ -3272,10 +3442,18 @@ def extract_wfs_cmd(
     is_flag=True,
     help="Skip adding bbox column (faster, but no per-geometry bbox)",
 )
+@click.option(
+    "--geometry/--no-geometry",
+    "geometry",
+    default=None,
+    help="Force geometry (GeoParquet) or plain tabular (plain Parquet) "
+    "extraction. Default: auto-detect from the table schema.",
+)
 @compression_options
 @row_group_options
 @geoparquet_version_option
 @overwrite_option
+@repair_geometry_option
 @verbose_option
 @any_extension_option
 @aws_profile_option
@@ -3293,12 +3471,14 @@ def extract_carto_cmd(
     timeout,
     skip_hilbert,
     skip_bbox,
+    geometry,
     compression,
     compression_level,
     row_group_size,
     row_group_size_mb,
     geoparquet_version,
     overwrite,
+    repair_geometry,
     verbose,
     any_extension,
     aws_profile,
@@ -3316,7 +3496,11 @@ def extract_carto_cmd(
     \b
     Notes:
         - Geometry column 'the_geom' is renamed to 'geometry' for consistency
+        - Tables with no geometry are written as plain Parquet (no geo metadata);
+          use --no-geometry to force tabular extraction or --geometry to force
+          GeoParquet (default: auto-detect)
         - Filters (--where, --bbox) are pushed to the server for efficiency
+          (--bbox applies only to geometry tables)
         - For large tables, use --limit or --where to avoid timeouts
         - Set CARTO_API_KEY env var for authenticated endpoints
 
@@ -3390,6 +3574,8 @@ def extract_carto_cmd(
                 geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
                 verbose=verbose,
+                repair_geometry=repair_geometry,
+                geometry=geometry,
             )
         except CartoError as e:
             raise click.ClickException(str(e)) from None
@@ -6689,6 +6875,47 @@ def pmtiles(ctx):
     default=None,
     help="In the generated PMTiles, split tiles into layers based on the value of this column",
 )
+@click.option(
+    "--simplify-only-low-zooms/--no-simplify-only-low-zooms",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --simplify-only-low-zooms",
+)
+@click.option(
+    "--no-simplification-of-shared-nodes/--simplification-of-shared-nodes",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --no-simplification-of-shared-nodes",
+)
+@click.option(
+    "--no-tile-size-limit/--tile-size-limit",
+    default=True,
+    show_default=True,
+    help=(
+        "Remove the tile size cap (--no-tile-size-limit). Use --tile-size-limit "
+        "to keep tippecanoe's limit so --drop-densest-as-needed actually drops "
+        "features on dense data."
+    ),
+)
+@click.option(
+    "--drop-densest-as-needed/--no-drop-densest-as-needed",
+    default=True,
+    show_default=True,
+    help="Pass tippecanoe --drop-densest-as-needed (no effect while size limit is off)",
+)
+@click.option(
+    "--maximum-tile-bytes",
+    type=int,
+    default=None,
+    help="Explicit per-tile byte cap (--maximum-tile-bytes); takes precedence over --no-tile-size-limit",
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite the output file if it already exists (tippecanoe --force)",
+)
+@repair_geometry_option
 @verbose_option
 @aws_profile_option
 def pmtiles_create(
@@ -6706,6 +6933,13 @@ def pmtiles_create(
     verbose,
     aws_profile,
     layer_by_column,
+    simplify_only_low_zooms,
+    no_simplification_of_shared_nodes,
+    no_tile_size_limit,
+    drop_densest_as_needed,
+    maximum_tile_bytes,
+    force,
+    repair_geometry,
 ):
     """Create PMTiles from a GeoParquet file.
 
@@ -6723,6 +6957,10 @@ def pmtiles_create(
         gpio pmtiles create data.parquet tiles.pmtiles --where "population > 10000"
 
         gpio pmtiles create data.parquet tiles.pmtiles --layer-by-column owner
+
+        gpio pmtiles create dense.parquet tiles.pmtiles --tile-size-limit --max-zoom 14
+
+        gpio pmtiles create data.parquet tiles.pmtiles --force
     """
     from geoparquet_io.core.pmtiles import create_pmtiles_from_geoparquet
 
@@ -6742,6 +6980,13 @@ def pmtiles_create(
             src_crs=src_crs,
             attribution=attribution,
             layer_by_column=layer_by_column,
+            simplify_only_low_zooms=simplify_only_low_zooms,
+            no_simplification_of_shared_nodes=no_simplification_of_shared_nodes,
+            no_tile_size_limit=no_tile_size_limit,
+            drop_densest_as_needed=drop_densest_as_needed,
+            maximum_tile_bytes=maximum_tile_bytes,
+            force=force,
+            repair_geometry=repair_geometry,
         )
         click.echo(click.style(f"✓ Created {output_file}", fg="green"))
     except Exception as e:

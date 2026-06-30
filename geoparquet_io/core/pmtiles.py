@@ -76,11 +76,17 @@ def _build_gpio_commands(
     verbose: bool,
     profile: str | None,
     src_crs: str | None,
+    repair_geometry: bool = True,
 ) -> list[list[str]]:
     """
     Build the gpio command(s) for GeoJSON conversion.
 
     Returns a list of commands to be piped together.
+
+    The chain always ends with ``gpio convert geojson``, which repairs invalid
+    geometry by default — so the geometry tippecanoe receives is valid (issue
+    #506). When ``repair_geometry`` is False we propagate ``--no-repair-geometry``
+    to that final step so opt-out reaches the pipeline.
     """
     gpio_exe = _get_gpio_executable()
 
@@ -135,6 +141,8 @@ def _build_gpio_commands(
             convert_cmd.append("--verbose")
         if profile:
             convert_cmd.extend(["--profile", profile])
+        if not repair_geometry:
+            convert_cmd.append("--no-repair-geometry")
 
         commands.append(convert_cmd)
 
@@ -146,6 +154,8 @@ def _build_gpio_commands(
         convert_cmd.append("--verbose")
     if profile:
         convert_cmd.extend(["--profile", profile])
+    if not repair_geometry:
+        convert_cmd.append("--no-repair-geometry")
 
     return [convert_cmd]
 
@@ -186,8 +196,22 @@ def _build_tippecanoe_command(
     verbose: bool,
     attribution: str | None = None,
     layer_by_column: str | None = None,
+    simplify_only_low_zooms: bool = True,
+    no_simplification_of_shared_nodes: bool = True,
+    no_tile_size_limit: bool = True,
+    drop_densest_as_needed: bool = True,
+    maximum_tile_bytes: int | None = None,
+    force: bool = False,
 ) -> list[str]:
-    """Build the tippecanoe command with production-quality settings."""
+    """Build the tippecanoe command with production-quality settings.
+
+    The four production-quality tippecanoe flags are individually
+    toggleable; their defaults reproduce the historical behaviour. When
+    ``maximum_tile_bytes`` is set it takes precedence over
+    ``no_tile_size_limit`` — the two are contradictory, and an explicit
+    cap is what gives ``--drop-densest-as-needed`` a limit to drop
+    features against.
+    """
     cmd = ["tippecanoe", "-P", "-o", output_path]
 
     if layer_by_column:
@@ -213,10 +237,23 @@ def _build_tippecanoe_command(
     else:
         cmd.append("-zg")
 
-    cmd.append("--simplify-only-low-zooms")
-    cmd.append("--no-simplification-of-shared-nodes")
-    cmd.append("--no-tile-size-limit")
-    cmd.append("--drop-densest-as-needed")
+    if simplify_only_low_zooms:
+        cmd.append("--simplify-only-low-zooms")
+    if no_simplification_of_shared_nodes:
+        cmd.append("--no-simplification-of-shared-nodes")
+
+    # An explicit byte cap and "no limit" are mutually exclusive; the cap wins
+    # so drop-densest has a limit to drop features against.
+    if maximum_tile_bytes is not None:
+        cmd.append(f"--maximum-tile-bytes={maximum_tile_bytes}")
+    elif no_tile_size_limit:
+        cmd.append("--no-tile-size-limit")
+
+    if drop_densest_as_needed:
+        cmd.append("--drop-densest-as-needed")
+
+    if force:
+        cmd.append("--force")
 
     if verbose:
         cmd.append("--progress-interval=1")
@@ -250,30 +287,25 @@ def _format_proc_error(proc: "subprocess.Popen[bytes]", stderr_bytes: bytes) -> 
     return msg
 
 
-def _run_pipeline(
+def _log_pipeline(
     gpio_commands: list[list[str]],
     tippecanoe_cmd: list[str],
-    verbose: bool,
-    layer_by_column: str | None = None,
+    layer_by_column: str | None,
 ) -> None:
-    """Execute the gpio to tippecanoe pipeline.
+    """Emit a debug line describing the pipeline that is about to run."""
+    cmd_str = " | ".join(" ".join(cmd) for cmd in gpio_commands)
+    debug(f"Running: {cmd_str} | {' '.join(tippecanoe_cmd)}")
+    if layer_by_column:
+        debug(f"Adding layer metadata into PMTiles from column '{layer_by_column}'")
 
-    If layer_by_column is given, the gpio output is intercepted and each
-    feature is annotated with a `tippecanoe.layer` value derived from
-    that column before being forwarded to tippecanoe.
+
+def _spawn_gpio_chain(gpio_commands: list[list[str]], verbose: bool) -> list["subprocess.Popen"]:
+    """Spawn the gpio commands as a connected stdin→stdout chain.
+
+    Cleans up any already-spawned processes if a later spawn fails, so the
+    caller never leaks subprocesses on a partial chain.
     """
-    if verbose:
-        if len(gpio_commands) == 1:
-            cmd_str = " ".join(gpio_commands[0])
-            debug(f"Running: {cmd_str} | {' '.join(tippecanoe_cmd)}")
-        else:
-            cmd_str = " | ".join(" ".join(cmd) for cmd in gpio_commands)
-            debug(f"Running: {cmd_str} | {' '.join(tippecanoe_cmd)}")
-        if layer_by_column:
-            debug(f"Adding layer metadata into PMTiles from column '{layer_by_column}'")
-
     processes: list[subprocess.Popen] = []
-
     try:
         for i, cmd in enumerate(gpio_commands):
             stdin_source = processes[-1].stdout if processes else None
@@ -288,128 +320,178 @@ def _run_pipeline(
 
             if i > 0 and processes[-2].stdout:
                 processes[-2].stdout.close()
+    except Exception:
+        for proc in processes:
+            if proc.poll() is None:
+                proc.terminate()
+        raise
 
-        if layer_by_column:
-            # Intercept: stream gpio output → inject layers → stream into tippecanoe
-            last_proc = processes[-1]
+    return processes
 
-            tippecanoe_proc = subprocess.Popen(
-                tippecanoe_cmd,
-                stdin=subprocess.PIPE,
-                stdout=None,
-                stderr=None,
-                text=True,  # work with strings instead of bytes
+
+def _collect_upstream_errors(procs: list["subprocess.Popen"]) -> list[str]:
+    """Drain stderr and wait for each gpio process, returning failure messages.
+
+    Stderr must be drained before waiting to avoid a deadlock on a full pipe,
+    and we drain every process so its stderr is the real diagnostic when
+    tippecanoe exits non-zero on truncated input.
+    """
+    errors: list[str] = []
+    for proc in procs:
+        stderr_bytes = b""
+        if proc.stderr:
+            stderr_bytes = proc.stderr.read()
+            proc.stderr.close()
+        proc.wait()
+        if proc.returncode != 0:
+            errors.append(_format_proc_error(proc, stderr_bytes))
+    return errors
+
+
+def _pump_features(
+    geojson_stream: IO[str],
+    layer_by_column: str,
+    tippecanoe_proc: "subprocess.Popen[str]",
+) -> bool:
+    """Inject layer metadata into each feature and stream it into tippecanoe.
+
+    Returns True if at least one feature was written.
+    """
+    assert tippecanoe_proc.stdin is not None  # narrowed by caller
+    wrote_any = False
+    for line in _add_layer_info(geojson_stream, layer_by_column):
+        # Detect if tippecanoe already exited (e.g., file exists, bad args, etc.)
+        if tippecanoe_proc.poll() is not None:
+            raise RuntimeError(f"tippecanoe failed with code {tippecanoe_proc.returncode}")
+
+        # tippecanoe can exit between the poll() above and the write below,
+        # closing the pipe out from under us. Convert that BrokenPipeError into
+        # the same RuntimeError we raise above so subprocess failures surface
+        # consistently — but only if the process really has exited; otherwise
+        # the broken pipe is unexpected and should propagate as-is.
+        try:
+            tippecanoe_proc.stdin.write(line)
+        except BrokenPipeError:
+            if tippecanoe_proc.poll() is not None:
+                raise RuntimeError(
+                    f"tippecanoe failed with code {tippecanoe_proc.returncode}"
+                ) from None
+            raise
+        wrote_any = True
+    return wrote_any
+
+
+def _run_with_layer_injection(
+    processes: list["subprocess.Popen"],
+    tippecanoe_cmd: list[str],
+    layer_by_column: str,
+) -> None:
+    """Stream gpio output through layer injection into tippecanoe."""
+    last_proc = processes[-1]
+
+    tippecanoe_proc: subprocess.Popen[str] = subprocess.Popen(
+        tippecanoe_cmd,
+        stdin=subprocess.PIPE,
+        stdout=None,
+        stderr=None,
+        text=True,  # work with strings instead of bytes
+    )
+
+    if last_proc.stdout is None:
+        raise RuntimeError("last process has no stdout")
+    if tippecanoe_proc.stdin is None:
+        raise RuntimeError("tippecanoe has no stdin")
+
+    geojson_stream = io.TextIOWrapper(last_proc.stdout, encoding="utf-8")
+
+    try:
+        wrote_any = _pump_features(geojson_stream, layer_by_column, tippecanoe_proc)
+
+        # Signal EOF to tippecanoe, then drain the gpio chain.
+        tippecanoe_proc.stdin.close()
+        upstream_errors = _collect_upstream_errors(processes)
+
+        if upstream_errors:
+            tippecanoe_proc.wait()
+            raise RuntimeError("\n\n".join(upstream_errors))
+
+        if not wrote_any:
+            tippecanoe_proc.wait()
+            raise RuntimeError(
+                "gpio pipeline produced no output — check input path, "
+                "filters, and that the column exists in the file"
             )
 
-            if last_proc.stdout is None:
-                raise RuntimeError("last process has no stdout")
-            if tippecanoe_proc.stdin is None:
-                raise RuntimeError("tippecanoe has no stdin")
+        tippecanoe_proc.wait()
 
-            geojson_stream = io.TextIOWrapper(last_proc.stdout, encoding="utf-8")
+        if tippecanoe_proc.returncode != 0:
+            raise RuntimeError(f"tippecanoe failed with exit code {tippecanoe_proc.returncode}")
 
-            wrote_any = False
+    except Exception:
+        # Ensure processes are cleaned up on failure
+        if tippecanoe_proc.poll() is None:
+            tippecanoe_proc.terminate()
+        if last_proc.poll() is None:
+            last_proc.terminate()
+        raise
 
-            try:
-                for line in _add_layer_info(geojson_stream, layer_by_column):
-                    # Detect if tippecanoe already exited (e.g., file exists, bad args, etc.)
-                    if tippecanoe_proc.poll() is not None:
-                        raise RuntimeError(
-                            f"tippecanoe failed with code {tippecanoe_proc.returncode}"
-                        )
 
-                    tippecanoe_proc.stdin.write(line)
-                    wrote_any = True
+def _run_simple(
+    processes: list["subprocess.Popen"],
+    tippecanoe_cmd: list[str],
+    verbose: bool,
+) -> None:
+    """Pipe gpio output straight into tippecanoe (no layer injection)."""
+    tippecanoe_proc = subprocess.Popen(
+        tippecanoe_cmd,
+        stdin=processes[-1].stdout if processes else None,
+        stdout=None if verbose else subprocess.PIPE,
+        stderr=None,
+    )
+    processes.append(tippecanoe_proc)
+    if len(processes) > 1 and processes[-2].stdout:
+        processes[-2].stdout.close()
 
-                # Signal EOF to tippecanoe
-                tippecanoe_proc.stdin.close()
+    tippecanoe_proc.communicate()
 
-                # Wait for upstream gpio process to finish
-                last_stderr = b""
-                if last_proc.stderr:
-                    last_stderr = last_proc.stderr.read()
-                    last_proc.stderr.close()
+    # Drain stderr and wait for upstream procs FIRST. If an upstream gpio
+    # process crashed, tippecanoe almost always exits non-zero too (read
+    # truncated input), and the upstream stderr is the real diagnostic —
+    # we must not short-circuit on tippecanoe's exit code before collecting it.
+    upstream_gpio_errors = _collect_upstream_errors(processes[:-1])
 
-                last_proc.wait()
+    if tippecanoe_proc.returncode != 0:
+        msg = f"tippecanoe failed with exit code {tippecanoe_proc.returncode}"
+        if upstream_gpio_errors:
+            msg = f"{msg}\nUpstream errors:\n" + "\n\n".join(upstream_gpio_errors)
+        raise RuntimeError(msg)
 
-                # Collect upstream errors
-                upstream_errors: list[str] = []
+    if upstream_gpio_errors:
+        raise RuntimeError("\n\n".join(upstream_gpio_errors))
 
-                for proc in processes[:-1]:
-                    stderr_bytes = b""
-                    if proc.stderr:
-                        stderr_bytes = proc.stderr.read()
-                        proc.stderr.close()
-                    proc.wait()
-                    if proc.returncode != 0:
-                        upstream_errors.append(_format_proc_error(proc, stderr_bytes))
 
-                if last_proc.returncode != 0:
-                    upstream_errors.append(_format_proc_error(last_proc, last_stderr or b""))
+def _run_pipeline(
+    gpio_commands: list[list[str]],
+    tippecanoe_cmd: list[str],
+    verbose: bool,
+    layer_by_column: str | None = None,
+) -> None:
+    """Execute the gpio to tippecanoe pipeline.
 
-                if upstream_errors:
-                    tippecanoe_proc.wait()
-                    raise RuntimeError("\n\n".join(upstream_errors))
+    If layer_by_column is given, the gpio output is intercepted and each
+    feature is annotated with a `tippecanoe.layer` value derived from
+    that column before being forwarded to tippecanoe.
+    """
+    if verbose:
+        _log_pipeline(gpio_commands, tippecanoe_cmd, layer_by_column)
 
-                if not wrote_any:
-                    tippecanoe_proc.wait()
-                    raise RuntimeError(
-                        "gpio pipeline produced no output — check input path, "
-                        "filters, and that the column exists in the file"
-                    )
+    processes = _spawn_gpio_chain(gpio_commands, verbose)
 
-                # Wait for tippecanoe to finish
-                tippecanoe_proc.wait()
-
-                if tippecanoe_proc.returncode != 0:
-                    raise RuntimeError(
-                        f"tippecanoe failed with exit code {tippecanoe_proc.returncode}"
-                    )
-
-            except Exception:
-                # Ensure processes are cleaned up on failure
-                if tippecanoe_proc.poll() is None:
-                    tippecanoe_proc.terminate()
-                if last_proc.poll() is None:
-                    last_proc.terminate()
-                raise
+    try:
+        if layer_by_column:
+            _run_with_layer_injection(processes, tippecanoe_cmd, layer_by_column)
         else:
-            tippecanoe_proc = subprocess.Popen(
-                tippecanoe_cmd,
-                stdin=processes[-1].stdout if processes else None,
-                stdout=None if verbose else subprocess.PIPE,
-                stderr=None,
-            )  # type: ignore
-            processes.append(tippecanoe_proc)
-            if len(processes) > 1 and processes[-2].stdout:
-                processes[-2].stdout.close()
-
-            tippecanoe_proc.communicate()
-
-            # Drain stderr and wait for upstream procs FIRST. If an upstream gpio
-            # process crashed, tippecanoe almost always exits non-zero too (read
-            # truncated input), and the upstream stderr is the real diagnostic —
-            # we must not short-circuit on tippecanoe's exit code before
-            # collecting it.
-            upstream_gpio_errors: list[str] = []
-            for proc in processes[:-1]:
-                stderr_bytes = b""
-                if proc.stderr:
-                    stderr_bytes = proc.stderr.read()
-                    proc.stderr.close()
-                proc.wait()
-                if proc.returncode != 0:
-                    upstream_gpio_errors.append(_format_proc_error(proc, stderr_bytes))
-
-            if tippecanoe_proc.returncode != 0:
-                msg = f"tippecanoe failed with exit code {tippecanoe_proc.returncode}"
-                if upstream_gpio_errors:
-                    msg = f"{msg}\nUpstream errors:\n" + "\n\n".join(upstream_gpio_errors)
-                raise RuntimeError(msg)
-
-            if upstream_gpio_errors:
-                raise RuntimeError("\n\n".join(upstream_gpio_errors))
-
+            _run_simple(processes, tippecanoe_cmd, verbose)
     except KeyboardInterrupt:
         for proc in processes:
             proc.terminate()
@@ -437,6 +519,13 @@ def create_pmtiles_from_geoparquet(
     src_crs: str | None = None,
     attribution: str | None = None,
     layer_by_column: str | None = None,
+    simplify_only_low_zooms: bool = True,
+    no_simplification_of_shared_nodes: bool = True,
+    no_tile_size_limit: bool = True,
+    drop_densest_as_needed: bool = True,
+    maximum_tile_bytes: int | None = None,
+    force: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Create PMTiles using gpio streaming + tippecanoe subprocess.
@@ -462,6 +551,20 @@ def create_pmtiles_from_geoparquet(
         src_crs: Source CRS for reprojection to WGS84
         attribution: Attribution HTML for the tiles
         layer_by_column: Split tiles into layers grouped by values of this column
+        simplify_only_low_zooms: Pass --simplify-only-low-zooms (default: True)
+        no_simplification_of_shared_nodes: Pass --no-simplification-of-shared-nodes (default: True)
+        no_tile_size_limit: Pass --no-tile-size-limit, removing the tile size
+            cap (default: True). Set False to respect tippecanoe's size limit so
+            that drop_densest_as_needed actually drops features on dense data.
+        drop_densest_as_needed: Pass --drop-densest-as-needed (default: True).
+            Only drops features to bring a tile back under the size limit, so it
+            has no effect while no_tile_size_limit is True.
+        maximum_tile_bytes: Set an explicit per-tile byte cap via
+            --maximum-tile-bytes. Takes precedence over no_tile_size_limit.
+        force: Pass --force to overwrite the output file if it already exists.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            Prevents tippecanoe TopologyExceptions on self-intersecting polygons.
+            Set False to pass geometry through unrepaired.
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -497,6 +600,7 @@ def create_pmtiles_from_geoparquet(
         verbose,
         profile,
         src_crs,
+        repair_geometry=repair_geometry,
     )
     tippecanoe_cmd = _build_tippecanoe_command(
         output_path,
@@ -506,6 +610,12 @@ def create_pmtiles_from_geoparquet(
         verbose,
         attribution,
         layer_by_column,
+        simplify_only_low_zooms=simplify_only_low_zooms,
+        no_simplification_of_shared_nodes=no_simplification_of_shared_nodes,
+        no_tile_size_limit=no_tile_size_limit,
+        drop_densest_as_needed=drop_densest_as_needed,
+        maximum_tile_bytes=maximum_tile_bytes,
+        force=force,
     )
 
     _run_pipeline(gpio_commands, tippecanoe_cmd, verbose, layer_by_column)

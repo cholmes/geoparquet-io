@@ -371,24 +371,27 @@ class TestHilbertDetectionAndWarnings:
         assert result["fix_available"] is False
 
     def test_spatial_check_fails_for_non_hilbert_files(self, places_test_file, temp_output_dir):
-        """Test that files without proper row grouping get spatial warnings."""
+        """Test that randomly shuffled data gets spatial warnings."""
+        import random
+
         import pyarrow.parquet as pq
 
         from geoparquet_io.core.check_spatial_order import check_spatial_order_bbox_stats
 
-        # Use places_test_file which has ~1000 rows (enough for multiple row groups)
         output_file = os.path.join(temp_output_dir, "non_hilbert.parquet")
 
-        # Write with very small row groups (not Hilbert pattern, and will cause high overlap)
+        # Shuffle rows to destroy spatial order before writing with small row groups
         table = pq.read_table(places_test_file)
+        indices = list(range(table.num_rows))
+        random.seed(42)
+        random.shuffle(indices)
+        table = table.take(indices)
         pq.write_table(table, output_file, compression="ZSTD", row_group_size=50)
 
         result = check_spatial_order_bbox_stats(
             output_file, verbose=False, return_results=True, quiet=True
         )
 
-        # Should fail (small row groups with high overlap, not Hilbert pattern)
-        # (places data has high spatial mixing so small row groups will have high overlap)
         assert result["passed"] is False
         assert result["fix_available"] is True
 

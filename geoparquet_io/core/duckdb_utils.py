@@ -113,6 +113,7 @@ def build_spatial_join_condition(
     target_bbox_col: str | None = None,
     input_alias: str = "a",
     target_alias: str = "b",
+    input_geom_sql: str | None = None,
 ) -> str:
     """Build the ON-clause condition for a spatial join between two tables.
 
@@ -138,17 +139,25 @@ def build_spatial_join_condition(
         target_bbox_col: Optional bbox covering column on the target table.
         input_alias: SQL alias for the input table (default "a").
         target_alias: SQL alias for the target table (default "b").
+        input_geom_sql: Optional SQL expression to use for the input geometry in
+            place of ``<input_alias>.<input_geom_col>`` — e.g. an ``ST_Transform``
+            that reprojects a non-CRS84 input to the target's CRS (issue #525).
+            When supplied, the bbox pre-filter is skipped: the input's stored bbox
+            covering is in the *source* CRS and cannot be compared against a
+            target bbox in a different CRS.
 
     Returns:
         A SQL boolean expression for use directly after ``ON``.
     """
     qi_geom = quote_identifier(input_geom_col)
     qt_geom = quote_identifier(target_geom_col)
-    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
+    input_geom_ref = input_geom_sql if input_geom_sql is not None else f"{input_alias}.{qi_geom}"
+    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_geom_ref})"
 
-    # A one-sided bbox cannot form an overlap test, so fall back to the
-    # precise predicate alone.
-    if not (input_bbox_col and target_bbox_col):
+    # A one-sided bbox cannot form an overlap test, and a reprojected input geom
+    # makes the stored (source-CRS) bbox incomparable — fall back to the precise
+    # predicate alone.
+    if input_geom_sql is not None or not (input_bbox_col and target_bbox_col):
         return intersects
 
     qi_bbox = quote_identifier(input_bbox_col)
@@ -280,6 +289,32 @@ def get_duckdb_connection(
         con.execute(f"SET s3_region='{safe_region}';")
 
     return con
+
+
+def load_community_extension(con, name: str) -> None:
+    """INSTALL and LOAD a DuckDB community extension with a clear error message.
+
+    Community extensions (e.g. ``geography`` for S2 support) are built per
+    DuckDB release. When a newer DuckDB version ships before the extension has
+    been rebuilt for it, ``INSTALL ... FROM community`` fails with an opaque
+    HTTP 404. Translate that into an actionable :class:`ExtensionUnavailableError`
+    so users understand the extension simply isn't published for their DuckDB
+    version yet.
+
+    Args:
+        con: An open DuckDB connection.
+        name: Community extension name (e.g. "geography", "h3").
+
+    Raises:
+        ExtensionUnavailableError: If the extension cannot be installed or loaded.
+    """
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    try:
+        con.execute(f"INSTALL {name} FROM community;")
+        con.execute(f"LOAD {name};")
+    except duckdb.Error as e:
+        raise ExtensionUnavailableError(name, duckdb.__version__, str(e)) from e
 
 
 def get_duckdb_connection_for_s3(

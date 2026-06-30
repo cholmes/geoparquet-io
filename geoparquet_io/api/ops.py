@@ -181,6 +181,7 @@ def extract(
     where: str | None = None,
     limit: int | None = None,
     geometry_column: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Extract columns and rows with optional filtering.
@@ -193,6 +194,7 @@ def extract(
         where: SQL WHERE clause
         limit: Maximum rows to return
         geometry_column: Geometry column name (auto-detected if None)
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
     Returns:
         Filtered table
@@ -205,6 +207,7 @@ def extract(
         where=where,
         limit=limit,
         geometry_column=geometry_column,
+        repair_geometry=repair_geometry,
     )
 
 
@@ -531,6 +534,7 @@ def read_bigquery(
     geography_column: str | None = None,
     geometry_format: str = "wkt",
     edges: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Read data from a BigQuery table.
@@ -621,6 +625,7 @@ def read_bigquery(
         geometry_format=geometry_format,
         edges=edges,
         verbose=False,
+        repair_geometry=repair_geometry,
     )
 
     if arrow_table is None:
@@ -636,6 +641,7 @@ def convert_to_geojson(
     precision: int = 7,
     write_bbox: bool = False,
     id_field: str | None = None,
+    repair_geometry: bool = True,
 ) -> str | None:
     """
     Convert a GeoParquet table to GeoJSON.
@@ -683,6 +689,7 @@ def convert_to_geojson(
             precision=precision,
             write_bbox=write_bbox,
             id_field=id_field,
+            repair_geometry=repair_geometry,
         )
 
         return output_path
@@ -921,6 +928,10 @@ def from_arcgis(
     exclude_cols: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
+    repair_geometry: bool = True,
+    timeout: float = 60.0,
 ) -> pa.Table:
     """
     Fetch ArcGIS Feature Service as a PyArrow Table.
@@ -937,6 +948,12 @@ def from_arcgis(
         exclude_cols: Comma-separated column names to exclude (client-side)
         limit: Maximum number of features to return
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS. 'native' uses the layer's advertised SR,
+            or pass an EPSG code (e.g. EPSG:25830). Default None reprojects to WGS84.
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            output-CRS units (degrees on the default WGS84 path).
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that are slow to serialize.
 
     Returns:
         PyArrow Table with WKB geometry column
@@ -965,7 +982,11 @@ def from_arcgis(
         exclude_cols=exclude_cols,
         limit=limit,
         max_workers=max_workers,
+        output_crs=output_crs,
+        max_allowable_offset=max_allowable_offset,
         verbose=False,
+        repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
 
@@ -976,10 +997,11 @@ def from_wfs(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     auto_tile: bool = False,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -995,11 +1017,13 @@ def from_wfs(
         bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
             CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
-        strict_crs: If True, fail when server returns coordinates that don't match
-            requested CRS. If False (default), warn and use detected CRS.
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False (default), warn and use the server's actual CRS.
+            The CRS the server declares in its GeoJSON response is authoritative;
+            gpio never guesses from coordinates when the server states it (#499).
         auto_tile: Automatically subdivide into spatial tiles for servers with
             startIndex limits (default: False)
 
@@ -1025,7 +1049,90 @@ def from_wfs(
         axis_order=axis_order,
         strict_crs=strict_crs,
         auto_tile=auto_tile,
+        repair_geometry=repair_geometry,
     )
+
+
+def from_wfs_layers(
+    service_url: str,
+    typenames: list[str],
+    output_dir: str,
+    version: str = "auto",
+    bbox: tuple[float, float, float, float] | None = None,
+    limit: int | None = None,
+    max_workers: int = 1,
+    page_size: int = 100000,
+    parallel_layers: int = 1,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
+    auto_tile: bool = False,
+    skip_hilbert: bool = False,
+    skip_bbox: bool = False,
+    compression: str = "ZSTD",
+    overwrite: bool = False,
+    repair_geometry: bool = True,
+) -> dict[str, str]:
+    """
+    Extract multiple WFS layers in parallel to a directory.
+
+    Each layer is saved as a separate GeoParquet file named after the typename.
+
+    Args:
+        service_url: WFS service URL
+        typenames: List of layer typenames to extract
+        output_dir: Directory to write output files
+        version: WFS version ('auto', '2.0.0', '1.1.0', '1.0.0'). Default 'auto'
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) applied to all layers
+        limit: Maximum features per layer
+        max_workers: Per-layer pagination workers (default: 1)
+        page_size: Features per page (default: 100000)
+        parallel_layers: Number of layers to extract concurrently (default: 1)
+        axis_order: Bbox axis order ('auto', 'xy', 'latlon')
+        strict_crs: If True, fail when the server returns a different CRS than requested
+        auto_tile: Automatically subdivide into spatial tiles for servers with
+            startIndex limits (default: False)
+        skip_hilbert: Skip Hilbert curve sorting (default: False)
+        skip_bbox: Skip adding bbox column (default: False)
+        compression: Compression algorithm (default: 'ZSTD')
+        overwrite: Overwrite existing files (default: False)
+
+    Returns:
+        Dict mapping typename to output file path (only successful extractions)
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> results = ops.from_wfs_layers(
+        ...     'https://geo.example.com/wfs',
+        ...     ['roads', 'buildings', 'parcels'],
+        ...     './output/',
+        ...     parallel_layers=3,
+        ...     max_workers=2
+        ... )
+        >>> print(results)  # {'roads': './output/roads.parquet', ...}
+    """
+    from geoparquet_io.core.wfs import convert_wfs_layers_to_directory
+
+    results = convert_wfs_layers_to_directory(
+        service_url=service_url,
+        typenames=typenames,
+        output_dir=output_dir,
+        parallel_layers=parallel_layers,
+        max_workers=max_workers,
+        page_size=page_size,
+        version=version,
+        bbox=bbox,
+        limit=limit,
+        axis_order=axis_order,
+        strict_crs=strict_crs,
+        skip_hilbert=skip_hilbert,
+        skip_bbox=skip_bbox,
+        compression=compression,
+        overwrite=overwrite,
+        auto_tile=auto_tile,
+        repair_geometry=repair_geometry,
+    )
+    # Convert Path to str for simpler API
+    return {k: str(v) for k, v in results.items()}
 
 
 def from_carto(
@@ -1038,27 +1145,38 @@ def from_carto(
     exclude_cols: str | None = None,
     api_key: str | None = None,
     timeout: float = 120.0,
+    repair_geometry: bool = True,
+    geometry: bool | None = None,
 ) -> pa.Table:
     """
     Fetch Carto SQL API table as PyArrow Table.
 
-    Uses DuckDB's ST_Read for efficient GeoJSON parsing from Carto's SQL API.
-    Filters are pushed to the server for optimal performance.
+    Geometry tables are parsed via DuckDB's ST_Read (GeoJSON) and carry
+    GeoParquet metadata. Geometry-less (tabular) tables are fetched as CSV and
+    returned as a plain table with no ``geo`` metadata. Filters are pushed to
+    the server for optimal performance.
 
     Args:
         url: Carto SQL API URL (e.g., 'https://phl.carto.com/api/v2/sql')
             or base domain (e.g., 'https://phl.carto.com')
         table_name: Name of the table to query
         where: SQL WHERE clause for filtering
-        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84
+        bbox: Optional bounding box filter (xmin, ymin, xmax, ymax) in WGS84.
+            Ignored for geometry-less tables.
         limit: Maximum rows to fetch
         include_cols: Comma-separated columns to include
         exclude_cols: Comma-separated columns to exclude
         api_key: API key for authenticated requests (or set CARTO_API_KEY env var)
         timeout: Request timeout in seconds (default: 120)
+        repair_geometry: Repair invalid geometry with ST_MakeValid (geometry
+            tables only; default: True)
+        geometry: Extraction mode. ``None`` (default) auto-detects from the
+            table schema; ``True`` forces geometry extraction; ``False`` forces
+            plain/tabular extraction (no ``geo`` metadata).
 
     Returns:
-        PyArrow Table with geometry column named 'geometry'
+        PyArrow Table. For geometry tables, a 'geometry' column with GeoParquet
+        metadata; for tabular tables, a plain table with no ``geo`` metadata.
 
     Note:
         The Carto geometry column 'the_geom' is renamed to 'geometry'
@@ -1094,6 +1212,8 @@ def from_carto(
         exclude_cols=exclude_cols,
         api_key=api_key,
         timeout=timeout,
+        repair_geometry=repair_geometry,
+        geometry=geometry,
     )
 
 
@@ -1229,6 +1349,13 @@ def create_pmtiles(
     src_crs: str | None = None,
     attribution: str | None = None,
     layer_by_column: str | None = None,
+    simplify_only_low_zooms: bool = True,
+    no_simplification_of_shared_nodes: bool = True,
+    no_tile_size_limit: bool = True,
+    drop_densest_as_needed: bool = True,
+    maximum_tile_bytes: int | None = None,
+    force: bool = False,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Create PMTiles from a GeoParquet file using tippecanoe.
@@ -1251,6 +1378,16 @@ def create_pmtiles(
         src_crs: Source CRS for reprojection to WGS84
         attribution: Attribution HTML for the tiles
         layer_by_column: Split tiles into layers grouped by the values of this column
+        simplify_only_low_zooms: Pass --simplify-only-low-zooms (default: True)
+        no_simplification_of_shared_nodes: Pass --no-simplification-of-shared-nodes (default: True)
+        no_tile_size_limit: Pass --no-tile-size-limit, removing the tile size
+            cap (default: True). Set False to respect tippecanoe's size limit so
+            that drop_densest_as_needed actually drops features on dense data.
+        drop_densest_as_needed: Pass --drop-densest-as-needed (default: True).
+            Only takes effect when there is a tile size limit to drop against.
+        maximum_tile_bytes: Set an explicit per-tile byte cap via
+            --maximum-tile-bytes. Takes precedence over no_tile_size_limit.
+        force: Pass --force to overwrite the output file if it already exists.
 
     Raises:
         TippecanoeNotFoundError: If tippecanoe is not in PATH
@@ -1286,4 +1423,11 @@ def create_pmtiles(
         src_crs=src_crs,
         attribution=attribution,
         layer_by_column=layer_by_column,
+        simplify_only_low_zooms=simplify_only_low_zooms,
+        no_simplification_of_shared_nodes=no_simplification_of_shared_nodes,
+        no_tile_size_limit=no_tile_size_limit,
+        drop_densest_as_needed=drop_densest_as_needed,
+        maximum_tile_bytes=maximum_tile_bytes,
+        force=force,
+        repair_geometry=repair_geometry,
     )

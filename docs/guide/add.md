@@ -2,6 +2,15 @@
 
 The `add` commands enhance GeoParquet files with spatial indices, geometry metrics, and administrative metadata.
 
+!!! note "Coordinate Reference Systems"
+    The grid-index commands (`h3`, `s2`, `a5`, `quadkey`) and `admin-divisions` are
+    **CRS-aware**. If your input declares a projected CRS (e.g. EPSG:5070 or
+    EPSG:28992), the geometry centroid is reprojected to OGC:CRS84 (lon/lat
+    degrees) before the cell is computed, and the input is reprojected to the
+    admin boundaries' CRS before the spatial join — so you no longer need to run
+    `gpio convert reproject` first. Inputs without a declared CRS are treated as
+    OGC:CRS84 per the GeoParquet spec.
+
 ## Bounding Boxes
 
 Add precomputed bounding boxes for faster spatial queries:
@@ -193,6 +202,14 @@ s2_cell_token(
 
 Cell IDs are stored as hex strings (e.g., `"89c25901"`) rather than integers for
 maximum portability across systems.
+
+!!! note "DuckDB version and the geography extension"
+    The `geography` extension is a [DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html)
+    that is built per DuckDB release. If you install a DuckDB version for which it
+    has not been published yet, `gpio add s2` (and `gpio partition s2`) fail with a
+    clear message telling you the extension is unavailable for that version. All other
+    `gpio` commands continue to work; either wait for the extension to be rebuilt or
+    install a DuckDB version that provides it.
 
 ## A5 Cells
 

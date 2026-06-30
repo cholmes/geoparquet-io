@@ -214,6 +214,107 @@ def _wrap_query_with_crs(
     """
 
 
+#: Default target CRS for lon/lat operations (grid keying, admin joins). The
+#: GeoParquet default; lon/lat axis order is guaranteed by the session-level
+#: ``geometry_always_xy = true`` that ``get_duckdb_connection`` sets.
+WGS84_TRANSFORM_TARGET = "OGC:CRS84"
+
+
+def resolve_crs_to_string(crs_info) -> str | None:
+    """Resolve CRS info (PROJJSON dict or string) to a CRS string for ST_Transform.
+
+    Tries the authority identifier first, then pyproj resolution, then the raw
+    PROJJSON. Returns None if ``crs_info`` is falsy or unresolvable.
+    """
+    if not crs_info:
+        return None
+
+    identifier = _extract_crs_identifier(crs_info)
+    if identifier:
+        authority, code = identifier
+        return f"{authority}:{code}"
+
+    if isinstance(crs_info, dict):
+        try:
+            from pyproj import CRS
+
+            authority = CRS.from_json_dict(crs_info).to_authority()
+            if authority:
+                return f"{authority[0]}:{authority[1]}"
+        except Exception:
+            pass
+        return json.dumps(crs_info)
+
+    return None
+
+
+def crs_transform_sql_expr(
+    geom_sql: str,
+    source_crs,
+    target_crs: str = WGS84_TRANSFORM_TARGET,
+) -> str:
+    """Return a SQL expression yielding ``geom_sql`` in ``target_crs``.
+
+    Wraps ``geom_sql`` in ``ST_Transform(..., '<src>', '<target>')`` only when
+    the source CRS is known and differs from the target; otherwise returns
+    ``geom_sql`` unchanged. This is the single source of truth for making the
+    CRS-blind spatial operations (grid keying, admin joins) CRS-aware.
+
+    The rules mirror the GeoParquet/DuckDB contract:
+
+    - A missing/``None`` or default (OGC:CRS84 / EPSG:4326) source is treated as
+      already being the target — no transform. A CRS-less geometry (e.g. from an
+      in-memory Arrow table via ``ST_GeomFromWKB``) is therefore accepted as-is,
+      and ``ST_Intersects`` accepts a CRS-less geometry against a CRS-bearing one.
+    - An unresolvable source CRS is left untransformed rather than guessed.
+
+    Relies on the session-level ``geometry_always_xy = true`` so the transformed
+    coordinates come out as lon/lat (x/y) for the ``*_lonlat_to_cell`` keying.
+
+    Args:
+        geom_sql: A SQL geometry expression (e.g. a quoted column name or
+            ``ST_Centroid("geometry")``).
+        source_crs: The source CRS as a PROJJSON dict, an ``AUTH:CODE`` string,
+            or ``None``.
+        target_crs: The target CRS string (default OGC:CRS84).
+    """
+    if not source_crs or is_default_crs(source_crs):
+        return geom_sql
+
+    src = resolve_crs_to_string(source_crs)
+    if not src:
+        return geom_sql
+
+    src_literal = _escape_sql_string(src)
+    target_literal = _escape_sql_string(target_crs)
+    return f"ST_Transform({geom_sql}, '{src_literal}', '{target_literal}')"
+
+
+def extract_crs_from_table(table, geometry_column: str | None = None):
+    """Return the CRS of ``geometry_column`` from a pyarrow table's geo metadata.
+
+    Returns the CRS value (PROJJSON dict or string) when present and non-default,
+    else ``None``. ``geometry_column`` defaults to the geo metadata's declared
+    primary column. Used by the table-centric (Python API) operations to detect
+    a projected input before grid keying.
+    """
+    metadata = table.schema.metadata
+    if not metadata or b"geo" not in metadata:
+        return None
+    try:
+        geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    columns = geo_meta.get("columns", {})
+    if not isinstance(columns, dict):
+        return None
+    col = geometry_column or geo_meta.get("primary_column", "geometry")
+    crs = columns.get(col, {}).get("crs")
+    if crs and not is_default_crs(crs):
+        return crs
+    return None
+
+
 def extract_crs_from_parquet(parquet_file, verbose=False):
     """
     Extract CRS (as PROJJSON dict) from a Parquet file.

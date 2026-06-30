@@ -631,23 +631,30 @@ def get_preview_data(
 
         # Also detect geometry columns from GeoParquet metadata
         geo_meta = get_geo_metadata(parquet_file)
+        columns_meta = {}
         if geo_meta:
             columns_meta = geo_meta.get("columns", {})
             geo_columns.update(columns_meta.keys())
 
-        # Get all column names from the parquet file
+        # Get all column names and DuckDB types from the parquet file
         schema_result = con.execute(
-            f"SELECT column_name FROM (DESCRIBE SELECT * FROM read_parquet('{safe_url}'))"
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('{safe_url}'))"
         ).fetchall()
         all_columns = [row[0] for row in schema_result]
+        col_types = {row[0]: row[1] for row in schema_result}
 
-        # Build column list, converting geometry columns to WKT
+        # Native GeoArrow geometry is exposed by DuckDB as a raw STRUCT/LIST, which
+        # ST_AsText cannot consume. Select those columns raw and convert them to WKT
+        # via geoarrow after the query. Serialized (WKB/GEOMETRY) columns keep ST_AsText.
+        native_geo_columns = {c for c in geo_columns if "STRUCT" in col_types.get(c, "").upper()}
+
+        # Build column list, converting serialized geometry columns to WKT in SQL
         column_expressions = []
         for col in all_columns:
             # Escape double quotes in column names for SQL identifiers
             escaped_col = col.replace('"', '""')
-            if col in geo_columns:
-                # Convert geometry to WKT for display
+            if col in geo_columns and col not in native_geo_columns:
+                # Convert serialized geometry to WKT for display
                 column_expressions.append(f'ST_AsText("{escaped_col}") AS "{escaped_col}"')
             else:
                 column_expressions.append(f'"{escaped_col}"')
@@ -672,10 +679,61 @@ def get_preview_data(
 
         # Execute query and convert to PyArrow table
         table = con.execute(query).arrow().read_all()
+
+        # Convert any native GeoArrow geometry columns to WKT strings for display.
+        if native_geo_columns:
+            table = _native_geoarrow_columns_to_wkt(table, native_geo_columns, columns_meta)
     finally:
         con.close()
 
     return table, mode
+
+
+def _native_geoarrow_columns_to_wkt(
+    table: pa.Table, native_columns: set[str], columns_meta: dict
+) -> pa.Table:
+    """Replace native GeoArrow geometry columns with WKT strings for display.
+
+    DuckDB returns native GeoArrow geometry as a raw STRUCT/LIST without the
+    geoarrow extension type. Re-wrap each column with the geoarrow type implied
+    by its GeoParquet ``encoding`` and render it to WKT. Columns that cannot be
+    converted (e.g. unexpected encoding or dimensionality) are left untouched.
+    """
+    import geoarrow.pyarrow as ga
+    import pyarrow as pa
+
+    from geoparquet_io.core.logging_config import debug
+
+    def _nullable_type(t):
+        """Rebuild an Arrow type with all nested fields/elements nullable.
+
+        DuckDB returns native geometry as large_list with nullable subfields, while
+        a geoarrow type's storage uses (non-nullable) list. Casting to a nullable
+        variant bridges both the large_list->list and nullability differences so
+        rows with NULL geometry survive the cast.
+        """
+        if pa.types.is_struct(t):
+            return pa.struct([pa.field(f.name, _nullable_type(f.type), nullable=True) for f in t])
+        if pa.types.is_list(t) or pa.types.is_large_list(t):
+            return pa.list_(pa.field(t.value_field.name, _nullable_type(t.value_type)))
+        return t
+
+    for col in native_columns:
+        encoding = (columns_meta.get(col) or {}).get("encoding", "")
+        if not encoding or encoding.lower() == "wkb":
+            continue
+        try:
+            ga_type = getattr(ga, encoding.lower())()
+            arr = table.column(col).combine_chunks()
+            wrapped = ga_type.wrap_array(arr.cast(_nullable_type(ga_type.storage_type)))
+            wkt = ga.as_wkt(wrapped)
+            storage = wkt.storage if hasattr(wkt, "storage") else wkt
+            idx = table.schema.get_field_index(col)
+            table = table.set_column(idx, col, storage)
+        except Exception as e:
+            debug(f"Could not render native GeoArrow column '{col}' as WKT: {e}")
+            continue
+    return table
 
 
 def get_column_statistics(
@@ -816,14 +874,67 @@ def _create_columns_table(columns_info: list[dict[str, Any]]) -> Table:
     return table
 
 
+# Preview table fit-to-width tuning. Approximate rich box geometry: each column
+# costs its content width plus padding (2) and a separator (1); plus one outer border.
+_PREVIEW_MIN_COL_WIDTH = 12
+_PREVIEW_COL_OVERHEAD = 3
+_PREVIEW_BORDER_WIDTH = 1
+
+
+def _columns_that_fit(num_columns: int, console_width: int, max_columns: int | None = None) -> int:
+    """Return how many columns to show in a preview at the given terminal width.
+
+    With max_columns set, returns that count clamped to [1, num_columns]. Otherwise
+    computes how many columns fit console_width at a readable minimum width, always
+    at least 1 and never more than num_columns.
+    """
+    if num_columns <= 0:
+        return 0
+    if max_columns is not None:
+        return max(1, min(max_columns, num_columns))
+    available = max(0, console_width - _PREVIEW_BORDER_WIDTH)
+    per_col = _PREVIEW_MIN_COL_WIDTH + _PREVIEW_COL_OVERHEAD
+    fit = available // per_col
+    return max(1, min(fit, num_columns))
+
+
 def _create_preview_table(
     preview_table: pa.Table,
     columns_info: list[dict[str, Any]],
-) -> Table:
-    """Create the preview data table."""
+    *,
+    console: Console | None = None,
+    max_columns: int | None = None,
+    no_truncate: bool = False,
+) -> tuple[Table, int]:
+    """Create the preview data table.
+
+    Returns (table, hidden_column_count). In the default mode only the columns that
+    fit the console width (or max_columns) are shown, with one-line ellipsis cells;
+    remaining columns are reported via hidden_column_count. With no_truncate=True every
+    column is shown with full, wrapped values.
+
+    Fit-to-width only applies to a real terminal: when output is redirected or piped
+    (console.is_terminal is False) and max_columns was not explicitly requested, every
+    column is shown so scripts and pipes keep seeing all columns as they did before.
+    """
+    non_tty = console is not None and not console.is_terminal
+    full_columns = no_truncate or (non_tty and max_columns is None)
+    if full_columns:
+        visible = columns_info
+        hidden_count = 0
+        overflow = "fold"
+        no_wrap = False
+    else:
+        width = console.width if console is not None else 80
+        visible_count = _columns_that_fit(len(columns_info), width, max_columns)
+        visible = columns_info[:visible_count]
+        hidden_count = len(columns_info) - visible_count
+        overflow = "ellipsis"
+        no_wrap = True
+
     preview = Table(show_header=True, header_style="bold")
-    for col in columns_info:
-        preview.add_column(col["name"], style="white", overflow="fold")
+    for col in visible:
+        preview.add_column(col["name"], style="white", overflow=overflow, no_wrap=no_wrap)
 
     for i in range(preview_table.num_rows):
         row_data = [
@@ -832,11 +943,11 @@ def _create_preview_table(
                 col["type"],
                 col["is_geometry"],
             )
-            for col in columns_info
+            for col in visible
         ]
         preview.add_row(*row_data)
 
-    return preview
+    return preview, hidden_count
 
 
 def _truncate_stat_value(value: Any) -> str:
@@ -903,6 +1014,8 @@ def format_terminal_output(
     preview_mode: str | None = None,
     stats: dict[str, dict[str, Any]] | None = None,
     compression_stats: list[dict] | None = None,
+    max_columns: int | None = None,
+    no_truncate: bool = False,
 ) -> None:
     """
     Format and print terminal output using Rich.
@@ -953,7 +1066,18 @@ def format_terminal_output(
         console.print()
         label = "first" if preview_mode == "head" else "last"
         console.print(f"Preview ({label} {preview_table.num_rows} rows):")
-        console.print(_create_preview_table(preview_table, columns_info))
+        preview, hidden = _create_preview_table(
+            preview_table,
+            columns_info,
+            console=console,
+            max_columns=max_columns,
+            no_truncate=no_truncate,
+        )
+        console.print(preview)
+        if hidden > 0:
+            console.print(
+                f"[dim]… +{hidden} more columns (--no-truncate or --json to see all)[/dim]"
+            )
 
     # Statistics table
     if stats:

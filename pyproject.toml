@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geoparquet-io"
-version = "1.2.0"
+version = "1.3.0"
 description = "Fast I/O and transformation tools for GeoParquet files"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ dependencies = [
     "click>=8.0.0",
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
     "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
-    "duckdb>=1.5.0",
+    "duckdb>=1.5.0",  # S2 needs the 'geography' community extension; gpio errors clearly if it is unpublished for the installed DuckDB version
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
     "rich>=13.0.0",
@@ -49,6 +49,7 @@ dependencies = [
     "lxml>=6.1.0",  # CVE-2026-41066 fix
     "idna>=3.15",  # CVE-2026-45409 fix
     "urllib3>=2.7.0",  # PYSEC-2026-141, PYSEC-2026-142 fix
+    "msgpack>=1.2.1",  # GHSA-6v7p-g79w-8964 fix (transitive via CacheControl)
 ]
 
 [project.scripts]
@@ -95,6 +96,11 @@ benchmark = [
     "pyogrio>=0.7.0",
     "fiona>=1.9.0",
 ]
+
+[tool.uv]
+# Keep transitive msgpack (pulled via pip-audit -> cachecontrol) above the
+# GHSA-6v7p-g79w-8964 fix so `uv lock --upgrade` cannot reintroduce it.
+constraint-dependencies = ["msgpack>=1.2.1"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -236,9 +242,9 @@ module = [
 ignore_errors = true
 
 [tool.mutmut]
-paths_to_mutate = "geoparquet_io/"
-tests_dir = "tests/"
+source_paths = ["geoparquet_io/"]
 runner = "python -m pytest -x -q --tb=no"
+pytest_add_cli_args_test_selection = ["tests/"]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "docs"]
@@ -259,7 +265,7 @@ skips = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "1.2.0"
+version = "1.3.0"
 version_files = ["pyproject.toml:^version"]
 tag_format = "v$version"
 update_changelog_on_bump = true

@@ -278,6 +278,123 @@ class TestBuildTippecanoeCommand:
         assert "--no-tile-size-limit" in cmd
         assert "--drop-densest-as-needed" in cmd
 
+    def test_simplify_only_low_zooms_toggle_off(self):
+        """--simplify-only-low-zooms is omitted when disabled."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            simplify_only_low_zooms=False,
+        )
+
+        assert "--simplify-only-low-zooms" not in cmd
+
+    def test_no_simplification_of_shared_nodes_toggle_off(self):
+        """--no-simplification-of-shared-nodes is omitted when disabled."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            no_simplification_of_shared_nodes=False,
+        )
+
+        assert "--no-simplification-of-shared-nodes" not in cmd
+
+    def test_tile_size_limit_toggle_off(self):
+        """--no-tile-size-limit is omitted when the size limit is re-enabled."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            no_tile_size_limit=False,
+        )
+
+        assert "--no-tile-size-limit" not in cmd
+
+    def test_drop_densest_toggle_off(self):
+        """--drop-densest-as-needed is omitted when disabled."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            drop_densest_as_needed=False,
+        )
+
+        assert "--drop-densest-as-needed" not in cmd
+
+    def test_maximum_tile_bytes_sets_cap_and_suppresses_no_limit(self):
+        """--maximum-tile-bytes takes precedence over --no-tile-size-limit.
+
+        The two are contradictory: passing an explicit cap while also
+        disabling the limit would defeat the cap. The byte cap wins so
+        that --drop-densest-as-needed has a limit to drop features against.
+        """
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            maximum_tile_bytes=500000,
+        )
+
+        assert "--maximum-tile-bytes=500000" in cmd
+        assert "--no-tile-size-limit" not in cmd
+
+    def test_force_omitted_by_default(self):
+        """--force is not passed unless requested."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+        )
+
+        assert "--force" not in cmd
+
+    def test_force_passed_when_enabled(self):
+        """--force is passed to tippecanoe when force=True."""
+        from geoparquet_io.core.pmtiles import _build_tippecanoe_command
+
+        cmd = _build_tippecanoe_command(
+            output_path="output.pmtiles",
+            layer="test_layer",
+            min_zoom=None,
+            max_zoom=None,
+            verbose=False,
+            attribution=None,
+            force=True,
+        )
+
+        assert "--force" in cmd
+
     def test_max_zoom_only(self):
         """Test that -z is used for max zoom without min zoom."""
         from geoparquet_io.core.pmtiles import _build_tippecanoe_command
@@ -495,6 +612,72 @@ class TestPMTilesIntegration:
                 layer_by_column="address",
                 layer="DUMMY",
             )
+
+
+class TestPMTilesCreateCLIFlags:
+    """The pmtiles create CLI exposes the tippecanoe production flags."""
+
+    def _invoke(self, args):
+        from unittest.mock import patch
+
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        with patch("geoparquet_io.core.pmtiles.create_pmtiles_from_geoparquet") as mock_create:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["pmtiles", "create", "in.parquet", "out.pmtiles", *args],
+            )
+            return result, mock_create
+
+    def test_defaults_thread_through(self):
+        result, mock_create = self._invoke([])
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["simplify_only_low_zooms"] is True
+        assert kwargs["no_simplification_of_shared_nodes"] is True
+        assert kwargs["no_tile_size_limit"] is True
+        assert kwargs["drop_densest_as_needed"] is True
+        assert kwargs["maximum_tile_bytes"] is None
+        assert kwargs["force"] is False
+
+    def test_toggles_off_thread_through(self):
+        result, mock_create = self._invoke(
+            [
+                "--no-simplify-only-low-zooms",
+                "--simplification-of-shared-nodes",
+                "--tile-size-limit",
+                "--no-drop-densest-as-needed",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["simplify_only_low_zooms"] is False
+        assert kwargs["no_simplification_of_shared_nodes"] is False
+        assert kwargs["no_tile_size_limit"] is False
+        assert kwargs["drop_densest_as_needed"] is False
+
+    def test_maximum_tile_bytes_thread_through(self):
+        result, mock_create = self._invoke(["--maximum-tile-bytes", "500000"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_create.call_args.kwargs["maximum_tile_bytes"] == 500000
+
+    def test_force_thread_through(self):
+        result, mock_create = self._invoke(["--force"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_create.call_args.kwargs["force"] is True
+
+    def test_force_short_flag_thread_through(self):
+        result, mock_create = self._invoke(["-f"])
+
+        assert result.exit_code == 0, result.output
+        assert mock_create.call_args.kwargs["force"] is True
 
 
 class TestRunPipelineErrorSurfacing:

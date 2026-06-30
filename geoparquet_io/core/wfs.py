@@ -28,6 +28,9 @@ import pyarrow as pa
 
 # Public API
 __all__ = [
+    "EmptyLayerError",
+    "LayerNotFoundError",
+    "WFSAuthenticationError",
     "WFSError",
     "WFSLayerInfo",
     "WFS_VERSIONS",
@@ -39,9 +42,14 @@ __all__ = [
     "wfs_to_table",
 ]
 
-from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.common import (
+    _cast_table_to_schema,
+    _compute_unified_schema,
+    write_geoparquet_table,
+)
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
 )
@@ -68,6 +76,40 @@ class WFSError(Exception):
     pass
 
 
+class EmptyLayerError(WFSError):
+    """Raised when a WFS layer has 0 features."""
+
+    def __init__(self, typename: str) -> None:
+        self.typename = typename
+        super().__init__(
+            f"No features returned from WFS service for layer '{typename}'.\n"
+            "Check that the layer exists and is not empty."
+        )
+
+
+class LayerNotFoundError(WFSError):
+    """Raised when a WFS layer does not exist in the service."""
+
+    def __init__(self, typename: str, available: list[str] | None = None) -> None:
+        self.typename = typename
+        self.available = available or []
+        hint = (
+            f"\nAvailable layers (first 10): {', '.join(self.available[:10])}"
+            if self.available
+            else ""
+        )
+        super().__init__(f"Layer '{typename}' not found in WFS service.{hint}")
+
+
+class WFSAuthenticationError(WFSError):
+    """Raised when WFS service requires authentication or access is denied."""
+
+    def __init__(self, url: str, status_code: int, message: str) -> None:
+        self.url = url
+        self.status_code = status_code
+        super().__init__(message)
+
+
 # GeoJSON output format identifiers (in preference order)
 GEOJSON_FORMATS = [
     "application/json",
@@ -88,6 +130,13 @@ GML_FORMATS = [
     "text/xml; subtype=gml/2.1.2",
 ]
 
+# Schema-metadata key under which the CRS declared by the server in its GeoJSON
+# response (the FeatureCollection ``crs`` member) is carried up from the fetch
+# layer to wfs_to_table. This is the authoritative statement of which CRS the
+# server actually honored — far more reliable than guessing from a bbox. See
+# https://github.com/geoparquet/geoparquet-io/issues/499
+_SERVER_CRS_METADATA_KEY = b"_wfs_server_crs"
+
 
 @dataclass
 class WFSLayerInfo:
@@ -100,6 +149,7 @@ class WFSLayerInfo:
     bbox: tuple[float, float, float, float] | None
     geometry_column: str
     available_formats: list[str]
+    sortable_attribute: str | None = None
 
 
 # Default timeout for HTTP requests (seconds)
@@ -200,9 +250,13 @@ def _make_request(
                     time.sleep(delay)
                     continue
             elif status == 401:
-                raise WFSError("Authentication required. WFS server requires credentials.") from e
+                raise WFSAuthenticationError(
+                    url, 401, "Authentication required. WFS server requires credentials."
+                ) from e
             elif status == 403:
-                raise WFSError("Access denied. Check your permissions for this WFS service.") from e
+                raise WFSAuthenticationError(
+                    url, 403, "Access denied. Check your permissions for this WFS service."
+                ) from e
             elif status == 404:
                 raise WFSError(f"WFS service not found (404). Check the URL: {url}") from e
             raise WFSError(f"HTTP error {status}: {e}") from e
@@ -366,6 +420,27 @@ def _crs_matches(crs1: str, crs2: str) -> bool:
     return _normalize_crs(crs1) == _normalize_crs(crs2)
 
 
+def _with_server_crs(table: pa.Table, server_crs: str | None) -> pa.Table:
+    """Attach the server-declared CRS to a table's schema metadata.
+
+    Carries the CRS the server reported in its GeoJSON response up through the
+    fetch/concat/type-inference pipeline so wfs_to_table can trust it instead of
+    guessing from coordinates. No-op when ``server_crs`` is None.
+    """
+    if not server_crs:
+        return table
+    metadata = dict(table.schema.metadata or {})
+    metadata[_SERVER_CRS_METADATA_KEY] = server_crs.encode()
+    return table.replace_schema_metadata(metadata)
+
+
+def _read_server_crs(table: pa.Table) -> str | None:
+    """Read the server-declared CRS previously attached via _with_server_crs."""
+    metadata = table.schema.metadata or {}
+    value = metadata.get(_SERVER_CRS_METADATA_KEY)
+    return value.decode() if value else None
+
+
 def _estimate_crs_from_bbox(
     bbox: tuple[float, float, float, float],
 ) -> str | None:
@@ -467,8 +542,17 @@ def _validate_crs_coordinates(
             if not (2_000_000 < xmin < 7_500_000 and 1_000_000 < ymin < 5_500_000):
                 mismatch = True
         elif detected and detected != normalized_crs:
-            # Generic check: if we detected a CRS and it differs from requested
-            mismatch = True
+            # The bbox heuristic can reliably distinguish coordinate *categories*
+            # (geographic degrees vs. projected meters) but NOT one projected CRS
+            # from another — e.g. EPSG:22174 (POSGAR 98 / Argentina 4) and
+            # EPSG:3857 both use large metric coordinates. Only treat this as a
+            # mismatch when the categories disagree; otherwise trust the
+            # server-honored CRS rather than relabel it on a guess, which silently
+            # corrupts downstream reprojection (issue #499).
+            requested_geographic = _is_geographic_crs(normalized_crs)
+            detected_geographic = detected == "EPSG:4326"
+            if requested_geographic != detected_geographic:
+                mismatch = True
 
         if mismatch:
             msg = (
@@ -493,6 +577,97 @@ def _validate_crs_coordinates(
     except Exception as e:
         debug(f"CRS validation skipped due to error: {e}")
         return True, None
+
+
+def _reconcile_source_crs(
+    table: pa.Table,
+    *,
+    source_crs: str,
+    requested_crs: str,
+    output_crs: str | None,
+    strict_crs: bool,
+    origin: str,
+) -> tuple[pa.Table, str]:
+    """Reconcile a known source CRS against the requested CRS.
+
+    ``source_crs`` is the CRS the data is actually in (from the server's GeoJSON
+    ``crs`` member, or — as a last resort — guessed from coordinates). When it
+    matches what we requested, the data is trusted as-is. When it genuinely
+    differs, the server ignored ``srsName``; we reproject to ``output_crs`` if
+    one was given, raise under ``strict_crs``, else label the output with the
+    real ``source_crs`` rather than silently mislabeling it (issue #499).
+    """
+    if _crs_matches(source_crs, requested_crs):
+        return table, requested_crs
+
+    lead = "Server declared" if origin == "server" else "Coordinates look like"
+    base_msg = (
+        f"{lead} {source_crs} but {requested_crs} was requested; server may have ignored srsName."
+    )
+
+    if strict_crs:
+        raise WFSError(base_msg)
+
+    if output_crs:
+        info(f"{base_msg} Reprojecting from {source_crs} to {output_crs}.")
+        try:
+            table = reproject_table(table, target_crs=output_crs, source_crs=source_crs)
+        except Exception as e:
+            raise WFSError(f"Failed to reproject from {source_crs} to {output_crs}: {e}") from e
+        return table, output_crs
+
+    warn(f"{base_msg} Labeling output with {source_crs}.")
+    return table, source_crs
+
+
+def _resolve_crs_for_output(
+    table: pa.Table,
+    requested_crs: str,
+    output_crs: str | None,
+    strict_crs: bool,
+) -> tuple[pa.Table, str]:
+    """Decide the CRS to label (and optionally reproject) the fetched data to.
+
+    Trust order:
+      1. The CRS the server declared in its GeoJSON response — authoritative.
+         When present we never second-guess it with coordinate heuristics.
+      2. A bbox-coordinate guess — last resort, only when the server declared
+         nothing. The guess cannot tell two projected CRSs apart, so it is used
+         conservatively (see _validate_crs_coordinates).
+
+    Returns ``(table, crs)`` where ``table`` may have been reprojected.
+    """
+    server_crs = _read_server_crs(table)
+    if server_crs:
+        debug(f"Server declared CRS {server_crs} in GeoJSON response")
+        return _reconcile_source_crs(
+            table,
+            source_crs=server_crs,
+            requested_crs=requested_crs,
+            output_crs=output_crs,
+            strict_crs=strict_crs,
+            origin="server",
+        )
+
+    debug(
+        f"Server declared no CRS in its GeoJSON response; inferring from "
+        f"coordinates and trusting the requested {requested_crs} unless they clearly disagree."
+    )
+    crs_valid, detected_crs = _validate_crs_coordinates(table, requested_crs, strict=strict_crs)
+    if crs_valid or not detected_crs:
+        return table, requested_crs
+    # A real mismatch under strict_crs already raised inside
+    # _validate_crs_coordinates, so reconciliation here is only ever reached in
+    # non-strict mode — pass strict_crs=False to keep that the single source of
+    # truth and avoid a redundant raise.
+    return _reconcile_source_crs(
+        table,
+        source_crs=detected_crs,
+        requested_crs=requested_crs,
+        output_crs=output_crs,
+        strict_crs=False,
+        origin="detected",
+    )
 
 
 def _detect_geometry_column(wfs, typename: str) -> str:
@@ -522,6 +697,42 @@ def _detect_geometry_column(wfs, typename: str) -> str:
         pass  # Fall back to default
 
     return "geometry"
+
+
+def _detect_sortable_attribute(wfs, typename: str) -> str | None:
+    """
+    Detect a sortable (non-geometry) attribute from DescribeFeatureType.
+
+    GeoServer requires a sortBy parameter for stable pagination on layers
+    without a primary key. This function finds the first non-geometry
+    attribute that can be used for sorting.
+
+    Args:
+        wfs: OWSLib WebFeatureService object
+        typename: Layer typename
+
+    Returns:
+        First sortable attribute name, or None if none found
+    """
+    try:
+        schema = wfs.get_schema(typename)
+        if schema and "properties" in schema:
+            geometry_col = schema.get("geometry_column", "geometry")
+            for prop_name, prop_type in schema["properties"].items():
+                # Skip geometry columns
+                if prop_name == geometry_col:
+                    continue
+                prop_type_str = str(prop_type).lower()
+                if any(
+                    geom in prop_type_str
+                    for geom in ["geometry", "point", "line", "polygon", "multi", "curve"]
+                ):
+                    continue
+                # Found a non-geometry attribute
+                return str(prop_name)
+    except Exception:
+        pass
+    return None
 
 
 def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> WFSLayerInfo:
@@ -555,8 +766,7 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
 
     if layer is None:
         available = list(wfs.contents.keys())[:10]
-        hint = f"\nAvailable layers (first 10): {', '.join(available)}" if available else ""
-        raise WFSError(f"Layer '{typename}' not found in WFS service.{hint}")
+        raise LayerNotFoundError(typename, available)
 
     # Extract CRS list
     crs_list = []
@@ -605,6 +815,9 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
         except Exception:
             pass
 
+    # Detect sortable attribute for stable pagination (Issue #488)
+    sortable_attribute = _detect_sortable_attribute(wfs, matched_typename)
+
     return WFSLayerInfo(
         typename=matched_typename,
         title=getattr(layer, "title", None),
@@ -613,6 +826,7 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
         bbox=bbox,
         geometry_column=geometry_column,
         available_formats=available_formats,
+        sortable_attribute=sortable_attribute,
     )
 
 
@@ -760,16 +974,28 @@ def _is_urn_crs(crs: str) -> bool:
 
 
 def _is_geographic_crs(crs: str) -> bool:
-    """Check if CRS is a geographic coordinate system (lat/lon, not projected)."""
+    """Check if CRS is a geographic coordinate system (lat/lon, not projected).
+
+    Uses pyproj for authoritative detection across all geographic CRSs rather
+    than a hardcoded list — an allowlist misclassifies valid geographic systems
+    outside it (e.g. EPSG:4171 RGF93) as projected, which would flag a false
+    coordinate mismatch and relabel correct data to EPSG:4326. Falls back to a
+    small known set only when pyproj cannot resolve the CRS.
+    """
     normalized = _normalize_crs(crs)
-    # Common geographic CRS codes
-    geographic_codes = {
-        "EPSG:4326",  # WGS84
-        "EPSG:4269",  # NAD83
-        "EPSG:4267",  # NAD27
-        "EPSG:4258",  # ETRS89
-    }
-    return normalized in geographic_codes or "CRS84" in crs.upper()
+    try:
+        from pyproj import CRS as _PyprojCRS
+
+        return bool(_PyprojCRS.from_user_input(normalized).is_geographic)
+    except Exception:
+        # pyproj unavailable or CRS unrecognized — fall back to a known set.
+        geographic_codes = {
+            "EPSG:4326",  # WGS84
+            "EPSG:4269",  # NAD83
+            "EPSG:4267",  # NAD27
+            "EPSG:4258",  # ETRS89
+        }
+        return normalized in geographic_codes or "CRS84" in crs.upper()
 
 
 def _needs_axis_swap(crs: str, version: str, axis_order: str = "auto") -> bool:
@@ -820,33 +1046,30 @@ def _build_bbox_param(
     """
     Build WFS bbox parameter string with correct axis order.
 
-    WFS 1.0.0: xmin,ymin,xmax,ymax (always XY)
-    WFS 1.1.0+: Axis order depends on CRS format
-      - EPSG:4326 (simple): xmin,ymin,xmax,ymax,crs
-      - urn:ogc:def:crs:EPSG::4326: ymin,xmin,ymax,xmax,crs (lat,lon per spec)
+    IMPORTANT: Bbox is always sent in WGS84 (EPSG:4326) regardless of output CRS,
+    because many WFS servers (especially GeoServer) only accept bbox in WGS84.
+    The bbox coordinates are expected to be in lon,lat (WGS84) order.
+
+    WFS 1.0.0: xmin,ymin,xmax,ymax (always XY, no CRS suffix)
+    WFS 1.1.0+: xmin,ymin,xmax,ymax,EPSG:4326 (always WGS84)
 
     Args:
-        bbox: Bounding box tuple (xmin, ymin, xmax, ymax) in lon,lat order
-        crs: Coordinate reference system
+        bbox: Bounding box tuple (xmin, ymin, xmax, ymax) in WGS84 lon,lat order
+        crs: Output CRS (ignored for bbox - we always use WGS84)
         version: WFS version
         axis_order: "auto" (detect from CRS), "xy" (force lon,lat), "latlon" (force lat,lon)
 
     Returns:
-        Bbox parameter string with correct axis order for the CRS
+        Bbox parameter string in WGS84
     """
     xmin, ymin, xmax, ymax = bbox
 
     if version == "1.0.0":
         return f"{xmin},{ymin},{xmax},{ymax}"
 
-    # Check if we need to swap axis order for this CRS
-    if _needs_axis_swap(crs, version, axis_order):
-        # Swap to lat,lon order (ymin,xmin,ymax,xmax)
-        debug(f"Using lat,lon axis order for URN CRS: {crs}")
-        return f"{ymin},{xmin},{ymax},{xmax},{crs}"
-    else:
-        # Standard lon,lat order (xmin,ymin,xmax,ymax)
-        return f"{xmin},{ymin},{xmax},{ymax},{crs}"
+    # Always use WGS84 for bbox - most WFS servers expect this regardless of output CRS
+    # Use simple EPSG:4326 format (not URN) to ensure XY axis order
+    return f"{xmin},{ymin},{xmax},{ymax},EPSG:4326"
 
 
 def _validate_identifier(name: str) -> str:
@@ -895,7 +1118,34 @@ def _build_local_bbox_filter(
 
     xmin, ymin, xmax, ymax = bbox
     wkt = f"POLYGON(({xmin} {ymin}, {xmax} {ymin}, {xmax} {ymax}, {xmin} {ymax}, {xmin} {ymin}))"
-    return f"ST_Intersects(\"{safe_column}\", ST_GeomFromText('{wkt}'))"
+    # Fetched features carry geometry as WKB (BLOB), so decode it before the
+    # spatial predicate — ST_Intersects has no BLOB overload.
+    return f"ST_Intersects(ST_GeomFromWKB(\"{safe_column}\"), ST_GeomFromText('{wkt}'))"
+
+
+def _reproject_bbox_for_local_filter(
+    bbox: tuple[float, float, float, float], source_crs: str, target_crs: str
+) -> tuple[float, float, float, float]:
+    """Reproject a filter bbox from ``source_crs`` into ``target_crs``.
+
+    The local bbox filter compares fetched geometries against this bbox. The
+    bbox is expressed in the requested CRS, but when the server honors a
+    different CRS the geometries are in *that* CRS — comparing the two as-is
+    drops valid rows (issue #499). Aligning the bbox to the geometries' CRS
+    avoids reprojecting the whole geometry column just to filter. On failure we
+    fall back to the original bbox rather than crash the extraction.
+    """
+    try:
+        from pyproj import Transformer
+
+        transformer = Transformer.from_crs(
+            _normalize_crs(source_crs), _normalize_crs(target_crs), always_xy=True
+        )
+        xmin, ymin, xmax, ymax = transformer.transform_bounds(*bbox)
+        return (xmin, ymin, xmax, ymax)
+    except Exception as e:
+        warn(f"Could not reproject bbox from {source_crs} to {target_crs} for local filter: {e}")
+        return bbox
 
 
 def _get_feature_count(
@@ -1158,6 +1408,41 @@ def _build_wfs_feature_query(
         """
 
 
+def _read_count_and_server_crs(
+    con: duckdb.DuckDBPyConnection, safe_path: str
+) -> tuple[int, str | None]:
+    """Read the feature count and the server-declared CRS in a single pass.
+
+    A WFS GeoJSON response is one FeatureCollection object, so we read it once
+    as raw text and pull out both things we need before parsing features:
+
+    * the ``features`` array length — DuckDB can't UNNEST an empty array, so we
+      must branch on the count;
+    * the optional top-level ``crs`` member. WFS servers (e.g. GeoServer) echo
+      the CRS they actually honored there, e.g. ``{"crs": {"properties":
+      {"name": "urn:ogc:def:crs:EPSG::22174"}}}``. This is authoritative — when
+      present we never have to guess the CRS from coordinate ranges.
+
+    ``json_extract_string`` returns NULL (rather than raising) when the ``crs``
+    member is absent (RFC 7946 GeoJSON has none) or has an unexpected shape, so
+    we transparently fall back to the coordinate heuristic. Reading once here
+    replaces a separate count query and a separate CRS query with one scan.
+
+    See https://github.com/geoparquet/geoparquet-io/issues/499
+    """
+    row = con.execute(f"""
+        SELECT
+            json_array_length(content, '$.features') AS cnt,
+            json_extract_string(content, '$.crs.properties.name') AS crs_name
+        FROM read_text('{safe_path}')
+    """).fetchone()
+    if not row:
+        return 0, None
+    feature_count = row[0] or 0
+    server_crs = _normalize_crs(str(row[1])) if row[1] else None
+    return feature_count, server_crs
+
+
 def _fetch_wfs_page(
     url: str, extract_fid: bool = False, max_retries: int = 3, retry_delay: float = 2.0
 ) -> pa.Table:
@@ -1267,16 +1552,15 @@ def _fetch_wfs_page(
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         safe_path = _escape_sql_string(tmp_path)
 
-        # Check feature count first (DuckDB can't UNNEST empty JSON arrays)
-        count_result = con.execute(f"""
-            SELECT len(features) AS cnt
-            FROM read_json_auto('{safe_path}', maximum_object_size={_MAX_JSON_OBJECT_SIZE})
-        """).fetchone()
-        feature_count = count_result[0] if count_result else 0
+        # Read the feature count (DuckDB can't UNNEST empty JSON arrays) and the
+        # authoritative CRS the server reported in its GeoJSON response, if any,
+        # in a single scan over the response.
+        feature_count, server_crs = _read_count_and_server_crs(con, safe_path)
 
         if feature_count == 0:
             debug("Empty response, returning empty table")
-            return pa.table({"geometry": pa.array([], type=pa.binary())})
+            empty = pa.table({"geometry": pa.array([], type=pa.binary())})
+            return _with_server_crs(empty, server_crs)
 
         # Detect property type and build extraction query
         props_type, can_unnest_props = _probe_properties_type(con, safe_path, _MAX_JSON_OBJECT_SIZE)
@@ -1294,7 +1578,7 @@ def _fetch_wfs_page(
         parse_time = time.time() - parse_start
         total_time = time.time() - start_time
         debug(f"Parsed {table.num_rows:,} rows in {parse_time:.1f}s (total: {total_time:.1f}s)")
-        return table
+        return _with_server_crs(table, server_crs)
     except WFSError:
         raise
     except Exception as e:
@@ -1472,9 +1756,10 @@ def _fetch_with_spatial_tiles(
     layer_bbox: tuple[float, float, float, float],
     crs: str,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     max_features: int | None = None,
+    sort_by: str | None = None,
 ) -> pa.Table:
     """
     Fetch a large WFS dataset by subdividing into spatial tiles.
@@ -1519,15 +1804,28 @@ def _fetch_with_spatial_tiles(
             page_size=page_size,
             axis_order=axis_order,
             extract_fid=True,
+            sort_by=sort_by,
         )
         if tile_table.num_rows > 0:
             all_tables.append(tile_table)
         progress(f"Tile {i + 1}/{len(tiles)}: {tile_table.num_rows:,} features")
 
     if not all_tables:
-        raise WFSError("No features returned from any spatial tile.")
+        raise EmptyLayerError(typename)
 
-    combined = pa.concat_tables(all_tables, promote=True)
+    # All tiles share one server CRS; capture before schema unification drops it.
+    server_crs = _read_server_crs(all_tables[0])
+
+    # Unify schemas to handle type mismatches across tiles (e.g., int64 vs decimal128)
+    if len(all_tables) > 1:
+        schemas = [t.schema for t in all_tables]
+        unified_schema = _compute_unified_schema(schemas)
+        all_tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"tile {i + 1}")
+            for i, t in enumerate(all_tables)
+        ]
+
+    combined = pa.concat_tables(all_tables)
     before_dedup = combined.num_rows
 
     combined = _deduplicate_tiles(combined)
@@ -1538,7 +1836,7 @@ def _fetch_with_spatial_tiles(
             f"Deduplicated: {before_dedup:,} → {after_dedup:,} ({before_dedup - after_dedup:,} duplicates)"
         )
 
-    return _infer_column_types(combined)
+    return _with_server_crs(_infer_column_types(combined), server_crs)
 
 
 def _probe_startindex_limit(
@@ -1600,6 +1898,7 @@ def _build_wfs_url(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     axis_order: str = "auto",
+    sort_by: str | None = None,
 ) -> str:
     """Build a WFS GetFeature URL with pagination support."""
     from urllib.parse import urlencode
@@ -1633,6 +1932,10 @@ def _build_wfs_url(
     if bbox and crs:
         params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
 
+    # sortBy is required for stable pagination on PK-less layers (Issue #488)
+    if sort_by and version != "1.0.0":
+        params["sortBy"] = sort_by
+
     return f"{clean_url}?{urlencode(params)}"
 
 
@@ -1661,7 +1964,11 @@ def _single_fetch_mode(
         axis_order=axis_order,
     )
     table = _fetch_wfs_page(url, extract_fid=extract_fid)
-    return table if extract_fid else _infer_column_types(table)
+    if extract_fid:
+        return table
+    # _infer_column_types rebuilds the schema and drops metadata; re-attach the
+    # server-declared CRS captured by _fetch_wfs_page.
+    return _with_server_crs(_infer_column_types(table), _read_server_crs(table))
 
 
 def _sequential_pagination_mode(
@@ -1674,6 +1981,7 @@ def _sequential_pagination_mode(
     crs: str | None,
     axis_order: str,
     extract_fid: bool,
+    sort_by: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using sequential adaptive pagination.
@@ -1697,6 +2005,7 @@ def _sequential_pagination_mode(
             bbox=bbox,
             crs=crs,
             axis_order=axis_order,
+            sort_by=sort_by,
         )
         try:
             table = _fetch_wfs_page(url, extract_fid=extract_fid)
@@ -1734,6 +2043,7 @@ def _parallel_pagination_mode(
     crs: str | None,
     axis_order: str,
     extract_fid: bool,
+    sort_by: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using parallel pagination.
@@ -1759,6 +2069,7 @@ def _parallel_pagination_mode(
             bbox=bbox,
             crs=crs,
             axis_order=axis_order,
+            sort_by=sort_by,
         )
         pages.append((i, start, url))
 
@@ -1790,9 +2101,11 @@ def fetch_all_features_duckdb(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     extract_fid: bool = False,
+    sort_by: str | None = None,
+    total_count: int | None = None,
 ) -> pa.Table:
     """
     Fetch WFS features via Python httpx download and DuckDB local parsing.
@@ -1814,17 +2127,21 @@ def fetch_all_features_duckdb(
         bbox: Optional bounding box filter
         crs: CRS for bbox parameter
         max_workers: Number of parallel requests (1-10). Use 4-8 for large datasets.
-        page_size: Features per page when paginating (default: 10000)
+        page_size: Features per page when paginating (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
         extract_fid: If True, extract WFS feature IDs for deduplication
+        sort_by: Attribute to sort by for stable pagination (auto-detected if None)
+        total_count: Pre-fetched feature count (avoids re-querying at this version).
+            Pass this when the caller already has a trusted count from WFS 2.0.0.
 
     Returns:
         PyArrow Table with geometry (WKB) and all properties
     """
-    # Get expected count for progress and pagination
-    total_count = _get_feature_count(
-        service_url, typename, version, bbox=bbox, crs=crs, axis_order=axis_order
-    )
+    # Use provided count or query at this version
+    if total_count is None:
+        total_count = _get_feature_count(
+            service_url, typename, version, bbox=bbox, crs=crs, axis_order=axis_order
+        )
     if max_features and total_count:
         total_count = min(total_count, max_features)
 
@@ -1899,6 +2216,7 @@ def fetch_all_features_duckdb(
             crs,
             axis_order,
             extract_fid,
+            sort_by=sort_by,
         )
     else:
         results = _parallel_pagination_mode(
@@ -1913,20 +2231,74 @@ def fetch_all_features_duckdb(
             crs,
             axis_order,
             extract_fid,
+            sort_by=sort_by,
         )
 
     # Combine tables in order
     if not results:
-        raise WFSError("No features returned from WFS service.")
+        raise EmptyLayerError(typename)
 
     tables = [results[i] for i in sorted(results.keys())]
-    combined = pa.concat_tables(tables, promote=True)
+
+    # All pages come from the same layer/request, so they share one server CRS.
+    # Capture it before schema unification, which drops metadata.
+    server_crs = _read_server_crs(tables[0])
+
+    # Unify schemas to handle type mismatches across pages (e.g., int64 vs decimal128)
+    if len(tables) > 1:
+        schemas = [t.schema for t in tables]
+        unified_schema = _compute_unified_schema(schemas)
+        tables = [
+            _cast_table_to_schema(t, unified_schema, page_info=f"page {i + 1}")
+            for i, t in enumerate(tables)
+        ]
+
+    combined = pa.concat_tables(tables)
     debug(f"Combined {len(tables)} pages: {combined.num_rows:,} total features")
 
     # Skip type inference for tile fetches — the tiling orchestrator handles it
     if extract_fid:
-        return combined
-    return _infer_column_types(combined)
+        return _with_server_crs(combined, server_crs)
+    return _with_server_crs(_infer_column_types(combined), server_crs)
+
+
+def _looks_like_server_cap(count: int) -> bool:
+    """Check if a feature count looks like a server-imposed cap.
+
+    Server caps are typically round numbers like 1000000, 500000, 100000, etc.
+    Parallel workers may drift slightly past exact caps due to network retries
+    (e.g., 1,000,002 instead of 1,000,000), so we allow ±0.1% tolerance around
+    common cap values (issue #503).
+    """
+    if count <= 0:
+        return False
+    # Check for common cap values with ±0.1% tolerance for parallel-worker drift
+    common_caps = {1000000, 500000, 100000, 50000, 10000}
+    for cap in common_caps:
+        if abs(count - cap) <= cap * 0.001:
+            return True
+    # Check if it's a round number (divisible by 10000 with at least 5 digits)
+    if count >= 10000 and count % 10000 == 0:
+        return True
+    return False
+
+
+def _get_tiling_bbox(
+    user_bbox: tuple[float, float, float, float] | None,
+    use_server_bbox: bool,
+    layer_info: WFSLayerInfo,
+) -> tuple[float, float, float, float] | None:
+    """Get the bounding box to use for spatial tiling.
+
+    Returns the user's bbox if provided and server-side filtering is enabled,
+    otherwise falls back to the layer's advertised bbox from capabilities.
+    Returns None if no bbox is available.
+    """
+    if user_bbox and use_server_bbox:
+        return user_bbox
+    if layer_info.bbox:
+        return layer_info.bbox
+    return None
 
 
 def wfs_to_table(
@@ -1938,11 +2310,13 @@ def wfs_to_table(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
+    sort_by: str | None = None,
+    repair_geometry: bool = True,
 ) -> pa.Table:
     """
     Fetch WFS layer as PyArrow Table.
@@ -1961,15 +2335,24 @@ def wfs_to_table(
         version: WFS version (1.0.0, 1.1.0, or 2.0.0)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax)
         bbox_mode: Bbox strategy ("auto", "server", "local")
-        output_crs: Guarantee output in this CRS. If server returns different CRS, data is
-            reprojected automatically. (e.g., "EPSG:4326")
+        output_crs: Guarantee output in this CRS. If the server returns a
+            different CRS than requested, data is reprojected automatically from
+            the server's actual CRS. (e.g., "EPSG:4326")
         limit: Maximum features to fetch
         max_workers: Parallel requests for large datasets (default: 1 = single request)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
-            output_crs is set, reproject automatically; otherwise warn and use detected CRS
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False and output_crs is set, reproject from the
+            server's actual CRS; otherwise warn and label the output with the
+            server's actual CRS. The CRS the server declares in its GeoJSON
+            response is authoritative — gpio never guesses from coordinates when
+            the server states which CRS it used (issue #499).
         verbose: Enable debug output
+        sort_by: Attribute to sort by for stable pagination. If None, auto-detected from
+            DescribeFeatureType. Required for layers without a primary key.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
 
     Returns:
         PyArrow Table with GeoParquet-compatible geometry
@@ -1996,38 +2379,51 @@ def wfs_to_table(
     output_format = _detect_best_output_format(layer_info.available_formats)
     debug(f"Using output format: {output_format}")
 
+    # Auto-detect sortBy attribute for stable pagination (Issue #488)
+    # GeoServer requires sortBy for pagination on layers without a primary key
+    effective_sort_by = sort_by
+    if effective_sort_by is None and version != "1.0.0":
+        effective_sort_by = layer_info.sortable_attribute
+        if effective_sort_by:
+            debug(f"Auto-detected sort attribute: {effective_sort_by}")
+
     # Determine bbox strategy
     use_server_bbox = True
     if bbox:
         use_server_bbox = _determine_bbox_strategy(bbox_mode, layer_info)
 
-    # Check if auto-tiling is needed (server has startIndex limit + dataset exceeds it)
+    # Get expected feature count for cap detection
+    # Try WFS 2.0.0 first for count query since it often has higher/no limits
+    expected_count = None
+    if auto_tile and version != "1.0.0":
+        # Try WFS 2.0.0 count first (higher limits), fall back to requested version
+        expected_count = _get_feature_count(service_url, layer_info.typename, "2.0.0")
+        if not expected_count:
+            expected_count = _get_feature_count(service_url, layer_info.typename, version)
+        if expected_count:
+            debug(f"Server reports {expected_count:,} features")
+
+    # Check for startIndex limit (proactive tiling for pagination limits)
     use_tiling = False
     tiling_bbox: tuple[float, float, float, float] | None = None
     tiling_total = 0
     tiling_limit = 0
-    if auto_tile and version != "1.0.0":
-        total_count = _get_feature_count(service_url, layer_info.typename, version)
+    if auto_tile and version != "1.0.0" and expected_count:
         startindex_limit = _probe_startindex_limit(
             service_url, layer_info.typename, version, crs=crs, axis_order=axis_order
         )
-        if startindex_limit and total_count:
-            effective = min(limit, total_count) if limit else total_count
+        if startindex_limit:
+            effective = min(limit, expected_count) if limit else expected_count
             if effective > startindex_limit + page_size:
-                # Determine bbox for tiling: use caller bbox if provided, else layer bbox
-                if bbox and use_server_bbox:
-                    tiling_bbox = bbox
-                elif layer_info.bbox:
-                    tiling_bbox = layer_info.bbox
-                else:
-                    raise WFSError(
-                        "Auto-tiling requires a bounding box. Either:\n"
-                        "  1. Use --bbox to specify a region\n"
-                        "  2. Ensure the layer has a bbox in capabilities"
+                tiling_bbox = _get_tiling_bbox(bbox, use_server_bbox, layer_info)
+                if tiling_bbox:
+                    use_tiling = True
+                    tiling_total = effective
+                    tiling_limit = startindex_limit
+                    warn(
+                        f"Server has startIndex limit of {startindex_limit:,}. "
+                        f"Auto-tiling {effective:,} features..."
                     )
-                use_tiling = True
-                tiling_total = effective
-                tiling_limit = startindex_limit
 
     if use_tiling and tiling_bbox is not None:
         table = _fetch_with_spatial_tiles(
@@ -2042,8 +2438,11 @@ def wfs_to_table(
             page_size=page_size,
             axis_order=axis_order,
             max_features=limit,
+            sort_by=effective_sort_by,
         )
     else:
+        # Normal fetch — pass expected_count so we don't re-query at this version
+        # (some servers return different counts by WFS version; issue #503)
         table = fetch_all_features_duckdb(
             service_url=service_url,
             typename=layer_info.typename,
@@ -2054,7 +2453,42 @@ def wfs_to_table(
             max_workers=max_workers,
             page_size=page_size,
             axis_order=axis_order,
+            sort_by=effective_sort_by,
+            total_count=expected_count,
         )
+
+        # Check for maxFeatures cap (reactive tiling)
+        # If we got fewer features than expected and the count looks like a server cap,
+        # retry with spatial tiling to bypass the cap
+        if (
+            auto_tile
+            and version != "1.0.0"
+            and expected_count
+            and table.num_rows < expected_count
+            and _looks_like_server_cap(table.num_rows)
+            and not limit  # Don't retry if user specified a limit
+        ):
+            tiling_bbox = _get_tiling_bbox(bbox, use_server_bbox, layer_info)
+            if tiling_bbox:
+                warn(
+                    f"Server capped response at {table.num_rows:,} features "
+                    f"(expected {expected_count:,}). Auto-tiling to fetch all..."
+                )
+                # Use a synthetic "startindex_limit" equal to the cap for tile sizing
+                table = _fetch_with_spatial_tiles(
+                    service_url=service_url,
+                    typename=layer_info.typename,
+                    version=version,
+                    total_count=expected_count,
+                    startindex_limit=table.num_rows,  # Use the cap as the limit
+                    layer_bbox=tiling_bbox,
+                    crs=crs,
+                    max_workers=max_workers,
+                    page_size=page_size,
+                    axis_order=axis_order,
+                    max_features=limit,
+                    sort_by=effective_sort_by,
+                )
 
     if table.num_rows == 0:
         if bbox:
@@ -2062,41 +2496,46 @@ def wfs_to_table(
             warn(f"No features found in bbox for layer '{typename}'. Writing empty file.")
         else:
             # Empty results without bbox likely indicates a problem
-            raise WFSError(
-                f"No features returned from WFS service for layer '{typename}'.\n"
-                "Check that the layer exists and is not empty."
-            )
+            raise EmptyLayerError(typename)
 
     # Apply local bbox filter if needed
     if bbox and not use_server_bbox:
         debug("Applying local bbox filter...")
-        filter_sql = _build_local_bbox_filter(bbox, "geometry")
+        # The DuckDB roundtrip below drops Arrow schema metadata, which would
+        # discard the server-declared CRS and silently fall back to the bbox
+        # heuristic (issue #499). Capture it first and re-attach afterwards.
+        server_crs = _read_server_crs(table)
+        # The bbox is in the requested CRS, but the geometries are in the CRS the
+        # server actually returned. When those differ, align the bbox to the
+        # geometries' CRS so the filter doesn't drop valid rows (issue #499).
+        filter_bbox = bbox
+        if server_crs and not _crs_matches(server_crs, crs):
+            filter_bbox = _reproject_bbox_for_local_filter(bbox, crs, server_crs)
+        filter_sql = _build_local_bbox_filter(filter_bbox, "geometry")
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
             con.register("features", table)
             filtered = con.execute(f"SELECT * FROM features WHERE {filter_sql}").arrow()
-            table = filtered.read_all()
+            table = _with_server_crs(filtered.read_all(), server_crs)
             debug(f"After local filter: {table.num_rows:,} features")
         finally:
             con.close()
 
-    # Validate CRS - check if coordinates match requested CRS
-    crs_valid, detected_crs = _validate_crs_coordinates(table, crs, strict=strict_crs)
-    if not crs_valid and detected_crs:
-        if output_crs:
-            # User explicitly requested CRS but server returned different — reproject
-            info(f"Server returned {detected_crs}, reprojecting to requested {output_crs}")
-            try:
-                table = reproject_table(table, target_crs=output_crs, source_crs=detected_crs)
-            except Exception as e:
-                raise WFSError(
-                    f"Failed to reproject from {detected_crs} to {output_crs}: {e}"
-                ) from e
-            crs = output_crs
-        else:
-            # No explicit request — use detected CRS for metadata
-            info(f"Using detected CRS {detected_crs} for output metadata")
-            crs = detected_crs
+    # Repair invalid geometry (issue #506) before CRS resolution, so the rest
+    # of the pipeline — and any downstream consumer like PMTiles — sees valid
+    # geometry. The helper repairs on native GEOMETRY in DuckDB and restores the
+    # table's schema metadata (including the server-CRS marker, issue #499).
+    if table.num_rows > 0:
+        table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+
+    # Resolve the CRS to label/reproject to. Trust the server's declared CRS
+    # when it gave one; otherwise fall back to a coordinate-range guess.
+    table, crs = _resolve_crs_for_output(table, crs, output_crs, strict_crs)
+
+    # Drop the internal server-CRS marker unconditionally so it never leaks into
+    # the output file, regardless of whether geo metadata is written below.
+    existing_meta = dict(table.schema.metadata or {})
+    existing_meta.pop(_SERVER_CRS_METADATA_KEY, None)
 
     # Add CRS metadata to schema
     projjson = parse_crs_string_to_projjson(_normalize_crs(crs))
@@ -2111,9 +2550,9 @@ def wfs_to_table(
                 }
             },
         }
-        existing_meta = table.schema.metadata or {}
         existing_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-        table = table.replace_schema_metadata(existing_meta)
+
+    table = table.replace_schema_metadata(existing_meta)
 
     success(f"Fetched {table.num_rows:,} features from WFS")
     return table
@@ -2129,7 +2568,7 @@ def convert_wfs_to_geoparquet(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 10000,
+    page_size: int = 100000,
     axis_order: str = "auto",
     strict_crs: bool = False,
     skip_hilbert: bool = False,
@@ -2142,6 +2581,8 @@ def convert_wfs_to_geoparquet(
     overwrite: bool = False,
     verbose: bool = False,
     auto_tile: bool = False,
+    sort_by: str | None = None,
+    repair_geometry: bool = True,
 ) -> None:
     """
     Extract WFS layer and save as optimized GeoParquet.
@@ -2156,10 +2597,13 @@ def convert_wfs_to_geoparquet(
         output_crs: Guarantee output in this CRS (reprojects if server returns different)
         limit: Maximum features
         max_workers: Parallel requests for large datasets (default: 1)
-        page_size: Features per page when using parallel mode (default: 10000)
+        page_size: Features per page when using parallel mode (default: 100000)
         axis_order: Bbox axis order ("auto", "xy", "latlon")
-        strict_crs: If True, fail on CRS mismatch (before reprojection). If False and
-            output_crs is set, reproject automatically; otherwise warn and use detected CRS
+        strict_crs: If True, fail when the server returns a different CRS than
+            requested. If False and output_crs is set, reproject from the
+            server's actual CRS; otherwise warn and label with the server's
+            actual CRS. The server's declared CRS is trusted over any coordinate
+            guess (issue #499).
         skip_hilbert: Skip Hilbert curve sorting
         skip_bbox: Skip adding bbox column
         compression: Compression algorithm
@@ -2170,6 +2614,9 @@ def convert_wfs_to_geoparquet(
         overwrite: Overwrite existing file
         verbose: Enable debug output
         auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
+        sort_by: Attribute to sort by for stable pagination. If None, auto-detected.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+            When False, invalid geometry is preserved and a warning reports the count.
     """
     configure_verbose(verbose)
 
@@ -2193,6 +2640,8 @@ def convert_wfs_to_geoparquet(
         strict_crs=strict_crs,
         verbose=verbose,
         auto_tile=auto_tile,
+        sort_by=sort_by,
+        repair_geometry=repair_geometry,
     )
 
     # Apply Hilbert ordering (unless skipped)
@@ -2224,3 +2673,220 @@ def convert_wfs_to_geoparquet(
     )
 
     success(f"Wrote {table.num_rows:,} features to {output_file}")
+
+
+def _extract_single_layer(
+    service_url: str,
+    typename: str,
+    output_dir: Path,
+    layer_index: int,
+    total_layers: int,
+    **kwargs,
+) -> tuple[str, Path, int | None, str | None]:
+    """
+    Extract a single WFS layer to a file in output_dir.
+
+    Returns (typename, output_path, row_count, error_message).
+    error_message is None on success.
+    """
+    # Sanitize typename for filename (replace : and / with _)
+    safe_name = typename.replace(":", "_").replace("/", "_")
+    output_path = output_dir / f"{safe_name}.parquet"
+
+    try:
+        progress(f"[{layer_index + 1}/{total_layers}] Starting {typename}...")
+        convert_wfs_to_geoparquet(
+            service_url=service_url,
+            typename=typename,
+            output_file=str(output_path),
+            **kwargs,
+        )
+        # Read back row count for summary
+        import pyarrow.parquet as pq
+
+        meta = pq.read_metadata(output_path)
+        row_count = meta.num_rows
+        return (typename, output_path, row_count, None)
+    except Exception as e:
+        return (typename, output_path, None, str(e))
+
+
+def convert_wfs_layers_to_directory(
+    service_url: str,
+    typenames: list[str],
+    output_dir: str | Path,
+    parallel_layers: int = 1,
+    max_workers: int = 1,
+    page_size: int = 100000,
+    version: str = "1.1.0",
+    bbox: tuple[float, float, float, float] | None = None,
+    bbox_mode: str = "auto",
+    output_crs: str | None = None,
+    limit: int | None = None,
+    axis_order: str = "auto",
+    strict_crs: bool = False,
+    skip_hilbert: bool = False,
+    skip_bbox: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    row_group_size_mb: float | None = None,
+    row_group_rows: int | None = None,
+    geoparquet_version: str | None = None,
+    overwrite: bool = False,
+    verbose: bool = False,
+    auto_tile: bool = False,
+    sort_by: str | None = None,
+    repair_geometry: bool = True,
+) -> dict[str, Path]:
+    """
+    Extract multiple WFS layers in parallel to a directory.
+
+    Each layer is saved as a separate GeoParquet file named after the typename.
+
+    Args:
+        service_url: WFS service URL
+        typenames: List of layer typenames to extract
+        output_dir: Directory to write output files
+        parallel_layers: Number of layers to extract concurrently (default: 1)
+        max_workers: Per-layer pagination workers (default: 1)
+        page_size: Features per page (default: 100000)
+        version: WFS version
+        bbox: Optional bounding box filter (applied to all layers)
+        bbox_mode: Bbox strategy
+        output_crs: Output CRS (applied to all layers)
+        limit: Maximum features per layer
+        axis_order: Bbox axis order
+        strict_crs: Fail on CRS mismatch
+        skip_hilbert: Skip Hilbert ordering
+        skip_bbox: Skip bbox column
+        compression: Compression algorithm
+        compression_level: Compression level
+        row_group_size_mb: Row group size in MB
+        row_group_rows: Row group size in rows
+        geoparquet_version: GeoParquet version
+        overwrite: Overwrite existing files
+        verbose: Enable debug output
+        auto_tile: Auto-tile for servers with startIndex limits
+        sort_by: Sort attribute for stable pagination
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
+
+    Returns:
+        Dict mapping typename to output file path (only successful extractions)
+
+    Raises:
+        WFSError: If output_dir exists and is not a directory, or if all extractions fail
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    configure_verbose(verbose)
+
+    output_path = Path(output_dir)
+
+    # Create output directory if needed
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise WFSError(f"Output path exists but is not a directory: {output_dir}")
+    else:
+        output_path.mkdir(parents=True)
+
+    # Check for existing files if not overwriting
+    if not overwrite:
+        existing = []
+        for typename in typenames:
+            safe_name = typename.replace(":", "_").replace("/", "_")
+            file_path = output_path / f"{safe_name}.parquet"
+            if file_path.exists():
+                existing.append(str(file_path))
+        if existing:
+            raise WFSError(
+                "Output files already exist:\n  "
+                + "\n  ".join(existing)
+                + "\nUse --overwrite to replace them."
+            )
+
+    progress(
+        f"Extracting {len(typenames)} layers to {output_dir} "
+        f"(parallel_layers={parallel_layers}, workers={max_workers})..."
+    )
+
+    # Build kwargs for each layer extraction
+    kwargs = {
+        "version": version,
+        "bbox": bbox,
+        "bbox_mode": bbox_mode,
+        "output_crs": output_crs,
+        "limit": limit,
+        "max_workers": max_workers,
+        "page_size": page_size,
+        "axis_order": axis_order,
+        "strict_crs": strict_crs,
+        "skip_hilbert": skip_hilbert,
+        "skip_bbox": skip_bbox,
+        "compression": compression,
+        "compression_level": compression_level,
+        "row_group_size_mb": row_group_size_mb,
+        "row_group_rows": row_group_rows,
+        "geoparquet_version": geoparquet_version,
+        "overwrite": overwrite,
+        "verbose": verbose,
+        "auto_tile": auto_tile,
+        "sort_by": sort_by,
+        "repair_geometry": repair_geometry,
+    }
+
+    results: dict[str, Path] = {}
+    errors: list[tuple[str, str]] = []
+    total_rows = 0
+
+    actual_parallel = min(parallel_layers, len(typenames))
+
+    if actual_parallel == 1:
+        # Sequential mode
+        for i, typename in enumerate(typenames):
+            result_typename, path, rows, error = _extract_single_layer(
+                service_url, typename, output_path, i, len(typenames), **kwargs
+            )
+            if error:
+                errors.append((result_typename, error))
+                warn(f"Failed to extract {result_typename}: {error}")
+            else:
+                results[result_typename] = path
+                total_rows += rows or 0
+    else:
+        # Parallel mode
+        with ThreadPoolExecutor(max_workers=actual_parallel) as executor:
+            futures = {
+                executor.submit(
+                    _extract_single_layer,
+                    service_url,
+                    typename,
+                    output_path,
+                    i,
+                    len(typenames),
+                    **kwargs,
+                ): typename
+                for i, typename in enumerate(typenames)
+            }
+
+            for future in as_completed(futures):
+                result_typename, path, rows, error = future.result()
+                if error:
+                    errors.append((result_typename, error))
+                    warn(f"Failed to extract {result_typename}: {error}")
+                else:
+                    results[result_typename] = path
+                    total_rows += rows or 0
+
+    # Summary
+    if errors:
+        warn(f"Completed with {len(errors)} failures:")
+        for typename, error in errors:
+            warn(f"  {typename}: {error}")
+
+    if not results:
+        raise WFSError(f"All {len(typenames)} layer extractions failed")
+
+    success(
+        f"Extracted {len(results)}/{len(typenames)} layers ({total_rows:,} total features) to {output_dir}"
+    )
+    return results

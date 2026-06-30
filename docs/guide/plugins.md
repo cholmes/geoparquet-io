@@ -62,7 +62,11 @@ For Python API usage, install plugins as regular dependencies:
     The `gpio pmtiles` command is now part of geoparquet-io core. No plugin installation needed.
     See the [GeoJSON guide](geojson.md#using-gpio-pmtiles-built-in) for usage.
 
-Currently there are no external plugins. The plugin system is available for community extensions.
+| Plugin | Package | Description |
+|--------|---------|-------------|
+| fiboa | `gpio-fiboa` | Field Boundaries for Agriculture — improve and describe fiboa datasets |
+
+See the [fiboa guide](fiboa.md) for detailed usage.
 
 ## How Plugins Work
 

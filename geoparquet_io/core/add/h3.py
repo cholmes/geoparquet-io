@@ -6,7 +6,15 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.crs_utils import (
+    crs_transform_sql_expr,
+    extract_crs_from_parquet,
+    extract_crs_from_table,
+)
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -56,8 +64,7 @@ def add_h3_table(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         # Load H3 extension
-        con.execute("INSTALL h3 FROM community")
-        con.execute("LOAD h3")
+        load_community_extension(con, "h3")
 
         con.register("__input_table", table)
 
@@ -78,10 +85,13 @@ def add_h3_table(
         else:
             source_ref = "__input_table"
 
-        # Build H3 column query
+        # Build H3 column query. h3_latlng_to_cell_string expects lat/lon degrees,
+        # so a projected input is reprojected to OGC:CRS84 first (issue #525).
+        source_crs = extract_crs_from_table(table, geom_col)
+        centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
         h3_expr = f"""h3_latlng_to_cell_string(
-            ST_Y(ST_Centroid("{geom_col}")),
-            ST_X(ST_Centroid("{geom_col}")),
+            ST_Y({centroid}),
+            ST_X({centroid}),
             {resolution}
         )"""
 
@@ -119,11 +129,17 @@ def _make_add_h3_query(
     geometry_column: str,
     h3_column_name: str,
     resolution: int,
+    source_crs=None,
 ) -> str:
-    """Build query to add H3 column to a source."""
+    """Build query to add H3 column to a source.
+
+    ``source_crs`` (when a non-default CRS) reprojects the centroid to OGC:CRS84
+    before keying, since ``h3_latlng_to_cell_string`` expects lat/lon degrees.
+    """
+    centroid = crs_transform_sql_expr(f'ST_Centroid("{geometry_column}")', source_crs)
     h3_expr = f"""h3_latlng_to_cell_string(
-        ST_Y(ST_Centroid("{geometry_column}")),
-        ST_X(ST_Centroid("{geometry_column}")),
+        ST_Y({centroid}),
+        ST_X({centroid}),
         {resolution}
     )"""
     return f'SELECT *, {h3_expr} AS "{h3_column_name}" FROM {source}'
@@ -208,10 +224,14 @@ def add_h3_column(
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    # Define the H3 SQL expression (using string format for portability)
+    # Define the H3 SQL expression (using string format for portability). A
+    # projected input is reprojected to OGC:CRS84 before keying (issue #525),
+    # since h3_latlng_to_cell_string expects lat/lon degrees.
+    source_crs = extract_crs_from_parquet(input_parquet, verbose)
+    centroid = crs_transform_sql_expr(f"ST_Centroid({geom_col})", source_crs)
     sql_expression = f"""h3_latlng_to_cell_string(
-        ST_Y(ST_Centroid({geom_col})),
-        ST_X(ST_Centroid({geom_col})),
+        ST_Y({centroid}),
+        ST_X({centroid}),
         {h3_resolution}
     )"""
 
@@ -265,11 +285,14 @@ def _add_h3_streaming(
     if should_stream_output(output_path):
         verbose = False
 
+    # Detect a projected source CRS so the centroid is reprojected to OGC:CRS84
+    # before keying. stdin carries no readable CRS, so it is treated as CRS84.
+    source_crs = None if is_stdin(input_path) else extract_crs_from_parquet(input_path, verbose)
+
     def make_query(source: str, con) -> str:
         """Build the add H3 query for streaming source."""
         # Load H3 extension
-        con.execute("INSTALL h3 FROM community")
-        con.execute("LOAD h3")
+        load_community_extension(con, "h3")
 
         # Get column names from query result
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description
@@ -287,7 +310,7 @@ def _add_h3_streaming(
         if verbose:
             debug(f"Using geometry column: {geom_col}")
 
-        return _make_add_h3_query(source, geom_col, h3_column_name, resolution)
+        return _make_add_h3_query(source, geom_col, h3_column_name, resolution, source_crs)
 
     execute_transform(
         input_path,

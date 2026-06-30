@@ -16,7 +16,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -48,7 +48,7 @@ jobs:
 
       - name: Create or update issue
         if: steps.audit.outputs.vulnerabilities_found == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -112,7 +112,7 @@ jobs:
 
       - name: Close issue if no vulnerabilities
         if: steps.audit.outputs.vulnerabilities_found == 'false'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = '🔒 Security: Dependency vulnerabilities detected';

@@ -87,12 +87,12 @@ def _check_spatial_sorting(parquet_file, verbose=False):
             return_results=True,
             quiet=True,
         )
-        if result and result.get("passed"):
-            ratio = result.get("ratio")
-            ratio_str = f" (ratio: {ratio:.2f})" if ratio is not None else ""
-            return {"passed": True, "detail": f"Data appears spatially sorted{ratio_str}"}
-        ratio = result.get("ratio") if result else None
+        # check_spatial_order with return_results=True always returns a dict
+        assert isinstance(result, dict)
+        ratio = result["ratio"]
         ratio_str = f" (ratio: {ratio:.2f})" if ratio is not None else ""
+        if result["passed"]:
+            return {"passed": True, "detail": f"Data appears spatially sorted{ratio_str}"}
         return {"passed": False, "detail": f"Data is not spatially sorted{ratio_str}"}
     except Exception:
         return {"passed": False, "detail": "Could not determine spatial ordering"}

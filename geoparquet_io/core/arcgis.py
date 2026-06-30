@@ -18,8 +18,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
+from geoparquet_io.core.common import _cast_table_to_schema, write_geoparquet_table
+from geoparquet_io.core.crs_utils import _extract_crs_identifier, parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.exceptions import (
     BatchTooLargeError,
@@ -27,7 +27,9 @@ from geoparquet_io.core.exceptions import (
     InvalidParameterError,
     RemoteAccessError,
 )
+from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
+    DEFAULT_TIMEOUT,
     make_request_with_retry,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
@@ -82,6 +84,21 @@ class ArcGISLayerInfo:
 BATCH_SIZE_FALLBACKS = [1000, 500, 100, 50, 10, 1]
 
 
+def _disable_gdal_geojson_size_limit() -> None:
+    """Lift GDAL's per-feature GeoJSON object size limit before ST_Read.
+
+    GDAL's GeoJSON/ESRIJSON drivers cap a single feature object at 200 MB by
+    default (``OGR_GEOJSON_MAX_OBJ_SIZE``, in megabytes) and raise an
+    ``IOException`` ("GeoJSON object too complex/large") when a feature exceeds
+    it. Large, complex polygon layers — e.g. national admin boundaries with
+    detailed coastlines — blow past this even at ``batch_size=1``, so the
+    batch-size fallback ladder cannot recover. GDAL reads the option from the
+    process environment; "0" removes the limit. Idempotent and harmless to call
+    on every page conversion. See issue #517.
+    """
+    os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
+
+
 def _get_reduced_batch_size(current_batch: int) -> int | None:
     """
     Get the next smaller batch size from the fallback sequence.
@@ -111,6 +128,7 @@ def _make_request(
     data: dict | None = None,
     max_retries: int = 3,
     retry_delay: float = 1.0,
+    timeout: float = DEFAULT_TIMEOUT,
     batch_size: int | None = None,
 ) -> dict:
     """
@@ -125,6 +143,7 @@ def _make_request(
         data: POST data
         max_retries: Number of retry attempts
         retry_delay: Base delay between retries
+        timeout: Request timeout in seconds
         batch_size: Current batch size (for BatchTooLargeError context)
 
     Returns:
@@ -141,6 +160,7 @@ def _make_request(
         data=data,
         max_retries=max_retries,
         retry_delay=retry_delay,
+        timeout=timeout,
         parse_json=True,
         batch_size=batch_size,
     )
@@ -168,6 +188,7 @@ def generate_token(
     password: str,
     portal_url: str | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """
     Generate authentication token via ArcGIS REST API.
@@ -177,6 +198,7 @@ def generate_token(
         password: ArcGIS password
         portal_url: Enterprise portal URL (default: ArcGIS Online)
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         Authentication token string
@@ -197,7 +219,7 @@ def generate_token(
         "expiration": 60,  # 60 minutes
     }
 
-    result = _make_request("POST", token_url, data=data)
+    result = _make_request("POST", token_url, data=data, timeout=timeout)
     result = _handle_arcgis_response(result, "Token generation")
 
     if "token" not in result:
@@ -213,6 +235,7 @@ def resolve_token(
     auth: ArcGISAuth,
     service_url: str,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> str | None:
     """
     Resolve authentication token from various sources.
@@ -226,6 +249,7 @@ def resolve_token(
         auth: ArcGISAuth configuration
         service_url: Service URL (used to detect enterprise portal)
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds (used for token generation)
 
     Returns:
         Token string, or None if no auth provided
@@ -263,7 +287,7 @@ def resolve_token(
                 if verbose:
                     debug(f"Detected enterprise portal: {portal_url}")
 
-        return generate_token(auth.username, auth.password, portal_url, verbose)
+        return generate_token(auth.username, auth.password, portal_url, verbose, timeout=timeout)
 
     return None
 
@@ -333,6 +357,7 @@ def get_layer_info(
     where: str = "1=1",
     bbox: tuple[float, float, float, float] | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> ArcGISLayerInfo:
     """
     Fetch layer metadata from ArcGIS REST service.
@@ -343,6 +368,7 @@ def get_layer_info(
         where: SQL WHERE clause for counting features (default: "1=1" = all)
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         ArcGISLayerInfo with layer metadata
@@ -351,16 +377,29 @@ def get_layer_info(
         debug(f"Fetching layer info from {service_url}")
 
     params = _add_token_to_params({"f": "json"}, token)
-    data = _make_request("GET", service_url, params=params)
+    data = _make_request("GET", service_url, params=params, timeout=timeout)
     data = _handle_arcgis_response(data, "Layer info")
 
     # Get feature count (using the WHERE and bbox filters)
-    count = get_feature_count(service_url, where=where, bbox=bbox, token=token, verbose=verbose)
+    count = get_feature_count(
+        service_url, where=where, bbox=bbox, token=token, verbose=verbose, timeout=timeout
+    )
+
+    # Servers advertise the layer SR in different places: top-level
+    # spatialReference, extent.spatialReference, or sourceSpatialReference.
+    # An empty dict (not a silent 4326 default) marks "no advertised SR" so
+    # --output-crs native can fail honestly instead of resolving to the wrong CRS.
+    spatial_reference = (
+        data.get("spatialReference")
+        or data.get("extent", {}).get("spatialReference")
+        or data.get("sourceSpatialReference")
+        or {}
+    )
 
     return ArcGISLayerInfo(
         name=data.get("name", "Unknown"),
         geometry_type=data.get("geometryType", "esriGeometryPoint"),
-        spatial_reference=data.get("spatialReference", {"wkid": 4326}),
+        spatial_reference=spatial_reference,
         fields=data.get("fields", []),
         max_record_count=data.get("maxRecordCount", 1000),
         total_count=count,
@@ -373,6 +412,7 @@ def get_feature_count(
     bbox: tuple[float, float, float, float] | None = None,
     token: str | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> int:
     """
     Get total feature count from ArcGIS service.
@@ -383,6 +423,7 @@ def get_feature_count(
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         token: Optional authentication token
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds
 
     Returns:
         Feature count
@@ -404,7 +445,7 @@ def get_feature_count(
 
     params = _add_token_to_params(params, token)
 
-    data = _make_request("GET", query_url, params=params)
+    data = _make_request("GET", query_url, params=params, timeout=timeout)
     data = _handle_arcgis_response(data, "Feature count")
 
     count = data.get("count", 0)
@@ -422,7 +463,10 @@ def fetch_features_page(
     bbox: tuple[float, float, float, float] | None = None,
     out_fields: str = "*",
     token: str | None = None,
+    output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> dict:
     """
     Fetch a single page of features as GeoJSON.
@@ -435,10 +479,17 @@ def fetch_features_page(
         bbox: Bounding box filter (xmin, ymin, xmax, ymax) in WGS84
         out_fields: Comma-separated field names or "*" for all
         token: Optional authentication token
+        output_wkid: Optional output WKID (e.g. 25830). When set, requests
+            EsriJSON (f=json) with outSR so the server reprojects before delivery.
+        max_allowable_offset: Optional server-side geometry generalization
+            tolerance, in the units of the output CRS (degrees on the default
+            WGS84 path). Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
+        timeout: Request timeout in seconds. Raise for layers whose large or
+            complex geometries take the server minutes to serialize per page.
 
     Returns:
-        GeoJSON FeatureCollection dict
+        GeoJSON FeatureCollection dict, or EsriJSON dict when output_wkid is set
     """
     query_url = f"{service_url}/query"
     params = {
@@ -450,6 +501,15 @@ def fetch_features_page(
         "resultRecordCount": str(limit),
     }
 
+    # Server-side geometry generalization (Douglas-Peucker). Honored on both the
+    # GeoJSON and EsriJSON paths. ArcGIS measures the tolerance in outSR units and
+    # falls back to the layer's source units when outSR is unset, so anchor outSR
+    # (to 4326 on the default GeoJSON path) to keep the unit well-defined. The
+    # output_wkid branch below overrides this with the requested SR when present.
+    if max_allowable_offset is not None:
+        params["maxAllowableOffset"] = str(max_allowable_offset)
+        params.setdefault("outSR", "4326")
+
     # Add bbox filter if provided (spatial query)
     if bbox:
         xmin, ymin, xmax, ymax = bbox
@@ -458,9 +518,14 @@ def fetch_features_page(
         params["spatialRel"] = "esriSpatialRelIntersects"
         params["inSR"] = "4326"  # WGS84
 
+    # Native-CRS path: ArcGIS honors outSR only for EsriJSON (f=json), not GeoJSON.
+    if output_wkid is not None:
+        params["f"] = "json"
+        params["outSR"] = str(output_wkid)
+
     params = _add_token_to_params(params, token)
 
-    data = _make_request("GET", query_url, params=params, batch_size=limit)
+    data = _make_request("GET", query_url, params=params, timeout=timeout, batch_size=limit)
 
     # GeoJSON responses don't have the standard error format
     # Check if we got features or an error
@@ -480,7 +545,10 @@ def fetch_all_features(
     token: str | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> Generator[dict, None, None]:
     """
     Generator that yields pages of GeoJSON features.
@@ -498,6 +566,7 @@ def fetch_all_features(
         batch_size: Custom batch size (default: server's maxRecordCount)
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
         verbose: Whether to print debug output
+        timeout: Per-request timeout in seconds
 
     Yields:
         GeoJSON FeatureCollection dicts for each page
@@ -548,7 +617,10 @@ def fetch_all_features(
                     bbox=bbox,
                     out_fields=out_fields,
                     token=token,
+                    output_wkid=output_wkid,
+                    max_allowable_offset=max_allowable_offset,
                     verbose=verbose,
+                    timeout=timeout,
                 )
             except BatchTooLargeError as e:
                 # Server couldn't handle batch size - reduce and retry
@@ -624,7 +696,10 @@ def fetch_all_features(
                         bbox=bbox,
                         out_fields=out_fields,
                         token=token,
+                        output_wkid=output_wkid,
+                        max_allowable_offset=max_allowable_offset,
                         verbose=False,  # Disable per-request verbose to avoid race conditions
+                        timeout=timeout,
                     )
                     futures.append((offset, current_batch, future))
 
@@ -709,15 +784,98 @@ def fetch_all_features(
             debug(f"Fetched {fetched} features total using {max_workers} workers")
 
 
+def _wkid_from_spatial_reference(spatial_ref: dict) -> int | None:
+    """Return the WKID from an ArcGIS spatial reference dict, or None.
+
+    Prefers latestWkid (the current EPSG-aligned code) over the legacy
+    Esri-specific wkid, e.g. {"wkid": 102100, "latestWkid": 3857} -> 3857.
+    """
+    return spatial_ref.get("latestWkid") or spatial_ref.get("wkid")
+
+
+def _normalize_wkid(wkid: int) -> int:
+    """Map legacy Esri WKIDs to their EPSG equivalents (e.g. 102100 -> 3857)."""
+    return WKID_TO_EPSG.get(wkid, wkid)
+
+
+def _parse_crs_to_wkid(value: str) -> int:
+    """Parse a CRS string to an integer WKID.
+
+    Accepts 'EPSG:25830' (any case), URN forms, or a bare '25830'.
+    """
+    cleaned = value.strip()
+    if cleaned.isdigit():
+        return int(cleaned)
+    identifier = _extract_crs_identifier(cleaned)
+    if identifier is None:
+        raise ValueError(f"Cannot parse CRS '{value}'. Use 'EPSG:<code>' or a numeric code.")
+    authority, code = identifier
+    if authority != "EPSG":
+        raise ValueError(f"Unsupported CRS authority '{authority}' in '{value}'. Use EPSG codes.")
+    if not isinstance(code, int):
+        raise ValueError(f"Cannot parse CRS '{value}'. Use 'EPSG:<code>' or a numeric code.")
+    return code
+
+
+def _projjson_from_wkid(wkid: int) -> dict | None:
+    """Resolve an ArcGIS WKID to PROJJSON, trying the EPSG then ESRI authority.
+
+    Many ArcGIS layers advertise Esri-authority WKIDs (e.g. 102039) that are
+    not valid EPSG codes; tagging those as EPSG would write CRS metadata no
+    consumer can resolve.
+    """
+    code = _normalize_wkid(wkid)
+    try:
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+    except ImportError:
+        return {"id": {"authority": "EPSG", "code": code}}
+    for authority in ("EPSG", "ESRI"):
+        try:
+            return CRS.from_authority(authority, code).to_json_dict()
+        except CRSError:
+            continue
+    warn(f"WKID {wkid} is not a known EPSG or ESRI code; leaving the output CRS unset.")
+    return None
+
+
+def _resolve_native_wkid(spatial_ref: dict) -> int:
+    """Resolve a layer's advertised native SR to an EPSG/ESRI WKID for outSR.
+
+    Prefers an advertised WKID. Falls back to deriving an EPSG code from an
+    advertised WKT (common for layers that omit a WKID). Raises when the SR is
+    absent or its WKT maps to no EPSG code.
+    """
+    wkid = _wkid_from_spatial_reference(spatial_ref)
+    if wkid is not None:
+        return _normalize_wkid(wkid)
+
+    wkt = spatial_ref.get("wkt")
+    if wkt:
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+
+        try:
+            epsg = CRS.from_wkt(wkt).to_epsg()
+        except CRSError:
+            epsg = None
+        if epsg is not None:
+            return epsg
+        raise GeoParquetError(
+            "--output-crs native could not resolve the layer's WKT spatial reference "
+            "to an EPSG code. Pass an explicit --output-crs EPSG:<code> instead."
+        )
+
+    raise GeoParquetError(
+        "--output-crs native requested but the layer advertises no spatial reference."
+    )
+
+
 def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
     """Extract CRS as PROJJSON from ArcGIS spatial reference."""
-    # ArcGIS uses WKID (Well-Known ID) which maps to EPSG codes
-    wkid = spatial_ref.get("wkid") or spatial_ref.get("latestWkid")
-
+    wkid = _wkid_from_spatial_reference(spatial_ref)
     if wkid:
-        # Handle special WKIDs
-        epsg_code = WKID_TO_EPSG.get(wkid, wkid)
-        return parse_crs_string_to_projjson(f"EPSG:{epsg_code}")
+        return _projjson_from_wkid(wkid)
 
     # Fall back to WKT if provided
     wkt = spatial_ref.get("wkt")
@@ -726,44 +884,6 @@ def _extract_crs_from_spatial_reference(spatial_ref: dict) -> dict | None:
 
     # Default to WGS84
     return parse_crs_string_to_projjson("EPSG:4326")
-
-
-def _align_table_to_schema(table: pa.Table, target_schema: pa.Schema) -> pa.Table:
-    """
-    Align a table's columns to match a target schema.
-
-    This handles three types of mismatches between DuckDB output and ArcGIS metadata:
-    1. Column order differences - reorders columns to match target schema
-    2. Extra columns - drops columns not in target schema
-    3. Missing columns - adds null columns of the correct type
-
-    This is critical for handling schema variance in paginated ArcGIS responses
-    (issue #334), where different batches may have different column ordering or
-    missing/extra fields.
-
-    Args:
-        table: Source table from DuckDB with potentially different column order
-        target_schema: Target schema from ArcGIS layer metadata
-
-    Returns:
-        Table with columns aligned to target schema
-    """
-    source_columns = set(table.column_names)
-    target_columns = [field.name for field in target_schema]
-
-    aligned_arrays = []
-    for field in target_schema:
-        if field.name in source_columns:
-            # Column exists - select it (handles reordering)
-            col = table.column(field.name)
-            aligned_arrays.append(col)
-        else:
-            # Column missing - create null array of correct type
-            null_array = pa.nulls(table.num_rows, type=field.type)
-            aligned_arrays.append(null_array)
-
-    # Create new table with aligned columns (automatically drops extra columns)
-    return pa.table(dict(zip(target_columns, aligned_arrays, strict=True)))
 
 
 def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
@@ -824,9 +944,52 @@ def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
     return pa.schema(fields)
 
 
-def _geojson_page_to_table(
-    features: list[dict],
-) -> pa.Table | None:
+def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Table:
+    """Write a JSON document to a temp file and convert it via DuckDB ST_Read.
+
+    Shared mechanics for the GeoJSON and EsriJSON page converters.
+
+    Args:
+        doc: JSON-serializable document (GeoJSON FeatureCollection or raw
+            EsriJSON page)
+        exclude: Comma-separated columns for the SQL EXCLUDE clause
+        suffix: Temp file suffix (controls GDAL driver detection)
+        con: Optional DuckDB connection to reuse across pages; a fresh one is
+            created and closed when omitted.
+
+    Returns:
+        PyArrow Table with WKB geometry column
+    """
+    owns_con = con is None
+    if owns_con:
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    temp_file = tempfile.gettempdir() + f"/arcgis_page_{uuid.uuid4()}{suffix}"
+
+    try:
+        with open(temp_file, "w") as f:
+            json.dump(doc, f)
+
+        # Allow arbitrarily large/complex single features through GDAL's parser
+        # (issue #517) — must be in effect before ST_Read reads the temp file.
+        _disable_gdal_geojson_size_limit()
+
+        query = f"""
+            SELECT
+                ST_AsWKB(geom) as geometry,
+                * EXCLUDE ({exclude})
+            FROM ST_Read('{temp_file}')
+        """
+
+        return con.execute(query).arrow().read_all()
+
+    finally:
+        if owns_con:
+            con.close()
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+
+
+def _geojson_page_to_table(features: list[dict], con=None) -> pa.Table | None:
     """
     Convert a page of GeoJSON features to PyArrow Table with WKB geometry.
 
@@ -836,6 +999,7 @@ def _geojson_page_to_table(
 
     Args:
         features: List of GeoJSON feature dicts (typically one page)
+        con: Optional DuckDB connection to reuse
 
     Returns:
         PyArrow Table with WKB geometry column, or None if no features
@@ -843,37 +1007,30 @@ def _geojson_page_to_table(
     if not features:
         return None
 
-    # Create a temporary GeoJSON string for DuckDB to parse
-    geojson_collection = json.dumps(
-        {
-            "type": "FeatureCollection",
-            "features": features,
-        }
+    # DuckDB ST_Read adds OGC_FID for GeoJSON, which we exclude
+    return _json_doc_to_table(
+        {"type": "FeatureCollection", "features": features},
+        exclude="geom, OGC_FID",
+        suffix=".geojson",
+        con=con,
     )
 
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
-    temp_file = tempfile.gettempdir() + f"/arcgis_page_{uuid.uuid4()}.geojson"
 
-    try:
-        with open(temp_file, "w") as f:
-            f.write(geojson_collection)
+def _esrijson_page_to_table(page: dict, con=None) -> pa.Table | None:
+    """Convert a page of EsriJSON features to a PyArrow Table with WKB geometry.
 
-        # Read GeoJSON and convert geometry to WKB
-        # Note: DuckDB ST_Read adds OGC_FID column, which we exclude
-        query = f"""
-            SELECT
-                ST_AsWKB(geom) as geometry,
-                * EXCLUDE (geom, OGC_FID)
-            FROM ST_Read('{temp_file}')
-        """
+    Unlike GeoJSON, GDAL's ESRIJSON driver needs the whole response object
+    (geometryType / spatialReference / fields / features), so the raw page is
+    written verbatim. `attributes` are flattened to columns by the driver.
+    GDAL may or may not add OGC_FID for EsriJSON; extra columns are kept here
+    and dropped later by _cast_table_to_schema.
 
-        table = con.execute(query).arrow().read_all()
-        return table
+    Returns a PyArrow Table with WKB geometry column, or None if no features.
+    """
+    if not page.get("features"):
+        return None
 
-    finally:
-        con.close()
-        if os.path.exists(temp_file):
-            os.unlink(temp_file)
+    return _json_doc_to_table(page, exclude="geom", suffix=".json", con=con)
 
 
 def _stream_features_to_parquet(
@@ -887,8 +1044,11 @@ def _stream_features_to_parquet(
     token: str | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_wkid: int | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
-) -> int:
+    timeout: float = DEFAULT_TIMEOUT,
+) -> tuple[int, dict | None]:
     """
     Stream features from ArcGIS to a Parquet file page by page.
 
@@ -907,10 +1067,15 @@ def _stream_features_to_parquet(
         token: Optional authentication token
         batch_size: Custom batch size for pagination
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_wkid: Preserve native CRS. When set (e.g. 25830), fetches
+            EsriJSON (f=json) with outSR; default None fetches GeoJSON in WGS84.
         verbose: Whether to print debug output
+        timeout: Per-request timeout in seconds
 
     Returns:
-        Number of features written
+        Tuple of (number of features written, the server's returned
+        spatialReference dict or None). The spatialReference is only populated
+        on the EsriJSON path (output_wkid set).
     """
     # Build fixed schema from layer metadata upfront to prevent type mismatches
     # between batches (issue #290)
@@ -932,6 +1097,11 @@ def _stream_features_to_parquet(
     writer = None
     total_rows = 0
     page_count = 0
+    detected_sr: dict | None = None
+
+    # One DuckDB connection for all page conversions (a fresh connection per
+    # page would re-load the spatial extension thousands of times)
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
 
     try:
         for page in fetch_all_features(
@@ -944,38 +1114,54 @@ def _stream_features_to_parquet(
             token=token,
             batch_size=batch_size,
             max_workers=max_workers,
+            output_wkid=output_wkid,
+            max_allowable_offset=max_allowable_offset,
             verbose=verbose,
+            timeout=timeout,
         ):
             features = page.get("features", [])
             if not features:
                 continue
 
+            # Capture the server-returned spatial reference once (output_wkid path)
+            if output_wkid is not None and detected_sr is None:
+                detected_sr = page.get("spatialReference")
+
             # Convert this page to Arrow table
-            page_table = _geojson_page_to_table(features)
+            if output_wkid is not None:
+                page_table = _esrijson_page_to_table(page, con=con)
+            else:
+                page_table = _geojson_page_to_table(features, con=con)
             if page_table is None:
                 continue
 
             page_count += 1
 
-            # Align columns to target schema (handles order/missing/extra columns)
-            # This is required because DuckDB may return columns in different order
-            # than ArcGIS metadata, or some batches may have different fields
-            page_table = _align_table_to_schema(page_table, target_schema)
-
-            # Cast to fixed schema (handles type mismatches between batches)
+            # Reconcile this page to the authoritative metadata schema using the
+            # shared helper from core/common.py (same code path as the WFS extractor):
+            # it reorders columns, fills missing fields with typed nulls, drops extras,
+            # and casts each column to the metadata type with page context in errors.
+            # The metadata schema stays authoritative (e.g. int32 declared fields are
+            # narrowed back from DuckDB's int64 inference); promotion is intentionally
+            # NOT used here because, unlike WFS, ArcGIS has an authoritative schema.
             try:
-                page_table = page_table.cast(target_schema, safe=True)
-            except pa.ArrowInvalid as e:
-                # If safe casting fails, try to provide helpful error message
+                page_table = _cast_table_to_schema(
+                    page_table, target_schema, page_info=f"batch {page_count}"
+                )
+            except ValueError as e:
+                # Cast failure (e.g. a value that overflows a declared narrower type)
                 raise GeoParquetError(
                     f"Failed to cast batch {page_count} to target schema. "
-                    f"This may indicate data corruption or unexpected types from the service. "
-                    f"Error: {e}"
+                    f"This may indicate unexpected types from the service. {e}"
                 ) from e
 
-            # Initialize writer with fixed schema on first page
+            # Initialize writer on first page using the reconciled page's schema.
+            # _cast_table_to_schema produces nullable columns (it rebuilds the table),
+            # so we seed the writer from the reconciled table rather than the metadata
+            # schema to avoid a nullability mismatch. Column types still match metadata;
+            # geo metadata is (re)derived in the second pass, not from this writer.
             if writer is None:
-                writer = pq.ParquetWriter(output_path, target_schema)
+                writer = pq.ParquetWriter(output_path, page_table.schema)
 
             # Write this page
             writer.write_table(page_table)
@@ -985,9 +1171,10 @@ def _stream_features_to_parquet(
             del page_table
 
         debug(f"Streamed {total_rows} features in {page_count} pages to temp file")
-        return total_rows
+        return total_rows, detected_sr
 
     finally:
+        con.close()
         if writer is not None:
             writer.close()
 
@@ -1002,7 +1189,11 @@ def arcgis_to_table(
     limit: int | None = None,
     batch_size: int | None = None,
     max_workers: int = 1,
+    output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
     verbose: bool = False,
+    repair_geometry: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> pa.Table:
     """
     Convert ArcGIS Feature Service to PyArrow Table.
@@ -1030,24 +1221,56 @@ def arcgis_to_table(
         limit: Maximum number of features to return
         batch_size: Custom batch size for pagination
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
+        output_crs: Preserve native CRS instead of reprojecting to WGS84. Use
+            "native" for the layer's advertised SR, or an EPSG code (e.g.
+            "EPSG:25830"). Default None fetches GeoJSON in WGS84 (CRS84).
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            the units of the output CRS (degrees on the default WGS84 path).
+            Reduces vertices per feature for very large geometries.
         verbose: Whether to print debug output
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            FeatureServer layers whose large/complex geometries take the server
+            minutes to serialize a single page.
 
     Returns:
         PyArrow Table with WKB geometry column
     """
     configure_verbose(verbose)
 
+    # Resolve and validate the requested output CRS before any network work
+    # so a bad value fails fast with a clean error. "native" needs the layer
+    # metadata and is resolved after get_layer_info below.
+    output_wkid: int | None = None
+    if output_crs is not None and output_crs != "native":
+        try:
+            output_wkid = _normalize_wkid(_parse_crs_to_wkid(output_crs))
+        except ValueError as e:
+            raise InvalidParameterError("output_crs", str(e)) from e
+
+    # A generalization tolerance must be positive; reject bad values before any
+    # network work so the failure is fast and clean.
+    if max_allowable_offset is not None and max_allowable_offset <= 0:
+        raise InvalidParameterError(
+            "max_allowable_offset", "must be a positive number (units of the output CRS)."
+        )
+
     # Validate URL
     service_url, layer_id = validate_arcgis_url(service_url)
 
     # Resolve authentication
-    token = resolve_token(auth, service_url, verbose) if auth else None
+    token = resolve_token(auth, service_url, verbose, timeout=timeout) if auth else None
 
     # Get layer info (with WHERE and bbox filters applied to count)
-    layer_info = get_layer_info(service_url, token=token, where=where, bbox=bbox, verbose=verbose)
+    layer_info = get_layer_info(
+        service_url, token=token, where=where, bbox=bbox, verbose=verbose, timeout=timeout
+    )
     debug(f"Layer: {layer_info.name}")
     debug(f"Geometry type: {layer_info.geometry_type}")
     debug(f"Total features matching filter: {layer_info.total_count}")
+
+    # Resolve "native" to the layer's advertised SR
+    if output_crs == "native":
+        output_wkid = _resolve_native_wkid(layer_info.spatial_reference)
 
     if layer_info.total_count == 0:
         filters_applied = where != "1=1" or bbox is not None
@@ -1076,7 +1299,7 @@ def arcgis_to_table(
 
     try:
         progress("Streaming features to temp file...")
-        total_rows = _stream_features_to_parquet(
+        total_rows, detected_sr = _stream_features_to_parquet(
             service_url=service_url,
             layer_info=layer_info,
             output_path=temp_parquet,
@@ -1087,7 +1310,10 @@ def arcgis_to_table(
             token=token,
             batch_size=batch_size,
             max_workers=max_workers,
+            output_wkid=output_wkid,
+            max_allowable_offset=max_allowable_offset,
             verbose=verbose,
+            timeout=timeout,
         )
 
         if total_rows == 0:
@@ -1106,10 +1332,24 @@ def arcgis_to_table(
                 table = table.select(cols_to_keep)
                 debug(f"Excluded columns: {cols_to_exclude}")
 
-        # Add CRS to metadata
-        # Always use CRS84 (WGS84 lon/lat) because we request f=geojson,
-        # which per RFC 7946 is always WGS84 regardless of the layer's native SR
-        crs = parse_crs_string_to_projjson("OGC:CRS84")
+        # Add CRS to metadata.
+        # Default (GeoJSON path): always CRS84 (WGS84 lon/lat) because we request
+        # f=geojson, which per RFC 7946 is always WGS84 regardless of the native SR.
+        # Native path (EsriJSON + outSR): tag the SR the server actually returned.
+        if output_wkid is None:
+            crs = parse_crs_string_to_projjson("OGC:CRS84")
+        else:
+            # returned_wkid is None when the server omitted spatialReference on
+            # every page; we can't observe a mismatch in that case, so we skip the
+            # warning and fall back to tagging with the requested WKID below.
+            returned_wkid = _wkid_from_spatial_reference(detected_sr or {})
+            if returned_wkid and _normalize_wkid(returned_wkid) != output_wkid:
+                warn(
+                    f"Requested output CRS WKID {output_wkid} but server returned "
+                    f"WKID {returned_wkid}. Tagging output with the returned CRS "
+                    f"(coordinates were not reprojected)."
+                )
+            crs = _extract_crs_from_spatial_reference(detected_sr or {"wkid": output_wkid})
         if crs:
             geo_metadata = {
                 "version": "1.1.0",
@@ -1130,13 +1370,21 @@ def arcgis_to_table(
             new_metadata = {**existing_metadata, b"geo": json.dumps(geo_metadata).encode("utf-8")}
             table = table.replace_schema_metadata(new_metadata)
 
+        # Repair invalid geometry (issue #506). Helper preserves schema metadata.
+        if table.num_rows > 0:
+            table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+
         success(f"Converted {table.num_rows} features")
         return table
 
     finally:
-        # Clean up temp file
+        # Clean up temp file (best-effort: on Windows pyarrow may still hold
+        # the file handle after read_table, raising PermissionError on unlink)
         if os.path.exists(temp_parquet):
-            os.unlink(temp_parquet)
+            try:
+                os.unlink(temp_parquet)
+            except OSError:
+                debug(f"Could not remove temp file {temp_parquet}")
 
 
 def convert_arcgis_to_geoparquet(
@@ -1152,6 +1400,8 @@ def convert_arcgis_to_geoparquet(
     include_cols: str | None = None,
     exclude_cols: str | None = None,
     limit: int | None = None,
+    output_crs: str | None = None,
+    max_allowable_offset: float | None = None,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     max_workers: int = 1,
@@ -1164,6 +1414,8 @@ def convert_arcgis_to_geoparquet(
     row_group_size_mb: int | None = None,
     row_group_rows: int | None = None,
     overwrite: bool = False,
+    repair_geometry: bool = True,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> None:
     """
     Convert ArcGIS Feature Service to GeoParquet file.
@@ -1189,6 +1441,10 @@ def convert_arcgis_to_geoparquet(
         include_cols: Comma-separated columns to include (pushed to server)
         exclude_cols: Comma-separated columns to exclude (applied client-side)
         limit: Maximum number of features to return
+        output_crs: Preserve native CRS. "native" uses the layer's advertised SR;
+            or pass an EPSG code (e.g. "EPSG:25830"). Default None -> WGS84 (f=geojson).
+        max_allowable_offset: Server-side geometry generalization tolerance, in
+            output-CRS units (degrees on the default WGS84 path).
         skip_hilbert: Skip Hilbert spatial ordering
         skip_bbox: Skip adding bbox column for spatial query optimization
         max_workers: Number of concurrent requests (1 = sequential, 2-3 recommended)
@@ -1200,6 +1456,9 @@ def convert_arcgis_to_geoparquet(
         profile: AWS profile for S3 output
         row_group_size_mb: Row group size in MB (mutually exclusive with row_group_rows)
         row_group_rows: Row group size in number of rows (mutually exclusive with row_group_size_mb)
+        timeout: Per-request HTTP timeout in seconds (default 60). Increase for
+            layers with very large/complex geometries that the server is slow to
+            serialize.
     """
     configure_verbose(verbose)
 
@@ -1234,7 +1493,11 @@ def convert_arcgis_to_geoparquet(
         limit=limit,
         batch_size=batch_size,
         max_workers=max_workers,
+        output_crs=output_crs,
+        max_allowable_offset=max_allowable_offset,
         verbose=verbose,
+        repair_geometry=repair_geometry,
+        timeout=timeout,
     )
 
     # Apply Hilbert ordering if not skipped

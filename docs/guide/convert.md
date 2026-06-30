@@ -317,6 +317,47 @@ See [Remote Files Guide](remote-files.md) for authentication setup.
 
 ## Options
 
+### Geometry Repair
+
+Invalid geometry (self-intersections, unclosed rings — common in government and
+municipal data) is repaired automatically with `ST_MakeValid` and a warning
+reports how many features were fixed.
+
+Repair is **on by default** across the pipeline (`convert`, `extract wfs`,
+`extract arcgis`, `extract bigquery`, `extract carto`, `extract geoparquet`,
+`convert geojson`, and `pmtiles create`). It prevents downstream failures such
+as tippecanoe `TopologyException` crashes during PMTiles generation.
+
+To preserve invalid geometry exactly (e.g. for round-tripping), opt out — gpio
+still counts and warns about the invalid features it left untouched.
+
+=== "CLI"
+
+    ```bash
+    # Default: repairs and warns ("Repaired 3 invalid geometries")
+    gpio convert cordoba.gpkg output.parquet
+
+    # Opt out: preserves invalid geometry, still warns
+    # ("Left unrepaired 3 invalid geometries (--no-repair-geometry)")
+    gpio convert cordoba.gpkg output.parquet --no-repair-geometry
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Default: repairs invalid geometry
+    gpio.convert("cordoba.gpkg").write("output.parquet")
+
+    # Opt out: preserve invalid geometry exactly
+    gpio.convert("cordoba.gpkg", repair_geometry=False).write("output.parquet")
+    ```
+
+Only invalid geometry is touched: valid geometry is byte-identical, NULL is
+preserved, and bounding boxes stay correct (`ST_MakeValid` never expands an
+envelope).
+
 ### Skip Hilbert Ordering
 
 For faster conversion when spatial ordering isn't critical:
@@ -346,6 +387,52 @@ Available compression types:
 - `LZ4` - Fastest decompression
 - `SNAPPY` - Fast compression
 - `UNCOMPRESSED` - No compression
+
+### GeoParquet Version
+
+Control the GeoParquet encoding version written to output:
+
+=== "CLI"
+
+    ```bash
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
+    gpio convert input.geojson output.parquet --geoparquet-version 1.1-geoarrow
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio convert input.shp output.parquet --geoparquet-version 1.0
+
+    # GeoParquet 1.1 with WKB encoding (default)
+    gpio convert input.shp output.parquet --geoparquet-version 1.1
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
+    # Converts geometry from any input (GeoJSON, Shapefile, GeoPackage, CSV, WKB GeoParquet)
+    # to native GeoArrow types. No bbox column is added.
+    # Columns mixing incompatible geometry types fall back to WKB.
+    gpio.convert('input.geojson').write(
+        'output.parquet', geoparquet_version='1.1-geoarrow'
+    )
+
+    # GeoParquet 1.0 with WKB encoding
+    gpio.convert('input.shp').write(
+        'output.parquet', geoparquet_version='1.0'
+    )
+    ```
+
+Available versions:
+- `1.0` — GeoParquet 1.0 with WKB encoding
+- `1.1` — GeoParquet 1.1 with WKB encoding (default)
+- `1.1-geoarrow` — GeoParquet 1.1 with native GeoArrow (nested-coordinate) encoding; no bbox
+  column; compatible geometry type mixes are promoted (e.g. Polygon + MultiPolygon →
+  MultiPolygon); incompatible mixes fall back to WKB
+- `2.0` — GeoParquet 2.0 with native Parquet geo types
+- `parquet-geo-only` — Native Parquet geo types without GeoParquet metadata
 
 ### Verbose Output
 

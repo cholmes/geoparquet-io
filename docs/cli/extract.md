@@ -85,6 +85,11 @@ gpio extract arcgis https://services.arcgis.com/.../FeatureServer/0 output.parqu
 - `--include-cols` - Comma-separated columns to include (pushed to server)
 - `--exclude-cols` - Comma-separated columns to exclude (applied after download)
 - `--limit` - Maximum number of features to extract
+- `--output-crs` - Output CRS such as `EPSG:25830`, or `native` for the layer's advertised SR (default reprojects to WGS84)
+- `--max-allowable-offset` - Server-side geometry generalization tolerance in output CRS units
+- `--workers` - Parallel requests for large datasets (1-10, default: 1)
+- `--batch-size` - Features per request (default: server's maxRecordCount, auto-reduces on errors)
+- `--timeout` - Per-request HTTP timeout in seconds (default: 60). Increase for layers with very large/complex geometries that are slow to serialize
 - `--skip-hilbert` - Skip Hilbert spatial ordering
 - `--skip-bbox` - Skip adding bbox column
 
@@ -132,7 +137,9 @@ gpio extract wfs https://geo.example.com/wfs layer_name output.parquet
 - `--limit` - Maximum features to extract
 - `--output-crs` - Request specific CRS from server (e.g., `EPSG:4326`)
 - `--workers` - Parallel requests for large datasets (1-10, default: 1)
-- `--page-size` - Features per page when using `--workers > 1` (default: 10000)
+- `--page-size` - Features per page (default: 100000, max: 500000)
+- `--auto-tile/--no-auto-tile` - Auto-subdivide bbox when server caps response (default: enabled)
+- `--parallel-layers` - Concurrent layer extraction for multi-layer requests (1-10, default: 1)
 - `--skip-hilbert` - Skip Hilbert spatial ordering
 - `--skip-bbox` - Skip adding bbox column
 
@@ -155,8 +162,15 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 # Parallel extraction for large datasets (1M+ features)
 gpio extract wfs https://geo.example.com/wfs large_layer output.parquet \
-    --workers 4 --page-size 10000
+    --workers 4
+
+# Extract multiple layers in parallel to a directory
+gpio extract wfs https://geo.example.com/wfs layer1,layer2,layer3 ./output/ \
+    --parallel-layers 3
 ```
+
+!!! tip "Auto-Tiling"
+    When a WFS server caps responses (e.g., maxFeatures=1M), gpio automatically subdivides the bbox and fetches all features. Disable with `--no-auto-tile` if you want the capped response.
 
 !!! tip "Performance"
     For datasets under ~100K features, the default single-stream mode is fastest. Use `--workers 2-4` for very large datasets (1M+ features) where server timeouts occur.

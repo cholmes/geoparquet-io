@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import partition
+from geoparquet_io.core import duckdb_utils
 
 
 class TestVecorelPartitionSelectClause:
@@ -116,7 +117,10 @@ class TestVecorelPartitionLocalIntegration:
         input_file = os.path.join(temp_output_dir, "input.parquet")
         out_dir = os.path.join(temp_output_dir, "out")
 
-        # Overture-shaped admin file: two region polygons with country + region
+        # Overture-shaped admin file. Per-level joins read each level's own
+        # polygons, so the country level needs a country-subtype polygon (real
+        # Overture has these; region rows alone are not enough). One country
+        # polygon covering both regions, plus the two region polygons.
         _write_geoparquet(
             con,
             """
@@ -124,6 +128,8 @@ class TestVecorelPartitionLocalIntegration:
                 {'xmin': ST_XMin(geometry), 'xmax': ST_XMax(geometry),
                  'ymin': ST_YMin(geometry), 'ymax': ST_YMax(geometry)} AS bbox
             FROM (VALUES
+                ('country', 'US', NULL,
+                 ST_GeomFromText('POLYGON((0 0, 0 10, 20 10, 20 0, 0 0))')),
                 ('region', 'US', 'US-CA',
                  ST_GeomFromText('POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))')),
                 ('region', 'US', 'US-NV',
@@ -167,6 +173,11 @@ class TestVecorelPartitionLocalIntegration:
         files = list(Path(out_dir).rglob("*.parquet"))
         assert len(files) == 2
 
+        # No row multiplication: per-level chaining must emit one row per input
+        # feature, not one per (country × region) polygon match (PR #474).
+        total_rows = sum(pq.ParquetFile(str(f)).metadata.num_rows for f in files)
+        assert total_rows == 2
+
         for f in files:
             pf = pq.ParquetFile(str(f))
             names = pf.schema_arrow.names
@@ -182,6 +193,118 @@ class TestVecorelPartitionLocalIntegration:
             collection = json.loads(meta[b"collection"])
             assert VECOREL_ADMIN_SCHEMA in collection["schemas"]["default"]
             assert pf.schema_arrow.field("admin:country_code").nullable is False
+
+
+@pytest.mark.integration
+class TestNonVecorelPartitionLocalIntegration:
+    """End-to-end NON-vecorel admin partitioning against a local admin file.
+
+    Pins the single-pass invariants for the admin path (the new file only covered
+    partition_by_column): exactly one PARTITION_BY scan, row reconciliation with
+    no multiplication, admin columns dropped from output, nested layout.
+    """
+
+    def test_single_scan_reconciliation_and_dropped_admin_columns(
+        self, monkeypatch, temp_output_dir
+    ):
+        import os
+        from pathlib import Path
+
+        import duckdb
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+        from geoparquet_io.core.partition.admin_hierarchical import (
+            partition_by_admin_hierarchical,
+        )
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+
+        admin_file = os.path.join(temp_output_dir, "admin.parquet")
+        input_file = os.path.join(temp_output_dir, "input.parquet")
+        out_dir = os.path.join(temp_output_dir, "out")
+
+        _write_geoparquet(
+            con,
+            """
+            SELECT subtype, country, region, geometry,
+                {'xmin': ST_XMin(geometry), 'xmax': ST_XMax(geometry),
+                 'ymin': ST_YMin(geometry), 'ymax': ST_YMax(geometry)} AS bbox
+            FROM (VALUES
+                ('country', 'US', NULL,
+                 ST_GeomFromText('POLYGON((0 0, 0 10, 20 10, 20 0, 0 0))')),
+                ('region', 'US', 'US-CA',
+                 ST_GeomFromText('POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))')),
+                ('region', 'US', 'US-NV',
+                 ST_GeomFromText('POLYGON((10 0, 10 10, 20 10, 20 0, 10 0))'))
+            ) AS t(subtype, country, region, geometry)
+            """,
+            admin_file,
+        )
+        _write_geoparquet(
+            con,
+            """
+            SELECT id, geometry FROM (VALUES
+                (1, ST_GeomFromText('POINT(5 5)')),
+                (2, ST_GeomFromText('POINT(15 5)'))
+            ) AS t(id, geometry)
+            """,
+            input_file,
+        )
+        con.close()
+
+        def fake_create(dataset_name, source_path=None, verbose=False):
+            return OvertureAdminDataset(source_path=admin_file, verbose=verbose)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.partition.admin_hierarchical.AdminDatasetFactory.create",
+            staticmethod(fake_create),
+        )
+
+        # Spy the DuckDB connection factory to count partitioned scans.
+        executed: list[str] = []
+        real_get_conn = duckdb_utils.get_duckdb_connection
+
+        class SpyCon:
+            def __init__(self, con):
+                self._con = con
+
+            def execute(self, sql, *args, **kwargs):
+                executed.append(sql)
+                return self._con.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._con, name)
+
+        def spy_get_conn(*args, **kwargs):
+            return SpyCon(real_get_conn(*args, **kwargs))
+
+        monkeypatch.setattr(duckdb_utils, "get_duckdb_connection", spy_get_conn)
+
+        count = partition_by_admin_hierarchical(
+            input_file,
+            out_dir,
+            dataset_name="overture",
+            levels=["country", "region"],
+            hive=True,
+        )
+
+        assert count == 2
+        files = list(Path(out_dir).rglob("*.parquet"))
+        assert len(files) == 2
+        # No row multiplication from the country×region polygon matches.
+        assert sum(pq.ParquetFile(str(f)).metadata.num_rows for f in files) == 2
+
+        # Exactly one partitioned scan of the enriched data; no per-combination writes.
+        partition_by_stmts = [s for s in executed if "PARTITION_BY" in s.upper()]
+        assert len(partition_by_stmts) == 1, executed
+
+        # Admin columns are dropped from non-vecorel output (via the alias trick).
+        for f in files:
+            names = pq.ParquetFile(str(f)).schema_arrow.names
+            assert not any(n.startswith("_admin_") or n.startswith("__gpio_part") for n in names)
+            assert "admin:country_code" not in names
 
 
 @pytest.mark.network

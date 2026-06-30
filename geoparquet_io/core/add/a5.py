@@ -6,7 +6,15 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.crs_utils import (
+    crs_transform_sql_expr,
+    extract_crs_from_parquet,
+    extract_crs_from_table,
+)
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -56,8 +64,7 @@ def add_a5_table(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         # Load A5 extension
-        con.execute("INSTALL a5 FROM community")
-        con.execute("LOAD a5")
+        load_community_extension(con, "a5")
 
         con.register("__input_table", table)
 
@@ -78,10 +85,13 @@ def add_a5_table(
         else:
             source_ref = "__input_table"
 
-        # Build A5 column query
+        # Build A5 column query. a5_lonlat_to_cell expects lon/lat degrees, so a
+        # projected input is reprojected to OGC:CRS84 before keying (issue #525).
+        source_crs = extract_crs_from_table(table, geom_col)
+        centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
         a5_expr = f"""a5_lonlat_to_cell(
-            ST_X(ST_Centroid("{geom_col}")),
-            ST_Y(ST_Centroid("{geom_col}")),
+            ST_X({centroid}),
+            ST_Y({centroid}),
             {resolution}
         )"""
 
@@ -119,11 +129,17 @@ def _make_add_a5_query(
     geometry_column: str,
     a5_column_name: str,
     resolution: int,
+    source_crs=None,
 ) -> str:
-    """Build query to add A5 column to a source."""
+    """Build query to add A5 column to a source.
+
+    ``source_crs`` (when a non-default CRS) reprojects the centroid to OGC:CRS84
+    before keying, since ``a5_lonlat_to_cell`` expects lon/lat degrees.
+    """
+    centroid = crs_transform_sql_expr(f'ST_Centroid("{geometry_column}")', source_crs)
     a5_expr = f"""a5_lonlat_to_cell(
-        ST_X(ST_Centroid("{geometry_column}")),
-        ST_Y(ST_Centroid("{geometry_column}")),
+        ST_X({centroid}),
+        ST_Y({centroid}),
         {resolution}
     )"""
     return f'SELECT *, {a5_expr} AS "{a5_column_name}" FROM {source}'
@@ -208,10 +224,13 @@ def add_a5_column(
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    # Define the A5 SQL expression
+    # Define the A5 SQL expression. a5_lonlat_to_cell expects lon/lat degrees, so
+    # a projected input is reprojected to OGC:CRS84 before keying (issue #525).
+    source_crs = extract_crs_from_parquet(input_parquet, verbose)
+    centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
     sql_expression = f"""a5_lonlat_to_cell(
-        ST_X(ST_Centroid("{geom_col}")),
-        ST_Y(ST_Centroid("{geom_col}")),
+        ST_X({centroid}),
+        ST_Y({centroid}),
         {a5_resolution}
     )"""
 
@@ -265,11 +284,14 @@ def _add_a5_streaming(
     if should_stream_output(output_path):
         verbose = False
 
+    # Detect a projected source CRS so the centroid is reprojected to OGC:CRS84
+    # before keying. stdin carries no readable CRS, so it is treated as CRS84.
+    source_crs = None if is_stdin(input_path) else extract_crs_from_parquet(input_path, verbose)
+
     def make_query(source: str, con) -> str:
         """Build the add A5 query for streaming source."""
         # Load A5 extension
-        con.execute("INSTALL a5 FROM community")
-        con.execute("LOAD a5")
+        load_community_extension(con, "a5")
 
         # Get column names from query result
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description
@@ -287,7 +309,7 @@ def _add_a5_streaming(
         if verbose:
             debug(f"Using geometry column: {geom_col}")
 
-        return _make_add_a5_query(source, geom_col, a5_column_name, resolution)
+        return _make_add_a5_query(source, geom_col, a5_column_name, resolution, source_crs)
 
     execute_transform(
         input_path,

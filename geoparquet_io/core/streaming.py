@@ -21,10 +21,23 @@ import json
 import sys
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 
 # Marker for stdin/stdout in CLI arguments
 STREAM_MARKER = "-"
+
+# Arrow's plain ``binary`` type uses 32-bit offsets, so the cumulative value
+# bytes of a single array must stay below INT32_MAX (2,147,483,647). geoarrow's
+# ``as_wkb`` re-encodes each Arrow chunk into a 32-bit ``binary`` array, so a
+# chunk whose total WKB exceeds this ceiling overflows
+# (``GeoArrowKernel<as_geoarrow>::push_batch() failed (75)``). DuckDB exports
+# Arrow in ~1M-row batches with ``arrow_large_buffer_size=true`` (64-bit
+# ``large_binary``), and 1M detailed polygons can easily blow past 2 GB. We
+# re-chunk oversized batches under this byte budget before conversion so the
+# 32-bit output stays valid while remaining maximally compatible downstream.
+# The margin below 2 GB leaves headroom for per-value offset bookkeeping.
+_MAX_WKB_CHUNK_BYTES = 1_500_000_000
 
 
 def is_stdin(path: str | None) -> bool:
@@ -322,6 +335,69 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
     return temp_path
 
 
+def _wkb_chunk_data_nbytes(arr: pa.Array) -> int:
+    """Return the total value bytes (excluding offsets/validity) of a binary array."""
+    if len(arr) == 0:
+        return 0
+    total = pc.sum(pc.binary_length(arr)).as_py()
+    return int(total or 0)
+
+
+def _split_array_under_byte_limit(arr: pa.Array, max_bytes: int) -> list[pa.Array]:
+    """
+    Split a binary array into slices whose cumulative value bytes stay under a limit.
+
+    Bounds on bytes rather than rows because per-row WKB size varies wildly
+    (a point is ~21 bytes, a detailed field-boundary polygon can be kilobytes).
+    A single value larger than ``max_bytes`` is emitted in its own slice; the
+    caller surfaces a clear error if even that one row overflows the 32-bit
+    ceiling on conversion.
+    """
+    lengths = pc.binary_length(arr).to_pylist()
+    slices: list[pa.Array] = []
+    start = 0
+    running = 0
+    for i, length in enumerate(lengths):
+        length = length or 0  # null geometries contribute no value bytes
+        if i > start and running + length > max_bytes:
+            slices.append(arr.slice(start, i - start))
+            start = i
+            running = 0
+        running += length
+    slices.append(arr.slice(start, len(arr) - start))
+    return slices
+
+
+def _rebatch_wkb_under_byte_limit(
+    geom_col: pa.ChunkedArray | pa.Array,
+    max_bytes: int | None = None,
+) -> pa.ChunkedArray | pa.Array:
+    """
+    Re-chunk a (chunked) binary array so no chunk exceeds the 32-bit offset ceiling.
+
+    Returns the input unchanged when every chunk already fits the budget, so the
+    common (small-batch) case is a no-op. Oversized chunks are split on byte
+    boundaries (see :func:`_split_array_under_byte_limit`) before geoarrow
+    re-encodes them into 32-bit ``binary`` WKB (issue #511).
+    """
+    if max_bytes is None:
+        max_bytes = _MAX_WKB_CHUNK_BYTES
+
+    chunks = geom_col.chunks if isinstance(geom_col, pa.ChunkedArray) else [geom_col]
+    rebatched: list[pa.Array] = []
+    needs_split = False
+    for chunk in chunks:
+        if _wkb_chunk_data_nbytes(chunk) > max_bytes:
+            needs_split = True
+            rebatched.extend(_split_array_under_byte_limit(chunk, max_bytes))
+        else:
+            rebatched.append(chunk)
+
+    if not needs_split:
+        return geom_col
+    return pa.chunked_array(rebatched, type=geom_col.type)
+
+
 def apply_geoarrow_extension_type(
     table: pa.Table,
     geometry_column: str,
@@ -340,6 +416,12 @@ def apply_geoarrow_extension_type(
 
     Returns:
         Table with geometry column converted to geoarrow extension type
+
+    Raises:
+        StreamingError: If the geometry column is WKB but cannot be encoded
+            (e.g. a single geometry above the 2 GB Arrow offset ceiling, or
+            malformed WKB). Surfacing this loudly avoids the misleading
+            downstream "No data received on stdin" (issue #511).
     """
     import geoarrow.pyarrow as ga
 
@@ -348,6 +430,13 @@ def apply_geoarrow_extension_type(
 
     try:
         geom_col = table.column(geometry_column)
+
+        # Keep each Arrow chunk under the 32-bit binary offset ceiling before
+        # geoarrow re-encodes it. DuckDB exports geometry as 64-bit
+        # large_binary batches that can exceed 2 GB, but ga.as_wkb produces
+        # 32-bit binary — so an oversized batch overflows without this guard
+        # (issue #511).
+        geom_col = _rebatch_wkb_under_byte_limit(geom_col)
 
         # Convert to geoarrow WKB extension type
         wkb_arr = ga.as_wkb(geom_col)
@@ -367,8 +456,23 @@ def apply_geoarrow_extension_type(
         return table.set_column(col_index, geometry_column, wkb_arr)
 
     except (TypeError, ValueError, AttributeError):
-        # If conversion fails, return original table
+        # The column isn't convertible WKB (e.g. already-native nested
+        # geometry); pass it through unchanged rather than failing the stream.
         return table
+    except Exception as e:
+        # Any other failure — notably geoarrow's GeoArrowCException (a
+        # RuntimeError subclass) for malformed WKB or a single value above the
+        # 2 GB offset ceiling — must surface with its true cause. Returning the
+        # table here would silently emit un-converted geometry, and letting the
+        # raw exception escape gets masked downstream as the misleading "No
+        # data received on stdin" (issue #511).
+        raise StreamingError(
+            f"Failed to convert geometry column '{geometry_column}' to GeoArrow "
+            f"WKB for streaming: {e}\n\n"
+            "If a single geometry's WKB exceeds 2 GB it cannot be encoded into "
+            "Arrow's 32-bit binary layout; simplify very large geometries before "
+            "streaming."
+        ) from e
 
 
 def extract_crs_from_table(

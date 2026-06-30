@@ -5,11 +5,12 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import datetime
 import json
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -52,6 +53,31 @@ MOCK_FEATURES_PAGE = {
             "geometry": {"type": "Point", "coordinates": [-122.6, 38.0]},
             "properties": {"OBJECTID": 3, "name": "Point 3"},
         },
+    ],
+}
+
+MOCK_ESRI_FEATURES_PAGE = {
+    "geometryType": "esriGeometryPolygon",
+    "spatialReference": {"wkid": 25830, "latestWkid": 25830},
+    "fields": [
+        {"name": "OBJECTID", "type": "esriFieldTypeOID"},
+        {"name": "name", "type": "esriFieldTypeString"},
+    ],
+    "features": [
+        {
+            "attributes": {"OBJECTID": 1, "name": "Zone 1"},
+            "geometry": {
+                "rings": [
+                    [
+                        [442931.3, 4475041.4],
+                        [442930.1, 4475006.5],
+                        [442896.9, 4475008.9],
+                        [442898.3, 4475043.0],
+                        [442931.3, 4475041.4],
+                    ]
+                ]
+            },
+        }
     ],
 }
 
@@ -208,6 +234,61 @@ class TestGetLayerInfo:
         assert result.max_record_count == 1000
         assert result.total_count == 100
 
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_from_extent(self, mock_count, mock_request):
+        """Many servers advertise the layer SR only under extent.spatialReference."""
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Madrid",
+            "geometryType": "esriGeometryPolygon",
+            "extent": {"spatialReference": {"wkid": 25830, "latestWkid": 25830}},
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {"wkid": 25830, "latestWkid": 25830}
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_from_source_sr(self, mock_count, mock_request):
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Layer",
+            "geometryType": "esriGeometryPolygon",
+            "sourceSpatialReference": {"wkid": 4269},
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {"wkid": 4269}
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    @patch("geoparquet_io.core.arcgis.get_feature_count")
+    def test_spatial_reference_missing_is_empty_not_4326(self, mock_count, mock_request):
+        """No advertised SR must not silently default to 4326 (native would lie)."""
+        from geoparquet_io.core.arcgis import get_layer_info
+
+        mock_count.return_value = 1
+        mock_request.return_value = {
+            "name": "Layer",
+            "geometryType": "esriGeometryPolygon",
+            "fields": [],
+            "maxRecordCount": 1000,
+        }
+
+        result = get_layer_info("https://example.com/MapServer/0")
+
+        assert result.spatial_reference == {}
+
 
 class TestFetchFeaturesPage:
     """Tests for feature fetching."""
@@ -227,6 +308,190 @@ class TestFetchFeaturesPage:
 
         assert result["type"] == "FeatureCollection"
         assert len(result["features"]) == 3
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_default_uses_geojson(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "geojson"
+        assert "outSR" not in params
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_output_wkid_uses_esrijson_and_outsr(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            output_wkid=25830,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "json"
+        assert params["outSR"] == "25830"
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_no_max_allowable_offset_by_default(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        params = mock_request.call_args.kwargs["params"]
+        assert "maxAllowableOffset" not in params
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_on_geojson(self, mock_request):
+        """Generalization tolerance is honored on the default GeoJSON path too."""
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "geojson"
+        assert params["maxAllowableOffset"] == "0.005"
+        # outSR is anchored to 4326 so the tolerance unit is unambiguously degrees.
+        assert params["outSR"] == "4326"
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_max_allowable_offset_with_outsr(self, mock_request):
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_ESRI_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            output_wkid=25830,
+            max_allowable_offset=0.005,
+        )
+
+        params = mock_request.call_args.kwargs["params"]
+        assert params["f"] == "json"
+        assert params["outSR"] == "25830"
+        assert params["maxAllowableOffset"] == "0.005"
+
+
+class TestTimeout:
+    """Tests for the configurable HTTP timeout (issue #518)."""
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_default_timeout(self, mock_request):
+        """Default timeout matches DEFAULT_TIMEOUT when not specified."""
+        from geoparquet_io.core.arcgis import DEFAULT_TIMEOUT, fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page("https://example.com/FeatureServer/0", offset=0, limit=1000)
+
+        assert mock_request.call_args.kwargs["timeout"] == DEFAULT_TIMEOUT
+
+    @patch("geoparquet_io.core.arcgis._make_request")
+    def test_fetch_page_custom_timeout_threaded_to_request(self, mock_request):
+        """A custom timeout reaches the underlying HTTP request."""
+        from geoparquet_io.core.arcgis import fetch_features_page
+
+        mock_request.return_value = MOCK_FEATURES_PAGE
+        fetch_features_page(
+            "https://example.com/FeatureServer/0",
+            offset=0,
+            limit=1000,
+            timeout=300.0,
+        )
+
+        assert mock_request.call_args.kwargs["timeout"] == 300.0
+
+    def test_make_request_passes_timeout_to_retry_helper(self):
+        """_make_request forwards the timeout to make_request_with_retry."""
+        from geoparquet_io.core.arcgis import _make_request
+
+        with patch("geoparquet_io.core.arcgis.make_request_with_retry") as mock_retry:
+            mock_retry.return_value = {"ok": True}
+            _make_request("GET", "https://example.com/test", timeout=240.0)
+
+        assert mock_retry.call_args.kwargs["timeout"] == 240.0
+
+    def test_make_request_with_retry_applies_timeout_per_request(self):
+        """The retry helper applies the timeout to the actual httpx call.
+
+        Regression test: the shared client caches its first timeout, so the
+        timeout must also be passed per-request to actually take effect.
+        """
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.return_value = {"ok": True}
+        mock_response.raise_for_status = Mock()
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            make_request_with_retry("GET", "https://example.com/test", timeout=300.0)
+
+        assert mock_client.get.call_args.kwargs["timeout"] == 300.0
+
+
+class TestCrsParsing:
+    """Tests for output-crs parsing helpers."""
+
+    def test_parse_crs_to_wkid_epsg_prefix(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("EPSG:25830") == 25830
+
+    def test_parse_crs_to_wkid_bare_code(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("25830") == 25830
+
+    def test_parse_crs_to_wkid_case_insensitive(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("epsg:4148") == 4148
+
+    def test_parse_crs_to_wkid_rejects_garbage(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        with pytest.raises(ValueError):
+            _parse_crs_to_wkid("not-a-crs")
+
+    def test_parse_crs_to_wkid_rejects_non_epsg_authority(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        with pytest.raises(ValueError, match="ESRI"):
+            _parse_crs_to_wkid("ESRI:102039")
+
+    def test_parse_crs_to_wkid_urn_form(self):
+        from geoparquet_io.core.arcgis import _parse_crs_to_wkid
+
+        assert _parse_crs_to_wkid("urn:ogc:def:crs:EPSG::25830") == 25830
+
+    def test_wkid_from_spatial_reference_prefers_latest_wkid(self):
+        from geoparquet_io.core.arcgis import _wkid_from_spatial_reference
+
+        # latestWkid carries the modern EPSG code; legacy wkid is Esri-specific
+        assert _wkid_from_spatial_reference({"wkid": 102100, "latestWkid": 3857}) == 3857
+        assert _wkid_from_spatial_reference({"latestWkid": 4326}) == 4326
+        assert _wkid_from_spatial_reference({"wkid": 25830}) == 25830
+        assert _wkid_from_spatial_reference({}) is None
+
+    def test_normalize_wkid_maps_esri_legacy_codes(self):
+        from geoparquet_io.core.arcgis import _normalize_wkid
+
+        assert _normalize_wkid(102100) == 3857
+        assert _normalize_wkid(25830) == 25830
 
 
 class TestCrsExtraction:
@@ -296,7 +561,7 @@ class TestCrsExtraction:
 
             output_path = kwargs.get("output_path") or args[2]
             shutil.copy(temp_parquet, output_path)
-            return 1
+            return 1, None
 
         mock_stream.side_effect = mock_stream_side_effect
 
@@ -310,6 +575,261 @@ class TestCrsExtraction:
         # CRS84 is WGS84 with lon/lat axis order (matches GeoJSON)
         assert crs["id"]["authority"] == "OGC"
         assert crs["id"]["code"] == "CRS84"
+
+
+class TestArcgisToTableOutputCrs:
+    def _layer(self, wkid, latest):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo
+
+        return ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": wkid, "latestWkid": latest},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+    def _stub_stream(self, tmp_path, detected_sr):
+        import shutil
+
+        temp_parquet = str(tmp_path / "temp.parquet")
+        pq.write_table(
+            pa.table(
+                {
+                    "geometry": [
+                        b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+                    ],
+                    "OBJECTID": [1],
+                    "name": ["Zone 1"],
+                }
+            ),
+            temp_parquet,
+        )
+
+        def side_effect(*args, **kwargs):
+            output_path = kwargs.get("output_path") or args[2]
+            shutil.copy(temp_parquet, output_path)
+            return 1, detected_sr
+
+        return side_effect
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_explicit_output_crs_tags_returned_sr(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
+
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "EPSG"
+        assert crs["id"]["code"] == 25830
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_resolves_to_layer_sr(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_no_warning_for_esri_legacy_wkid_alias(self, mock_layer, mock_stream, tmp_path, caplog):
+        """Server echoing legacy wkid 102100 for EPSG:3857 must not warn."""
+        import logging
+
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(102100, 3857)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 102100, "latestWkid": 3857})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:3857")
+
+        assert not any("server returned" in r.message for r in caplog.records)
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "EPSG"
+        assert crs["id"]["code"] == 3857
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_esri_only_wkid_tags_esri_authority(self, mock_layer, mock_stream, tmp_path):
+        """ESRI-authority WKIDs (no EPSG equivalent) must not be tagged as EPSG."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 102039},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 102039})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 102039
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["authority"] == "ESRI"
+        assert int(crs["id"]["code"]) == 102039
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_unresolvable_wkid_writes_no_crs(self, mock_layer, mock_stream, tmp_path, caplog):
+        """A WKID resolving as neither EPSG nor ESRI must not be tagged as EPSG."""
+        import logging
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 999999},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 999999})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        # No fabricated EPSG metadata when the code cannot be resolved.
+        metadata = result.schema.metadata or {}
+        assert b"geo" not in metadata
+        assert any("999999" in r.message for r in caplog.records)
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_resolves_via_epsg(self, mock_layer, mock_stream, tmp_path):
+        """Native SR advertised only as WKT must resolve to its EPSG code."""
+        from pyproj import CRS
+
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+
+        wkt = CRS.from_epsg(25830).to_wkt()
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_stream.call_args.kwargs["output_wkid"] == 25830
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 25830
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_native_wkt_only_unresolvable_raises(self, mock_layer, mock_stream, tmp_path):
+        """A WKT-only native SR with no EPSG equivalent raises an accurate error."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        wkt = (
+            'LOCAL_CS["Custom",LOCAL_DATUM["Custom",0],UNIT["metre",1.0],'
+            'AXIS["X",EAST],AXIS["Y",NORTH]]'
+        )
+        mock_layer.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkt": wkt},
+            fields=[{"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False}],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+        with pytest.raises(GeoParquetError, match="could not resolve"):
+            arcgis_to_table("https://example.com/FeatureServer/0", output_crs="native")
+
+        mock_stream.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_invalid_output_crs_raises_before_network(self, mock_layer):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="output_crs"):
+            arcgis_to_table("https://example.com/FeatureServer/0", output_crs="ESRI:102100")
+
+        mock_layer.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_max_allowable_offset_threads_to_stream(self, mock_layer, mock_stream, tmp_path):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 25830, "latestWkid": 25830})
+
+        arcgis_to_table(
+            "https://example.com/FeatureServer/0",
+            output_crs="EPSG:25830",
+            max_allowable_offset=0.005,
+        )
+
+        assert mock_stream.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_invalid_max_allowable_offset_raises_before_network(self, mock_layer):
+        from geoparquet_io.core.arcgis import arcgis_to_table
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=0)
+
+        with pytest.raises(GeoParquetError, match="max_allowable_offset"):
+            arcgis_to_table("https://example.com/FeatureServer/0", max_allowable_offset=-1.0)
+
+        mock_layer.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_server_ignores_outsr_tags_returned_and_warns(
+        self, mock_layer, mock_stream, tmp_path, caplog
+    ):
+        import logging
+
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        mock_layer.return_value = self._layer(25830, 25830)
+        mock_stream.side_effect = self._stub_stream(tmp_path, {"wkid": 4326, "latestWkid": 4326})
+
+        with caplog.at_level(logging.WARNING):
+            result = arcgis_to_table("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
+
+        crs = json.loads(result.schema.metadata[b"geo"])["columns"]["geometry"]["crs"]
+        assert crs["id"]["code"] == 4326
+        assert any("25830" in r.message and "4326" in r.message for r in caplog.records)
 
 
 class TestSchemaBuilding:
@@ -522,6 +1042,144 @@ class TestCLI:
         assert "password" in result.output.lower() or "password" in str(result.exception).lower()
 
 
+class TestArcgisCliOutputCrs:
+    """Tests for the --output-crs CLI option on extract arcgis."""
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_output_crs(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--output-crs",
+                "EPSG:25830",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_cli_invalid_output_crs_fails_cleanly(self, mock_layer, tmp_path):
+        """A bad --output-crs must fail with a clean message before any network call."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--output-crs",
+                "not-a-crs",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "output_crs" in result.output
+        assert not isinstance(result.exception, ValueError)
+        mock_layer.assert_not_called()
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_max_allowable_offset(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0.005",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_passes_timeout(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--timeout",
+                "300",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["timeout"] == 300.0
+
+    @patch("geoparquet_io.core.arcgis.convert_arcgis_to_geoparquet")
+    def test_cli_timeout_defaults_to_60(self, mock_convert, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_convert.call_args.kwargs["timeout"] == 60.0
+
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    def test_cli_invalid_max_allowable_offset_fails_cleanly(self, mock_layer, tmp_path):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract",
+                "arcgis",
+                "https://example.com/FeatureServer/0",
+                out,
+                "--max-allowable-offset",
+                "0",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "max_allowable_offset" in result.output
+        mock_layer.assert_not_called()
+
+
 class TestPythonAPI:
     """Tests for Python API functions."""
 
@@ -554,6 +1212,46 @@ class TestPythonAPI:
         assert result.num_rows == 1
 
 
+class TestApiOutputCrs:
+    """Tests for output_crs forwarding through the Python API."""
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_ops_from_arcgis_forwards_output_crs(self, mock_to_table):
+        from geoparquet_io.api import ops
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        ops.from_arcgis("https://example.com/FeatureServer/0", output_crs="native")
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "native"
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_extract_arcgis_forwards_output_crs(self, mock_to_table):
+        from geoparquet_io.api.table import extract_arcgis
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        extract_arcgis("https://example.com/FeatureServer/0", output_crs="EPSG:25830")
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_ops_from_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api import ops
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        ops.from_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
+
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_extract_arcgis_forwards_max_allowable_offset(self, mock_to_table):
+        from geoparquet_io.api.table import extract_arcgis
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        extract_arcgis("https://example.com/FeatureServer/0", max_allowable_offset=0.005)
+
+        assert mock_to_table.call_args.kwargs["max_allowable_offset"] == 0.005
+
+
 class TestStreamingConversion:
     """Tests for memory-efficient streaming conversion."""
 
@@ -582,6 +1280,38 @@ class TestStreamingConversion:
         result = _geojson_page_to_table([])
         assert result is None
 
+    def test_disable_gdal_geojson_size_limit_sets_env(self, monkeypatch):
+        """Helper removes GDAL's per-feature GeoJSON size limit (issue #517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+
+        monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
+        _disable_gdal_geojson_size_limit()
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
+    def test_disable_gdal_geojson_size_limit_overrides_existing(self, monkeypatch):
+        """A prior nonzero limit is lifted unconditionally (issue #517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+
+        monkeypatch.setenv("OGR_GEOJSON_MAX_OBJ_SIZE", "200")
+        _disable_gdal_geojson_size_limit()
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
+    def test_geojson_page_to_table_lifts_size_limit(self, monkeypatch):
+        """Converting a page sets the GDAL size limit before ST_Read (#517)."""
+        import os
+
+        from geoparquet_io.core.arcgis import _geojson_page_to_table
+
+        monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
+        table = _geojson_page_to_table(MOCK_FEATURES_PAGE["features"])
+
+        assert table is not None
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+
     @patch("geoparquet_io.core.arcgis.fetch_all_features")
     def test_stream_features_to_parquet_single_page(self, mock_fetch, output_file):
         """Test streaming a single page to parquet."""
@@ -602,7 +1332,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -662,7 +1392,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -697,7 +1427,7 @@ class TestStreamingConversion:
             total_count=3,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -732,7 +1462,7 @@ class TestStreamingConversion:
             # Write a minimal parquet file
             table = pa.table({"geometry": [b"test1", b"test2", b"test3"], "name": ["a", "b", "c"]})
             pq.write_table(table, output_path)
-            return 3
+            return 3, None
 
         mock_stream.side_effect = mock_stream_impl
 
@@ -748,6 +1478,62 @@ class TestStreamingConversion:
         # Should have same number (temp file cleaned up)
         assert temp_files_before == temp_files_after
         assert result.num_rows == 3
+
+
+class TestStreamOutputCrs:
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_stream_returns_detected_sr_for_esrijson(self, mock_fetch, tmp_path):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 25830, "latestWkid": 25830},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=1,
+        )
+        mock_fetch.return_value = iter([MOCK_ESRI_FEATURES_PAGE])
+        out = str(tmp_path / "stream.parquet")
+
+        total_rows, detected_sr = _stream_features_to_parquet(
+            "https://example.com/FeatureServer/0",
+            layer_info,
+            out,
+            output_wkid=25830,
+        )
+
+        assert total_rows == 1
+        assert detected_sr == {"wkid": 25830, "latestWkid": 25830}
+        assert mock_fetch.call_args.kwargs["output_wkid"] == 25830
+
+    @patch("geoparquet_io.core.arcgis.fetch_all_features")
+    def test_stream_default_returns_no_sr(self, mock_fetch, tmp_path):
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _stream_features_to_parquet
+
+        layer_info = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "nullable": False},
+                {"name": "name", "type": "esriFieldTypeString", "nullable": True},
+            ],
+            max_record_count=1000,
+            total_count=3,
+        )
+        mock_fetch.return_value = iter([MOCK_FEATURES_PAGE])
+        out = str(tmp_path / "stream.parquet")
+
+        total_rows, detected_sr = _stream_features_to_parquet(
+            "https://example.com/FeatureServer/0", layer_info, out
+        )
+
+        assert total_rows == 3
+        assert detected_sr is None
 
 
 @pytest.mark.network
@@ -824,12 +1610,18 @@ class TestNetworkIntegration:
         assert "geometry" in table.column_names
 
 
-class TestAlignTableToSchema:
-    """Unit tests for the _align_table_to_schema helper function."""
+class TestCastTableToSchema:
+    """Schema-reconciliation tests for the shared _cast_table_to_schema helper.
+
+    ArcGIS converged onto core/common._cast_table_to_schema (the same helper WFS
+    uses) instead of a bespoke _align_table_to_schema + raw cast. These tests
+    preserve the reorder/drop/add coverage of the deleted helper and add the new
+    page-context-error and geometry-binary guarantees the convergence provides.
+    """
 
     def test_reorders_columns_to_match_schema(self):
-        """Test that columns are reordered to match target schema."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Columns are reordered to match the target schema."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         # Source table with different column order
         source = pa.table(
@@ -848,7 +1640,7 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "b", "c"]
         assert result.column("a").to_pylist() == [1, 4]
@@ -856,8 +1648,8 @@ class TestAlignTableToSchema:
         assert result.column("c").to_pylist() == [3, 6]
 
     def test_drops_extra_columns(self):
-        """Test that extra columns not in target schema are dropped."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Extra columns not in the target schema are dropped."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -874,14 +1666,14 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "b"]
         assert "extra" not in result.column_names
 
     def test_adds_missing_columns_with_nulls(self):
-        """Test that missing columns are filled with nulls."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Missing columns are filled with typed nulls."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -896,14 +1688,14 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "missing"]
         assert result.column("missing").to_pylist() == [None, None]
 
     def test_handles_all_mismatches_together(self):
-        """Test reorder + drop + add in combination."""
-        from geoparquet_io.core.arcgis import _align_table_to_schema
+        """Reorder + drop + add + cast in combination."""
+        from geoparquet_io.core.common import _cast_table_to_schema
 
         source = pa.table(
             {
@@ -921,13 +1713,95 @@ class TestAlignTableToSchema:
             ]
         )
 
-        result = _align_table_to_schema(source, target_schema)
+        result = _cast_table_to_schema(source, target_schema)
 
         assert result.column_names == ["a", "missing", "z"]
         assert result.column("a").to_pylist() == [1, 2]
         assert result.column("missing").to_pylist() == [None, None]
         assert result.column("z").to_pylist() == [9, 10]
         assert "extra" not in result.column_names
+
+    def test_geometry_binary_is_preserved(self):
+        """A WKB geometry column stays binary even when attributes are strings.
+
+        Guards against any regression that coerces the geometry column toward
+        string when reconciling an ArcGIS page table to the metadata schema.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table(
+            {
+                "geometry": pa.array([b"\x01\x02", b"\x03\x04"], type=pa.binary()),
+                "name": ["a", "b"],
+            }
+        )
+
+        target_schema = pa.schema(
+            [
+                pa.field("geometry", pa.binary()),
+                pa.field("name", pa.string()),
+            ]
+        )
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("geometry").type == pa.binary()
+        assert result.column("geometry").to_pylist() == [b"\x01\x02", b"\x03\x04"]
+
+    def test_int32_column_upcast_to_timestamp(self):
+        """int32 → timestamp is upcast via int64 instead of crashing (issue #516).
+
+        DuckDB can infer an epoch-zero/null date column as int32 while the layer
+        metadata declares timestamp. PyArrow cannot cast int32 → timestamp
+        directly (it raises ArrowNotImplementedError), so the helper upcasts to
+        int64 first.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"valid_on": pa.array([0, 1000], type=pa.int32())})
+        target_schema = pa.schema([pa.field("valid_on", pa.timestamp("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("valid_on").type == pa.timestamp("ms")
+        # 0 ms = epoch, 1000 ms = one second past epoch
+        assert result.column("valid_on").to_pylist() == [
+            datetime.datetime(1970, 1, 1, 0, 0, 0),
+            datetime.datetime(1970, 1, 1, 0, 0, 1),
+        ]
+
+    def test_int16_column_upcast_to_timestamp(self):
+        """Any sub-64-bit integer column is upcast before the timestamp cast."""
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"valid_on": pa.array([0, 500], type=pa.int16())})
+        target_schema = pa.schema([pa.field("valid_on", pa.timestamp("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.schema.field("valid_on").type == pa.timestamp("ms")
+        assert result.column("valid_on").to_pylist() == [
+            datetime.datetime(1970, 1, 1, 0, 0, 0),
+            datetime.datetime(1970, 1, 1, 0, 0, 0, 500000),
+        ]
+
+    def test_cast_failure_reports_page_context(self):
+        """An impossible cast raises ValueError carrying the page/column context.
+
+        This is the new diagnostic the convergence buys: ArcGIS wraps this
+        ValueError into a GeoParquetError that names the batch and column,
+        replacing the previous generic message.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        # A non-numeric string cannot be safely cast to int64
+        source = pa.table({"amount": ["not_a_number", "also_bad"]})
+        target_schema = pa.schema([pa.field("amount", pa.int64())])
+
+        with pytest.raises(ValueError, match="amount") as exc_info:
+            _cast_table_to_schema(source, target_schema, page_info="batch 7")
+
+        assert "batch 7" in str(exc_info.value)
 
 
 class TestSchemaMismatchBetweenBatches:
@@ -1005,7 +1879,7 @@ class TestSchemaMismatchBetweenBatches:
         )
 
         # This should NOT raise a schema mismatch error
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1065,7 +1939,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=2,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1132,7 +2006,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=2,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1185,7 +2059,7 @@ class TestSchemaMismatchBetweenBatches:
         )
 
         # This should NOT raise a schema mismatch error
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1236,7 +2110,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=1,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1287,7 +2161,7 @@ class TestSchemaMismatchBetweenBatches:
             total_count=1,
         )
 
-        total = _stream_features_to_parquet(
+        total, _ = _stream_features_to_parquet(
             service_url="https://example.com/FeatureServer/0",
             layer_info=layer_info,
             output_path=output_file,
@@ -1570,3 +2444,81 @@ class TestAdaptiveBatchNetworkIntegration:
         assert Path(output_file).exists()
         pf = pq.ParquetFile(output_file)
         assert pf.metadata.num_rows == expected_feature_count
+
+
+class TestEsriJsonPageToTable:
+    """EsriJSON pages are parsed by DuckDB ST_Read (GDAL ESRIJSON driver)."""
+
+    def test_esrijson_page_to_table_parses_geometry_and_attrs(self):
+        from geoparquet_io.core.arcgis import _esrijson_page_to_table
+
+        table = _esrijson_page_to_table(MOCK_ESRI_FEATURES_PAGE)
+
+        assert table is not None
+        assert table.num_rows == 1
+        assert "geometry" in table.column_names
+        # Attribute columns are flattened from `attributes`
+        assert "OBJECTID" in table.column_names
+        assert "name" in table.column_names
+        # Geometry is WKB bytes (projected coords preserved, not reprojected)
+        assert isinstance(table.column("geometry")[0].as_py(), bytes)
+
+    def test_esrijson_page_to_table_empty(self):
+        from geoparquet_io.core.arcgis import _esrijson_page_to_table
+
+        assert _esrijson_page_to_table({"features": []}) is None
+
+
+class TestConvertOutputCrs:
+    @patch("geoparquet_io.core.arcgis.write_geoparquet_table")
+    @patch("geoparquet_io.core.arcgis.arcgis_to_table")
+    def test_convert_forwards_output_crs(self, mock_to_table, mock_write, tmp_path):
+        from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
+
+        mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})
+        out = str(tmp_path / "out.parquet")
+
+        convert_arcgis_to_geoparquet(
+            "https://example.com/FeatureServer/0",
+            out,
+            output_crs="EPSG:25830",
+            skip_hilbert=True,
+            skip_bbox=True,
+        )
+
+        assert mock_to_table.call_args.kwargs["output_crs"] == "EPSG:25830"
+
+
+@pytest.mark.network
+@pytest.mark.slow
+class TestArcgisOutputCrsLive:
+    """Live smoke test against a real ArcGIS server to confirm that
+    --output-crs preserves geometries in their native CRS (EPSG:25830)
+    rather than reprojecting them to WGS84."""
+
+    def test_madrid_native_25830(self, tmp_path):
+        import duckdb
+
+        from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
+        from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
+
+        out = str(tmp_path / "zp.parquet")
+        url = "https://sigma.madrid.es/hosted/rest/services/MOVILIDAD/ZONAS_PEATONALES/MapServer/0"
+
+        # An unavailable server should skip, not fail. A returned-but-wrong
+        # CRS is a real bug and must fail (AssertionError propagates below).
+        try:
+            convert_arcgis_to_geoparquet(
+                url,
+                out,
+                limit=5,
+                output_crs="EPSG:25830",
+                geoparquet_version="2.0",
+            )
+        except (RemoteAccessError, GeoParquetError) as exc:
+            pytest.skip(f"Madrid server unavailable: {exc}")
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        crs = con.execute(f"SELECT ST_CRS(geometry) FROM '{out}' LIMIT 1").fetchone()[0]
+        assert "25830" in str(crs)

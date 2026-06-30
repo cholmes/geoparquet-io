@@ -190,6 +190,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 .worktrees/
+
+# Agent scratch files (commit message tooling, etc.)
+.agent/
 .grepai/
 
 # Menard cache files
@@ -199,3 +202,7 @@ cython_debug/
 .menard/import_graph.state
 .menard/symbols_cache.json
 .claude/worktrees/
+.serena/
+
+# Agent commit-message scratch buffers
+.agent/
