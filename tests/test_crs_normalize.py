@@ -160,29 +160,27 @@ class TestHotPathUnchanged:
     """Regression guard (#525 perf): CRS84 input must not pay for reprojection.
 
     The reprojection is keyed off a detected source CRS. For default/CRS84 input
-    the join SQL must keep its bbox pre-filter and contain no ST_Transform, so the
-    common path is byte-for-byte what it was before this change.
+    the join SQL contains no ST_Transform; the predicate is a bare ST_Intersects
+    on DuckDB's SPATIAL_JOIN (#545).
     """
 
-    def test_join_condition_keeps_bbox_prefilter_without_transform(self):
+    def test_join_condition_is_bare_intersects_without_transform(self):
         from geoparquet_io.core.duckdb_utils import build_spatial_join_condition
 
-        sql = build_spatial_join_condition("geom", "geom", "bbox", "bbox")
+        sql = build_spatial_join_condition("geom", "geom")
         assert "ST_Transform" not in sql
-        assert ".xmin" in sql and ".xmax" in sql  # bbox pre-filter retained
+        assert sql == 'ST_Intersects(b."geom", a."geom")'
 
-    def test_join_condition_reprojects_and_drops_bbox_when_transforming(self):
+    def test_join_condition_reprojects_input_when_transforming(self):
         from geoparquet_io.core.duckdb_utils import build_spatial_join_condition
 
         sql = build_spatial_join_condition(
             "geom",
             "geom",
-            "bbox",
-            "bbox",
             input_geom_sql="ST_Transform(a.geom, 'EPSG:5070', 'OGC:CRS84')",
         )
         assert "ST_Transform" in sql
-        assert ".xmin" not in sql  # bbox pre-filter skipped (source-CRS bbox)
+        assert sql == "ST_Intersects(b.\"geom\", ST_Transform(a.geom, 'EPSG:5070', 'OGC:CRS84'))"
 
 
 def _read_column(parquet_file, column):
@@ -436,7 +434,6 @@ class TestAdminJoinIsCrsAware:
                 "input_url": fields_5070_file,
                 "admin_subquery": "(SELECT geom, region FROM _admin)",
                 "admin_select_clause": 'b."region" AS region',
-                "input_bbox_col": None,
                 "admin_bbox_col": None,
                 "input_geom_col": "geometry",
                 "admin_geom_col": "geom",
@@ -485,28 +482,29 @@ class TestAdminReprojectsAdminSideWithBbox:
     """Class A perf (#525): with bboxes on both sides the admin side is reprojected.
 
     Reprojecting the (small) admin polygons into the input CRS — instead of the
-    large input into CRS84 — keeps the cheap bbox pre-filter, so the join does
-    not degrade to a full nested-loop ST_Intersects (the #460 regression). The
-    input geometry must be left untransformed.
+    large input into CRS84 — leaves the input geometry untransformed so its stored
+    bbox stays usable for the admin-side extent pre-filter. The join predicate is a
+    bare ST_Intersects on DuckDB's SPATIAL_JOIN (#545).
     """
 
-    def test_join_query_keeps_bbox_prefilter_and_leaves_input_untransformed(self):
+    def test_join_query_is_bare_intersects_and_leaves_input_untransformed(self):
         from geoparquet_io.core.add.admin_divisions import _build_spatial_join_query
 
         sql = _build_spatial_join_query(
             input_url="x.parquet",
             admin_subquery="(SELECT geom, bbox, region FROM admin)",
             admin_select_clause='b."region" AS region',
-            input_bbox_col="bbox",
             admin_bbox_col="bbox",
             input_geom_col="geometry",
             admin_geom_col="geom",
             source_crs="EPSG:5070",
         )
         # The join itself does not transform the input (admin reproject lives in
-        # the subquery); the bbox pre-filter is retained.
+        # the subquery); the ON clause is a bare ST_Intersects with no bbox-overlap
+        # term (#545).
         assert "ST_Transform" not in sql
-        assert ".xmin" in sql and ".xmax" in sql
+        assert 'ON ST_Intersects(b."geom", a."geometry")' in sql
+        assert 'a."bbox"' not in sql
 
     def test_admin_subquery_reprojects_admin_and_synthesizes_bbox(self):
         from geoparquet_io.core.add.admin_divisions import _build_admin_subquery

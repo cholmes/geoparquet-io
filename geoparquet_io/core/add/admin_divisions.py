@@ -142,7 +142,6 @@ def _build_spatial_join_query(
     input_url,
     admin_subquery,
     admin_select_clause,
-    input_bbox_col,
     admin_bbox_col,
     input_geom_col,
     admin_geom_col,
@@ -171,19 +170,18 @@ def _build_spatial_join_query(
     # CRS handling for a non-CRS84 input (#525):
     #  - If the admin side was reprojected into the input CRS (it has a bbox), the
     #    join runs entirely in the input CRS, so the input geometry is left
-    #    untouched and the cheap bbox pre-filter is kept (avoids the #460 hang).
-    #  - Otherwise (admin has no bbox) reproject the input geometry inline; without
-    #    a bbox there is no pre-filter to preserve either way.
+    #    untouched and the stored bbox still drives the admin-side extent pre-filter.
+    #  - Otherwise (admin has no bbox) reproject the input geometry inline.
+    # Either way the ON-clause predicate is a bare ST_Intersects (#545).
     input_geom_sql = None
     if source_crs and not _admin_reprojected(source_crs, admin_bbox_col):
         input_geom_sql = transform_geom_sql(f"a.{quote_identifier(input_geom_col)}", source_crs)
 
-    # Shared, fully-quoted ON clause (bbox pre-filter + ST_Intersects).
+    # Shared, fully-quoted ON clause: a bare ST_Intersects on DuckDB's SPATIAL_JOIN
+    # (#545). The stored bbox still drives the admin-side extent pre-filter below.
     join_clause = "ON " + build_spatial_join_condition(
         input_geom_col,
         admin_geom_col,
-        input_bbox_col,
-        admin_bbox_col,
         input_geom_sql=input_geom_sql,
     )
 
@@ -463,17 +461,13 @@ def _build_admin_where_clauses_list(
 def _report_join_strategy(
     has_native_geometry, input_bbox_col, admin_bbox_col, verbose, input_geom_rewritten=False
 ):
-    """Print a status line describing which spatial-join strategy will run.
+    """Print a status line describing the spatial join that will run.
 
-    Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path, so
-    the old "No bbox columns available, using full geometry intersection..." line
-    misreported them as a degraded fallback (issue #538). Only 1.x files that
-    genuinely lack a bbox column get that warning now.
-
-    A reprojected (non-CRS84) input also gets a bare ST_Intersects — its stored
-    bbox is in the source CRS and is dropped from the predicate (#525) — so
-    ``input_geom_rewritten`` keeps the message from claiming a bbox pre-filter
-    that the emitted SQL does not contain.
+    Every path now runs a bare ``ST_Intersects`` on DuckDB's indexed
+    ``SPATIAL_JOIN`` (#545), so no message implies a degraded full-scan fallback.
+    The only distinction reported is whether the input's stored bbox drives the
+    admin-side extent pre-filter (issue #538 kept the message honest vs the
+    predicate; #545 made the predicate uniform).
     """
     strategy = spatial_join_strategy(
         has_native_geometry, input_bbox_col, admin_bbox_col, input_geom_rewritten
@@ -482,9 +476,9 @@ def _report_join_strategy(
         progress("Using native geometry with DuckDB SPATIAL_JOIN...")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
         if verbose:
-            debug("Using bbox columns for initial filtering...")
+            debug("Using DuckDB SPATIAL_JOIN; bbox covering drives the admin extent pre-filter...")
     else:
-        progress("No bbox columns available, using full geometry intersection...")
+        progress("Using DuckDB SPATIAL_JOIN...")
 
 
 def _build_query_components(
@@ -559,7 +553,6 @@ def _build_query_components(
         input_url,
         admin_subquery,
         admin_select_clause,
-        input_bbox_col,
         admin_bbox_col,
         input_geom_col,
         admin_geom_col,
@@ -606,9 +599,9 @@ def _handle_dry_run_mode(
     if strategy == SPATIAL_JOIN_NATIVE:
         info("-- Using native geometry with DuckDB SPATIAL_JOIN")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
-        info("-- Using bbox columns for optimized spatial join")
+        info("-- Using DuckDB SPATIAL_JOIN (bbox covering drives the admin extent pre-filter)")
     else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+        info("-- Using DuckDB SPATIAL_JOIN")
 
     if compression in ["GZIP", "ZSTD", "BROTLI"]:
         compression_str = f"{compression}:{compression_level}"

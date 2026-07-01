@@ -125,7 +125,12 @@ class TestDryRunCommands:
         assert not os.path.exists(temp_output_file)
 
     def test_dry_run_with_bbox_column_present(self, places_test_file):
-        """Test dry-run when input has bbox column (for admin-divisions)."""
+        """Input with a bbox covering (admin-divisions).
+
+        Since #545 the join predicate is a bare ST_Intersects (no per-row
+        bbox-overlap term), but the stored bbox still drives the beneficial
+        admin-side extent pre-filter.
+        """
         runner = CliRunner()
         result = runner.invoke(
             add, ["admin-divisions", places_test_file, "output.parquet", "--dry-run", "--no-cache"]
@@ -133,13 +138,12 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        # Should use bbox column for spatial join optimization. Identifiers are
-        # quoted by build_spatial_join_condition, so the input bbox struct field
-        # renders as `"bbox".xmin` (regression guard for the #460 pre-filter).
-        assert '"bbox".xmin' in result.output
-        assert "Using bbox columns for optimized spatial join" in result.output
-        # Should show spatial join query
-        assert "ST_Intersects" in result.output
+        # Bare join predicate — no per-row bbox-overlap term ANDed in (#545).
+        assert "ON ST_Intersects" in result.output
+        assert 'a."bbox"' not in result.output
+        # The admin-side extent pre-filter still uses the bbox covering.
+        assert '"geometry_bbox".xmin <=' in result.output
+        assert "Using DuckDB SPATIAL_JOIN" in result.output
 
     def test_dry_run_with_native_geometry_input(self, fields_v2_file):
         """Native-geometry (GeoParquet 2.0) input uses no bbox pre-filter.
@@ -167,21 +171,14 @@ class TestDryRunCommands:
         assert "no bbox optimization" not in result.output
 
     def test_dry_run_with_reprojected_bbox_input(self, austria_bbox_covering_file):
-        """Reprojected (non-CRS84) input + admin-with-bbox keeps the bbox pre-filter.
+        """Reprojected (non-CRS84) input + admin-with-bbox: admin side is reprojected.
 
-        Regression for #538/#540: the input is EPSG:31287 and the admin dataset
-        (GAUL) has a bbox column, so admin_divisions reprojects the *admin* side into
-        the input CRS (ST_Transform on the admin geometry) and keeps the cheap
-        bbox-overlap pre-filter on both sides — the input geometry is left untouched
-        (#525). build_spatial_join_condition therefore emits the bbox pre-filter
-        ANDed in front of ST_Intersects, so the status line must report the bbox
-        optimization, not "no bbox optimization".
-
-        This guards against the f2 mismatch: keying the reported strategy on
-        ``source_crs`` alone (ignoring admin_bbox_col) would misreport this join as
-        SPATIAL_JOIN_NO_BBOX while the emitted SQL still runs the bbox pre-filter.
-        The reported strategy must mirror the ``input_geom_sql is not None`` decision
-        in _build_spatial_join_query, i.e. ``source_crs and not _admin_reprojected``.
+        The input is EPSG:31287 and the admin dataset (GAUL) has a bbox column, so
+        admin_divisions reprojects the *admin* side into the input CRS (ST_Transform
+        on the admin geometry) and leaves the input geometry untouched (#525). Since
+        #545 the join predicate is a bare ST_Intersects, but the stored bbox still
+        drives the admin-side extent pre-filter, so the status line reports the
+        SPATIAL_JOIN path, not "no bbox optimization".
         """
         runner = CliRunner()
         result = runner.invoke(
@@ -198,10 +195,12 @@ class TestDryRunCommands:
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
         # Admin side is reprojected into the input CRS (ST_Transform on the admin
-        # geometry); the input geometry is left as-is so the bbox pre-filter stays.
+        # geometry); the input geometry is left as-is.
         assert "ST_Transform" in result.output
-        # The bbox-overlap pre-filter must be present in the emitted predicate.
+        # Bare join predicate: no per-row bbox-overlap term ANDed in (#545).
+        assert "ON ST_Intersects" in result.output
+        assert 'a."geometry_bbox"' not in result.output
+        # The admin-side extent pre-filter is retained (admin bbox vs input extent).
         assert ".xmin <=" in result.output
-        # The message must match the predicate that actually runs (bbox pre-filter).
-        assert "Using bbox columns for optimized spatial join" in result.output
+        assert "Using DuckDB SPATIAL_JOIN" in result.output
         assert "no bbox optimization" not in result.output

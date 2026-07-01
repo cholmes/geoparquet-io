@@ -224,19 +224,16 @@ class TestSpatialJoinConditionCrs:
     """``build_spatial_join_condition`` honours a reprojected input geom."""
 
     def test_default_uses_plain_column(self):
-        cond = build_spatial_join_condition("geom", "geometry", "bbox", "bbox")
+        cond = build_spatial_join_condition("geom", "geometry")
         assert "ST_Transform" not in cond
         assert 'a."geom"' in cond
-        # bbox pre-filter present when both sides have bbox.
-        assert ".xmin" in cond
+        # Bare ST_Intersects, no bbox-overlap term (#545).
+        assert ".xmin" not in cond
 
-    def test_reprojected_input_skips_bbox_prefilter(self):
+    def test_reprojected_input_uses_transformed_geom(self):
         transformed = "ST_Transform(a.\"geom\", 'EPSG:5070', 'OGC:CRS84')"
-        cond = build_spatial_join_condition(
-            "geom", "geometry", "bbox", "bbox", input_geom_sql=transformed
-        )
+        cond = build_spatial_join_condition("geom", "geometry", input_geom_sql=transformed)
         assert transformed in cond
-        # The source-CRS bbox cannot be compared cross-CRS, so it is dropped.
         assert ".xmin" not in cond
         assert cond.startswith("ST_Intersects(")
 

@@ -167,18 +167,16 @@ def _build_spatial_join_query(
     select_clause,
     input_geom_col,
     countries_geom_col,
-    input_bbox_col,
-    countries_bbox_col,
 ):
-    """Build the spatial join query based on bbox availability.
+    """Build the spatial join query (bare ST_Intersects on DuckDB's SPATIAL_JOIN).
 
     Identifiers are quoted via the shared :func:`build_spatial_join_condition`
-    helper, so a maliciously-named geometry/bbox column from an untrusted input
-    or ``--countries-parquet`` cannot inject SQL.
+    helper, so a maliciously-named geometry column from an untrusted input or
+    ``--countries-parquet`` cannot inject SQL. The stored bbox covering still
+    drives the separate countries-side extent pre-filter (see
+    :func:`_build_filter_table_sql`).
     """
-    join_condition = build_spatial_join_condition(
-        input_geom_col, countries_geom_col, input_bbox_col, countries_bbox_col
-    )
+    join_condition = build_spatial_join_condition(input_geom_col, countries_geom_col)
     return f"""
     SELECT
         a.*,
@@ -351,9 +349,9 @@ def _print_dry_run_query(
     if strategy == SPATIAL_JOIN_NATIVE:
         info("-- Using native geometry with DuckDB SPATIAL_JOIN")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
-        info("-- Using bbox columns for optimized spatial join")
+        info("-- Using DuckDB SPATIAL_JOIN (bbox covering drives the countries extent pre-filter)")
     else:
-        info("-- Using full geometry intersection (no bbox optimization)")
+        info("-- Using DuckDB SPATIAL_JOIN")
 
     compression_str = (
         f"{compression}:{compression_level}"
@@ -524,11 +522,12 @@ def _create_duckdb_connection(using_default):
 def _print_bbox_status(
     input_bbox_col, countries_bbox_col, verbose, dry_run, has_native_geometry=False
 ):
-    """Print a status line describing which spatial-join strategy will run.
+    """Print a status line describing the spatial join that will run.
 
-    Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path, so
-    the old "No bbox columns available..." line misreported them as a degraded
-    fallback (issue #538). Only 1.x files genuinely lacking a bbox get that warning.
+    Every path now runs a bare ``ST_Intersects`` on DuckDB's indexed
+    ``SPATIAL_JOIN`` (#545), so no message implies a degraded full-scan fallback.
+    The only distinction reported is whether the input's stored bbox drives the
+    countries-side extent pre-filter (issue #538).
     """
     if dry_run:
         return
@@ -537,9 +536,11 @@ def _print_bbox_status(
         progress("Using native geometry with DuckDB SPATIAL_JOIN...")
     elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
         if verbose:
-            debug("Using bbox columns for initial filtering...")
+            debug(
+                "Using DuckDB SPATIAL_JOIN; bbox covering drives the countries extent pre-filter..."
+            )
     else:
-        progress("No bbox columns available, using full geometry intersection...")
+        progress("Using DuckDB SPATIAL_JOIN...")
 
 
 def add_country_codes(
@@ -622,8 +623,6 @@ def add_country_codes(
         select_clause,
         input_geom_col,
         countries_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
     )
 
     if dry_run:

@@ -92,13 +92,11 @@ def test_country_codes_join_query_quotes_identifiers():
         select_clause="b.iso_a2 as country",
         input_geom_col=MALICIOUS_GEOM_NAME,
         countries_geom_col="geometry",
-        input_bbox_col='bb") AS pwn, (',
-        countries_bbox_col="geometry_bbox",
     )
 
     # Embedded double-quotes are doubled inside quoted identifiers; the raw
-    # breakout text must never appear unquoted/executable.
+    # breakout text must never appear unquoted/executable. Since #545 the join is a
+    # bare ST_Intersects, so the geometry column is the only injectable identifier.
     assert 'geom"") AS pwn' in query
-    assert 'bb"") AS pwn' in query
     # ST_Intersects references the quoted geometry identifiers, not bare names.
     assert 'a."' + MALICIOUS_GEOM_NAME.replace('"', '""') + '"' in query

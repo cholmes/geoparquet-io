@@ -109,36 +109,36 @@ def quote_identifier(name: str) -> str:
 def build_spatial_join_condition(
     input_geom_col: str,
     target_geom_col: str,
-    input_bbox_col: str | None = None,
-    target_bbox_col: str | None = None,
     input_alias: str = "a",
     target_alias: str = "b",
     input_geom_sql: str | None = None,
 ) -> str:
     """Build the ON-clause condition for a spatial join between two tables.
 
-    The precise predicate is always ``ST_Intersects(target_geom, input_geom)``.
-    When *both* sides expose a bbox covering column, a cheap bounding-box
-    overlap test is ANDed in front of it: DuckDB evaluates the four numeric
-    comparisons first and only runs the expensive geometry intersection on the
-    surviving candidate pairs. Because bbox overlap is a necessary condition for
-    geometry intersection, the result is identical to ST_Intersects alone -- it
-    is purely a performance pre-filter.
+    The predicate is always a *bare* ``ST_Intersects(target_geom, input_geom)``.
+    That is the only ON-clause shape DuckDB's indexed ``SPATIAL_JOIN`` operator
+    recognizes, and it reliably triggers it -- verified on DuckDB 1.5.1 against a
+    local admin dataset and a remote ≥1M-feature Overture admin (issue #545).
 
-    Dropping this pre-filter (as #457 did) makes the Overture remote datasets
-    run a full ST_Intersects against every admin geometry, which effectively
-    hangs. See PR #460.
+    Why no bbox-overlap pre-filter (history):
+        Earlier versions ANDed a four-comparison bbox-overlap test in front of
+        ``ST_Intersects`` (retained for the 1.x path after #457/#460, defended in
+        #538 with a "~27-73x faster / SPATIAL_JOIN does not reliably trigger on
+        remote" rationale). Re-testing on 1.5.1 (issue #545) disproved that: under
+        the ``LEFT JOIN`` these commands actually emit, the AND'd bbox term forces
+        the plan to a ``BLOCKWISE_NL_JOIN`` (O(n·m)) -- the exact pessimization the
+        pre-filter was believed to prevent -- while the bare predicate stays on
+        ``SPATIAL_JOIN`` even against the remote 1M-feature admin with no hang. The
+        per-row bbox-overlap term is therefore dropped from every path.
 
-    Trade-off (issue #538): a *bare* ``ST_Intersects(...)`` ON clause is the
-    only shape DuckDB's ``SPATIAL_JOIN`` operator recognizes; the moment any
-    bbox-overlap test is ANDed in front, the plan drops to a ``BLOCKWISE_NL_JOIN``
-    (O(n·m)). On the cases benchmarked in #538 the bare-intersects SPATIAL_JOIN
-    was ~27-73x faster. The pre-filter is therefore retained *only* for the
-    explicit-bbox (1.x) path where #460 proved SPATIAL_JOIN does not reliably
-    trigger; native-geometry inputs deliberately get the bare predicate (see
-    below) and must NOT have a bbox derived from their geometry and ANDed in --
-    that was #462's proposed direction and it pessimizes the very path it meant
-    to speed up.
+    Note this only removes the *per-row-pair* bbox term. The separate, beneficial
+    admin-side **extent** pre-filter (a WHERE clause bounding the target to the
+    input's bounding box, built in the caller) is unaffected and still uses the
+    stored bbox covering when present.
+
+    ``input_geom_sql`` is a pre-built input-geometry expression (e.g. wrapped in
+    ``ST_Transform`` to reproject a non-CRS84 input, #525); when supplied it is
+    used verbatim in place of the input geometry column.
 
     All identifiers are passed through :func:`quote_identifier`, so column names
     sourced from untrusted file metadata cannot break out of the predicate.
@@ -146,45 +146,19 @@ def build_spatial_join_condition(
     Args:
         input_geom_col: Geometry column on the input (left) table.
         target_geom_col: Geometry column on the target (right) table.
-        input_bbox_col: Optional bbox covering column on the input table.
-        target_bbox_col: Optional bbox covering column on the target table.
         input_alias: SQL alias for the input table (default "a").
         target_alias: SQL alias for the target table (default "b").
+        input_geom_sql: Optional pre-built input-geometry SQL expression to use
+            instead of ``input_alias.input_geom_col`` (e.g. a reprojection).
 
     Returns:
         A SQL boolean expression for use directly after ``ON``.
     """
     qt_geom = quote_identifier(target_geom_col)
-
-    # ``input_geom_sql`` is a pre-built input-geometry expression (e.g. wrapped in
-    # ST_Transform to reproject a non-CRS84 input, #525). When supplied, the
-    # stored input bbox is in the *source* CRS and so cannot be used for the
-    # overlap pre-filter — fall back to the precise predicate alone.
     if input_geom_sql is not None:
-        intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_geom_sql})"
-        return intersects
-
+        return f"ST_Intersects({target_alias}.{qt_geom}, {input_geom_sql})"
     qi_geom = quote_identifier(input_geom_col)
-    intersects = f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
-
-    # A one-sided bbox cannot form an overlap test, so fall back to the
-    # precise predicate alone.
-    if not (input_bbox_col and target_bbox_col):
-        return intersects
-
-    qi_bbox = quote_identifier(input_bbox_col)
-    qt_bbox = quote_identifier(target_bbox_col)
-    return (
-        "(\n"
-        "        -- Fast bbox-overlap pre-filter (cheap; eliminates most candidate pairs)\n"
-        f"        {input_alias}.{qi_bbox}.xmin <= {target_alias}.{qt_bbox}.xmax AND\n"
-        f"        {input_alias}.{qi_bbox}.xmax >= {target_alias}.{qt_bbox}.xmin AND\n"
-        f"        {input_alias}.{qi_bbox}.ymin <= {target_alias}.{qt_bbox}.ymax AND\n"
-        f"        {input_alias}.{qi_bbox}.ymax >= {target_alias}.{qt_bbox}.ymin\n"
-        "    )\n"
-        "    -- Precise check only runs on the bbox matches\n"
-        f"    AND {intersects}"
-    )
+    return f"ST_Intersects({target_alias}.{qt_geom}, {input_alias}.{qi_geom})"
 
 
 # Strategy labels returned by spatial_join_strategy(), kept in sync with the
@@ -200,11 +174,16 @@ def spatial_join_strategy(
     target_bbox_col: str | None,
     input_geom_rewritten: bool = False,
 ) -> str:
-    """Classify which spatial-join strategy :func:`build_spatial_join_condition` uses.
+    """Classify a spatial join for status-message purposes.
 
-    Lets callers print a status message that matches the predicate that actually
-    runs (issue #538), instead of misreporting the native-geometry fast path as a
-    degraded "no bbox" fallback.
+    Since #545 the join predicate is a bare ``ST_Intersects`` on **every** path
+    (see :func:`build_spatial_join_condition`), so all three outcomes run DuckDB's
+    indexed ``SPATIAL_JOIN``. What this classifier distinguishes is what the *input
+    bbox covering* is used for: driving the separate admin-side **extent**
+    pre-filter (``SPATIAL_JOIN_BBOX_PREFILTER``) or not
+    (``SPATIAL_JOIN_NO_BBOX``). Callers use it to print an accurate status line
+    instead of misreporting the native-geometry fast path as a degraded fallback
+    (issue #538).
 
     Args:
         has_native_geometry: True when the input exposes a native geometry type
@@ -213,22 +192,20 @@ def spatial_join_strategy(
         target_bbox_col: Target-side bbox covering column, or ``None``.
         input_geom_rewritten: True when the input geometry is rewritten in the ON
             clause (e.g. an ``ST_Transform`` reprojecting a non-CRS84 input, issue
-            #525). :func:`build_spatial_join_condition` then drops the bbox
-            pre-filter because the stored (source-CRS) input bbox is incomparable
-            to the target bbox, so the emitted predicate is a bare ``ST_Intersects``
-            even though ``input_bbox_col`` is populated. The classifier must mirror
-            that or it misreports a reprojected 1.x-with-bbox input as a
-            bbox-prefilter join (issue #538).
+            #525). The stored (source-CRS) input bbox is then incomparable to the
+            target and is not used for the extent pre-filter either, so the input
+            is classified ``SPATIAL_JOIN_NO_BBOX`` even though ``input_bbox_col`` is
+            populated.
 
     Returns:
-        - ``SPATIAL_JOIN_NATIVE``: native-geometry input. The ON clause is a bare
-          ``ST_Intersects``, which DuckDB's ``SPATIAL_JOIN`` operator recognizes
-          and accelerates. This is the fast path, not a fallback.
+        - ``SPATIAL_JOIN_NATIVE``: native-geometry input. Bare ``ST_Intersects``
+          on DuckDB's ``SPATIAL_JOIN`` -- the fast path, not a fallback.
         - ``SPATIAL_JOIN_BBOX_PREFILTER``: 1.x input with a bbox covering on both
-          sides; the cheap bbox-overlap test is ANDed in front of ``ST_Intersects``.
-        - ``SPATIAL_JOIN_NO_BBOX``: no bbox pre-filter is applied — either a 1.x
-          input without a bbox column, or a reprojected input whose stored bbox is
-          incomparable. The precise check runs against every candidate.
+          sides; the stored bbox drives the admin-side extent pre-filter. The join
+          predicate itself is still a bare ``ST_Intersects``.
+        - ``SPATIAL_JOIN_NO_BBOX``: no usable input bbox (a 1.x input without a
+          bbox column, or a reprojected input whose stored bbox is incomparable).
+          Still a bare ``ST_Intersects`` SPATIAL_JOIN.
     """
     if has_native_geometry:
         return SPATIAL_JOIN_NATIVE

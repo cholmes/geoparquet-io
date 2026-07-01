@@ -85,70 +85,59 @@ class TestQuoteIdentifier:
 class TestBuildSpatialJoinCondition:
     """Tests for the spatial-join ON-clause builder.
 
-    Regression guard for PR #460: the cheap bbox-overlap pre-filter must be
-    emitted whenever both sides have a bbox column. It was silently removed in
-    #457, which made `add admin-divisions --dataset overture` hang.
+    Since #545 the ON clause is always a bare ``ST_Intersects`` -- the only shape
+    DuckDB's indexed ``SPATIAL_JOIN`` recognizes. The earlier per-row bbox-overlap
+    pre-filter was removed because under the ``LEFT JOIN`` these commands emit it
+    forced a ``BLOCKWISE_NL_JOIN`` (O(n*m)); the beneficial admin-side *extent*
+    pre-filter lives in the callers, not in this predicate.
     """
 
-    def test_without_bbox_columns_is_plain_intersects(self):
-        """No bbox columns -> bare ST_Intersects, no pre-filter."""
+    def test_bare_intersects(self):
+        """Default -> bare ST_Intersects(target, input)."""
         cond = build_spatial_join_condition("geometry", "geom")
         assert cond == 'ST_Intersects(b."geom", a."geometry")'
 
-    def test_with_bbox_columns_adds_prefilter(self):
-        """Both sides have bbox -> four-sided overlap test ANDed before ST_Intersects."""
-        cond = build_spatial_join_condition("geometry", "geom", "bbox", "geom_bbox")
-        assert 'a."bbox".xmin <= b."geom_bbox".xmax' in cond
-        assert 'a."bbox".xmax >= b."geom_bbox".xmin' in cond
-        assert 'a."bbox".ymin <= b."geom_bbox".ymax' in cond
-        assert 'a."bbox".ymax >= b."geom_bbox".ymin' in cond
-        assert 'ST_Intersects(b."geom", a."geometry")' in cond
-        # The cheap bbox test must precede the expensive geometry intersection.
-        assert cond.index("xmin") < cond.index("ST_Intersects")
-        assert " AND " in cond
-
-    def test_one_sided_bbox_falls_back_to_intersects(self):
-        """A bbox on only one side cannot form a safe overlap test -> fall back."""
-        plain = 'ST_Intersects(b."g", a."g")'
-        assert build_spatial_join_condition("g", "g", input_bbox_col="bbox") == plain
-        assert build_spatial_join_condition("g", "g", target_bbox_col="bbox") == plain
+    def test_never_emits_bbox_overlap_term(self):
+        """Regression guard (#545): the ON clause must not AND a bbox-overlap test
+        (``a.bbox.xmin <= b.bbox.xmax`` ...) in front of ST_Intersects -- that is
+        what forced DuckDB to a BLOCKWISE_NL_JOIN under the LEFT JOIN.
+        """
+        cond = build_spatial_join_condition("geometry", "geom")
+        for token in ("xmin", "xmax", "ymin", "ymax", " AND "):
+            assert token not in cond
 
     def test_custom_aliases(self):
         """Table aliases are configurable for both sides."""
         cond = build_spatial_join_condition(
-            "geometry",
-            "geom",
-            "bbox",
-            "geom_bbox",
-            input_alias="lhs",
-            target_alias="rhs",
+            "geometry", "geom", input_alias="lhs", target_alias="rhs"
         )
-        assert 'lhs."bbox".xmin <= rhs."geom_bbox".xmax' in cond
-        assert 'ST_Intersects(rhs."geom", lhs."geometry")' in cond
+        assert cond == 'ST_Intersects(rhs."geom", lhs."geometry")'
 
     def test_identifiers_are_quoted(self):
         """Column names with special characters are safely quoted."""
-        cond = build_spatial_join_condition("geo m", 'g"x', "b b", "q")
+        cond = build_spatial_join_condition("geo m", 'g"x')
         assert '"geo m"' in cond
         assert '"g""x"' in cond  # embedded double-quote doubled
 
-    def test_no_derived_bbox_from_geometry(self):
-        """Regression guard for #538: the ON clause must never derive a bbox from
-        the geometry (ST_XMin/XMax/...) and AND it in front of ST_Intersects.
+    def test_reprojected_input_geom_used_verbatim(self):
+        """input_geom_sql (e.g. an ST_Transform reprojection, #525) replaces the
+        input geometry column and still yields a bare ST_Intersects."""
+        transformed = "ST_Transform(a.\"geometry\", 'EPSG:5070', 'OGC:CRS84')"
+        cond = build_spatial_join_condition("geometry", "geom", input_geom_sql=transformed)
+        assert cond == f'ST_Intersects(b."geom", {transformed})'
 
-        #462 proposed exactly that for native geometry; the #538 benchmark showed
-        it defeats DuckDB's SPATIAL_JOIN and forces a ~73x slower BLOCKWISE_NL_JOIN.
-        The builder must only ever use *stored* bbox covering columns as a
-        pre-filter, never compute one inline.
+    def test_no_derived_bbox_from_geometry(self):
+        """Regression guard for #538/#462: the ON clause must never derive a bbox
+        from the geometry (ST_XMin/XMax/...) and AND it in front of ST_Intersects.
+
+        #462 proposed exactly that for native geometry; it defeats DuckDB's
+        SPATIAL_JOIN and forces a slower BLOCKWISE_NL_JOIN.
         """
         for cond in (
             build_spatial_join_condition("geometry", "geom"),
-            build_spatial_join_condition("geometry", "geom", "bbox", "geom_bbox"),
             build_spatial_join_condition(
                 "geometry",
                 "geom",
-                "bbox",
-                "geom_bbox",
                 input_geom_sql="ST_Transform(a.\"geometry\", 'EPSG:5070', 'OGC:CRS84')",
             ),
         ):

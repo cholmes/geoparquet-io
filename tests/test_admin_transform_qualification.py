@@ -56,7 +56,6 @@ def test_admin_divisions_handles_input_with_region_column():
             input_url="_gpio_test_input",
             admin_subquery="(SELECT geometry, region FROM _admin)",
             admin_select_clause=select_clause,
-            input_bbox_col=None,
             admin_bbox_col=None,
             input_geom_col="geometry",
             admin_geom_col="geometry",
