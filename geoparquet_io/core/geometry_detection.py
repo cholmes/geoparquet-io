@@ -70,6 +70,40 @@ def detect_parquet_geometry_column(parquet_file: str, verbose: bool = False) -> 
     return None
 
 
+def _crs_short(crs) -> str:
+    """Short CRS label (e.g. 'EPSG:28992') for verbose output, avoiding full PROJJSON."""
+    if crs is None:
+        return "none"
+    if isinstance(crs, str):
+        return crs
+    if isinstance(crs, dict):
+        cid = crs.get("id")
+        if isinstance(cid, dict):
+            return f"{cid.get('authority', '?')}:{cid.get('code', '?')}"
+        return crs.get("name", "custom")
+    return "custom"
+
+
+def _summarize_geo_metadata(geo_meta) -> str:
+    """One-line geo-metadata summary for verbose output (no full CRS dump)."""
+    if not isinstance(geo_meta, dict):
+        return str(geo_meta)
+    columns = geo_meta.get("columns", {})
+    cols = (
+        "; ".join(
+            f"{name}(encoding={col.get('encoding', '?')}, crs={_crs_short(col.get('crs'))}, "
+            f"types={col.get('geometry_types', [])})"
+            for name, col in columns.items()
+        )
+        if isinstance(columns, dict)
+        else ""
+    )
+    return (
+        f"version={geo_meta.get('version', '?')}, "
+        f"primary_column={geo_meta.get('primary_column', '?')}, columns=[{cols}]"
+    )
+
+
 def find_primary_geometry_column(parquet_file: str, verbose: bool = False) -> str:
     """
     Find the primary geometry column from GeoParquet metadata.
@@ -86,8 +120,6 @@ def find_primary_geometry_column(parquet_file: str, verbose: bool = False) -> st
     Returns:
         str: Name of the primary geometry column (defaults to 'geometry')
     """
-    import json
-
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
     from geoparquet_io.core.file_utils import safe_file_url
 
@@ -95,7 +127,7 @@ def find_primary_geometry_column(parquet_file: str, verbose: bool = False) -> st
     geo_meta = get_geo_metadata(safe_url)
 
     if verbose and geo_meta:
-        debug(f"\nGeo metadata: {json.dumps(geo_meta, indent=2)}")
+        debug(f"Geo metadata: {_summarize_geo_metadata(geo_meta)}")
 
     if geo_meta:
         if isinstance(geo_meta, dict):
