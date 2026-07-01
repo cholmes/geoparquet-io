@@ -167,14 +167,21 @@ class TestDryRunCommands:
         assert "no bbox optimization" not in result.output
 
     def test_dry_run_with_reprojected_bbox_input(self, austria_bbox_covering_file):
-        """Reprojected (non-CRS84) 1.x-with-bbox input must not claim a bbox prefilter.
+        """Reprojected (non-CRS84) input + admin-with-bbox keeps the bbox pre-filter.
 
-        Regression for #538/#525: a projected 1.x input has a stored bbox column,
-        but admin boundaries are CRS84 so the input geometry is wrapped in
-        ST_Transform (#525). build_spatial_join_condition then drops the source-CRS
-        bbox pre-filter and emits a bare ST_Intersects — so the status message must
-        report "no bbox optimization", not "Using bbox columns for optimized
-        spatial join", which would mismatch the predicate that actually runs.
+        Regression for #538/#540: the input is EPSG:31287 and the admin dataset
+        (GAUL) has a bbox column, so admin_divisions reprojects the *admin* side into
+        the input CRS (ST_Transform on the admin geometry) and keeps the cheap
+        bbox-overlap pre-filter on both sides — the input geometry is left untouched
+        (#525). build_spatial_join_condition therefore emits the bbox pre-filter
+        ANDed in front of ST_Intersects, so the status line must report the bbox
+        optimization, not "no bbox optimization".
+
+        This guards against the f2 mismatch: keying the reported strategy on
+        ``source_crs`` alone (ignoring admin_bbox_col) would misreport this join as
+        SPATIAL_JOIN_NO_BBOX while the emitted SQL still runs the bbox pre-filter.
+        The reported strategy must mirror the ``input_geom_sql is not None`` decision
+        in _build_spatial_join_query, i.e. ``source_crs and not _admin_reprojected``.
         """
         runner = CliRunner()
         result = runner.invoke(
@@ -190,10 +197,11 @@ class TestDryRunCommands:
 
         assert result.exit_code == 0
         assert "DRY RUN MODE" in result.output
-        # Input is reprojected to CRS84, so the ON clause is a bare ST_Intersects
-        # wrapping the input geometry in ST_Transform — no bbox-overlap pre-filter.
-        assert "ON ST_Intersects" in result.output
+        # Admin side is reprojected into the input CRS (ST_Transform on the admin
+        # geometry); the input geometry is left as-is so the bbox pre-filter stays.
         assert "ST_Transform" in result.output
-        # The message must match the bare predicate, not claim a bbox prefilter.
-        assert "Using full geometry intersection (no bbox optimization)" in result.output
-        assert "Using bbox columns for optimized spatial join" not in result.output
+        # The bbox-overlap pre-filter must be present in the emitted predicate.
+        assert ".xmin <=" in result.output
+        # The message must match the predicate that actually runs (bbox pre-filter).
+        assert "Using bbox columns for optimized spatial join" in result.output
+        assert "no bbox optimization" not in result.output

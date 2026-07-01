@@ -544,7 +544,9 @@ def _build_query_components(
     )
 
     if not dry_run:
-        input_geom_rewritten = _reprojected_input_geom_sql(input_geom_col, source_crs) is not None
+        input_geom_rewritten = bool(source_crs) and not _admin_reprojected(
+            source_crs, admin_bbox_col
+        )
         _report_join_strategy(
             has_native_geometry,
             input_bbox_col,
@@ -891,7 +893,7 @@ def add_admin_divisions_multi(
                     compression_level,
                     has_native_geometry=has_native_geometry,
                     input_geom_rewritten=(
-                        _reprojected_input_geom_sql(input_geom_col, source_crs) is not None
+                        bool(source_crs) and not _admin_reprojected(source_crs, admin_bbox_col)
                     ),
                 ):
                     return
