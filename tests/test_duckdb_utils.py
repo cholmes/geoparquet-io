@@ -158,6 +158,102 @@ class TestBuildSpatialJoinCondition:
             assert "ST_YMax" not in cond
 
 
+class TestSpatialJoinOperatorPlan:
+    """Plan-level guard that the native/bare predicate stays on ``SPATIAL_JOIN``.
+
+    Fix C for issue #545. The string-level guards above ensure we *build* the right
+    predicate; this one runs ``EXPLAIN`` so a DuckDB-version change or query-shape
+    regression that silently defeats the indexed ``SPATIAL_JOIN`` operator fails CI
+    instead of hanging in production.
+
+    Why it matters: ``add admin-divisions`` / ``add country-codes`` place the
+    predicate from :func:`build_spatial_join_condition` inside a ``LEFT JOIN``
+    (``admin_divisions.py``, ``country_codes.py``). If the plan degrades to
+    ``BLOCKWISE_NL_JOIN`` (O(n*m)) a large input such as remote Overture hangs --
+    the original #460 incident.
+
+    Issue #545 background: on DuckDB 1.5.1 the bare ``ST_Intersects`` predicate
+    plans as ``SPATIAL_JOIN`` even at >=1M input features (~15s, no hang), whereas
+    ANDing the bbox-overlap pre-filter in front of it under a ``LEFT JOIN`` drops to
+    ``BLOCKWISE_NL_JOIN``. That asymmetry is the evidence base for eventually
+    dropping the pre-filter (Fix B); this guard protects the bare fast path that
+    such a change would rely on. The predicate builder is shared, so guarding it
+    here covers both ``admin-divisions`` and ``country-codes``.
+    """
+
+    # Nested-loop / cross-product operators. Any of these on the bare predicate is
+    # the #460 hang signature.
+    _NESTED_LOOP_OPERATORS = ("BLOCKWISE_NL_JOIN", "NESTED_LOOP_JOIN", "CROSS_PRODUCT")
+
+    @staticmethod
+    def _explain_native_left_join(con, n_input, n_target):
+        """Build the real native-path query and return its physical plan text.
+
+        ``target`` stands in for admin polygons, ``input`` for the features being
+        enriched. The ON clause is exactly what ``build_spatial_join_condition``
+        emits for a native-geometry input (neither side has a bbox covering), placed
+        in the same ``LEFT JOIN`` shape the add commands use.
+        """
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE target AS
+            SELECT
+                i AS id,
+                ST_Buffer(
+                    ST_Point(((i * 11) % 3599) / 10.0 - 180,
+                             ((i * 17) % 1799) / 10.0 - 90),
+                    0.5
+                ) AS geometry
+            FROM range({n_target}) t(i)
+            """
+        )
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE input AS
+            SELECT
+                i AS id,
+                ST_Point(((i * 131) % 3599) / 10.0 - 180,
+                         ((i * 197) % 1799) / 10.0 - 90) AS geometry
+            FROM range({n_input}) t(i)
+            """
+        )
+        # Native path: no bbox columns -> bare ST_Intersects.
+        condition = build_spatial_join_condition("geometry", "geometry")
+        query = f"SELECT a.id FROM input a LEFT JOIN target b ON {condition}"
+        plan_rows = con.execute(f"EXPLAIN {query}").fetchall()
+        return "\n".join(row[1] for row in plan_rows)
+
+    def _assert_indexed_spatial_join(self, plan):
+        assert "SPATIAL_JOIN" in plan, f"expected SPATIAL_JOIN, got plan:\n{plan}"
+        for operator in self._NESTED_LOOP_OPERATORS:
+            assert operator not in plan, f"unexpected {operator} in plan:\n{plan}"
+
+    def test_native_predicate_plans_as_spatial_join(self):
+        """Bare ST_Intersects LEFT JOIN -> indexed SPATIAL_JOIN, not a nested loop."""
+        con = get_duckdb_connection(load_httpfs=False)
+        try:
+            plan = self._explain_native_left_join(con, n_input=2000, n_target=1000)
+        finally:
+            con.close()
+        self._assert_indexed_spatial_join(plan)
+
+    @pytest.mark.slow
+    def test_native_predicate_plans_as_spatial_join_at_scale(self):
+        """Fix C (issue #545): at >=1M input features against a 45k-polygon target
+        the bare predicate must still plan as SPATIAL_JOIN.
+
+        A cardinality-driven flip to BLOCKWISE_NL_JOIN at this scale is exactly the
+        #460 Overture hang; asserting the operator here turns that regression into a
+        loud CI failure instead of a silent hang.
+        """
+        con = get_duckdb_connection(load_httpfs=False)
+        try:
+            plan = self._explain_native_left_join(con, n_input=1_200_000, n_target=45_000)
+        finally:
+            con.close()
+        self._assert_indexed_spatial_join(plan)
+
+
 class TestSpatialJoinStrategy:
     """Tests for spatial_join_strategy() (issue #538).
 
