@@ -352,6 +352,53 @@ def partition_options_base(func):
     return func
 
 
+def grid_aggregate_options(func):
+    """Add the options shared by `gpio process aggregate <grid>` commands.
+
+    Adds (the per-scheme ``--resolution`` is declared on each command, since its
+    valid range differs between grids):
+    - --auto, --target-per-cell, --max-cells
+    - --metric, --breakdown, --breakdown-limit
+    - --out-geometry
+    """
+    func = click.option(
+        "--out-geometry",
+        type=click.Choice(["polygon", "centroid", "both", "none"]),
+        default="polygon",
+        help="Output geometry per cell (default: polygon).",
+    )(func)
+    func = click.option(
+        "--breakdown-limit",
+        type=int,
+        default=20,
+        help="Max breakdown values before remainder rolls into count_other (default: 20).",
+    )(func)
+    func = click.option(
+        "--breakdown",
+        default=None,
+        help="Categorical column to pivot count by (one count_<value> column each).",
+    )(func)
+    func = click.option(
+        "--metric",
+        default=None,
+        help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
+    )(func)
+    func = click.option(
+        "--max-cells",
+        type=int,
+        default=500000,
+        help="Maximum output cells when using --auto (default: 500000).",
+    )(func)
+    func = click.option(
+        "--target-per-cell",
+        type=int,
+        default=10000,
+        help="Target features per cell when using --auto (default: 10000).",
+    )(func)
+    func = click.option("--auto", is_flag=True, help="Auto-select resolution from data size.")(func)
+    return func
+
+
 def partition_options(func):
     """
     Add standard partitioning options to a command with directory sub-partitioning support.

@@ -10,6 +10,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **`gpio process aggregate a5`**, **`gpio process aggregate h3`**, and
+  **`gpio process aggregate admin`**: aggregate large GeoParquet datasets into A5 grid
+  cells, H3 hexagonal cells, or administrative regions with per-bucket `count`,
+  `--metric` rollups (`sum`/`avg`/`min`/`max`), and `--breakdown` category pivots, for
+  low-zoom visualization. Output geometry is selectable
+  (`--out-geometry polygon|centroid|both|none`); every row carries the bucket id
+  (`a5_cell`/`h3_cell`/`admin_code`) so `none` output can be re-joined to geometry later.
+  Features outside all admin regions go into an `unassigned` bucket. Python API:
+  `Table.aggregate_a5`, `Table.aggregate_h3`, `Table.aggregate_admin`, `ops.aggregate_a5`,
+  `ops.aggregate_h3`, `ops.aggregate_admin`.
+
 - **`gpio convert reproject --assume-crs84`**: treat a file's unknown (explicit
   `crs: null`) CRS as OGC:CRS84 and rewrite it so the `crs` key is omitted (the
   spec default). No coordinates are changed. Also available as the
