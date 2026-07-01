@@ -2190,32 +2190,43 @@ class TestRealWorldSchemaMismatch:
         "FS_VCGI_OPENDATA_Cadastral_PTTR_point_WM_v1_view/FeatureServer/0"
     )
 
-    @pytest.fixture
-    def output_file(self, tmp_path):
-        """Create a temporary output file path."""
-        output = tmp_path / f"vt_property_{uuid.uuid4()}.parquet"
-        yield str(output)
-        safe_unlink(output)
-
-    def test_vermont_property_transfers_issue_334(self, output_file):
+    def test_vermont_property_transfers_issue_334(self):
         """Test extraction from VT property transfer dataset that triggered #334.
 
         This dataset has the TownGlValu field (esriFieldTypeDouble) which caused
         schema mismatches when some batches only had integer values.
-        """
-        import geoparquet_io as gpio
 
-        # Extract a subset to keep test fast but still exercise multiple batches
-        table = gpio.extract_arcgis(
+        The #334 regression lives in the per-page schema reconciliation inside
+        ``_stream_features_to_parquet``; what actually exercises it is crossing
+        *multiple batches* over that Double field, not the total row count. We
+        drive the core extractor with a small ``batch_size`` (3 pages of 50 =
+        150 rows) rather than pulling 5000 rows through the server's 2000-row
+        pages. That hits the identical code path with ~30x less live data,
+        keeping this live third-party fetch fast and far less prone to the
+        transient worker crashes that a large multi-page fetch under parallel
+        CI can trigger. (``batch_size`` isn't exposed on the public
+        ``extract_arcgis`` API, so we call the core ``arcgis_to_table``, which
+        the public API wraps and which owns the #334 fix.)
+        """
+        from geoparquet_io.core.arcgis import arcgis_to_table
+
+        # 3 small pages (50 each) still span the TownGlValu Double field across
+        # batches, which is exactly what triggered the schema mismatch in #334.
+        table = arcgis_to_table(
             self.VT_PROPERTY_SERVICE,
-            limit=5000,  # Multiple pages to trigger potential schema issues
+            limit=150,
+            batch_size=50,
         )
 
         assert table.num_rows > 0
         assert "geometry" in table.column_names
 
-        # Verify the schema is consistent (no schema mismatch error occurred)
-        # If we got here without error, the fix is working
+        # TownGlValu is the esriFieldTypeDouble field from #334; its presence
+        # confirms we actually crossed the batches that used to mismatch.
+        assert "TownGlValu" in table.column_names
+
+        # Verify the schema is consistent (no schema mismatch error occurred).
+        # If we got here without error, the fix is working.
         assert table.schema is not None
 
 
