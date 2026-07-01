@@ -18,9 +18,9 @@ from geoparquet_io.core.constants import (
     DEFAULT_S2_LEVEL,
 )
 from geoparquet_io.core.crs_utils import (
-    crs_transform_sql_expr,
-    extract_crs_from_parquet,
-    extract_crs_from_table,
+    crs_string_from_table,
+    source_crs_string,
+    transform_geom_sql,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, load_community_extension
 from geoparquet_io.core.exceptions import InvalidParameterError
@@ -64,21 +64,25 @@ def _create_geometry_view(con, table, geom_col):
     return "__input_table"
 
 
-def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level):
+def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level, geom_ref=None):
     """Build SELECT query to add S2 column to table.
+
+    Args:
+        geom_ref: SQL geometry expression for keying (defaults to the raw column;
+            pass a reprojected expression for non-CRS84 input).
 
     Returns:
         str: Complete SELECT query with S2 expression
     """
-    # Build S2 cell expression. s2_cellfromlonlat expects lon/lat degrees, so a
-    # projected input is reprojected to OGC:CRS84 before keying (issue #525).
-    source_crs = extract_crs_from_table(table, geom_col)
-    centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
+    if geom_ref is None:
+        geom_ref = f'"{geom_col}"'
+
+    # Build S2 cell expression (keyed on lon/lat, reprojected when needed)
     s2_expr = f"""s2_cell_token(
         s2_cell_parent(
             s2_cellfromlonlat(
-                ST_X({centroid}),
-                ST_Y({centroid})
+                ST_X(ST_Centroid({geom_ref})),
+                ST_Y(ST_Centroid({geom_ref}))
             ),
             {level}
         )
@@ -133,14 +137,23 @@ def add_s2_table(
     if not geom_col:
         geom_col = "geometry"
 
+    # S2 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    source_crs = crs_string_from_table(table, geom_col)
+
     # Register table and execute query
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         _load_geography_extension(con)
         con.register("__input_table", table)
 
         source_ref = _create_geometry_view(con, table, geom_col)
-        query = _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level)
+        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+        query = _build_s2_select_query(
+            table, source_ref, geom_col, s2_column_name, level, geom_ref=geom_ref
+        )
         result = con.execute(query).arrow().read_all()
 
         # Preserve metadata
@@ -157,20 +170,20 @@ def _make_add_s2_query(
     geometry_column: str,
     s2_column_name: str,
     level: int,
-    source_crs=None,
+    source_crs: str | None = None,
 ) -> str:
     """Build query to add S2 column to a source.
 
-    ``source_crs`` (when a non-default CRS) reprojects the centroid to OGC:CRS84
-    before keying, since ``s2_cellfromlonlat`` expects lon/lat degrees.
+    ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
+    (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
     """
+    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
     # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get desired level
-    centroid = crs_transform_sql_expr(f'ST_Centroid("{geometry_column}")', source_crs)
     s2_expr = f"""s2_cell_token(
         s2_cell_parent(
             s2_cellfromlonlat(
-                ST_X({centroid}),
-                ST_Y({centroid})
+                ST_X(ST_Centroid({geom_ref})),
+                ST_Y(ST_Centroid({geom_ref}))
             ),
             {level}
         )
@@ -256,17 +269,16 @@ def add_s2_column(
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    # Define the S2 SQL expression (using token/string format for portability).
-    # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get the
-    # desired level. A projected input is reprojected to OGC:CRS84 before keying
-    # (issue #525), since s2_cellfromlonlat expects lon/lat degrees.
-    source_crs = extract_crs_from_parquet(input_parquet, verbose)
-    centroid = crs_transform_sql_expr(f"ST_Centroid({geom_col})", source_crs)
+    # S2 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs_string(input_parquet, verbose))
+
+    # Define the S2 SQL expression (using token/string format for portability)
+    # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get desired level
     sql_expression = f"""s2_cell_token(
         s2_cell_parent(
             s2_cellfromlonlat(
-                ST_X({centroid}),
-                ST_Y({centroid})
+                ST_X(ST_Centroid({geom_ref})),
+                ST_Y(ST_Centroid({geom_ref}))
             ),
             {s2_level}
         )
@@ -322,12 +334,12 @@ def _add_s2_streaming(
     if should_stream_output(output_path):
         verbose = False
 
-    # Detect a projected source CRS so the centroid is reprojected to OGC:CRS84
-    # before keying. stdin carries no readable CRS, so it is treated as CRS84.
-    source_crs = None if is_stdin(input_path) else extract_crs_from_parquet(input_path, verbose)
+    def make_query(source: str, con, source_crs: str | None = None) -> str:
+        """Build the add S2 query for streaming source.
 
-    def make_query(source: str, con) -> str:
-        """Build the add S2 query for streaming source."""
+        ``source_crs`` is the streamed input's CRS (from its Arrow geo metadata),
+        used to reproject non-CRS84 input to lon/lat before keying (#525).
+        """
         # Load geography extension
         _load_geography_extension(con)
 

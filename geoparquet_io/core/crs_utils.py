@@ -550,3 +550,211 @@ def parse_crs_string_to_projjson(crs_string, con=None):
         return crs.to_json_dict()
     except Exception:
         return {"id": {"authority": authority, "code": code}}
+
+
+#: Canonical lon/lat target CRS for grid keying and admin spatial joins.
+#: With ``SET geometry_always_xy = true`` this is interchangeable with EPSG:4326.
+DEFAULT_TARGET_CRS = "OGC:CRS84"
+
+
+def crs_string_for_transform(crs) -> str | None:
+    """Return an ``"AUTH:CODE"`` CRS string for ``ST_Transform``, or ``None``.
+
+    ``None`` means no transform is needed or possible: the CRS is absent, is the
+    default (OGC:CRS84 / EPSG:4326), or is not identifiable as an authority code.
+    ``crs`` may be PROJJSON (as returned by :func:`extract_crs_from_parquet`) or
+    an ``"AUTH:CODE"`` string.
+    """
+    if not crs or is_default_crs(crs):
+        return None
+    identifier = _extract_crs_identifier(crs)
+    if not identifier:
+        return None
+    authority, code = identifier
+    return f"{authority}:{code}"
+
+
+def transform_geom_sql(geom_expr: str, source_crs, target_crs: str = DEFAULT_TARGET_CRS) -> str:
+    """Wrap ``geom_expr`` in ``ST_Transform`` to ``target_crs`` when needed.
+
+    Returns ``geom_expr`` unchanged when the source CRS is absent, the default,
+    or unidentifiable — so CRS-less / already-lon-lat input is untouched and the
+    common (CRS84) path pays nothing. The caller's DuckDB session should have
+    ``geometry_always_xy = true`` so transformed coordinates come out as lon/lat.
+
+    This is the shared "normalize geometry to the operation's expected CRS"
+    utility used by the admin spatial joins and the lon/lat grid keying (#525).
+    """
+    src = crs_string_for_transform(source_crs)
+    if src is None:
+        return geom_expr
+    src_esc = src.replace("'", "''")
+    tgt_esc = target_crs.replace("'", "''")
+    return f"ST_Transform({geom_expr}, '{src_esc}', '{tgt_esc}')"
+
+
+def source_crs_string(parquet_file, verbose: bool = False) -> str | None:
+    """Detect ``parquet_file``'s CRS as an ``"AUTH:CODE"`` transform string.
+
+    Returns ``None`` for CRS84/default/CRS-less input (no transform needed).
+    """
+    return crs_string_for_transform(extract_crs_from_parquet(parquet_file, verbose))
+
+
+def reproject_to_source_sql(geom_expr: str, source_crs, base_crs: str = DEFAULT_TARGET_CRS) -> str:
+    """Wrap ``geom_expr`` to reproject FROM ``base_crs`` (default CRS84) TO ``source_crs``.
+
+    The inverse direction of :func:`transform_geom_sql`. Used to bring the
+    (small) OGC:CRS84 admin polygons into a non-CRS84 input's CRS so the spatial
+    join and its bbox pre-filter run in one CRS *without* transforming the large
+    input per row — this restores the cheap bbox pre-filter on non-CRS84 admin
+    joins instead of degrading to a full nested-loop ``ST_Intersects`` (#525).
+
+    Returns ``geom_expr`` unchanged when ``source_crs`` is absent/default.
+    """
+    if not source_crs or is_default_crs(source_crs):
+        return geom_expr
+    src = resolve_crs_to_string(source_crs)
+    if not src:
+        return geom_expr
+    src_lit = _escape_sql_string(src)
+    base_lit = _escape_sql_string(base_crs)
+    return f"ST_Transform({geom_expr}, '{base_lit}', '{src_lit}')"
+
+
+def parse_geo_metadata_from_schema(metadata: dict | None) -> dict | None:
+    """Parse GeoParquet ``geo`` metadata from an Arrow schema metadata dict.
+
+    The schema metadata may use bytes or string keys/values depending on how it
+    was accessed. Returns the parsed dict, or ``None`` if absent/unparsable.
+    """
+    if not metadata:
+        return None
+    geo_bytes = metadata.get(b"geo") or metadata.get("geo")
+    if not geo_bytes:
+        return None
+    try:
+        if isinstance(geo_bytes, bytes):
+            return json.loads(geo_bytes.decode("utf-8"))
+        return json.loads(geo_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def crs_string_from_geo_meta(geo_meta: dict | None, geom_col: str) -> str | None:
+    """Return an ``"AUTH:CODE"`` transform string for a geometry column's CRS.
+
+    ``geo_meta`` is parsed GeoParquet ``geo`` metadata (as carried on a PyArrow
+    schema for the table-centric Python API). Returns ``None`` when no transform
+    is needed — the CRS is absent, the default (OGC:CRS84 / EPSG:4326), explicitly
+    null (unknown), or not identifiable as an authority code.
+    """
+    if not geo_meta:
+        return None
+    columns = geo_meta.get("columns", {})
+    col_meta = columns.get(geom_col)
+    if col_meta is None:
+        col_meta = columns.get(geo_meta.get("primary_column", "geometry"), {})
+    crs = col_meta.get("crs") if isinstance(col_meta, dict) else None
+    return crs_string_for_transform(crs)
+
+
+#: GeoArrow geometry extension names (registered by ``geoarrow.pyarrow``).
+_GEOARROW_EXTENSION_NAMES = frozenset(
+    {
+        "geoarrow.wkb",
+        "ogc.wkb",
+        "geoarrow.point",
+        "geoarrow.linestring",
+        "geoarrow.polygon",
+        "geoarrow.multipoint",
+        "geoarrow.multilinestring",
+        "geoarrow.multipolygon",
+        "geoarrow.geometry",
+    }
+)
+
+
+def _crs_from_extension_type(field_type):
+    """Extract a ``crs`` (PROJJSON dict/str) from a registered GeoArrow type.
+
+    When ``geoarrow.pyarrow`` is imported anywhere in the process it registers
+    its extension types, and ``pyarrow.parquet`` then returns geometry columns
+    as those types — moving the CRS onto ``field.type.crs`` and *consuming* the
+    raw ``ARROW:extension:metadata`` key off ``field.metadata``. Returns ``None``
+    for non-GeoArrow types or when no CRS is present.
+    """
+    if getattr(field_type, "extension_name", None) not in _GEOARROW_EXTENSION_NAMES:
+        return None
+    crs_obj = getattr(field_type, "crs", None)
+    if crs_obj is not None and hasattr(crs_obj, "to_json_dict"):
+        try:
+            return crs_obj.to_json_dict()
+        except Exception:
+            pass
+    ext_meta = getattr(field_type, "extension_metadata", None)
+    if ext_meta:
+        try:
+            parsed = json.loads(ext_meta)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(parsed, dict):
+            return parsed.get("crs")
+    return None
+
+
+def _crs_from_geoarrow_field(table, geom_col: str):
+    """Return the PROJJSON ``crs`` from a geometry field's GeoArrow metadata.
+
+    Parquet-geo-only / GeoArrow inputs carry the CRS on the geometry field, but
+    *where* depends on whether ``geoarrow.pyarrow`` has been imported in the
+    process (it registers extension types globally — many code paths and tests
+    do this transitively):
+
+    1. Imported -> the field is a registered extension type and the CRS lives on
+       ``field.type.crs`` (the raw metadata key is consumed off the field).
+    2. Not imported -> the CRS is in ``field.metadata['ARROW:extension:metadata']``.
+
+    Both are checked so detection is import-order-independent. Returns the raw
+    ``crs`` value (PROJJSON dict or string), or ``None``.
+    """
+    try:
+        field = table.schema.field(geom_col)
+    except (KeyError, ValueError):
+        return None
+
+    # Case 1: geoarrow-pyarrow registered the type and consumed the metadata.
+    crs = _crs_from_extension_type(field.type)
+    if crs is not None:
+        return crs
+
+    # Case 2: plain binary field — CRS is in the raw extension metadata.
+    md = getattr(field, "metadata", None)
+    if not md:
+        return None
+    ext = md.get(b"ARROW:extension:metadata") or md.get("ARROW:extension:metadata")
+    if not ext:
+        return None
+    try:
+        if isinstance(ext, bytes):
+            ext = ext.decode("utf-8")
+        ext_dict = json.loads(ext)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return ext_dict.get("crs") if isinstance(ext_dict, dict) else None
+
+
+def crs_string_from_table(table, geom_col: str) -> str | None:
+    """Detect an Arrow table's geometry CRS as an ``"AUTH:CODE"`` transform string.
+
+    Checks both CRS carriers used by the table-centric Python API:
+    1. The schema-level GeoParquet ``geo`` metadata.
+    2. The geometry field's GeoArrow ``ARROW:extension:metadata`` (parquet-geo-only).
+
+    Returns ``None`` for CRS84/default/CRS-less input (no transform needed).
+    """
+    geo_meta = parse_geo_metadata_from_schema(table.schema.metadata)
+    crs = crs_string_from_geo_meta(geo_meta, geom_col)
+    if crs:
+        return crs
+    return crs_string_for_transform(_crs_from_geoarrow_field(table, geom_col))

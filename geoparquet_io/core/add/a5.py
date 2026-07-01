@@ -7,9 +7,9 @@ import pyarrow as pa
 from geoparquet_io.core.common import add_computed_column
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
 from geoparquet_io.core.crs_utils import (
-    crs_transform_sql_expr,
-    extract_crs_from_parquet,
-    extract_crs_from_table,
+    crs_string_from_table,
+    source_crs_string,
+    transform_geom_sql,
 )
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
@@ -60,9 +60,15 @@ def add_a5_table(
     if not 0 <= resolution <= 30:
         raise ValueError(f"A5 resolution must be between 0 and 30, got {resolution}")
 
+    # A5 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    source_crs = crs_string_from_table(table, geom_col)
+
     # Register table and execute query
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
+        # Ensure ST_Transform (CRS-aware keying) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
+
         # Load A5 extension
         load_community_extension(con, "a5")
 
@@ -85,13 +91,11 @@ def add_a5_table(
         else:
             source_ref = "__input_table"
 
-        # Build A5 column query. a5_lonlat_to_cell expects lon/lat degrees, so a
-        # projected input is reprojected to OGC:CRS84 before keying (issue #525).
-        source_crs = extract_crs_from_table(table, geom_col)
-        centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
+        # Build A5 column query (reproject to lon/lat when source is non-CRS84)
+        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
         a5_expr = f"""a5_lonlat_to_cell(
-            ST_X({centroid}),
-            ST_Y({centroid}),
+            ST_X(ST_Centroid({geom_ref})),
+            ST_Y(ST_Centroid({geom_ref})),
             {resolution}
         )"""
 
@@ -129,17 +133,17 @@ def _make_add_a5_query(
     geometry_column: str,
     a5_column_name: str,
     resolution: int,
-    source_crs=None,
+    source_crs: str | None = None,
 ) -> str:
     """Build query to add A5 column to a source.
 
-    ``source_crs`` (when a non-default CRS) reprojects the centroid to OGC:CRS84
-    before keying, since ``a5_lonlat_to_cell`` expects lon/lat degrees.
+    ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
+    (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
     """
-    centroid = crs_transform_sql_expr(f'ST_Centroid("{geometry_column}")', source_crs)
+    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
     a5_expr = f"""a5_lonlat_to_cell(
-        ST_X({centroid}),
-        ST_Y({centroid}),
+        ST_X(ST_Centroid({geom_ref})),
+        ST_Y(ST_Centroid({geom_ref})),
         {resolution}
     )"""
     return f'SELECT *, {a5_expr} AS "{a5_column_name}" FROM {source}'
@@ -224,13 +228,13 @@ def add_a5_column(
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    # Define the A5 SQL expression. a5_lonlat_to_cell expects lon/lat degrees, so
-    # a projected input is reprojected to OGC:CRS84 before keying (issue #525).
-    source_crs = extract_crs_from_parquet(input_parquet, verbose)
-    centroid = crs_transform_sql_expr(f'ST_Centroid("{geom_col}")', source_crs)
+    # A5 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
+    geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs_string(input_parquet, verbose))
+
+    # Define the A5 SQL expression
     sql_expression = f"""a5_lonlat_to_cell(
-        ST_X({centroid}),
-        ST_Y({centroid}),
+        ST_X(ST_Centroid({geom_ref})),
+        ST_Y(ST_Centroid({geom_ref})),
         {a5_resolution}
     )"""
 
@@ -284,12 +288,12 @@ def _add_a5_streaming(
     if should_stream_output(output_path):
         verbose = False
 
-    # Detect a projected source CRS so the centroid is reprojected to OGC:CRS84
-    # before keying. stdin carries no readable CRS, so it is treated as CRS84.
-    source_crs = None if is_stdin(input_path) else extract_crs_from_parquet(input_path, verbose)
+    def make_query(source: str, con, source_crs: str | None = None) -> str:
+        """Build the add A5 query for streaming source.
 
-    def make_query(source: str, con) -> str:
-        """Build the add A5 query for streaming source."""
+        ``source_crs`` is the streamed input's CRS (from its Arrow geo metadata),
+        used to reproject non-CRS84 input to lon/lat before keying (#525).
+        """
         # Load A5 extension
         load_community_extension(con, "a5")
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 
 from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
+from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -435,6 +436,8 @@ def _probe_extent_resolution(
     con = None
     try:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
+        # Ensure ST_Transform (CRS-aware probing) emits lon/lat order.
+        con.execute("SET geometry_always_xy = true;")
         if profile:
             setup_aws_profile_if_needed(profile, input_parquet)
         for stmt in _INDEX_EXTENSIONS[spatial_index_type]:
@@ -443,7 +446,12 @@ def _probe_extent_resolution(
             _register_quadkey_udf(con)
 
         geom_col = find_primary_geometry_column(input_parquet, verbose)
-        geom_sql = _geom_sql(con, url, geom_col)
+        # Reproject a known non-CRS84 input to lon/lat before centroiding, so the
+        # probe keys the same coordinates the add/ modules will (#530). Without
+        # this the probe feeds raw projected metres to the lon/lat cell functions
+        # and picks a resolution from garbage cell counts.
+        source_crs = source_crs_string(input_parquet, verbose)
+        geom_sql = transform_geom_sql(_geom_sql(con, url, geom_col), source_crs)
 
         sample_size = min(
             total_rows,

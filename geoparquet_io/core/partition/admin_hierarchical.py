@@ -20,7 +20,11 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     get_parquet_metadata,
 )
-from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
+from geoparquet_io.core.crs_utils import (
+    reproject_to_source_sql,
+    source_crs_string,
+    transform_geom_sql,
+)
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -37,22 +41,6 @@ from geoparquet_io.core.partition.staging import (
     run_partitioned_copy,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
-
-
-def _reprojected_input_geom_sql(input_geom_col, source_crs, alias="a"):
-    """Return the input geometry expression reprojected to the admin CRS.
-
-    Admin boundaries are OGC:CRS84, so a non-CRS84 input must be reprojected
-    before ``ST_Intersects`` (issue #525) — DuckDB 1.5 otherwise refuses the
-    join with a CRS-mismatch error. Returns ``None`` when no transform is needed
-    (input already CRS84 / CRS-less). ``alias`` is the SQL table alias prefix;
-    pass ``None`` for a bare column reference (e.g. an aggregate extent query).
-    """
-    base = (
-        f"{alias}.{quote_identifier(input_geom_col)}" if alias else quote_identifier(input_geom_col)
-    )
-    transformed = crs_transform_sql_expr(base, source_crs)
-    return transformed if transformed != base else None
 
 
 def _build_enrichment_query(
@@ -75,14 +63,10 @@ def _build_enrichment_query(
     (per-level chaining) rather than a file path, so it is referenced without
     surrounding quotes.
 
-    ``source_crs`` (when a non-default CRS) reprojects the input geometry to the
-    admin CRS (OGC:CRS84) before ``ST_Intersects`` (issue #525). The stored input
-    bbox is then in the source CRS and cannot be compared against the admin bbox,
-    so the bbox pre-filter is skipped.
+    ``source_crs`` (an ``"AUTH:CODE"`` string) reprojects a non-CRS84 input to
+    the admin CRS before ``ST_Intersects`` (#525). When set, the input's stored
+    bbox is in the source CRS and is skipped for the pre-filter.
     """
-    input_geom_sql = _reprojected_input_geom_sql(input_geom_col, source_crs)
-    input_geom_ref = input_geom_sql or f'a."{input_geom_col}"'
-    use_bbox_prefilter = input_bbox_col and admin_bbox_col and input_geom_sql is None
     # Build column list for subquery - handle struct access
     subquery_cols = []
     for i, col in enumerate(boundary_columns):
@@ -94,14 +78,41 @@ def _build_enrichment_query(
 
     input_ref = input_url if input_is_table_ref else f"'{input_url}'"
 
-    if use_bbox_prefilter:
-        bbox_filter = f"""
+    q_input_geom = quote_identifier(input_geom_col)
+    bbox_filter = f"""
             (a.{input_bbox_col}.xmin <= b.{admin_bbox_col}.xmax AND
              a.{input_bbox_col}.xmax >= b.{admin_bbox_col}.xmin AND
              a.{input_bbox_col}.ymin <= b.{admin_bbox_col}.ymax AND
              a.{input_bbox_col}.ymax >= b.{admin_bbox_col}.ymin)
         """
 
+    if source_crs and input_bbox_col and admin_bbox_col:
+        # Non-CRS84 input with bboxes on both sides: reproject the (small) admin
+        # polygons into the input CRS and synthesize their source-CRS bbox, so the
+        # join runs in one CRS and keeps the cheap bbox pre-filter — instead of
+        # transforming the (large) input per row and degrading to a nested-loop
+        # ST_Intersects (#525, preserving the #460 pre-filter).
+        radmin = reproject_to_source_sql(f'"{admin_geom_col}"', source_crs)
+        bbox_struct = (
+            f"struct_pack(xmin := ST_XMin({radmin}), xmax := ST_XMax({radmin}), "
+            f"ymin := ST_YMin({radmin}), ymax := ST_YMax({radmin})) AS {admin_bbox_col}"
+        )
+        return f"""
+            CREATE TEMP TABLE {enriched_table} AS
+            SELECT
+                a.*,
+                {admin_select_clause}
+            FROM {input_ref} a
+            LEFT JOIN (
+                SELECT {radmin} AS {admin_geom_col}, {bbox_struct}, {subquery_cols_str}
+                FROM {admin_table_ref}
+                {admin_where_clause}
+            ) b
+            ON {bbox_filter}
+                AND ST_Intersects(b.{admin_geom_col}, a.{q_input_geom})
+        """
+
+    if input_bbox_col and admin_bbox_col and not source_crs:
         return f"""
             CREATE TEMP TABLE {enriched_table} AS
             SELECT
@@ -114,10 +125,13 @@ def _build_enrichment_query(
                 {admin_where_clause}
             ) b
             ON {bbox_filter}
-                AND ST_Intersects(b.{admin_geom_col}, {input_geom_ref})
+                AND ST_Intersects(b.{admin_geom_col}, a.{q_input_geom})
         """
-    else:
-        return f"""
+
+    # No bbox on one side: reproject the input geometry inline (no pre-filter to
+    # preserve either way).
+    input_geom_sql = transform_geom_sql(f"a.{q_input_geom}", source_crs)
+    return f"""
             CREATE TEMP TABLE {enriched_table} AS
             SELECT
                 a.*,
@@ -128,7 +142,7 @@ def _build_enrichment_query(
                 FROM {admin_table_ref}
                 {admin_where_clause}
             ) b
-            ON ST_Intersects(b.{admin_geom_col}, {input_geom_ref})
+            ON ST_Intersects(b.{admin_geom_col}, {input_geom_sql})
         """
 
 
@@ -140,13 +154,11 @@ def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source
     re-scanning the input per level — important when there is no bbox column and
     the fallback decodes every geometry.
 
-    When the input is reprojected to the admin CRS (``source_crs`` non-default),
-    the extent is computed from the *reprojected* geometry so the resulting
-    bounds are comparable to the admin (CRS84) bbox; the stored input bbox column
-    is in the source CRS and is therefore ignored (issue #525).
+    The admin boundaries are OGC:CRS84, so for a non-CRS84 input the extent must
+    be computed over the reprojected geometry (the stored bbox is in the source
+    CRS) so the admin extent filter is in the right units (#525).
     """
-    input_geom_sql = _reprojected_input_geom_sql(input_geom_col, source_crs, alias=None)
-    if input_bbox_col and input_geom_sql is None:
+    if input_bbox_col and not source_crs:
         extent_query = f"""
             SELECT
                 MIN({input_bbox_col}.xmin) as xmin,
@@ -156,13 +168,13 @@ def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source
             FROM '{input_url}'
         """
     else:
-        geom_expr = input_geom_sql or quote_identifier(input_geom_col)
+        geom_ref = transform_geom_sql(quote_identifier(input_geom_col), source_crs)
         extent_query = f"""
             SELECT
-                MIN(ST_XMin({geom_expr})) as xmin,
-                MAX(ST_XMax({geom_expr})) as xmax,
-                MIN(ST_YMin({geom_expr})) as ymin,
-                MAX(ST_YMax({geom_expr})) as ymax
+                MIN(ST_XMin({geom_ref})) as xmin,
+                MAX(ST_XMax({geom_ref})) as xmax,
+                MIN(ST_YMin({geom_ref})) as ymin,
+                MAX(ST_YMax({geom_ref})) as ymax
             FROM '{input_url}'
         """
     extent = con.execute(extent_query).fetchone()
@@ -223,21 +235,13 @@ def _setup_admin_dataset(dataset_name, verbose, levels):
 
 
 def _get_input_file_info(input_parquet, verbose):
-    """Get input file info (URL, geometry column, bbox column, source CRS).
-
-    ``source_crs`` is the detected non-default input CRS (or ``None`` for
-    CRS84/CRS-less): admin boundaries are OGC:CRS84, so a projected input is
-    reprojected before the spatial join (issue #525).
-    """
+    """Get input file info (URL, geometry column, bbox column)."""
     input_url = safe_file_url(input_parquet, verbose)
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     input_bbox_info = check_bbox_structure(input_parquet, verbose)
     input_bbox_col = input_bbox_info["bbox_column_name"]
-    source_crs = extract_crs_from_parquet(input_parquet, verbose)
-    if source_crs is not None and verbose:
-        debug("  → Projected input CRS detected — reprojecting to OGC:CRS84 for admin join")
 
-    return input_url, input_geom_col, input_bbox_col, source_crs
+    return input_url, input_geom_col, input_bbox_col
 
 
 def _setup_admin_join_connection(dataset, get_duckdb_connection):
@@ -259,8 +263,12 @@ def _setup_admin_join_connection(dataset, get_duckdb_connection):
             load_spatial=True, load_httpfs=True, temp_directory=str(temp_dir), threads=1
         )
         con.execute("SET preserve_insertion_order = false")
+        # Reproject (CRS-aware admin join, #525) emits lon/lat order to match CRS84.
+        con.execute("SET geometry_always_xy = true")
         return con
-    return get_duckdb_connection(load_spatial=True, load_httpfs=True)
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+    con.execute("SET geometry_always_xy = true")
+    return con
 
 
 def _setup_duckdb_extensions(con):
@@ -692,9 +700,12 @@ def partition_by_admin_hierarchical(
     try:
         # Setup dataset and get input file info
         dataset, boundary_columns = _setup_admin_dataset(dataset_name, verbose, levels)
-        input_url, input_geom_col, input_bbox_col, source_crs = _get_input_file_info(
-            actual_input, verbose
-        )
+        input_url, input_geom_col, input_bbox_col = _get_input_file_info(actual_input, verbose)
+
+        # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input before the
+        # join so ST_Intersects neither errors on a CRS mismatch nor silently
+        # matches nothing (#525).
+        source_crs = source_crs_string(actual_input, verbose)
 
         # Get admin dataset info
         admin_geom_col = dataset.get_geometry_column()
