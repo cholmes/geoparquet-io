@@ -4,6 +4,9 @@ import duckdb
 import pytest
 
 from geoparquet_io.core.duckdb_utils import (
+    SPATIAL_JOIN_BBOX_PREFILTER,
+    SPATIAL_JOIN_NATIVE,
+    SPATIAL_JOIN_NO_BBOX,
     _add_bucket_needing_auth,
     _bucket_needs_auth,
     _clear_s3_cache,
@@ -14,6 +17,7 @@ from geoparquet_io.core.duckdb_utils import (
     load_community_extension,
     quote_identifier,
     s3_config_scope,
+    spatial_join_strategy,
 )
 from geoparquet_io.core.exceptions import ExtensionUnavailableError
 
@@ -127,6 +131,56 @@ class TestBuildSpatialJoinCondition:
         cond = build_spatial_join_condition("geo m", 'g"x', "b b", "q")
         assert '"geo m"' in cond
         assert '"g""x"' in cond  # embedded double-quote doubled
+
+    def test_no_derived_bbox_from_geometry(self):
+        """Regression guard for #538: the ON clause must never derive a bbox from
+        the geometry (ST_XMin/XMax/...) and AND it in front of ST_Intersects.
+
+        #462 proposed exactly that for native geometry; the #538 benchmark showed
+        it defeats DuckDB's SPATIAL_JOIN and forces a ~73x slower BLOCKWISE_NL_JOIN.
+        The builder must only ever use *stored* bbox covering columns as a
+        pre-filter, never compute one inline.
+        """
+        for cond in (
+            build_spatial_join_condition("geometry", "geom"),
+            build_spatial_join_condition("geometry", "geom", "bbox", "geom_bbox"),
+            build_spatial_join_condition(
+                "geometry",
+                "geom",
+                "bbox",
+                "geom_bbox",
+                input_geom_sql="ST_Transform(a.\"geometry\", 'EPSG:5070', 'OGC:CRS84')",
+            ),
+        ):
+            assert "ST_XMin" not in cond
+            assert "ST_XMax" not in cond
+            assert "ST_YMin" not in cond
+            assert "ST_YMax" not in cond
+
+
+class TestSpatialJoinStrategy:
+    """Tests for spatial_join_strategy() (issue #538).
+
+    The classifier keeps the user-facing status message in sync with the
+    predicate build_spatial_join_condition actually emits, so native-geometry
+    inputs are no longer misreported as a degraded "no bbox" fallback.
+    """
+
+    def test_native_geometry_is_fast_path(self):
+        """Native geometry -> bare ST_Intersects SPATIAL_JOIN, regardless of bbox cols."""
+        assert spatial_join_strategy(True, None, None) == SPATIAL_JOIN_NATIVE
+        # Native wins even if bbox columns happen to be present.
+        assert spatial_join_strategy(True, "bbox", "bbox") == SPATIAL_JOIN_NATIVE
+
+    def test_explicit_bbox_both_sides_uses_prefilter(self):
+        """1.x input with bbox on both sides -> bbox-overlap pre-filter."""
+        assert spatial_join_strategy(False, "bbox", "bbox") == SPATIAL_JOIN_BBOX_PREFILTER
+
+    def test_missing_bbox_is_no_bbox_fallback(self):
+        """1.x input lacking a bbox column (either side) -> genuine no-bbox fallback."""
+        assert spatial_join_strategy(False, None, None) == SPATIAL_JOIN_NO_BBOX
+        assert spatial_join_strategy(False, "bbox", None) == SPATIAL_JOIN_NO_BBOX
+        assert spatial_join_strategy(False, None, "bbox") == SPATIAL_JOIN_NO_BBOX
 
 
 class TestGetDuckdbConnection:

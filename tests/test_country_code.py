@@ -2,6 +2,7 @@
 Tests for find_country_code_column function.
 """
 
+import logging
 import os
 import tempfile
 
@@ -10,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from geoparquet_io.core.add.country_codes import find_country_code_column
+from geoparquet_io.core.add.country_codes import add_country_codes, find_country_code_column
 
 
 class TestFindCountryCodeColumn:
@@ -185,3 +186,38 @@ class TestFindCountryCodeColumn:
         finally:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
+
+
+class TestCountryCodesDryRun:
+    """Dry-run status-message regression tests for add_country_codes.
+
+    The country_codes module is reached via benchmarks/legacy paths rather than a
+    CLI command, so the dry-run flow is exercised by calling the core function
+    directly with a local countries file (no network).
+    """
+
+    def test_dry_run_native_geometry_uses_spatial_join(self, fields_v2_file, caplog):
+        """Native-geometry input reports the SPATIAL_JOIN fast path, not a fallback.
+
+        Mirrors ``test_dry_run_with_native_geometry_input`` for admin-divisions
+        (#538): a GeoParquet 2.0 / geo-typed input nulls the bbox columns, so the
+        ON clause is a bare ST_Intersects that DuckDB's SPATIAL_JOIN operator
+        accelerates. The dry-run note must say so rather than the misleading
+        "no bbox optimization" fallback message.
+        """
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=fields_v2_file,
+                countries_parquet=fields_v2_file,
+                output_parquet="output.parquet",
+                add_bbox_flag=False,
+                dry_run=True,
+                verbose=False,
+            )
+
+        output = caplog.text
+        # Native geometry is the fast SPATIAL_JOIN path, and the ON clause is a
+        # bare ST_Intersects (no bbox pre-filter).
+        assert "Using native geometry with DuckDB SPATIAL_JOIN" in output
+        assert "no bbox optimization" not in output
+        assert "ON ST_Intersects" in output

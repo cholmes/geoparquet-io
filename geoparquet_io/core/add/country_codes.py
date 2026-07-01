@@ -9,7 +9,13 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import build_spatial_join_condition, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    SPATIAL_JOIN_BBOX_PREFILTER,
+    SPATIAL_JOIN_NATIVE,
+    build_spatial_join_condition,
+    quote_identifier,
+    spatial_join_strategy,
+)
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -335,12 +341,16 @@ def _print_dry_run_query(
     using_default,
     input_bbox_col,
     countries_bbox_col,
+    has_native_geometry=False,
 ):
     """Print the dry-run query output."""
     final_step = "3" if using_default else "1"
     info(f"-- Step {final_step}: Main spatial join query")
 
-    if input_bbox_col and countries_bbox_col:
+    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, countries_bbox_col)
+    if strategy == SPATIAL_JOIN_NATIVE:
+        info("-- Using native geometry with DuckDB SPATIAL_JOIN")
+    elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
         info("-- Using bbox columns for optimized spatial join")
     else:
         info("-- Using full geometry intersection (no bbox optimization)")
@@ -418,6 +428,8 @@ def _prepare_bbox_columns(
     For GeoParquet 2.0 / parquet-geo files with native geometry types,
     skip bbox pre-filtering entirely as native geometry row group statistics
     are faster than manual bbox filtering.
+
+    Returns ``(input_bbox_col, countries_bbox_col, has_native_geometry)``.
     """
     # Check if input file has native geometry (2.0 / parquet-geo)
     input_bbox_advice = get_bbox_advice(input_parquet, "spatial_filtering", verbose)
@@ -426,7 +438,7 @@ def _prepare_bbox_columns(
     if input_bbox_advice["skip_bbox_prefilter"]:
         if verbose:
             debug("Input has native geometry - skipping bbox pre-filter (native stats are faster)")
-        return None, None
+        return None, None, True
 
     # For 1.x files, use bbox optimization if available
     input_bbox_info = check_bbox_structure(input_parquet, verbose)
@@ -460,7 +472,7 @@ def _prepare_bbox_columns(
             )
             countries_bbox_col = countries_bbox_info["bbox_column_name"]
 
-    return input_bbox_col, countries_bbox_col
+    return input_bbox_col, countries_bbox_col, False
 
 
 def _setup_countries_source(
@@ -509,13 +521,24 @@ def _create_duckdb_connection(using_default):
     return con
 
 
-def _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run):
-    """Print bbox optimization status message."""
+def _print_bbox_status(
+    input_bbox_col, countries_bbox_col, verbose, dry_run, has_native_geometry=False
+):
+    """Print a status line describing which spatial-join strategy will run.
+
+    Native-geometry inputs take the bare-ST_Intersects SPATIAL_JOIN fast path, so
+    the old "No bbox columns available..." line misreported them as a degraded
+    fallback (issue #538). Only 1.x files genuinely lacking a bbox get that warning.
+    """
     if dry_run:
         return
-    if input_bbox_col and countries_bbox_col and verbose:
-        debug("Using bbox columns for initial filtering...")
-    elif not (input_bbox_col and countries_bbox_col):
+    strategy = spatial_join_strategy(has_native_geometry, input_bbox_col, countries_bbox_col)
+    if strategy == SPATIAL_JOIN_NATIVE:
+        progress("Using native geometry with DuckDB SPATIAL_JOIN...")
+    elif strategy == SPATIAL_JOIN_BBOX_PREFILTER:
+        if verbose:
+            debug("Using bbox columns for initial filtering...")
+    else:
         progress("No bbox columns available, using full geometry intersection...")
 
 
@@ -546,7 +569,7 @@ def add_country_codes(
         )
 
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
-    input_bbox_col, countries_bbox_col = _prepare_bbox_columns(
+    input_bbox_col, countries_bbox_col, has_native_geometry = _prepare_bbox_columns(
         input_parquet, countries_parquet, using_default, add_bbox_flag, dry_run, verbose
     )
 
@@ -591,7 +614,7 @@ def add_country_codes(
     )
 
     select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run)
+    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run, has_native_geometry)
 
     query = _build_spatial_join_query(
         input_url,
@@ -612,6 +635,7 @@ def add_country_codes(
             using_default,
             input_bbox_col,
             countries_bbox_col,
+            has_native_geometry,
         )
         return
 

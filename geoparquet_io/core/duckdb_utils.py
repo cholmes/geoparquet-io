@@ -129,6 +129,17 @@ def build_spatial_join_condition(
     run a full ST_Intersects against every admin geometry, which effectively
     hangs. See PR #460.
 
+    Trade-off (issue #538): a *bare* ``ST_Intersects(...)`` ON clause is the
+    only shape DuckDB's ``SPATIAL_JOIN`` operator recognizes; the moment any
+    bbox-overlap test is ANDed in front, the plan drops to a ``BLOCKWISE_NL_JOIN``
+    (O(n·m)). On the cases benchmarked in #538 the bare-intersects SPATIAL_JOIN
+    was ~27-73x faster. The pre-filter is therefore retained *only* for the
+    explicit-bbox (1.x) path where #460 proved SPATIAL_JOIN does not reliably
+    trigger; native-geometry inputs deliberately get the bare predicate (see
+    below) and must NOT have a bbox derived from their geometry and ANDed in --
+    that was #462's proposed direction and it pessimizes the very path it meant
+    to speed up.
+
     All identifiers are passed through :func:`quote_identifier`, so column names
     sourced from untrusted file metadata cannot break out of the predicate.
 
@@ -174,6 +185,58 @@ def build_spatial_join_condition(
         "    -- Precise check only runs on the bbox matches\n"
         f"    AND {intersects}"
     )
+
+
+# Strategy labels returned by spatial_join_strategy(), kept in sync with the
+# predicate decision in build_spatial_join_condition().
+SPATIAL_JOIN_NATIVE = "native"
+SPATIAL_JOIN_BBOX_PREFILTER = "bbox_prefilter"
+SPATIAL_JOIN_NO_BBOX = "no_bbox"
+
+
+def spatial_join_strategy(
+    has_native_geometry: bool,
+    input_bbox_col: str | None,
+    target_bbox_col: str | None,
+    input_geom_rewritten: bool = False,
+) -> str:
+    """Classify which spatial-join strategy :func:`build_spatial_join_condition` uses.
+
+    Lets callers print a status message that matches the predicate that actually
+    runs (issue #538), instead of misreporting the native-geometry fast path as a
+    degraded "no bbox" fallback.
+
+    Args:
+        has_native_geometry: True when the input exposes a native geometry type
+            (GeoParquet 2.x / geo-typed Parquet) rather than a 1.x bbox covering.
+        input_bbox_col: Input-side bbox covering column, or ``None``.
+        target_bbox_col: Target-side bbox covering column, or ``None``.
+        input_geom_rewritten: True when the input geometry is rewritten in the ON
+            clause (e.g. an ``ST_Transform`` reprojecting a non-CRS84 input, issue
+            #525). :func:`build_spatial_join_condition` then drops the bbox
+            pre-filter because the stored (source-CRS) input bbox is incomparable
+            to the target bbox, so the emitted predicate is a bare ``ST_Intersects``
+            even though ``input_bbox_col`` is populated. The classifier must mirror
+            that or it misreports a reprojected 1.x-with-bbox input as a
+            bbox-prefilter join (issue #538).
+
+    Returns:
+        - ``SPATIAL_JOIN_NATIVE``: native-geometry input. The ON clause is a bare
+          ``ST_Intersects``, which DuckDB's ``SPATIAL_JOIN`` operator recognizes
+          and accelerates. This is the fast path, not a fallback.
+        - ``SPATIAL_JOIN_BBOX_PREFILTER``: 1.x input with a bbox covering on both
+          sides; the cheap bbox-overlap test is ANDed in front of ``ST_Intersects``.
+        - ``SPATIAL_JOIN_NO_BBOX``: no bbox pre-filter is applied — either a 1.x
+          input without a bbox column, or a reprojected input whose stored bbox is
+          incomparable. The precise check runs against every candidate.
+    """
+    if has_native_geometry:
+        return SPATIAL_JOIN_NATIVE
+    if input_geom_rewritten:
+        return SPATIAL_JOIN_NO_BBOX
+    if input_bbox_col and target_bbox_col:
+        return SPATIAL_JOIN_BBOX_PREFILTER
+    return SPATIAL_JOIN_NO_BBOX
 
 
 def get_duckdb_connection(
