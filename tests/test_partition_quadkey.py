@@ -129,6 +129,11 @@ class TestPartitionByQuadkeyFunction:
         assert output_path.exists()
         parquet_files = list(output_path.glob("*.parquet"))
         assert len(parquet_files) > 0
+        # Regression #490: the shared finalize must not leak the internal
+        # __gpio_part alias into cell-id partition outputs.
+        for f in parquet_files:
+            names = pq.ParquetFile(f).schema_arrow.names
+            assert not any(n.startswith("__gpio_part") for n in names), names
 
     def test_partition_hive_style(self, places_file, output_folder):
         """Test Hive-style partitioning."""
