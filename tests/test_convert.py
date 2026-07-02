@@ -1019,6 +1019,61 @@ class TestConvertCSVCLI:
         assert row_count == 1445, f"Expected 1445 rows, got {row_count}"
 
 
+class TestConvertRowGroupSizeMB:
+    """--row-group-size-mb must actually shrink row groups (regression #547)."""
+
+    @pytest.fixture
+    def many_row_parquet(self, tmp_path):
+        """A GeoParquet large enough that the default write is a single row group."""
+        n = 50000
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        path = str(tmp_path / "many.parquet")
+        escaped = path.replace("'", "''")
+        con.execute(
+            f"""
+            COPY (
+                SELECT i AS id,
+                       ST_Point(random() * 10, random() * 10) AS geometry
+                FROM range({n}) t(i)
+            ) TO '{escaped}' (FORMAT PARQUET);
+            """
+        )
+        con.close()
+        # Sanity: default DuckDB row group size (>100k rows) keeps this in 1 group.
+        assert pq.ParquetFile(path).num_row_groups == 1
+        return path
+
+    def test_row_group_size_mb_reduces_row_groups(self, many_row_parquet, tmp_path):
+        """A small MB target on the default (duckdb-kv) path yields many row groups."""
+        out = str(tmp_path / "out.parquet")
+        result = CliRunner().invoke(
+            cli,
+            ["convert", many_row_parquet, out, "--row-group-size-mb", "0.2"],
+        )
+
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+        pf = pq.ParquetFile(out)
+        assert pf.metadata.num_rows == 50000
+        # Before the fix, --row-group-size-mb was dropped on the duckdb-kv path,
+        # leaving DuckDB's default (one group here). It must now split.
+        assert pf.num_row_groups > 1, (
+            f"--row-group-size-mb had no effect: got {pf.num_row_groups} row group(s)"
+        )
+
+    def test_smaller_mb_yields_more_row_groups(self, many_row_parquet, tmp_path):
+        """Row group count scales inversely with the MB target (monotonic)."""
+        small = str(tmp_path / "small.parquet")
+        large = str(tmp_path / "large.parquet")
+        for target, out in [("0.1", small), ("1.0", large)]:
+            result = CliRunner().invoke(
+                cli, ["convert", many_row_parquet, out, "--row-group-size-mb", target]
+            )
+            assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        assert pq.ParquetFile(small).num_row_groups > pq.ParquetFile(large).num_row_groups
+
+
 class TestConvertNoGeometry:
     """Test conversion of files without geometry columns."""
 

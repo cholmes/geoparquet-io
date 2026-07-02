@@ -129,6 +129,60 @@ def _detect_bbox_column_name(schema_names: list[str]) -> str | None:
     return None
 
 
+# Rows sampled to estimate average row size when converting an MB target to a
+# row count. Large enough to be representative, small enough to stay cheap.
+_MB_ESTIMATE_SAMPLE_ROWS = 20000
+
+
+def _resolve_row_group_rows(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    row_group_size_mb: float | None,
+    row_group_rows: int | None,
+    verbose: bool,
+) -> int | None:
+    """Resolve an MB row-group target to a row count for DuckDB COPY TO.
+
+    DuckDB's ``ROW_GROUP_SIZE`` is expressed in rows, so a ``--row-group-size-mb``
+    target has to be converted before it can take effect on this strategy (the
+    bytes-based ``ROW_GROUP_SIZE_BYTES`` option is unusable here because it
+    requires disabling insertion-order preservation, which would undo any
+    spatial ordering already applied). An explicit row count always wins; when
+    only an MB target is given we estimate bytes-per-row from a sample and mirror
+    the arrow write path (see ``_write_table_with_settings``).
+    """
+    if row_group_rows:
+        return row_group_rows
+    if not row_group_size_mb:
+        return None
+
+    from geoparquet_io.core.common import _estimate_row_size
+
+    try:
+        sample = (
+            con.execute(f"SELECT * FROM ({query}) LIMIT {_MB_ESTIMATE_SAMPLE_ROWS}")
+            .arrow()
+            .read_all()
+        )
+    except Exception as exc:  # pragma: no cover - defensive, fall back to default
+        if verbose:
+            debug(f"Could not sample rows for --row-group-size-mb estimate: {exc}")
+        return None
+
+    if sample.num_rows == 0:
+        return None
+
+    bytes_per_row = _estimate_row_size(sample)
+    target_bytes = row_group_size_mb * 1024 * 1024
+    rows = max(1, int(target_bytes // bytes_per_row))
+    if verbose:
+        debug(
+            f"Resolved --row-group-size-mb {row_group_size_mb} to {rows:,} rows/group "
+            f"(~{bytes_per_row} bytes/row)"
+        )
+    return rows
+
+
 def _build_copy_options(
     compression: str,
     row_group_rows: int | None,
@@ -199,6 +253,12 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             raise ValueError(
                 f"Invalid compression: {compression}. Valid: {', '.join(VALID_COMPRESSIONS)}"
             )
+
+        # DuckDB COPY TO sizes row groups by row count, so translate any MB target
+        # into rows before it can take effect on this strategy (fixes #547).
+        row_group_rows = _resolve_row_group_rows(
+            con, query, row_group_size_mb, row_group_rows, verbose
+        )
 
         # Handle non-geo queries: write plain Parquet without geo metadata
         if geometry_column is None:
