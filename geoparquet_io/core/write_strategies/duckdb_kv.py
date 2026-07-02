@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -133,6 +134,57 @@ def _detect_bbox_column_name(schema_names: list[str]) -> str | None:
 # row count. Large enough to be representative, small enough to stay cheap.
 _MB_ESTIMATE_SAMPLE_ROWS = 20000
 
+# Clauses that must not follow a trailing ORDER BY for it to be safely strippable
+# (they change which/how many rows a LIMIT would return).
+_ORDER_BY_TAIL_STOPWORDS = re.compile(r"(?i)\b(limit|offset|union|except|intersect|fetch)\b")
+
+
+def _strip_trailing_order_by(query: str) -> str:
+    """Drop a trailing top-level ``ORDER BY`` clause for cheap row sampling.
+
+    Estimating bytes-per-row does not need ordered rows, and a ``LIMIT`` layered
+    over an ``ORDER BY`` forces DuckDB to scan (and sort) the *entire* source —
+    re-downloading remote inputs and recomputing expensive ordering keys (e.g.
+    ``ST_Hilbert``) just to size row groups. Without the ordering the sample's
+    ``LIMIT`` pushes down, so DuckDB stops after a few row groups.
+
+    Returns the query unchanged when no strippable top-level trailing ORDER BY is
+    found, so estimation still works — it just skips the speed-up.
+    """
+    depth = 0
+    in_single = in_double = False
+    last_order_by = -1
+    i, n = 0, len(query)
+    while i < n:
+        ch = query[i]
+        if in_single:
+            in_single = ch != "'"
+        elif in_double:
+            in_double = ch != '"'
+        elif ch == "'":
+            in_single = True
+        elif ch == '"':
+            in_double = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and ch in "oO":
+            match = re.match(r"order\s+by\b", query[i:], re.IGNORECASE)
+            prev = query[i - 1] if i else " "
+            if match and not (prev.isalnum() or prev == "_"):
+                last_order_by = i
+                i += match.end()
+                continue
+        i += 1
+
+    if last_order_by == -1:
+        return query
+    # Bail if anything follows the ORDER BY that would alter the sampled rows.
+    if _ORDER_BY_TAIL_STOPWORDS.search(query[last_order_by:]):
+        return query
+    return query[:last_order_by].rstrip()
+
 
 def _resolve_row_group_rows(
     con: duckdb.DuckDBPyConnection,
@@ -158,9 +210,13 @@ def _resolve_row_group_rows(
 
     from geoparquet_io.core.common import _estimate_row_size
 
+    # Sample without the ORDER BY so the LIMIT streams (a LIMIT over an ORDER BY
+    # would rescan/sort the whole source — re-downloading remote inputs and
+    # recomputing the ordering key — just to size row groups).
+    sample_query = _strip_trailing_order_by(query)
     try:
         sample = (
-            con.execute(f"SELECT * FROM ({query}) LIMIT {_MB_ESTIMATE_SAMPLE_ROWS}")
+            con.execute(f"SELECT * FROM ({sample_query}) LIMIT {_MB_ESTIMATE_SAMPLE_ROWS}")
             .arrow()
             .read_all()
         )
