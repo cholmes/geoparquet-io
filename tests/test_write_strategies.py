@@ -213,6 +213,52 @@ class TestDuckDBKVStrategy:
             strategy._validate_output_path("file;DROP TABLE users;--.parquet")
 
 
+class TestStripTrailingOrderBy:
+    """Sampling for --row-group-size-mb must not re-run the ordered query."""
+
+    def test_strips_top_level_hilbert_order_by(self):
+        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+
+        query = "SELECT * FROM t\n        ORDER BY ST_Hilbert(geometry, ST_Extent(x))\n    "
+        stripped = _strip_trailing_order_by(query)
+        assert "ORDER BY" not in stripped.upper()
+        assert stripped.strip() == "SELECT * FROM t"
+
+    def test_leaves_query_without_order_by(self):
+        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+
+        query = "SELECT * FROM t WHERE id > 5"
+        assert _strip_trailing_order_by(query) == query
+
+    def test_ignores_order_by_inside_subquery(self):
+        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+
+        query = "SELECT * FROM (SELECT a FROM t ORDER BY a) sub"
+        assert _strip_trailing_order_by(query) == query
+
+    def test_keeps_order_by_when_limit_follows(self):
+        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+
+        query = "SELECT * FROM t ORDER BY a LIMIT 10"
+        assert _strip_trailing_order_by(query) == query
+
+    def test_stripped_sample_matches_ordered_row_size(self):
+        """The estimate must be unaffected by dropping the ordering."""
+        from geoparquet_io.core.write_strategies.duckdb_kv import (
+            _resolve_row_group_rows,
+            _strip_trailing_order_by,
+        )
+
+        con = duckdb.connect()
+        base = "SELECT i AS id, i * 2 AS v FROM range(1000) t(i)"
+        ordered = f"{base}\n            ORDER BY id"
+
+        rows = _resolve_row_group_rows(con, ordered, 0.001, None, verbose=False)
+        con.close()
+        assert rows is not None and rows > 0
+        assert _strip_trailing_order_by(ordered).strip() == base
+
+
 class TestDiskRewriteStrategy:
     """Tests for DiskRewriteStrategy."""
 
