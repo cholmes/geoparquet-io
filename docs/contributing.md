@@ -22,7 +22,24 @@ uv run pytest tests/test_yourfile.py -v               # Single file
 uv run pytest -m "not slow and not network"           # Fast tests only
 ```
 
-Coverage minimum: 67% (enforced in CI).
+CI runs three test tiers:
+
+- **Fast tests** (`not slow and not network`) — run on every PR across the full
+  OS/Python matrix and **block merging**.
+- **Slow tests** (`slow and not network`) — run after merge to main and nightly;
+  opt in on a PR by adding the `run-slow-tests` label.
+- **Network tests** (`network`) — hit live third-party services (ArcGIS, WFS,
+  Carto, ...). They are **non-blocking**: failures open/update a tracking issue
+  instead of failing CI, because a remote server's behavior is not something a
+  PR author can fix. They run serially with per-test timeouts, retries, and
+  process isolation (`--forked`).
+
+Coverage gates (both enforced in CI):
+
+- Global floor: 67% total coverage.
+- **Changed lines: 90%** — `diff-cover` checks that the lines your PR touches
+  are covered *by fast tests*. New code ships with tests that run on every PR,
+  not only in the post-merge slow suite.
 
 <!-- BEGIN GENERATED: test-markers -->
 ### Test Markers
@@ -36,11 +53,30 @@ Coverage minimum: 67% (enforced in CI).
 
 ## Code Quality
 
-All handled by pre-commit:
+`.pre-commit-config.yaml` is the **single source of truth** for every quality
+rule. CI runs the exact same hooks (`pre-commit run --all-files`, plus the
+pre-push stage), so a check can never pass locally and fail in CI for a
+different rule set — and skipping local hook install just moves the same
+failure to CI.
 
 ```bash
-uv run pre-commit run --all-files
+uv run pre-commit run --all-files                        # commit-stage hooks
+uv run pre-commit run --all-files --hook-stage pre-push  # deptry, vulture,
+                                                         # xenon, mypy,
+                                                         # import-linter, menard
 ```
+
+Two ratchet/ignore files gate quality over time:
+
+- `.pip-audit-ignores` — self-expiring CVE ignore list shared by the CI
+  security job and the daily security audit. Each entry needs an expiry date
+  and a reason; expired entries automatically re-fail CI.
+- `.mutation-baseline` — minimum mutation kill rate enforced by the nightly
+  mutation-testing run. Ratchet it up as test quality improves.
+
+Branch protection is code too: `scripts/apply_branch_protection.sh` declares
+the required status checks and review rules as GitHub rulesets (run once by an
+admin after changes).
 
 ## Documentation
 
