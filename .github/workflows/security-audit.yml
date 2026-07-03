@@ -25,7 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      # The automated-fix PR is opened with BOT_PR_TOKEN, not GITHUB_TOKEN, so
+      # GITHUB_TOKEN needs no write to contents here — only issue management.
+      contents: read
       pull-requests: write
       issues: write
     steps:
@@ -95,7 +97,16 @@ jobs:
             uv lock --upgrade-package "$p"
           done
 
+          # Guard the sync explicitly: under `set +e` a failed resolution would
+          # otherwise fall through to the diff/test checks and could mark a fix
+          # verified against a broken environment. Bail to the issue path instead.
           uv sync --all-extras
+          SYNC_EXIT=$?
+          if [ $SYNC_EXIT -ne 0 ]; then
+            echo "uv sync failed after upgrade — cannot verify fix."
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # If the lockfile did not change, no upstream fix is available yet —
           # fall through to the issue path rather than opening an empty PR.

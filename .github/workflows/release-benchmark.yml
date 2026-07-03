@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write  # "Update release notes" edits the GitHub release body
+      actions: read  # "Download previous baselines" reads the Actions artifacts API
     env:
       # Use environment variables to safely pass user inputs to shell commands
       INPUT_CURRENT: ${{ inputs.current_version }}
@@ -141,7 +142,7 @@ jobs:
               --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" > /tmp/artifact_id.txt || true
 
             if [ -s /tmp/artifact_id.txt ]; then
-              ARTIFACT_ID=$(cat /tmp/artifact_id.txt | head -1)
+              ARTIFACT_ID=$(head -1 /tmp/artifact_id.txt)
               echo "  Found artifact ID: $ARTIFACT_ID"
 
               # Download the artifact
