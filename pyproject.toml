@@ -368,8 +368,9 @@ dev = [
 [tool.deptry]
 # DEP002: unused dependencies - skip because optional/benchmark extras aren't always used
 ignore = ["DEP002"]
-# Exclude virtual env, tests, and benchmarks from analysis
-exclude = [".venv", "tests", "geoparquet_io/benchmarks"]
+# Exclude virtual env, tests, benchmarks, plugin packages (own dependency
+# definitions), and mutmut's mutants/ working tree from analysis
+exclude = [".venv", "tests", "geoparquet_io/benchmarks", "plugins", "mutants"]
 # Known transitive dependencies that appear unused but are required
 per_rule_ignores = {DEP003 = ["tomli"]}
 
