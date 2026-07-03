@@ -20,17 +20,24 @@ on:
         required: true
         default: 'v0.9.0'
 
+permissions:
+  contents: read
+
 jobs:
   benchmark-comparison:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write  # "Update release notes" edits the GitHub release body
     env:
       # Use environment variables to safely pass user inputs to shell commands
       INPUT_CURRENT: ${{ inputs.current_version }}
       INPUT_BASELINE: ${{ inputs.baseline_version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0  # Need full history for tags
+          persist-credentials: false
 
       - name: Validate inputs
         if: github.event_name == 'workflow_dispatch'
@@ -46,18 +53,25 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          enable-cache: true
+          # No cache in release-triggered runs: this job edits release notes
+          # and stores 400-day baselines (zizmor cache-poisoning).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.11
 
       - name: Determine versions
         id: versions
+        env:
+          # env indirection, not inline templating: a crafted tag name must
+          # never expand into shell code (zizmor template-injection).
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            CURRENT="${{ github.event.release.tag_name }}"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            CURRENT="$RELEASE_TAG"
             # Get the previous tag (skip current tag, get next one)
             TAGS=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
             TAG_COUNT=$(echo "$TAGS" | wc -l)
@@ -100,6 +114,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT_VERSION: ${{ steps.versions.outputs.current }}
         run: |
           # Create directory for historical baselines
           mkdir -p baselines
@@ -111,7 +126,7 @@ jobs:
           BASELINE_COUNT=0
           for TAG in $TAGS; do
             # Skip current version
-            if [[ "$TAG" == "${{ steps.versions.outputs.current }}" ]]; then
+            if [[ "$TAG" == "$CURRENT_VERSION" ]]; then
               continue
             fi
 
@@ -333,7 +348,7 @@ jobs:
           fi
 
       - name: Upload results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release-benchmark-${{ steps.versions.outputs.current }}
           path: |
@@ -344,12 +359,17 @@ jobs:
 
       - name: Update release notes
         if: github.event_name == 'release'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # env indirection, not inline templating into JS source
+          # (zizmor template-injection).
+          REGRESSIONS: ${{ steps.comparison.outputs.regressions }}
+          BASELINE_VERSION: ${{ steps.versions.outputs.baseline }}
         with:
           script: |
             const fs = require('fs');
             const comparison = fs.readFileSync('comparison.txt', 'utf8');
-            const regressions = '${{ steps.comparison.outputs.regressions }}';
+            const regressions = process.env.REGRESSIONS;
 
             let benchmarkSection = '\n\n---\n\n## Performance\n\n';
 
@@ -357,7 +377,7 @@ jobs:
             if (regressions !== 'none') {
               benchmarkSection += '⚠️ **Regressions detected:**\n```\n' + regressions + '\n```\n\n';
             } else {
-              benchmarkSection += '✅ No significant performance regressions compared to ${{ steps.versions.outputs.baseline }}\n\n';
+              benchmarkSection += `✅ No significant performance regressions compared to ${process.env.BASELINE_VERSION}\n\n`;
             }
 
             // Add trend analysis if available
@@ -408,10 +428,14 @@ jobs:
 
       - name: Warn on regressions
         if: steps.comparison.outputs.regressions != 'none'
+        env:
+          REGRESSIONS: ${{ steps.comparison.outputs.regressions }}
         run: |
-          echo "::warning::Performance regressions detected: ${{ steps.comparison.outputs.regressions }}"
+          echo "::warning::Performance regressions detected: $REGRESSIONS"
 
       - name: Warn on trend degradation
         if: steps.trends.outputs.warnings != '' && steps.trends.outputs.warnings != 'none'
+        env:
+          TREND_WARNINGS: ${{ steps.trends.outputs.warnings }}
         run: |
-          echo "::warning::Gradual performance degradation detected across releases: ${{ steps.trends.outputs.warnings }}"
+          echo "::warning::Gradual performance degradation detected across releases: $TREND_WARNINGS"
