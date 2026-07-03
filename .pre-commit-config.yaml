@@ -33,6 +33,21 @@ repos:
         additional_dependencies:
           - tomli
 
+  # Lint GitHub Actions workflow syntax/semantics
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # Audit GitHub Actions workflows for security issues (unpinned actions,
+  # missing permissions, template injection, ...). Offline mode keeps it
+  # deterministic and token-free.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.26.1
+    hooks:
+      - id: zizmor
+        args: [--no-online-audits]
+
   # -------------------------------------------------------------------------
   # Local hooks - commit stage (fast, <10s total)
   # -------------------------------------------------------------------------
@@ -187,18 +202,26 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+      - id: mypy
+        name: mypy
+        description: Static type check (same gate as CI)
+        entry: uv run mypy geoparquet_io/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
       - id: vulture
         name: vulture
-        description: Find unused code
-        entry: uv run vulture geoparquet_io/ --min-confidence 80
+        description: Find unused code (paths/confidence from [tool.vulture])
+        entry: uv run vulture
         language: system
         pass_filenames: false
         stages: [pre-push]
 
       - id: xenon
         name: xenon
-        description: Monitor code complexity
-        entry: uv run xenon --max-absolute=E --max-modules=D --max-average=C geoparquet_io/
+        description: Monitor code complexity (same scope as CI)
+        entry: uv run xenon --max-absolute=E --max-modules=D --max-average=C geoparquet_io tests
         language: system
         pass_filenames: false
         stages: [pre-push]
