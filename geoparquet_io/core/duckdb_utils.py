@@ -122,23 +122,37 @@ def build_spatial_join_condition(
     overlap test is ANDed in front of it: DuckDB evaluates the four numeric
     comparisons first and only runs the expensive geometry intersection on the
     surviving candidate pairs. Because bbox overlap is a necessary condition for
-    geometry intersection, the result is identical to ST_Intersects alone -- it
-    is purely a performance pre-filter.
+    geometry intersection, the result is identical to ST_Intersects alone -- the
+    pre-filter changes the query plan and its memory use, never the output.
 
-    Dropping this pre-filter (as #457 did) makes the Overture remote datasets
-    run a full ST_Intersects against every admin geometry, which effectively
-    hangs. See PR #460.
+    Why the pre-filter is kept -- it is a *memory-safety* mechanism, not merely a
+    speed-up:
 
-    Trade-off (issue #538): a *bare* ``ST_Intersects(...)`` ON clause is the
-    only shape DuckDB's ``SPATIAL_JOIN`` operator recognizes; the moment any
-    bbox-overlap test is ANDed in front, the plan drops to a ``BLOCKWISE_NL_JOIN``
-    (O(n·m)). On the cases benchmarked in #538 the bare-intersects SPATIAL_JOIN
-    was ~27-73x faster. The pre-filter is therefore retained *only* for the
-    explicit-bbox (1.x) path where #460 proved SPATIAL_JOIN does not reliably
-    trigger; native-geometry inputs deliberately get the bare predicate (see
-    below) and must NOT have a bbox derived from their geometry and ANDed in --
-    that was #462's proposed direction and it pessimizes the very path it meant
-    to speed up.
+    - A *bare* ``ST_Intersects(...)`` ON clause is the only shape DuckDB's
+      ``SPATIAL_JOIN`` operator matches. ``SPATIAL_JOIN`` builds an in-memory,
+      non-spilling R-tree; on large real-polygon inputs (e.g. remote Overture
+      admin boundaries at >=1M features) that index exhausts memory and OOMs --
+      the same "effectively hangs" failure first seen when the pre-filter was
+      dropped in #457 (see PR #460).
+    - ANDing the bbox-overlap test in front drops the plan to a streaming
+      ``BLOCKWISE_NL_JOIN`` driving the LEFT JOIN, which runs in bounded memory
+      and completes on those inputs.
+
+    Small, local benchmarks (#538) showed the bare ``SPATIAL_JOIN`` finishing
+    faster and suggested it was the fast path to prefer. A >=1M-feature
+    validation (#545) showed that does not hold at scale, where the bare
+    predicate OOMs. The pre-filter is therefore retained on the explicit-bbox
+    (1.x) path for bounded memory; do NOT restore a bare predicate there on the
+    strength of small-scale timings. The earlier "~27-73x faster / SPATIAL_JOIN
+    is the fast path" rationale is withdrawn.
+
+    Two paths still emit a bare predicate because no usable bbox pair exists: a
+    reprojected non-CRS84 input whose stored bbox is in the source CRS (#525),
+    and native-geometry inputs (they carry no 1.x bbox covering). Those paths
+    share the same ``SPATIAL_JOIN`` OOM risk at scale; whether they need their
+    own memory-bounded strategy -- and whether deriving a bbox from the geometry
+    (once #462's direction) helps or hurts -- is tracked in #550, not decided
+    here.
 
     All identifiers are passed through :func:`quote_identifier`, so column names
     sourced from untrusted file metadata cannot break out of the predicate.
