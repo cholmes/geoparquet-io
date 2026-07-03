@@ -66,6 +66,10 @@ dev = [
     "pytest>=9.0.3",  # CVE-2025-71176 fix
     "pytest-cov>=4.0.0",
     "pytest-xdist>=3.5.0",
+    "pytest-timeout>=2.3",  # per-test caps for live-network tests in CI
+    "pytest-rerunfailures>=14",  # retry transient network failures in CI
+    "pytest-forked>=1.6",  # isolate segfault-prone live-service tests
+    "diff-cover>=9.0",  # changed-lines coverage gate in CI
     "nbmake>=1.5.0",
     "ruff>=0.8.0",
     "pre-commit>=4.3.0",
@@ -243,8 +247,36 @@ ignore_errors = true
 
 [tool.mutmut]
 source_paths = ["geoparquet_io/"]
-runner = "python -m pytest -x -q --tb=no"
+# Fast tests only: slow/network tests are nondeterministic (live third-party
+# servers) and far too slow to run once per mutant. --no-cov drops the
+# coverage overhead and the global --cov-fail-under gate from addopts.
+# NOTE: mutmut 3 runs pytest in-process and IGNORES a `runner` setting;
+# extra args must go in pytest_add_cli_args.
+# The --ignore'd files are tooling meta-tests that spawn `uv run ...`
+# subprocesses against the project; from mutmut's mutants/ cwd that would
+# resolve/install the MUTATED package — meaningless for mutation score and
+# fatal to the run.
+pytest_add_cli_args = [
+    "--no-cov",
+    "--tb=no",
+    "-m", "not slow and not network",
+    "--ignore=tests/test_codespell.py",
+    "--ignore=tests/test_import_linter.py",
+    "--ignore=tests/test_security.py",
+    "--ignore=tests/test_validate_claude_md.py",
+]
 pytest_add_cli_args_test_selection = ["tests/"]
+# Everything the test suite reads relative to the repo root must also exist
+# inside mutmut's mutants/ tree (tests import scripts.*, and the meta-tests
+# validate ADRs, CLAUDE.md, workflows, and config files).
+also_copy = [
+    "scripts/",
+    "context/",
+    ".github/",
+    ".pre-commit-config.yaml",
+    ".pip-audit-ignores",
+    "CLAUDE.md",
+]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "docs"]

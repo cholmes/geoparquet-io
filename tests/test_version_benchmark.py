@@ -1,16 +1,14 @@
 """Tests for version_benchmark.py trend analysis."""
 
 import json
-
-# Import the functions we want to test
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-from version_benchmark import analyze_trends
+# Import via the scripts package (not a sys.path hack) so this also works from
+# mutmut's mutants/ copy of the tree, where relative-path insertion breaks.
+from scripts.version_benchmark import analyze_trends
 
 
 @pytest.fixture
