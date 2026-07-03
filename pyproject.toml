@@ -311,7 +311,10 @@ sort_by_size = true
 verbose = false
 
 [tool.codespell]
-skip = ".git,*.lock,*.parquet,*.json,tests/data/*,.venv,uv.lock"
+# site/ (mkdocs build) and mutants/ (mutmut working tree) are gitignored
+# build artifacts; scanning them made test_codespell_passes fail on any
+# machine that had built docs or run mutation testing locally.
+skip = ".git,*.lock,*.parquet,*.json,tests/data/*,.venv,uv.lock,site,mutants"
 ignore-words-list = "nd,ot,crs,inout,hel,bu"
 check-filenames = true
 

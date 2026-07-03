@@ -51,26 +51,31 @@ jobs:
         continue-on-error: true
         run: |
           set +e
+          IGNORE_ARGS=$(uv run python scripts/pip_audit_ignores.py)
           # Machine-readable JSON for extracting vulnerable package names.
-          uv run pip-audit -f json -o audit.json $(uv run python scripts/pip_audit_ignores.py)
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit -f json -o audit.json $IGNORE_ARGS
           # Human-readable output for the PR/issue body. This drives the
           # vulnerabilities_found decision via its exit code.
-          uv run pip-audit $(uv run python scripts/pip_audit_ignores.py) > audit-results.txt 2>&1
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit $IGNORE_ARGS > audit-results.txt 2>&1
           EXIT_CODE=$?
 
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-            echo "## Vulnerabilities Found" >> $GITHUB_STEP_SUMMARY
-            cat audit-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "vulnerabilities_found=true" >> "$GITHUB_OUTPUT"
+            echo "## Vulnerabilities Found" >> "$GITHUB_STEP_SUMMARY"
+            cat audit-results.txt >> "$GITHUB_STEP_SUMMARY"
             # Expose the human-readable report as a multiline output for the PR body.
             {
               echo "audit_output<<GPIO_AUDIT_EOF"
               cat audit-results.txt
               echo "GPIO_AUDIT_EOF"
-            } >> $GITHUB_OUTPUT
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
-            echo "## ✅ No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+            echo "vulnerabilities_found=false" >> "$GITHUB_OUTPUT"
+            echo "## ✅ No vulnerabilities found" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Attempt automated fix
@@ -96,7 +101,7 @@ jobs:
           # fall through to the issue path rather than opening an empty PR.
           if git diff --quiet uv.lock; then
             echo "uv.lock unchanged — no upstream fix available."
-            echo "fix_works=false" >> $GITHUB_OUTPUT
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -106,10 +111,10 @@ jobs:
 
           if [ $TEST_EXIT -eq 0 ]; then
             echo "Tests pass with upgraded dependencies."
-            echo "fix_works=true" >> $GITHUB_OUTPUT
+            echo "fix_works=true" >> "$GITHUB_OUTPUT"
           else
             echo "Tests failed with upgraded dependencies — not opening a PR."
-            echo "fix_works=false" >> $GITHUB_OUTPUT
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Open automated fix pull request

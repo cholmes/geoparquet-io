@@ -85,8 +85,8 @@ jobs:
             CURRENT="$INPUT_CURRENT"
             BASELINE="$INPUT_BASELINE"
           fi
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "baseline=$BASELINE" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
           if [[ -n "$BASELINE" ]]; then
             echo "Comparing $CURRENT against $BASELINE"
           else
@@ -145,21 +145,21 @@ jobs:
               echo "  Found artifact ID: $ARTIFACT_ID"
 
               # Download the artifact
-              gh api repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip > /tmp/${TAG}.zip || {
+              gh api "repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" > "/tmp/${TAG}.zip" || {
                 echo "  Failed to download artifact"
                 continue
               }
 
               # Extract just the results JSON
-              unzip -q -o /tmp/${TAG}.zip -d /tmp/${TAG}/ || {
+              unzip -q -o "/tmp/${TAG}.zip" -d "/tmp/${TAG}/" || {
                 echo "  Failed to extract artifact"
                 continue
               }
 
               # Find the results file
-              RESULTS_FILE=$(find /tmp/${TAG}/ -name "results_*.json" | head -1)
+              RESULTS_FILE=$(find "/tmp/${TAG}/" -name "results_*.json" | head -1)
               if [ -n "$RESULTS_FILE" ]; then
-                cp "$RESULTS_FILE" baselines/results_${TAG}.json
+                cp "$RESULTS_FILE" "baselines/results_${TAG}.json"
                 echo "  ✓ Downloaded baseline for $TAG"
                 BASELINE_COUNT=$((BASELINE_COUNT + 1))
               else
@@ -175,7 +175,7 @@ jobs:
             fi
           done
 
-          echo "baseline_count=$BASELINE_COUNT" >> $GITHUB_OUTPUT
+          echo "baseline_count=$BASELINE_COUNT" >> "$GITHUB_OUTPUT"
           echo "Downloaded $BASELINE_COUNT historical baselines"
 
       - name: Run current benchmarks
@@ -250,30 +250,38 @@ jobs:
             echo "regressions<<EOF"
             cat regressions.txt
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           # Create summary
-          echo "## Release Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Current:** $CURRENT_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "**Baseline:** $BASELINE_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Release Benchmark Comparison"
+            echo ""
+            echo "**Current:** $CURRENT_VERSION"
+            echo "**Baseline:** $BASELINE_VERSION"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$REGRESSIONS" != "none" ]]; then
-            echo "### ⚠️ Performance Regressions Detected" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "$REGRESSIONS" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            {
+              echo "### ⚠️ Performance Regressions Detected"
+              echo ""
+              echo "$REGRESSIONS"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### ✅ No Significant Regressions" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            {
+              echo "### ✅ No Significant Regressions"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "### Detailed Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          cat comparison.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### Detailed Results"
+            echo ""
+            echo "\`\`\`"
+            cat comparison.txt
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Analyze trends across releases
         id: trends
@@ -281,16 +289,19 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.versions.outputs.current }}
         run: |
-          # Create ordered list of baseline files (oldest to newest)
-          BASELINE_FILES=$(ls -t baselines/results_*.json | tac | tr '\n' ' ')
-          echo "Baseline files: $BASELINE_FILES"
+          # Create ordered list of baseline files (oldest to newest by mtime)
+          mapfile -t BASELINE_FILES < <(
+            find baselines -name 'results_*.json' -printf '%T@ %p\n' \
+              | sort -n | cut -d' ' -f2-
+          )
+          echo "Baseline files: ${BASELINE_FILES[*]}"
 
           # Add current results to the end
-          BASELINE_FILES="$BASELINE_FILES results_current.json"
+          BASELINE_FILES+=(results_current.json)
 
           # Run trend analysis
           uv run python scripts/version_benchmark.py \
-            --trend $BASELINE_FILES \
+            --trend "${BASELINE_FILES[@]}" \
             -o trend_analysis.json
 
           # Extract warnings for GitHub Actions
@@ -310,19 +321,20 @@ jobs:
           "
 
           # Set output
-          TREND_WARNINGS=$(cat trend_warnings.txt)
           {
             echo "warnings<<EOF"
             cat trend_warnings.txt
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Add trend analysis to summary
         if: steps.trends.outputs.warnings != '' && steps.trends.outputs.warnings != 'none'
         run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Performance Trends" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          {
+            echo ""
+            echo "### 📊 Performance Trends"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ -f trend_analysis.json ]]; then
             # Extract and display trend statistics
@@ -344,7 +356,7 @@ jobs:
                 print('**⚠️ Gradual Degradation Detected:**')
                 for w in trends['warnings']:
                     print(f\"- {w['message']}\")
-            " >> $GITHUB_STEP_SUMMARY
+            " >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload results

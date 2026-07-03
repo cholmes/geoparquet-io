@@ -152,23 +152,27 @@ jobs:
           git checkout ${{ github.sha }}
           uv sync --all-extras
 
-          echo "## Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          uv run python scripts/version_benchmark.py \
-            --compare results_baseline.json results_current.json >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Benchmark Comparison"
+            echo ""
+            echo "\`\`\`"
+            uv run python scripts/version_benchmark.py \
+              --compare results_baseline.json results_current.json
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate summary (no comparison)
         if: inputs.compare_version == ''
         run: |
-          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Version: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-          cat results_current.json >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Benchmark Results"
+            echo ""
+            echo "Version: ${{ github.sha }}"
+            echo ""
+            echo "\`\`\`json"
+            cat results_current.json
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check for regressions and run profiling
         if: inputs.compare_version != ''

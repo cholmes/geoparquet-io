@@ -86,7 +86,11 @@ jobs:
       - name: Dependency audit
         # Ignore list lives in .pip-audit-ignores (single source of truth,
         # shared with security-audit.yml). Entries auto-expire; see the file.
-        run: uv run pip-audit $(uv run python scripts/pip_audit_ignores.py)
+        run: |
+          IGNORE_ARGS=$(uv run python scripts/pip_audit_ignores.py)
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit $IGNORE_ARGS
 
   test:
     runs-on: ${{ matrix.os }}

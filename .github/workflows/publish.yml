@@ -59,8 +59,8 @@ jobs:
           # 1. [project].version (the package version - what we want)
           # 2. [tool.commitizen].version (kept in sync by cz bump)
           VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION (tag: v$VERSION)"
 
       - name: Check release status
@@ -74,17 +74,17 @@ jobs:
           # Check if GitHub Release exists (the real indicator of a completed release)
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, nothing to do"
-            echo "release_exists=true" >> $GITHUB_OUTPUT
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "release_exists=false" >> $GITHUB_OUTPUT
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
             # Check if tag exists (may need to skip tag creation but still publish)
             if git rev-parse "$TAG" >/dev/null 2>&1; then
               echo "Tag $TAG exists but no release - recovery mode"
-              echo "tag_exists=true" >> $GITHUB_OUTPUT
+              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             else
               echo "Tag $TAG does not exist, full release"
-              echo "tag_exists=false" >> $GITHUB_OUTPUT
+              echo "tag_exists=false" >> "$GITHUB_OUTPUT"
             fi
           fi
 
