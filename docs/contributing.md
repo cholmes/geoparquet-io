@@ -1,5 +1,53 @@
 # Contributing
 
+Thanks for contributing! This guide explains how we work, what a finished
+pull request looks like, and how to get set up. The short version: send a
+PR, test it against real data, get it reviewed hard, and let CI do its job.
+
+## How we work
+
+**Prefer pull requests to issues.** If you can describe a problem clearly,
+you can usually also open a PR that fixes it. Open an issue instead only
+when the change genuinely needs discussion first (a design decision, a
+breaking change, a new dependency) or when you can't attempt the fix
+yourself.
+
+**Start from a reproducible example.** A failing test that demonstrates a
+bug is a better bug report than any amount of prose. If you hit a bug, try
+to capture it as a small test case first. From there, an AI coding
+assistant (Claude, Copilot, or similar) can often carry you the rest of the
+way to a working PR — we encourage that. AI-assisted PRs are welcome here;
+they're held to the same bar as any other PR, and the CI is built so we can
+trust them.
+
+**The CI is strict on purpose.** Every gate described below exists so that
+maintainers don't have to manually re-verify each change. Strict, automated
+checks are what make it safe for us to accept fast, autonomous
+contributions — including ones written largely by AI. The guardrails aren't
+there to slow you down; they're what let us say yes quickly.
+
+## What a finished PR looks like
+
+Before you ask for a merge, check that your PR clears this bar:
+
+- [ ] **Tests run against real data.** This project reads and writes real
+      GeoParquet files, so tests should too. Use actual (small) files
+      rather than mocks or toy fixtures wherever that's feasible.
+- [ ] **Integration tests for anything that crosses a boundary.** If your
+      change spans modules, file formats, or an external service, add a
+      test that exercises the whole path — unit tests alone aren't enough.
+- [ ] **At least one adversarial review.** Someone (or something) whose job
+      is to *break* the change: feed it wrong data, hit the edge cases,
+      probe the failure modes. An AI review counts, but it has to be
+      adversarial in intent, not a rubber stamp.
+- [ ] **All CI checks green.** The required checks are the contract. A red
+      check blocks the merge, by design — fix it rather than working around
+      it.
+- [ ] **CodeRabbit comments addressed.** Every automated review comment is
+      either fixed or answered with a reason. Silence isn't an answer.
+- [ ] **Docs updated** if you changed user-facing behavior (guides, CLI
+      reference, Python API docs).
+
 ## Prerequisites
 
 - Python 3.10+
@@ -74,9 +122,33 @@ Two ratchet/ignore files gate quality over time:
 - `.mutation-baseline` — minimum mutation kill rate enforced by the nightly
   mutation-testing run. Ratchet it up as test quality improves.
 
-Branch protection is code too: `scripts/apply_branch_protection.sh` declares
-the required status checks and review rules as GitHub rulesets (run once by an
-admin after changes).
+## How the CI is set up (and why)
+
+Merging to `main` requires these status checks to pass: `lint`, `security`,
+`notebooks`, and the `test` matrix (Ubuntu on Python 3.10–3.13, macOS and
+Windows on 3.11–3.13). That list lives in code —
+`scripts/apply_branch_protection.sh` declares the required checks and review
+rules as GitHub rulesets, and an admin re-runs it whenever the list changes.
+If your PR is blocked on a check, that's the system working as intended:
+fix the check.
+
+Two heavier gates exist but don't run on every PR, so they won't slow down
+day-to-day contributions:
+
+- **Benchmark regression** — label-triggered; fails if performance drops
+  10% or more against the baseline.
+- **Mutation testing** — nightly; enforces the kill-rate floor in
+  `.mutation-baseline`.
+
+The repository also maintains itself where it can:
+
+- The **daily security audit** opens an automated fix PR when a dependency
+  vulnerability has a clean upgrade path.
+- **Dependabot PRs auto-merge** once all required checks pass.
+
+Bot-opened PRs go through the exact same required checks as human ones.
+That's the deal across the board: nothing merges without the checks, and
+because of that, a lot can merge without a human bottleneck.
 
 ## Documentation
 
