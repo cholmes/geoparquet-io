@@ -9,6 +9,12 @@ updates:
       - "dependencies"
       - "github-actions"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    # Wait before adopting fresh releases: compromised versions are usually
+    # yanked within days of publication (zizmor dependabot-cooldown).
+    cooldown:
+      default-days: 7
 
   # Python dependencies (uv lockfile-aware)
   - package-ecosystem: "uv"
@@ -19,6 +25,13 @@ updates:
       - "dependencies"
       - "python"
     open-pull-requests-limit: 10
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    # Wait before adopting fresh releases: compromised versions are usually
+    # yanked within days of publication (zizmor dependabot-cooldown).
+    cooldown:
+      default-days: 7
     # Group minor and patch updates together
     groups:
       development-dependencies:

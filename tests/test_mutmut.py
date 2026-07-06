@@ -90,10 +90,36 @@ class TestMutmutConfig:
             assert full_path.exists(), f"Tests directory does not exist: {test_path}"
             assert full_path.is_dir(), f"Tests path is not a directory: {test_path}"
 
-    def test_mutmut_runner_uses_pytest(self, mutmut_config: dict[str, Any]):
-        """Verify runner config uses pytest."""
-        runner = mutmut_config.get("runner", "")
-        assert "pytest" in runner, "mutmut runner should use pytest"
+    def test_mutmut_excludes_slow_and_network_tests(self, mutmut_config: dict[str, Any]):
+        """Verify per-mutant pytest runs are fast-suite only.
+
+        mutmut 3 runs pytest in-process and ignores a `runner` string, so the
+        marker filter must live in pytest_add_cli_args. Without it, every
+        mutant would run slow/network tests (nondeterministic and far too
+        slow).
+        """
+        args = mutmut_config.get("pytest_add_cli_args", [])
+        assert "not slow and not network" in args, (
+            "mutmut pytest_add_cli_args must filter to fast tests"
+        )
+        assert "--no-cov" in args, (
+            "mutmut pytest_add_cli_args must disable coverage (per-mutant "
+            "overhead, and the global --cov-fail-under gate would misfire)"
+        )
+
+    def test_mutmut_also_copies_test_prerequisites(self, mutmut_config: dict[str, Any]):
+        """Verify everything tests read relative to the repo root is copied.
+
+        Tests run from mutmut's mutants/ tree; anything missing from
+        also_copy fails there while passing in a normal checkout.
+        """
+        also_copy = mutmut_config.get("also_copy", [])
+        for required in ("scripts/", "context/"):
+            assert required in also_copy, f"mutmut also_copy must include {required}"
+        for entry in also_copy:
+            assert (PROJECT_ROOT / entry.rstrip("/")).exists(), (
+                f"also_copy entry does not exist: {entry}"
+            )
 
     def test_mutmut_dev_dependency(self, pyproject_config: dict[str, Any]):
         """Verify mutmut is in dev optional-dependencies."""

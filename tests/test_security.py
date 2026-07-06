@@ -56,11 +56,13 @@ class TestSecurityToolAvailability:
 
 # NOTE: The live dependency audit ("does pip-audit pass?") intentionally does
 # NOT live here as a pytest test. It runs in the dedicated `security` job in
-# .github/workflows/tests.yml, which owns the self-expiring CVE-ignore list,
-# blocks PRs on new vulnerabilities, and is non-blocking on nightly schedules.
-# A duplicate copy used to live here and drifted out of sync with the workflow's
-# ignore list (PYSEC-2026-196), silently breaking `main` on every push. Keep the
-# audit in exactly one place — the workflow.
+# .github/workflows/tests.yml, which blocks PRs on new vulnerabilities and is
+# non-blocking on nightly schedules. The self-expiring CVE-ignore list lives in
+# .pip-audit-ignores at the repo root (parsed by scripts/pip_audit_ignores.py)
+# and is shared with security-audit.yml. A duplicate audit used to live here
+# and its ignore list drifted out of sync with the workflow's (PYSEC-2026-196),
+# silently breaking `main` on every push. Keep the audit in exactly one place —
+# the workflow — and the ignore list in exactly one file.
 
 
 class TestBanditConfiguration:

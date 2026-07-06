@@ -19,22 +19,32 @@ on:
     branches: [main]
   workflow_dispatch:  # Manual trigger for recovery scenarios
 
+permissions:
+  contents: read
+
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Run if: push with bump commit OR manual trigger (workflow_dispatch)
     if: startsWith(github.event.head_commit.message, 'bump:') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write  # Required for creating tags and releases
       id-token: write  # Required for trusted PyPI publishing
     steps:
-      - uses: actions/checkout@v7
+      # Credentials must persist here: the "Create git tag" step pushes the
+      # release tag with the checkout token.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0  # Full history for tag creation
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          # No cache in the publish path: a poisoned cache must never be able
+          # to influence artifacts shipped to PyPI (zizmor cache-poisoning).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.11
@@ -49,41 +59,44 @@ jobs:
           # 1. [project].version (the package version - what we want)
           # 2. [tool.commitizen].version (kept in sync by cz bump)
           VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION (tag: v$VERSION)"
 
       - name: Check release status
         id: release_check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v$VERSION"
 
           # Check if GitHub Release exists (the real indicator of a completed release)
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, nothing to do"
-            echo "release_exists=true" >> $GITHUB_OUTPUT
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "release_exists=false" >> $GITHUB_OUTPUT
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
             # Check if tag exists (may need to skip tag creation but still publish)
             if git rev-parse "$TAG" >/dev/null 2>&1; then
               echo "Tag $TAG exists but no release - recovery mode"
-              echo "tag_exists=true" >> $GITHUB_OUTPUT
+              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             else
               echo "Tag $TAG does not exist, full release"
-              echo "tag_exists=false" >> $GITHUB_OUTPUT
+              echo "tag_exists=false" >> "$GITHUB_OUTPUT"
             fi
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create git tag
         if: steps.release_check.outputs.tag_exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
 
       - name: Build package
         if: steps.release_check.outputs.release_exists == 'false'
@@ -91,16 +104,18 @@ jobs:
 
       - name: Publish to PyPI
         if: steps.release_check.outputs.release_exists == 'false'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           print-hash: true
 
       - name: Create GitHub Release
         if: steps.release_check.outputs.release_exists == 'false'
-        run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "${{ steps.version.outputs.tag }}" \
-            --notes "See [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." \
-            dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "See [CHANGELOG](https://github.com/$REPO/blob/main/CHANGELOG.md) for details." \
+            dist/*

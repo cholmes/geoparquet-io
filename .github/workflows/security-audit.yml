@@ -1,7 +1,16 @@
 name: Security Audit
 
-# Proactive security scanning - creates issues instead of blocking CI
-# This catches CVEs BEFORE they fail your regular CI
+# Proactive security scanning — PR-first, issue-as-fallback.
+#
+# Runs pip-audit daily against the locked dependency tree (honoring the
+# self-expiring ignore list in .pip-audit-ignores). When vulnerabilities are
+# found it does NOT just file an issue: it first tries to fix them
+# automatically by upgrading the vulnerable packages in uv.lock and running
+# the fast test suite. If the upgrade actually changes the lockfile and tests
+# still pass, it opens (or updates) a pull request with the fix so a human can
+# review and merge. Only when no upstream fix is available (the lockfile does
+# not change) or the upgraded tests fail does it fall back to opening a
+# tracking issue. This catches CVEs BEFORE they fail regular CI.
 
 on:
   schedule:
@@ -10,16 +19,26 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # The automated-fix PR is opened with BOT_PR_TOKEN, not GITHUB_TOKEN, so
+      # GITHUB_TOKEN needs no write to contents here — only issue management.
+      contents: read
+      pull-requests: write
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # No direct git push happens here (create-pull-request uses its own
+          # token input), so don't leave GITHUB_TOKEN credentials in .git/config.
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -34,21 +53,120 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          uv run pip-audit > audit-results.txt 2>&1
+          IGNORE_ARGS=$(uv run python scripts/pip_audit_ignores.py)
+          # Machine-readable JSON for extracting vulnerable package names.
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit -f json -o audit.json $IGNORE_ARGS
+          # Human-readable output for the PR/issue body. This drives the
+          # vulnerabilities_found decision via its exit code.
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit $IGNORE_ARGS > audit-results.txt 2>&1
           EXIT_CODE=$?
 
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
-            echo "## Vulnerabilities Found" >> $GITHUB_STEP_SUMMARY
-            cat audit-results.txt >> $GITHUB_STEP_SUMMARY
+            echo "vulnerabilities_found=true" >> "$GITHUB_OUTPUT"
+            echo "## Vulnerabilities Found" >> "$GITHUB_STEP_SUMMARY"
+            cat audit-results.txt >> "$GITHUB_STEP_SUMMARY"
+            # Expose the human-readable report as a multiline output for the PR body.
+            {
+              echo "audit_output<<GPIO_AUDIT_EOF"
+              cat audit-results.txt
+              echo "GPIO_AUDIT_EOF"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
-            echo "## ✅ No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+            echo "vulnerabilities_found=false" >> "$GITHUB_OUTPUT"
+            echo "## ✅ No vulnerabilities found" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Create or update issue
+      - name: Attempt automated fix
+        id: fix
         if: steps.audit.outputs.vulnerabilities_found == 'true'
-        uses: actions/github-script@v9
+        run: |
+          set +e
+
+          # Extract the names of packages that actually have vulnerabilities.
+          PACKAGES=$(jq -r '.dependencies[] | select(.vulns | length > 0) | .name' audit.json | sort -u)
+          echo "Vulnerable packages:"
+          echo "$PACKAGES"
+
+          # Upgrade each vulnerable package to its latest compatible release.
+          for p in $PACKAGES; do
+            echo "Upgrading $p ..."
+            uv lock --upgrade-package "$p"
+          done
+
+          # Guard the sync explicitly: under `set +e` a failed resolution would
+          # otherwise fall through to the diff/test checks and could mark a fix
+          # verified against a broken environment. Bail to the issue path instead.
+          uv sync --all-extras
+          SYNC_EXIT=$?
+          if [ $SYNC_EXIT -ne 0 ]; then
+            echo "uv sync failed after upgrade — cannot verify fix."
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If the lockfile did not change, no upstream fix is available yet —
+          # fall through to the issue path rather than opening an empty PR.
+          if git diff --quiet uv.lock; then
+            echo "uv.lock unchanged — no upstream fix available."
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Run the fast suite to confirm the upgrade didn't break anything.
+          uv run pytest -n 4 -m "not slow and not network" -q --tb=short --no-cov -p no:cacheprovider
+          TEST_EXIT=$?
+
+          if [ $TEST_EXIT -eq 0 ]; then
+            echo "Tests pass with upgraded dependencies."
+            echo "fix_works=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tests failed with upgraded dependencies — not opening a PR."
+            echo "fix_works=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open automated fix pull request
+        if: steps.fix.outputs.fix_works == 'true'
+        # Use a dedicated bot token (not the default GITHUB_TOKEN): PRs opened
+        # with GITHUB_TOKEN never trigger further workflow runs, so CI would
+        # not run on the fix PR. BOT_PR_TOKEN lets the PR exercise CI normally.
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.9
+        with:
+          token: ${{ secrets.BOT_PR_TOKEN }}
+          branch: bot/security-dependency-upgrades
+          delete-branch: true
+          add-paths: uv.lock
+          commit-message: 'fix(deps): upgrade vulnerable dependencies (automated)'
+          title: 'fix(deps): upgrade vulnerable dependencies (automated)'
+          labels: |
+            security
+            automated
+            dependencies
+          body: |
+            ## Automated Security Fix
+
+            This pull request was opened automatically by the daily security
+            audit workflow. It upgrades the vulnerable dependencies detected by
+            `pip-audit` and has been verified against the fast test suite.
+
+            Please review the lockfile change and merge if CI passes.
+
+            ### Vulnerabilities Addressed
+
+            ```
+            ${{ steps.audit.outputs.audit_output }}
+            ```
+
+            ### Audit Details
+
+            - **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Create or update issue
+        if: steps.audit.outputs.vulnerabilities_found == 'true' && steps.fix.outputs.fix_works != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -59,6 +177,8 @@ jobs:
               '## Automated Security Audit',
               '',
               'This issue was automatically created by the daily security audit workflow.',
+              'An automated fix was attempted but no upstream fix is available, or the',
+              'upgraded dependencies failed the test suite, so this needs manual attention.',
               '',
               '### Vulnerabilities Found',
               '',
@@ -70,7 +190,8 @@ jobs:
               '',
               '1. **Quick fix**: Run `uv lock --upgrade-package <package>` for the affected package',
               '2. **Full update**: Run `uv lock --upgrade && uv sync`',
-              '3. **If no fix available**: Add to ignore list in `.github/workflows/tests.yml`',
+              '3. **If no fix available**: Add the vulnerability to `.pip-audit-ignores`',
+              '   using the self-expiring format `VULN-ID EXPIRES(YYYY-MM-DD) REASON`',
               '',
               '### Audit Details',
               '',
@@ -112,7 +233,7 @@ jobs:
 
       - name: Close issue if no vulnerabilities
         if: steps.audit.outputs.vulnerabilities_found == 'false'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = '🔒 Security: Dependency vulnerabilities detected';

@@ -2483,7 +2483,7 @@ class TestEsriJsonPageToTable:
 class TestConvertOutputCrs:
     @patch("geoparquet_io.core.arcgis.write_geoparquet_table")
     @patch("geoparquet_io.core.arcgis.arcgis_to_table")
-    def test_convert_forwards_output_crs(self, mock_to_table, mock_write, tmp_path):
+    def test_convert_forwards_output_crs(self, mock_to_table, _mock_write, tmp_path):
         from geoparquet_io.core.arcgis import convert_arcgis_to_geoparquet
 
         mock_to_table.return_value = pa.table({"geometry": pa.array([], type=pa.binary())})

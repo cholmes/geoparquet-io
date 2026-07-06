@@ -15,14 +15,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -32,49 +38,39 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Check code formatting
-        run: uv run ruff format --check .
+      # .pre-commit-config.yaml is the single source of truth for lint/quality
+      # rules. CI runs the exact same hooks contributors run locally, so a rule
+      # can never exist in only one place and drift (that gap previously let
+      # unhooked clones merge house-rule violations).
+      - name: Run pre-commit hooks (commit stage)
+        env:
+          # doc-sync mutates files (the --check step below covers it);
+          # sync-dependencies runs `uv sync` against the staged diff, which is
+          # meaningless in CI.
+          SKIP: doc-sync,sync-dependencies
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
-      - name: Run linter
-        run: uv run ruff check .
+      - name: Run pre-commit hooks (pre-push stage)
+        run: >-
+          uv run pre-commit run --all-files --hook-stage pre-push
+          --show-diff-on-failure
 
-      - name: Type check
-        run: uv run mypy geoparquet_io/
-
-      - name: Check architecture
-        run: uv run lint-imports
-
-      - name: Check CLAUDE.md sections are current
+      - name: Check generated doc sections are current
         run: uv run python scripts/doc_sync.py --check
-
-      - name: Check code complexity (informational)
-        run: uv run xenon --max-absolute=E --max-modules=D --max-average=C geoparquet_io tests
-        continue-on-error: true
-
-      - name: Check for dead code (informational)
-        run: uv run vulture
-        continue-on-error: true
-
-      - name: Check freshness markers (menard)
-        run: uv run menard audit --exit-code
-        continue-on-error: true
-
-      - name: Check spelling
-        run: uv run codespell
-
-      - name: Validate CLAUDE.md
-        run: uv run python scripts/validate_claude_md.py
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # On scheduled runs, don't fail the workflow for new CVEs - the security-audit
     # workflow handles those proactively. On PRs, we want to block vulnerable code.
     continue-on-error: ${{ github.event_name == 'schedule' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -88,17 +84,17 @@ jobs:
         run: uv run bandit -r geoparquet_io/ -c pyproject.toml
 
       - name: Dependency audit
-        # PYSEC-2026-196: pip 26.1.1 vulnerability. Fix in pip 26.1.2.
+        # Ignore list lives in .pip-audit-ignores (single source of truth,
+        # shared with security-audit.yml). Entries auto-expire; see the file.
         run: |
-          PIP_VERSION=$(uv run pip --version | awk '{print $2}')
-          if [[ "$PIP_VERSION" == "26.1.2"* ]] || [[ "$(printf '%s\n' "26.1.2" "$PIP_VERSION" | sort -V | head -n1)" == "26.1.2" ]]; then
-            uv run pip-audit
-          else
-            uv run pip-audit --ignore-vuln PYSEC-2026-196
-          fi
+          IGNORE_ARGS=$(uv run python scripts/pip_audit_ignores.py)
+          # word-splitting intended: emits repeated --ignore-vuln flags
+          # shellcheck disable=SC2086
+          uv run pip-audit $IGNORE_ARGS
 
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -110,10 +106,14 @@ jobs:
           - os: windows-latest
             python-version: '3.10'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Full history so diff-cover can diff against the PR base branch.
+          fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -165,20 +165,37 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           file: ./coverage.xml
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
 
+      - name: Diff coverage gate (changed lines >= 90% covered)
+        if: >-
+          github.event_name == 'pull_request' &&
+          matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        # Coverage comes from the fast suite, so changed lines must be covered
+        # by fast tests specifically — intended pressure: new code ships with
+        # tests that run on every PR, not only in the post-merge slow suite.
+        run: |
+          git fetch origin "$BASE_REF"
+          uv run diff-cover coverage.xml \
+            --compare-branch "origin/$BASE_REF" --fail-under=90
+
   notebooks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -196,6 +213,8 @@ jobs:
     # Slow tests run on merge to main, schedule, and manual dispatch. They do NOT
     # run on every PR (too slow), but can be opted in per-PR by adding the
     # "run-slow-tests" label, so risky changes can be verified before merge.
+    # Network-marked tests are deliberately excluded: they hit live third-party
+    # servers and live in the non-blocking network-tests job below.
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'schedule' ||
@@ -203,16 +222,19 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-slow-tests'))
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ['3.11']
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -261,7 +283,7 @@ jobs:
             brew install tippecanoe
           fi
 
-      - name: Run slow and network tests (parallel)
+      - name: Run slow tests (parallel)
         shell: bash
         run: |
           # Security tests (the live pip-audit) are owned by the dedicated
@@ -272,18 +294,166 @@ jobs:
 
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           else
-            uv run pytest -n 4 -m "slow or network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
           fi
 
       - name: Upload slow test coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           file: ./coverage.xml
           flags: slowtests
           name: codecov-slow
           fail_ci_if_error: false
+
+  network-tests:
+    # Live third-party services (ArcGIS, WFS, Carto, BigQuery, ...). A remote
+    # server's flakiness is not something a PR author can fix, so this job is
+    # non-blocking: the failing STEP is continue-on-error (workflow stays
+    # green) and failures open/update a single tracking issue instead —
+    # mirroring the security-audit.yml pattern. It is intentionally NOT in the
+    # required-checks list.
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install GDAL
+        run: sudo apt-get update && sudo apt-get install -y gdal-bin
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Pre-install DuckDB extensions
+        shell: bash
+        run: |
+          # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
+          # with a transient network error, which broke otherwise-green builds.
+          # Retry with backoff before giving up.
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          for attempt in 1 2 3 4 5; do
+            if uv run python -c "$install"; then
+              echo "DuckDB extensions installed (attempt $attempt)."
+              exit 0
+            fi
+            echo "Extension install failed (attempt $attempt). Retrying in $((attempt * 10))s..." >&2
+            sleep $((attempt * 10))
+          done
+          echo "Failed to install DuckDB extensions after 5 attempts." >&2
+          exit 1
+
+      - name: Install tippecanoe
+        run: sudo apt-get install -y tippecanoe
+
+      - name: Run network tests (serial, forked)
+        id: nettests
+        continue-on-error: true
+        run: |
+          # Serial (no xdist): a live-fetch segfault (see the Vermont ArcGIS
+          # test for #334) kills an xdist worker and poisons every sibling
+          # test's verdict. --forked confines a crash to the one test that
+          # crashed; --timeout caps a hung remote; --reruns absorbs transient
+          # network errors.
+          uv run pytest -p no:xdist --forked -m network \
+            --ignore=tests/test_security.py \
+            --timeout=180 --timeout-method=thread \
+            --reruns 2 --reruns-delay 10 \
+            -v --tb=short --no-cov
+
+      - name: Open or update tracking issue on failure
+        if: steps.nettests.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = '🌐 Network tests failing against live services';
+            const body = [
+              '## Automated network-test report',
+              '',
+              'The non-blocking `network-tests` job failed. These tests hit',
+              'live third-party services, so this usually means a remote',
+              'endpoint changed, broke, or throttled us — but it can also be',
+              'a real regression in our extractors.',
+              '',
+              `- **Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              `- **Date**: ${new Date().toISOString().split('T')[0]}`,
+              '',
+              '---',
+              '*Opened/updated automatically by the network-tests job; it will*',
+              '*be closed automatically when the suite passes again.*'
+            ].join('\n');
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'network-tests,automated',
+              per_page: 100
+            });
+            const existing = issues.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['network-tests', 'automated']
+              });
+            }
+
+      - name: Close tracking issue on success
+        if: steps.nettests.outcome == 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = '🌐 Network tests failing against live services';
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'network-tests,automated',
+              per_page: 100
+            });
+            const existing = issues.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: '✅ Network tests passing again. Closing automatically.'
+              });
+            }

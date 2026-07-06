@@ -20,17 +20,25 @@ on:
         required: true
         default: 'v0.9.0'
 
+permissions:
+  contents: read
+
 jobs:
   benchmark-comparison:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write  # "Update release notes" edits the GitHub release body
+      actions: read  # "Download previous baselines" reads the Actions artifacts API
     env:
       # Use environment variables to safely pass user inputs to shell commands
       INPUT_CURRENT: ${{ inputs.current_version }}
       INPUT_BASELINE: ${{ inputs.baseline_version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0  # Need full history for tags
+          persist-credentials: false
 
       - name: Validate inputs
         if: github.event_name == 'workflow_dispatch'
@@ -46,18 +54,25 @@ jobs:
           fi
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          enable-cache: true
+          # No cache in release-triggered runs: this job edits release notes
+          # and stores 400-day baselines (zizmor cache-poisoning).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.11
 
       - name: Determine versions
         id: versions
+        env:
+          # env indirection, not inline templating: a crafted tag name must
+          # never expand into shell code (zizmor template-injection).
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            CURRENT="${{ github.event.release.tag_name }}"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            CURRENT="$RELEASE_TAG"
             # Get the previous tag (skip current tag, get next one)
             TAGS=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
             TAG_COUNT=$(echo "$TAGS" | wc -l)
@@ -71,8 +86,8 @@ jobs:
             CURRENT="$INPUT_CURRENT"
             BASELINE="$INPUT_BASELINE"
           fi
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "baseline=$BASELINE" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "baseline=$BASELINE" >> "$GITHUB_OUTPUT"
           if [[ -n "$BASELINE" ]]; then
             echo "Comparing $CURRENT against $BASELINE"
           else
@@ -100,6 +115,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT_VERSION: ${{ steps.versions.outputs.current }}
         run: |
           # Create directory for historical baselines
           mkdir -p baselines
@@ -111,7 +127,7 @@ jobs:
           BASELINE_COUNT=0
           for TAG in $TAGS; do
             # Skip current version
-            if [[ "$TAG" == "${{ steps.versions.outputs.current }}" ]]; then
+            if [[ "$TAG" == "$CURRENT_VERSION" ]]; then
               continue
             fi
 
@@ -126,25 +142,25 @@ jobs:
               --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .id" > /tmp/artifact_id.txt || true
 
             if [ -s /tmp/artifact_id.txt ]; then
-              ARTIFACT_ID=$(cat /tmp/artifact_id.txt | head -1)
+              ARTIFACT_ID=$(head -1 /tmp/artifact_id.txt)
               echo "  Found artifact ID: $ARTIFACT_ID"
 
               # Download the artifact
-              gh api repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip > /tmp/${TAG}.zip || {
+              gh api "repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" > "/tmp/${TAG}.zip" || {
                 echo "  Failed to download artifact"
                 continue
               }
 
               # Extract just the results JSON
-              unzip -q -o /tmp/${TAG}.zip -d /tmp/${TAG}/ || {
+              unzip -q -o "/tmp/${TAG}.zip" -d "/tmp/${TAG}/" || {
                 echo "  Failed to extract artifact"
                 continue
               }
 
               # Find the results file
-              RESULTS_FILE=$(find /tmp/${TAG}/ -name "results_*.json" | head -1)
+              RESULTS_FILE=$(find "/tmp/${TAG}/" -name "results_*.json" | head -1)
               if [ -n "$RESULTS_FILE" ]; then
-                cp "$RESULTS_FILE" baselines/results_${TAG}.json
+                cp "$RESULTS_FILE" "baselines/results_${TAG}.json"
                 echo "  ✓ Downloaded baseline for $TAG"
                 BASELINE_COUNT=$((BASELINE_COUNT + 1))
               else
@@ -160,7 +176,7 @@ jobs:
             fi
           done
 
-          echo "baseline_count=$BASELINE_COUNT" >> $GITHUB_OUTPUT
+          echo "baseline_count=$BASELINE_COUNT" >> "$GITHUB_OUTPUT"
           echo "Downloaded $BASELINE_COUNT historical baselines"
 
       - name: Run current benchmarks
@@ -235,30 +251,38 @@ jobs:
             echo "regressions<<EOF"
             cat regressions.txt
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
           # Create summary
-          echo "## Release Benchmark Comparison" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Current:** $CURRENT_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "**Baseline:** $BASELINE_VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Release Benchmark Comparison"
+            echo ""
+            echo "**Current:** $CURRENT_VERSION"
+            echo "**Baseline:** $BASELINE_VERSION"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$REGRESSIONS" != "none" ]]; then
-            echo "### ⚠️ Performance Regressions Detected" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "$REGRESSIONS" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            {
+              echo "### ⚠️ Performance Regressions Detected"
+              echo ""
+              echo "$REGRESSIONS"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### ✅ No Significant Regressions" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            {
+              echo "### ✅ No Significant Regressions"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "### Detailed Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          cat comparison.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### Detailed Results"
+            echo ""
+            echo "\`\`\`"
+            cat comparison.txt
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Analyze trends across releases
         id: trends
@@ -266,16 +290,19 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.versions.outputs.current }}
         run: |
-          # Create ordered list of baseline files (oldest to newest)
-          BASELINE_FILES=$(ls -t baselines/results_*.json | tac | tr '\n' ' ')
-          echo "Baseline files: $BASELINE_FILES"
+          # Create ordered list of baseline files (oldest to newest by mtime)
+          mapfile -t BASELINE_FILES < <(
+            find baselines -name 'results_*.json' -printf '%T@ %p\n' \
+              | sort -n | cut -d' ' -f2-
+          )
+          echo "Baseline files: ${BASELINE_FILES[*]}"
 
           # Add current results to the end
-          BASELINE_FILES="$BASELINE_FILES results_current.json"
+          BASELINE_FILES+=(results_current.json)
 
           # Run trend analysis
           uv run python scripts/version_benchmark.py \
-            --trend $BASELINE_FILES \
+            --trend "${BASELINE_FILES[@]}" \
             -o trend_analysis.json
 
           # Extract warnings for GitHub Actions
@@ -295,19 +322,20 @@ jobs:
           "
 
           # Set output
-          TREND_WARNINGS=$(cat trend_warnings.txt)
           {
             echo "warnings<<EOF"
             cat trend_warnings.txt
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Add trend analysis to summary
         if: steps.trends.outputs.warnings != '' && steps.trends.outputs.warnings != 'none'
         run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Performance Trends" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          {
+            echo ""
+            echo "### 📊 Performance Trends"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ -f trend_analysis.json ]]; then
             # Extract and display trend statistics
@@ -329,11 +357,11 @@ jobs:
                 print('**⚠️ Gradual Degradation Detected:**')
                 for w in trends['warnings']:
                     print(f\"- {w['message']}\")
-            " >> $GITHUB_STEP_SUMMARY
+            " >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release-benchmark-${{ steps.versions.outputs.current }}
           path: |
@@ -344,12 +372,17 @@ jobs:
 
       - name: Update release notes
         if: github.event_name == 'release'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # env indirection, not inline templating into JS source
+          # (zizmor template-injection).
+          REGRESSIONS: ${{ steps.comparison.outputs.regressions }}
+          BASELINE_VERSION: ${{ steps.versions.outputs.baseline }}
         with:
           script: |
             const fs = require('fs');
             const comparison = fs.readFileSync('comparison.txt', 'utf8');
-            const regressions = '${{ steps.comparison.outputs.regressions }}';
+            const regressions = process.env.REGRESSIONS;
 
             let benchmarkSection = '\n\n---\n\n## Performance\n\n';
 
@@ -357,7 +390,7 @@ jobs:
             if (regressions !== 'none') {
               benchmarkSection += '⚠️ **Regressions detected:**\n```\n' + regressions + '\n```\n\n';
             } else {
-              benchmarkSection += '✅ No significant performance regressions compared to ${{ steps.versions.outputs.baseline }}\n\n';
+              benchmarkSection += `✅ No significant performance regressions compared to ${process.env.BASELINE_VERSION}\n\n`;
             }
 
             // Add trend analysis if available
@@ -408,10 +441,14 @@ jobs:
 
       - name: Warn on regressions
         if: steps.comparison.outputs.regressions != 'none'
+        env:
+          REGRESSIONS: ${{ steps.comparison.outputs.regressions }}
         run: |
-          echo "::warning::Performance regressions detected: ${{ steps.comparison.outputs.regressions }}"
+          echo "::warning::Performance regressions detected: $REGRESSIONS"
 
       - name: Warn on trend degradation
         if: steps.trends.outputs.warnings != '' && steps.trends.outputs.warnings != 'none'
+        env:
+          TREND_WARNINGS: ${{ steps.trends.outputs.warnings }}
         run: |
-          echo "::warning::Gradual performance degradation detected across releases: ${{ steps.trends.outputs.warnings }}"
+          echo "::warning::Gradual performance degradation detected across releases: $TREND_WARNINGS"

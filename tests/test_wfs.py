@@ -3728,7 +3728,7 @@ class TestFetchWithSpatialTiles:
             ),
             patch(
                 "geoparquet_io.core.wfs._refine_tiles_adaptive",
-                side_effect=lambda tiles, *a, **kw: tiles,
+                side_effect=lambda tiles, *a, **_kw: tiles,
             ),
             patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", side_effect=mock_fetch),
         ):

@@ -1,0 +1,11 @@
+# pip-audit ignore list — single source of truth, consumed by the tests.yml
+# security job and the security-audit.yml workflow via:
+#     uv run pip-audit $(uv run python scripts/pip_audit_ignores.py)
+#
+# Format: VULN-ID  EXPIRES(YYYY-MM-DD)  REASON
+# Entries past their expiry are dropped automatically: if the vulnerability is
+# fixed upstream by then, the audit stays green; if not, it goes red and
+# demands a conscious decision (extend the date with a reason, or pin/replace
+# the dependency). Never leave an entry without an expiry rationale.
+
+PYSEC-2026-196  2026-08-15  pip 26.1.1 vulnerability; fixed in pip 26.1.2 — remove once uv-managed pip updates
