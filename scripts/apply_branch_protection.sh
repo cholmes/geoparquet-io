@@ -42,6 +42,15 @@ set -euo pipefail
 #   and store it as the repository Actions secret named BOT_PR_TOKEN.
 #   (A fine-grained PAT is preferred over a classic PAT so the grant stays
 #   limited to geoparquet/geoparquet-io.)
+#
+#   NOTE: a fine-grained PAT must name the geoparquet ORG as its resource
+#   owner, which requires the org to have opted in to fine-grained PAT
+#   access (org owners: Settings -> Third-party Access -> Personal access
+#   tokens). If the org does not appear in your resource-owner dropdown,
+#   fall back to a classic PAT with the `repo` scope - it works with plain
+#   repo write access, at the cost of covering every repo your account can
+#   reach. Either way, store it with:
+#       gh secret set BOT_PR_TOKEN --repo geoparquet/geoparquet-io
 # =============================================================================
 
 REPO="geoparquet/geoparquet-io"
@@ -232,4 +241,5 @@ gh api "repos/${REPO}" --jq .allow_auto_merge
 
 echo ""
 echo ">> Done. Remember to create the BOT_PR_TOKEN repo secret (fine-grained"
-echo "   PAT, contents+PRs write, this repo only) for the security-audit bot."
+echo "   PAT, contents+PRs write, this repo only; or a classic PAT with the"
+echo "   'repo' scope if the org hasn't enabled fine-grained PAT access)."
