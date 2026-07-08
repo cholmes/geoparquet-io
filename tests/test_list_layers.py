@@ -378,16 +378,14 @@ class TestListLayersEdgeCases:
         result = list_layers_core(str(unicode_file))
         assert result is not None
 
-    def test_relative_path_normalized(self, multilayer_gpkg, monkeypatch):
+    def test_relative_path_normalized(self, multilayer_gpkg):
         """Relative paths should be handled correctly."""
-        from pathlib import Path
-
-        # Change to the directory containing the test file
-        test_dir = Path(multilayer_gpkg).parent
-        monkeypatch.chdir(test_dir)
-
-        # Use relative path
-        relative_path = Path(multilayer_gpkg).name
+        # Exercise relative-path handling WITHOUT changing the process CWD.
+        # Changing CWD breaks mutmut's stats-phase trampoline, which resolves
+        # the relative source_paths (geoparquet_io/) against the working
+        # directory on every instrumented call.
+        relative_path = os.path.relpath(multilayer_gpkg)
+        assert not os.path.isabs(relative_path)
         result = list_layers_core(relative_path)
         assert result is not None
 

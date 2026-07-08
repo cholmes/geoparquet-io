@@ -258,7 +258,11 @@ source_paths = ["geoparquet_io/"]
 # fatal to the run.
 pytest_add_cli_args = [
     "--no-cov",
-    "--tb=no",
+    # --tb=short (not --tb=no): a failure in mutmut's single-process stats
+    # phase must show WHERE it failed. --tb=no once hid a cwd-related crash
+    # (tests that chdir break mutmut's trampoline) and made nightly red with
+    # no diagnosable reason. See the tests/ chdir guard in .pre-commit-config.
+    "--tb=short",
     "-m", "not slow and not network",
     "--ignore=tests/test_codespell.py",
     "--ignore=tests/test_import_linter.py",
