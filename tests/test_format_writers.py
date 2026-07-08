@@ -585,124 +585,124 @@ class TestCLIConvertSubcommands:
         """Create Click test runner."""
         return CliRunner()
 
-    def test_convert_geopackage_subcommand(self, runner):
+    def test_convert_geopackage_subcommand(self, runner, tmp_path):
         """Test 'gpio convert geopackage' CLI command."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "geopackage",
-                    str(PLACES_PARQUET),
-                    "output.gpkg",
-                ],
-            )
-            if result.exit_code != 0:
-                print(f"STDOUT: {result.stdout}")
-                print(f"Exception: {result.exception}")
-            assert result.exit_code == 0
-            assert Path("output.gpkg").exists()
+        output = tmp_path / "output.gpkg"
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                "geopackage",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        if result.exit_code != 0:
+            print(f"STDOUT: {result.stdout}")
+            print(f"Exception: {result.exception}")
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_flatgeobuf_subcommand(self, runner):
+    def test_convert_flatgeobuf_subcommand(self, runner, tmp_path):
         """Test 'gpio convert flatgeobuf' CLI command."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "flatgeobuf",
-                    str(PLACES_PARQUET),
-                    "output.fgb",
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.fgb").exists()
+        output = tmp_path / "output.fgb"
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                "flatgeobuf",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_csv_subcommand(self, runner):
+    def test_convert_csv_subcommand(self, runner, tmp_path):
         """Test 'gpio convert csv' CLI command."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "csv",
-                    str(PLACES_PARQUET),
-                    "output.csv",
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.csv").exists()
+        output = tmp_path / "output.csv"
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                "csv",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_shapefile_subcommand(self, runner):
+    def test_convert_shapefile_subcommand(self, runner, tmp_path):
         """Test 'gpio convert shapefile' CLI command."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "shapefile",
-                    str(PLACES_PARQUET),
-                    "output.shp",
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.shp").exists()
+        output = tmp_path / "output.shp"
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                "shapefile",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_auto_detect_geopackage(self, runner):
+    def test_convert_auto_detect_geopackage(self, runner, tmp_path):
         """Test auto-detection of GeoPackage format from extension."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    str(PLACES_PARQUET),
-                    "output.gpkg",  # Auto-detect from .gpkg extension
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.gpkg").exists()
+        output = tmp_path / "output.gpkg"  # Auto-detect from .gpkg extension
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_auto_detect_flatgeobuf(self, runner):
+    def test_convert_auto_detect_flatgeobuf(self, runner, tmp_path):
         """Test auto-detection of FlatGeobuf format from extension."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    str(PLACES_PARQUET),
-                    "output.fgb",  # Auto-detect from .fgb extension
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.fgb").exists()
+        output = tmp_path / "output.fgb"  # Auto-detect from .fgb extension
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_auto_detect_csv(self, runner):
+    def test_convert_auto_detect_csv(self, runner, tmp_path):
         """Test auto-detection of CSV format from extension."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    str(PLACES_PARQUET),
-                    "output.csv",  # Auto-detect from .csv extension
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.csv").exists()
+        output = tmp_path / "output.csv"  # Auto-detect from .csv extension
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
-    def test_convert_auto_detect_shapefile(self, runner):
+    def test_convert_auto_detect_shapefile(self, runner, tmp_path):
         """Test auto-detection of Shapefile format from extension."""
-        with runner.isolated_filesystem():
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    str(PLACES_PARQUET),
-                    "output.shp",  # Auto-detect from .shp extension
-                ],
-            )
-            assert result.exit_code == 0
-            assert Path("output.shp").exists()
+        output = tmp_path / "output.shp"  # Auto-detect from .shp extension
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(PLACES_PARQUET),
+                str(output),
+            ],
+        )
+        assert result.exit_code == 0
+        assert output.exists()
 
 
 class TestShapefileZip:
