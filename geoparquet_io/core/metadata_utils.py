@@ -463,6 +463,7 @@ def has_parquet_native_geo_stats(parquet_file: str, geometry_column: str | None 
             - sample_bbox: list - [xmin, ymin, xmax, ymax] from first row group, or None
     """
     import pyarrow.parquet as pq
+
     from geoparquet_io.core.duckdb_metadata import detect_geometry_columns
 
     pf = pq.ParquetFile(parquet_file)
