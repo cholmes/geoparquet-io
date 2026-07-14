@@ -58,6 +58,21 @@ class ParquetWriteSettings:
 
         return kwargs
 
+    @classmethod
+    def for_web_profile(
+        cls,
+        row_group_rows: int | None = None,
+        compression: str | None = None,
+        compression_level: int | None = None,
+    ) -> "ParquetWriteSettings":
+        """Create ParquetWriteSettings for web-viz optimization.
+
+        Imported lazily to avoid a core import cycle.
+        """
+        from geoparquet_io.core.web_profile import resolve_web_settings
+
+        return resolve_web_settings(row_group_rows, compression, compression_level)
+
 
 def calculate_row_group_size(
     total_rows, file_size_bytes, target_row_group_size_mb=None, target_row_group_rows=None
