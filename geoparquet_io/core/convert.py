@@ -907,6 +907,7 @@ def _convert_csv_path(
     skip_invalid,
     verbose,
     geoparquet_version=None,
+    force_include_bbox=False,
 ):
     """Handle CSV/TSV conversion path. Returns SQL query.
 
@@ -914,11 +915,14 @@ def _convert_csv_path(
     to avoid re-evaluating TRY(ST_GeomFromText(...)) in downstream metadata
     queries. DuckDB 1.5 can segfault when ST_GeometryType() or spatial
     aggregates operate on inlined TRY() subqueries under parallel execution.
+
+    force_include_bbox: When True, always emit the covering bbox column even
+    for versions (e.g. 2.0) that would otherwise skip it (web-viz profile).
     """
     from geoparquet_io.core.common import should_skip_bbox
 
     # Determine if bbox should be skipped for this version
-    skip_bbox = should_skip_bbox(geoparquet_version)
+    skip_bbox = should_skip_bbox(geoparquet_version) and not force_include_bbox
 
     geom_info = _detect_csv_geometry_column(
         con, input_file, delimiter, wkt_column, lat_column, lon_column, verbose
@@ -980,9 +984,19 @@ def _convert_csv_path(
 
 
 def _convert_spatial_path(
-    con, input_file, skip_hilbert, verbose, is_parquet=False, layer=None, geoparquet_version=None
+    con,
+    input_file,
+    skip_hilbert,
+    verbose,
+    is_parquet=False,
+    layer=None,
+    geoparquet_version=None,
+    force_include_bbox=False,
 ):
     """Handle standard spatial format conversion path.
+
+    force_include_bbox: When True, always emit the covering bbox column even
+    for versions (e.g. 2.0) that would otherwise skip it (web-viz profile).
 
     Returns:
         tuple: (query, geometry_info) where geometry_info contains primary/secondary columns
@@ -1011,7 +1025,7 @@ def _convert_spatial_path(
         return None, None
 
     # Determine if bbox should be skipped for this version
-    skip_bbox = should_skip_bbox(geoparquet_version)
+    skip_bbox = should_skip_bbox(geoparquet_version) and not force_include_bbox
 
     # Check for existing bbox column if input is parquet
     existing_bbox_col = None
@@ -1422,6 +1436,7 @@ def convert_to_geoparquet(
     profile=None,
     geoparquet_version=None,
     repair_geometry=True,
+    optimize_for: str | None = None,
 ):
     """
     Convert vector format to optimized GeoParquet.
@@ -1456,12 +1471,20 @@ def convert_to_geoparquet(
             encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
+        optimize_for: Output optimization profile. "web" forces GeoParquet 2.0 with
+            native GeospatialStatistics, keeps the covering bbox column for viewport
+            pruning, byte-targets row-group size, and writes via the streaming
+            strategy with a Parquet page index.
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
     """
     configure_verbose(verbose)
     start_time = time.time()
+
+    is_web = optimize_for == "web"
+    if is_web:
+        geoparquet_version = "2.0"  # native GeospatialStatistics
 
     validate_profile_for_urls(profile, input_file, output_file)
     setup_aws_profile_if_needed(profile, input_file, output_file)
@@ -1496,6 +1519,7 @@ def convert_to_geoparquet(
                 skip_invalid,
                 verbose,
                 geoparquet_version=geoparquet_version,
+                force_include_bbox=is_web,
             )
             geometry_info = None
         else:
@@ -1507,6 +1531,7 @@ def convert_to_geoparquet(
                 is_parquet=is_parquet,
                 layer=layer,
                 geoparquet_version=geoparquet_version,
+                force_include_bbox=is_web,
             )
 
         # No geometry detected — error unless explicitly allowed
@@ -1547,21 +1572,66 @@ def convert_to_geoparquet(
             geom_col = "geometry" if is_csv else geometry_info["primary"]
             query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
-        write_parquet_with_metadata(
-            con,
-            query,
-            output_file,
-            original_metadata=None,
-            compression=compression,
-            compression_level=compression_level,
-            row_group_rows=row_group_rows,
-            row_group_size_mb=row_group_size_mb,
-            verbose=verbose,
-            profile=profile,
-            geoparquet_version=geoparquet_version,
-            input_crs=effective_crs,
-            geometry_info=geometry_info,
-        )
+        # Web-viz profile: byte-target the row-group size and route the write
+        # through the streaming strategy so native geo stats, the covering bbox
+        # column, and the Parquet page index all actually get produced (see
+        # write_parquet_with_metadata's rewrite_needed handling for why the
+        # strategy path, not the plain-COPY fast path, must be reached).
+        write_strategy = None
+        write_settings = None
+        effective_row_group_rows = row_group_rows
+        if is_web:
+            from pathlib import Path
+
+            from geoparquet_io.core.web_profile import (
+                WEB_WRITE_STRATEGY,
+                resolve_web_row_group_rows,
+                resolve_web_settings,
+            )
+
+            try:
+                if is_parquet:
+                    total_rows = con.execute(
+                        "SELECT count(*) FROM read_parquet(?)", [input_url]
+                    ).fetchone()[0]
+                else:
+                    total_rows = con.execute(
+                        f"SELECT count(*) FROM ({query}) AS _gpio_web_count"
+                    ).fetchone()[0]
+            except duckdb.Error:
+                total_rows = 0
+
+            input_size = Path(input_file).stat().st_size if Path(input_file).exists() else 0
+            effective_row_group_rows = resolve_web_row_group_rows(
+                total_rows=total_rows,
+                input_size_bytes=input_size,
+                target_mb=row_group_size_mb,
+                explicit_rows=row_group_rows,
+            )
+            write_settings = resolve_web_settings(
+                row_group_rows=effective_row_group_rows,
+                compression=compression,
+                compression_level=compression_level,
+            )
+            write_strategy = WEB_WRITE_STRATEGY
+
+        write_kwargs = {
+            "original_metadata": None,
+            "compression": compression,
+            "compression_level": compression_level,
+            "row_group_rows": effective_row_group_rows,
+            "row_group_size_mb": row_group_size_mb,
+            "verbose": verbose,
+            "profile": profile,
+            "geoparquet_version": geoparquet_version,
+            "input_crs": effective_crs,
+            "geometry_info": geometry_info,
+        }
+        if is_web:
+            write_kwargs["write_strategy"] = write_strategy
+            write_kwargs["write_settings"] = write_settings
+
+        write_parquet_with_metadata(con, query, output_file, **write_kwargs)
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 
     except duckdb.IOException as e:
