@@ -1413,6 +1413,16 @@ def _convert_streaming(
 
     from geoparquet_io.core.streaming import write_arrow_stream
 
+    if optimize_for == "web":
+        from geoparquet_io.core.logging_config import warn as log_warn
+
+        log_warn(
+            "--optimize-for web has no effect when streaming to stdout. "
+            "The web layout (page index, byte-targeted row groups, native stats) "
+            "is dropped when output is re-emitted as Arrow IPC. "
+            "Write to a .parquet file to get the web-optimized layout."
+        )
+
     # Convert to temp file first, then stream
     temp_path = Path(tempfile.gettempdir()) / f"gpio_convert_{uuid.uuid4()}.parquet"
 

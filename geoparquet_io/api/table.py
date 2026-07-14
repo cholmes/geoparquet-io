@@ -1048,6 +1048,10 @@ class Table:
             )
 
             total_rows = table_to_write.num_rows
+            # Deliberate proxy: this is the uncompressed in-memory Arrow size, not a
+            # compressed file size. Unlike the file-path convert (which sizes off the
+            # compressed source file on disk), there is no compressed source size to
+            # read from for an in-memory Table, so nbytes is the best available signal.
             input_size = table_to_write.nbytes
             row_group_rows = resolve_web_row_group_rows(
                 total_rows=total_rows,

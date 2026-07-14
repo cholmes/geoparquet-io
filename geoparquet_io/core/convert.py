@@ -1443,7 +1443,7 @@ def convert_to_geoparquet(
 
     Applies best practices:
     - ZSTD compression
-    - 100k row groups
+    - 100k row groups (byte-targeted when optimize_for="web")
     - Bbox column with metadata
     - Hilbert spatial ordering (unless --skip-hilbert)
     - GeoParquet metadata (version configurable)
