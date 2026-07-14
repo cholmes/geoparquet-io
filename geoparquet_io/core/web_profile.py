@@ -56,7 +56,7 @@ def resolve_web_row_group_rows(
     # Footer guard: too many row groups bloats the initial footer download.
     if total_rows / rows > WEB_MAX_ROW_GROUPS:
         rows = math.ceil(total_rows / WEB_MAX_ROW_GROUPS)
-    return rows
+    return int(rows)  # calculate_row_group_size is untyped (returns Any)
 
 
 def resolve_web_settings(
