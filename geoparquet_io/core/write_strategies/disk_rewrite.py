@@ -182,8 +182,14 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write Arrow table to GeoParquet using temporary file and rewrite."""
+        """Write Arrow table to GeoParquet using temporary file and rewrite.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here; this strategy is unaffected by the
+        web-viz profile.
+        """
         import duckdb
 
         from geoparquet_io.core.common import _detect_version_from_table

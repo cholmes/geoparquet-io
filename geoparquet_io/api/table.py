@@ -889,6 +889,7 @@ class Table:
         write_strategy: str = "duckdb-kv",
         profile: str | None = None,
         verbose: bool = False,
+        optimize_for: str | None = None,
         # Format-specific options
         overwrite: bool = False,
         layer_name: str = "features",
@@ -921,6 +922,8 @@ class Table:
             write_strategy: Write strategy for GeoParquet ('in-memory', 'streaming',
                            'duckdb-kv', 'disk-rewrite'). Default: 'duckdb-kv'
             profile: AWS profile for S3 operations
+            optimize_for: 'web' produces a web-viz-optimized GeoParquet 2.0 file
+                (native stats, covering bbox, fetch-sized row groups, page index)
             overwrite: Overwrite existing file (GeoPackage, Shapefile)
             layer_name: Layer name for GeoPackage (default: 'features')
             include_wkt: Include WKT geometry column for CSV (default: True)
@@ -959,6 +962,7 @@ class Table:
                 write_strategy=write_strategy,
                 profile=profile,
                 verbose=verbose,
+                optimize_for=optimize_for,
             )
 
         # Handle other formats
@@ -1006,6 +1010,7 @@ class Table:
         write_strategy: str,
         profile: str | None,
         verbose: bool = False,
+        optimize_for: str | None = None,
     ) -> Path:
         """Write table to GeoParquet format (supports local and cloud)."""
         import tempfile
@@ -1015,6 +1020,46 @@ class Table:
         from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
+
+        is_web = optimize_for == "web"
+        table_to_write = self._table
+        web_settings = None
+
+        if is_web:
+            # Web profile is a fixed contract: v2.0 native stats + streaming writer,
+            # regardless of what the caller passed for version/strategy.
+            geoparquet_version = "2.0"
+            write_strategy = "streaming"
+
+            from geoparquet_io.core.common import _detect_bbox_column_from_table
+
+            if _detect_bbox_column_from_table(table_to_write, verbose) is None:
+                from geoparquet_io.core.add.bbox import add_bbox_table
+
+                table_to_write = add_bbox_table(
+                    table_to_write,
+                    bbox_column_name="bbox",
+                    geometry_column=self._geometry_column,
+                )
+
+            from geoparquet_io.core.web_profile import (
+                resolve_web_row_group_rows,
+                resolve_web_settings,
+            )
+
+            total_rows = table_to_write.num_rows
+            input_size = table_to_write.nbytes
+            row_group_rows = resolve_web_row_group_rows(
+                total_rows=total_rows,
+                input_size_bytes=input_size,
+                target_mb=(int(row_group_size_mb) if row_group_size_mb else None),
+                explicit_rows=row_group_rows,
+            )
+            web_settings = resolve_web_settings(
+                row_group_rows=row_group_rows,
+                compression=compression,
+                compression_level=compression_level,
+            )
 
         path_str = str(path)
         is_remote = is_remote_url(path_str)
@@ -1060,7 +1105,7 @@ class Table:
                 input_crs = parse_crs_string_to_projjson(input_crs)
 
             strategy.write_from_table(
-                table=self._table,
+                table=table_to_write,
                 output_path=str(local_path),
                 geometry_column=self._geometry_column,
                 geoparquet_version=geoparquet_version,
@@ -1070,6 +1115,7 @@ class Table:
                 row_group_rows=row_group_rows,
                 verbose=verbose,
                 input_crs=input_crs,
+                write_settings=web_settings,
             )
 
             # Upload to remote if needed

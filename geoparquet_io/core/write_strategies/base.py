@@ -285,6 +285,7 @@ class BaseWriteStrategy(ABC):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
         """
         Write Arrow table to GeoParquet file.
@@ -301,6 +302,9 @@ class BaseWriteStrategy(ABC):
             verbose: Enable verbose logging
             input_crs: CRS dict to apply to geometry column
             custom_metadata: Optional dict with custom metadata (e.g., H3 covering info)
+            write_settings: Optional ParquetWriteSettings (e.g. web-viz profile) controlling
+                compression, row-group size, page index, and data page size. Strategies
+                that don't support these knobs accept and ignore it.
         """
         ...
 

@@ -151,8 +151,14 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write Arrow table to GeoParquet file."""
+        """Write Arrow table to GeoParquet file.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here; this strategy is unaffected by the
+        web-viz profile.
+        """
         from geoparquet_io.core.common import (
             _apply_geoparquet_metadata,
             _normalize_arrow_large_types,
