@@ -446,6 +446,54 @@ def has_parquet_geo_row_group_stats(parquet_file: str, geometry_column: str | No
     return result
 
 
+def has_parquet_native_geo_stats(parquet_file: str, geometry_column: str | None = None) -> dict:
+    """Detect Parquet-native GeospatialStatistics on the geometry column.
+
+    Returns {"has_stats": bool, "sample_bbox": [xmin, ymin, xmax, ymax] | None}.
+    Reads row group 0's geometry leaf via pyarrow. Native GeoStatistics.to_dict()
+    is ordered {xmin, xmax, ymin, ymax}; this reorders to [xmin, ymin, xmax, ymax].
+
+    Args:
+        parquet_file: Path to the parquet file
+        geometry_column: Name of the geometry column (auto-detected if None)
+
+    Returns:
+        dict with:
+            - has_stats: bool - Whether native geo statistics are present
+            - sample_bbox: list - [xmin, ymin, xmax, ymax] from first row group, or None
+    """
+    import pyarrow.parquet as pq
+    from geoparquet_io.core.duckdb_metadata import detect_geometry_columns
+
+    pf = pq.ParquetFile(parquet_file)
+    schema = pf.schema_arrow
+
+    # Auto-detect geometry column if not specified
+    if not geometry_column:
+        safe_url = safe_file_url(parquet_file, verbose=False)
+        geo_columns = detect_geometry_columns(safe_url)
+        if geo_columns:
+            geometry_column = next(iter(geo_columns.keys()))
+
+    if not geometry_column:
+        return {"has_stats": False, "sample_bbox": None}
+
+    # Get column index from schema
+    col_index = schema.get_field_index(geometry_column)
+    if col_index < 0 or pf.metadata.num_row_groups == 0:
+        return {"has_stats": False, "sample_bbox": None}
+
+    # Check for geo statistics on first row group
+    col = pf.metadata.row_group(0).column(col_index)
+    if not getattr(col, "is_geo_stats_set", False):
+        return {"has_stats": False, "sample_bbox": None}
+
+    # Extract and reorder bbox from geo statistics
+    gs = col.geo_statistics.to_dict()
+    bbox = [gs["xmin"], gs["ymin"], gs["xmax"], gs["ymax"]]
+    return {"has_stats": True, "sample_bbox": bbox}
+
+
 def extract_bbox_from_row_group_stats(
     parquet_file: str,
     geometry_column: str,
