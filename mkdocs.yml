@@ -67,6 +67,7 @@ nav:
     - Inspecting Files: guide/inspect.md
     - Viewing Metadata: guide/meta.md
     - Converting Formats: guide/convert.md
+    - Web-Optimized GeoParquet: guide/web-optimized-geoparquet.md
     - GeoJSON & PMTiles: guide/geojson.md
     - Extracting Data: guide/extract.md
     - Write Strategies: guide/write-strategies.md
