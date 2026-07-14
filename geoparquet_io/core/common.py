@@ -1791,6 +1791,7 @@ def write_parquet_with_metadata(
     memory_limit: str | None = None,
     geometry_info: dict | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    write_settings: ParquetWriteSettings | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -1830,6 +1831,10 @@ def write_parquet_with_metadata(
             - "metadata": dict mapping column names to their metadata (crs, encoding, etc.)
         extra_kv_metadata: Additional Parquet file-level KV metadata as {key: json_string}.
             Written alongside the 'geo' key (e.g., for Vecorel collection metadata).
+        write_settings: Optional ParquetWriteSettings (e.g. the web-viz profile). When
+            provided, forces the strategy write path (bypassing the plain-COPY fast
+            path, which cannot honor page-index/data-page-size settings) and is
+            forwarded to the selected write strategy.
 
     Returns:
         None
@@ -1889,6 +1894,9 @@ def write_parquet_with_metadata(
             debug(
                 f"Forcing metadata rewrite for extra KV metadata: {list(extra_kv_metadata.keys())}"
             )
+
+    if write_settings is not None:
+        rewrite_needed = True  # web profile: native write + page index only via the strategy path
 
     if show_sql:
         info("\n-- Query:")
@@ -1967,6 +1975,7 @@ def write_parquet_with_metadata(
                 "custom_metadata": custom_metadata,
                 "geometry_info": geometry_info,
                 "extra_kv_metadata": extra_kv_metadata,
+                "write_settings": write_settings,
             }
             if strategy_enum == WriteStrategy.DUCKDB_KV:
                 write_kwargs["memory_limit"] = memory_limit

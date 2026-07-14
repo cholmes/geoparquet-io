@@ -26,6 +26,8 @@ from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_ge
 if TYPE_CHECKING:
     import duckdb
 
+    from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+
 
 class DiskRewriteStrategy(BaseWriteStrategy):
     """
@@ -58,8 +60,14 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
         extra_kv_metadata: dict[str, str] | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write query results to GeoParquet using DuckDB COPY then PyArrow rewrite."""
+        """Write query results to GeoParquet using DuckDB COPY then PyArrow rewrite.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here; this strategy is unaffected by the
+        web-viz profile.
+        """
         from geoparquet_io.core.common import (
             compute_geometry_types_via_sql,
             validate_compression_settings,

@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     import duckdb
     import pyarrow as pa
 
+    from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+
 
 class ArrowMemoryStrategy(BaseWriteStrategy):
     """
@@ -51,8 +53,14 @@ class ArrowMemoryStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
         extra_kv_metadata: dict[str, str] | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write query results to GeoParquet using in-memory Arrow approach."""
+        """Write query results to GeoParquet using in-memory Arrow approach.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here; this strategy is unaffected by the
+        web-viz profile.
+        """
         from geoparquet_io.core.common import (
             _apply_geoparquet_metadata,
             _normalize_arrow_large_types,

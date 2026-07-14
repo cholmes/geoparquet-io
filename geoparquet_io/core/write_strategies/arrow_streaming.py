@@ -23,6 +23,8 @@ from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
 if TYPE_CHECKING:
     import duckdb
 
+    from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+
 # Default batch size for streaming (100K rows per batch)
 DEFAULT_BATCH_SIZE = 100_000
 
@@ -95,6 +97,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
         extra_kv_metadata: dict[str, str] | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
         """Write query results to GeoParquet using streaming RecordBatch approach."""
         from geoparquet_io.core.common import validate_compression_settings
@@ -182,9 +185,17 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         )
 
         # Prepare writer kwargs
-        writer_kwargs = {"compression": validated_compression or "NONE"}
-        if validated_level is not None and validated_compression:
-            writer_kwargs["compression_level"] = validated_level
+        if write_settings is not None:
+            writer_kwargs = write_settings.get_pyarrow_kwargs()
+            writer_kwargs.pop(
+                "row_group_size", None
+            )  # ParquetWriter rejects it; batch == row group
+            if not writer_kwargs.get("compression"):
+                writer_kwargs["compression"] = "NONE"  # normalize None/UNCOMPRESSED
+        else:
+            writer_kwargs = {"compression": validated_compression or "NONE"}
+            if validated_level is not None and validated_compression:
+                writer_kwargs["compression_level"] = validated_level
 
         if verbose:
             progress(f"Streaming to {output_path}...")

@@ -1,8 +1,10 @@
-"""End-to-end tests for the --optimize-for web convert profile (Task 4).
+"""End-to-end tests for the --optimize-for web convert profile (Tasks 4 + 5).
 
 Verifies that convert_to_geoparquet(..., optimize_for="web") forces GeoParquet
-2.0 with native GeospatialStatistics and keeps a covering bbox column for
-viewport pruning, with per-row-group stats and a page index on the bbox leaf.
+2.0 with native GeospatialStatistics, keeps a covering bbox column for viewport
+pruning, and routes the write through the streaming strategy so per-row-group
+bboxes and the page index are actually produced (not silently skipped by the
+plain-COPY fast path).
 """
 
 import pyarrow.parquet as pq
@@ -32,3 +34,17 @@ def test_web_convert_has_native_stats_and_covering(buildings_test_file, tmp_path
     bbox_leaf = leaf_names.index("bbox.xmin")
     assert rg0.column(bbox_leaf).has_column_index is True
     assert rg0.column(bbox_leaf).has_offset_index is True
+
+
+@pytest.mark.slow
+def test_web_convert_row_group_bboxes_usable_after_hilbert(buildings_test_file, tmp_path):
+    from geoparquet_io.core.duckdb_metadata import get_per_row_group_bbox_stats
+
+    out = tmp_path / "web2.parquet"
+    convert_to_geoparquet(
+        buildings_test_file, str(out), skip_hilbert=False, optimize_for="web", verbose=False
+    )
+    stats = get_per_row_group_bbox_stats(str(out), bbox_column="bbox")
+    assert len(stats) >= 1
+    for s in stats:  # each row group has a finite bbox usable by a viewer
+        assert s["xmin"] <= s["xmax"] and s["ymin"] <= s["ymax"]

@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     import duckdb
     import pyarrow as pa
 
+    from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+
 
 def build_geo_metadata(
     geometry_column: str,
@@ -242,6 +244,7 @@ class BaseWriteStrategy(ABC):
         custom_metadata: dict | None = None,
         geometry_info: dict | None = None,
         extra_kv_metadata: dict[str, str] | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
         """
         Write query results to GeoParquet file.
@@ -262,6 +265,9 @@ class BaseWriteStrategy(ABC):
             custom_metadata: Optional dict with custom metadata (e.g., H3 covering info)
             geometry_info: Multi-geometry column info from input file
             extra_kv_metadata: Additional Parquet KV metadata (e.g., Vecorel collection info)
+            write_settings: Optional ParquetWriteSettings (e.g. web-viz profile) controlling
+                compression, row-group size, page index, and data page size. Strategies
+                that don't support these knobs accept and ignore it.
         """
         ...
 
