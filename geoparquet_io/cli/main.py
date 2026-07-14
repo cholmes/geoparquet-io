@@ -20,6 +20,7 @@ from geoparquet_io.cli.decorators import (
     grid_aggregate_options,
     handle_directory_sub_partition,
     handle_geoparquet_errors,
+    optimize_for_option,
     output_format_options,
     overwrite_option,
     parse_row_group_options,
@@ -1261,6 +1262,7 @@ def convert(ctx):
 )
 @repair_geometry_option
 @geoparquet_version_option
+@optimize_for_option
 @verbose_option
 @output_format_options
 @aws_profile_option
@@ -1283,6 +1285,7 @@ def convert_to_geoparquet_cmd(
     allow_no_geometry,
     repair_geometry,
     geoparquet_version,
+    optimize_for,
     verbose,
     compression,
     compression_level,
@@ -1355,6 +1358,7 @@ def convert_to_geoparquet_cmd(
                 row_group_rows=row_group_size,
                 row_group_size_mb=row_group_mb,
                 repair_geometry=repair_geometry,
+                optimize_for=optimize_for,
             )
         else:
             convert_to_geoparquet(
@@ -1377,6 +1381,7 @@ def convert_to_geoparquet_cmd(
                 profile=aws_profile,
                 geoparquet_version=geoparquet_version,
                 repair_geometry=repair_geometry,
+                optimize_for=optimize_for,
             )
 
 
@@ -1398,6 +1403,7 @@ def _convert_streaming(
     row_group_rows=None,
     row_group_size_mb=None,
     repair_geometry=True,
+    optimize_for=None,
 ):
     """Handle streaming output for convert command."""
     import tempfile
@@ -1431,6 +1437,7 @@ def _convert_streaming(
             profile=profile,
             geoparquet_version=geoparquet_version,
             repair_geometry=repair_geometry,
+            optimize_for=optimize_for,
         )
 
         # Read and stream to stdout

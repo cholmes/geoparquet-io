@@ -66,3 +66,17 @@ def test_web_convert_row_group_bboxes_usable_after_hilbert(buildings_test_file, 
     assert len(stats) >= 1
     for s in stats:  # each row group has a finite bbox usable by a viewer
         assert s["xmin"] <= s["xmax"] and s["ymin"] <= s["ymax"]
+
+
+@pytest.mark.slow
+def test_cli_optimize_for_web(buildings_test_file, tmp_path):
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import convert
+
+    out = tmp_path / "cli_web.parquet"
+    result = CliRunner().invoke(
+        convert, ["geoparquet", buildings_test_file, str(out), "--optimize-for", "web"]
+    )
+    assert result.exit_code == 0, result.output
+    assert has_parquet_native_geo_stats(str(out))["has_stats"] is True

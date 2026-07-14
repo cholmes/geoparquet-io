@@ -283,6 +283,29 @@ def geoparquet_version_option(func):
     )(func)
 
 
+def optimize_for_option(func):
+    """
+    Add --optimize-for option to a command.
+
+    Allows specifying an optimization profile for GeoParquet output:
+    - web: GeoParquet 2.0 with native GeospatialStatistics, a covering bbox column,
+      byte-targeted fetch-sized row groups, and ZSTD compression, written via the
+      memory-safe streaming writer for browser viewers. Tune the fetch unit with
+      --row-group-size-mb.
+    """
+    return click.option(
+        "--optimize-for",
+        type=click.Choice(["web"]),
+        default=None,
+        help=(
+            "Optimization profile. 'web': GeoParquet 2.0 with native "
+            "GeospatialStatistics, a covering bbox column, byte-targeted fetch-sized "
+            "row groups, and ZSTD, written via the memory-safe streaming writer for "
+            "browser viewers. Tune the fetch unit with --row-group-size-mb."
+        ),
+    )(func)
+
+
 def write_strategy_option(func):
     """
     Add --write-strategy option to a command.
