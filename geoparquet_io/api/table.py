@@ -329,6 +329,66 @@ def convert(
     return Table(arrow_table, geometry_column=geom_col)
 
 
+def convert_geoparquet(
+    input_file: str | Path,
+    output_file: str | Path,
+    *,
+    optimize_for: str | None = None,
+    skip_hilbert: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int = 15,
+    row_group_rows: int | None = None,
+    row_group_size_mb: int | None = None,
+    geoparquet_version: str | None = None,
+    profile: str | None = None,
+    verbose: bool = False,
+) -> Path:
+    """One-shot file->file GeoParquet conversion mirroring `gpio convert geoparquet`.
+
+    Pass optimize_for="web" to produce a web-visualization-optimized GeoParquet 2.0
+    file (native GeospatialStatistics, covering bbox, byte-targeted fetch-sized row
+    groups, page index) via the memory-safe streaming writer.
+
+    Args:
+        input_file: Path to input file (Shapefile, GeoJSON, GeoPackage, CSV/TSV, etc.)
+        output_file: Path to output GeoParquet file
+        optimize_for: Set to "web" to apply the web-visualization profile
+        skip_hilbert: Skip Hilbert ordering (faster, less optimal)
+        compression: Compression type (default: ZSTD)
+        compression_level: Compression level (default: 15)
+        row_group_rows: Rows per group (default: None)
+        row_group_size_mb: Target row group size in MB (alternative to row_group_rows)
+        geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None)
+        profile: AWS profile name for S3 authentication (default: None)
+        verbose: Print detailed progress
+
+    Returns:
+        Path to the written output file
+
+    Example:
+        >>> import geoparquet_io as gpio
+        >>> gpio.convert_geoparquet('data.gpkg', 'out.parquet', optimize_for='web')
+    """
+    from pathlib import Path as PathLib
+
+    from geoparquet_io.core.convert import convert_to_geoparquet
+
+    convert_to_geoparquet(
+        str(input_file),
+        str(output_file),
+        skip_hilbert=skip_hilbert,
+        verbose=verbose,
+        compression=compression,
+        compression_level=compression_level,
+        row_group_rows=row_group_rows,
+        row_group_size_mb=row_group_size_mb,
+        profile=profile,
+        geoparquet_version=geoparquet_version,
+        optimize_for=optimize_for,
+    )
+    return PathLib(output_file)
+
+
 def extract_arcgis(
     service_url: str,
     *,
