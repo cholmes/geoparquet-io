@@ -21,6 +21,8 @@ class ParquetWriteSettings:
     compression_level: int = 15
     row_group_rows: int | None = None
     row_group_size_mb: int | None = None
+    write_page_index: bool = False
+    data_page_size: int | None = None
 
     # Best practice constants
     DEFAULT_COMPRESSION = "ZSTD"
@@ -49,6 +51,10 @@ class ParquetWriteSettings:
 
         if pa_compression_level is not None:
             kwargs["compression_level"] = pa_compression_level
+
+        kwargs["write_page_index"] = self.write_page_index
+        if self.data_page_size is not None:
+            kwargs["data_page_size"] = self.data_page_size
 
         return kwargs
 
