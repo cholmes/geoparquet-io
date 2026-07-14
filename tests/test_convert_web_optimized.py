@@ -37,6 +37,24 @@ def test_web_convert_has_native_stats_and_covering(buildings_test_file, tmp_path
 
 
 @pytest.mark.slow
+def test_web_convert_geojson_input_has_native_stats_and_covering(geojson_input, tmp_path):
+    out = tmp_path / "web_geojson.parquet"
+    convert_to_geoparquet(
+        geojson_input, str(out), skip_hilbert=False, optimize_for="web", verbose=False
+    )
+
+    # 1. Native GeospatialStatistics present (GeoParquet 2.0) for a non-parquet
+    #    (GDAL/ST_Read) input, covering the _convert_spatial_path branch.
+    assert has_parquet_native_geo_stats(str(out))["has_stats"] is True
+
+    pf = pq.ParquetFile(str(out))
+    names = pf.schema_arrow.names
+    # 2. Covering bbox column forced even at v2.0, proving force_include_bbox
+    #    threaded through the non-parquet path too.
+    assert "bbox" in names
+
+
+@pytest.mark.slow
 def test_web_convert_row_group_bboxes_usable_after_hilbert(buildings_test_file, tmp_path):
     from geoparquet_io.core.duckdb_metadata import get_per_row_group_bbox_stats
 

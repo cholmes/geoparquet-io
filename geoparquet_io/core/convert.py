@@ -1589,14 +1589,23 @@ def convert_to_geoparquet(
                 resolve_web_settings,
             )
 
+            # Count cheaply at the source, not the built `query` -- counting the
+            # fully-built pipeline would re-run Hilbert sort / geometry repair /
+            # CRS transforms as a second heavy source scan, defeating the point
+            # of the web profile on large files. This is only a sizing proxy for
+            # resolve_web_row_group_rows, so exact parse settings don't matter.
             try:
                 if is_parquet:
                     total_rows = con.execute(
                         "SELECT count(*) FROM read_parquet(?)", [input_url]
                     ).fetchone()[0]
+                elif is_csv:
+                    total_rows = con.execute(
+                        "SELECT count(*) FROM read_csv_auto(?)", [input_url]
+                    ).fetchone()[0]
                 else:
                     total_rows = con.execute(
-                        f"SELECT count(*) FROM ({query}) AS _gpio_web_count"
+                        "SELECT count(*) FROM ST_Read(?)", [input_url]
                     ).fetchone()[0]
             except duckdb.Error:
                 total_rows = 0
