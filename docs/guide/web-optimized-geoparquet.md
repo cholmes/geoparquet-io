@@ -122,7 +122,7 @@ candidate rows without decoding WKB geometry.
 **Page index is optional.** `write_page_index` is on by default, and the page
 index is written outside the footer, so page-level-pruning tools can opt in
 with `useOffsetIndex: true` when reading. A plain row-group-level viewer
-ignores the page index entirely and pays no cost for it, it lives after the
+ignores the page index entirely and pays no cost for it. It lives after the
 row groups it describes.
 
 **Compression.** ZSTD is the default and decodes via `hyparquet-compressors`
