@@ -93,6 +93,20 @@ Lower `--row-group-size-mb` (2 to 4) for dense interactive panning where you
 want finer-grained range requests. Raise it for datasets viewed mostly at low
 zoom, where fewer, larger requests reduce request overhead.
 
+## The covering bbox column
+
+The profile writes exactly one covering bbox, a struct column named `bbox` with
+`xmin`, `ymin`, `xmax`, `ymax` fields, referenced by the GeoParquet `covering`
+metadata. This is the form the spec requires and the form readers expect.
+
+If the input already carries flat top-level `xmin`/`ymin`/`xmax`/`ymax` columns,
+common in DuckDB and CARTO exports, the profile folds them into the `bbox`
+struct instead of keeping both copies. Without this, the same bounds would be
+stored twice and the output could grow by a third or more. The fold-in only
+happens under `--optimize-for web` and only when all four numeric columns are
+present, so a normal convert never drops your columns and a partial set is left
+untouched.
+
 ## Reader contract
 
 The web profile targets a specific reading pattern. This section documents

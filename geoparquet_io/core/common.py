@@ -952,6 +952,26 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
     return None
 
 
+def _flat_bbox_columns_in_table(table) -> list[str]:
+    """Detect redundant flat top-level bbox columns in an Arrow table.
+
+    Returns ["xmin", "ymin", "xmax", "ymax"] only when all four exist as numeric
+    top-level columns, otherwise []. The web profile folds these into the covering
+    bbox struct instead of storing the bounds twice (a partial set is left alone).
+    """
+    import pyarrow as pa
+
+    required = ["xmin", "ymin", "xmax", "ymax"]
+    names = set(table.schema.names)
+    if not all(n in names for n in required):
+        return []
+    for n in required:
+        t = table.schema.field(n).type
+        if not (pa.types.is_floating(t) or pa.types.is_integer(t) or pa.types.is_decimal(t)):
+            return []
+    return required
+
+
 # WKB geometry type codes to GeoParquet base names (2D types)
 _GEOMETRY_TYPE_CODES = {
     0: "Unknown",

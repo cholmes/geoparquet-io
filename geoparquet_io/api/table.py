@@ -1031,16 +1031,25 @@ class Table:
             geoparquet_version = "2.0"
             write_strategy = "streaming"
 
-            from geoparquet_io.core.common import _detect_bbox_column_from_table
+            from geoparquet_io.core.common import (
+                _detect_bbox_column_from_table,
+                _flat_bbox_columns_in_table,
+            )
 
             if _detect_bbox_column_from_table(table_to_write, verbose) is None:
                 from geoparquet_io.core.add.bbox import add_bbox_table
 
+                # Fold any pre-existing flat xmin/ymin/xmax/ymax columns into the
+                # covering struct rather than keeping both copies (mirrors the
+                # file-path convert; see _build_conversion_query).
+                flat_bbox_cols = _flat_bbox_columns_in_table(table_to_write)
                 table_to_write = add_bbox_table(
                     table_to_write,
                     bbox_column_name="bbox",
                     geometry_column=self._geometry_column,
                 )
+                if flat_bbox_cols:
+                    table_to_write = table_to_write.drop(flat_bbox_cols)
 
             from geoparquet_io.core.web_profile import (
                 resolve_web_row_group_rows,

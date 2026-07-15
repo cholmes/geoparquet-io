@@ -782,6 +782,48 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
     return f"SELECT * FROM ST_Read('{input_file}')"
 
 
+_FLAT_BBOX_NAMES = ("xmin", "ymin", "xmax", "ymax")
+_NUMERIC_DUCKDB_TYPES = frozenset(
+    {
+        "DOUBLE",
+        "FLOAT",
+        "REAL",
+        "DECIMAL",
+        "HUGEINT",
+        "BIGINT",
+        "INTEGER",
+        "SMALLINT",
+        "TINYINT",
+        "UBIGINT",
+        "UINTEGER",
+        "USMALLINT",
+        "UTINYINT",
+        "UHUGEINT",
+    }
+)
+
+
+def _detect_flat_bbox_columns(con, table_expr):
+    """Detect redundant flat top-level bbox columns in a parquet input.
+
+    Returns all four names (xmin, ymin, xmax, ymax) only when every one exists
+    as a numeric top-level column, otherwise []. The web profile uses this to
+    fold pre-existing flat bounds into the single covering bbox struct instead
+    of duplicating them (a partial set is not treated as a bbox).
+    """
+    try:
+        rows = con.execute(f"DESCRIBE SELECT * FROM {table_expr}").fetchall()
+    except duckdb.Error:
+        return []
+    numeric = {
+        name
+        for name, ctype, *_ in rows
+        if name in _FLAT_BBOX_NAMES
+        and str(ctype).split("(")[0].strip().upper() in _NUMERIC_DUCKDB_TYPES
+    }
+    return list(_FLAT_BBOX_NAMES) if numeric.issuperset(_FLAT_BBOX_NAMES) else []
+
+
 def _build_conversion_query(
     input_file,
     geom_column,
@@ -793,6 +835,7 @@ def _build_conversion_query(
     existing_bbox_col=None,
     preserve_existing_bbox=False,
     encoding="WKB",
+    drop_flat_bbox_cols=None,
 ):
     """Build SQL query for conversion with optional Hilbert ordering.
 
@@ -807,6 +850,9 @@ def _build_conversion_query(
         existing_bbox_col: Name of existing bbox column to remove (for parquet input)
         preserve_existing_bbox: If True, keep existing bbox column instead of adding new one
         encoding: GeoParquet geometry encoding (e.g. "WKB", "multipolygon")
+        drop_flat_bbox_cols: Flat top-level bbox columns (e.g. xmin/ymin/xmax/ymax)
+            to exclude when packing the covering bbox struct, so their bounds are
+            not stored twice (web-viz profile).
     """
     # For parquet files, read directly; for other formats use ST_Read
     if is_parquet:
@@ -856,30 +902,25 @@ def _build_conversion_query(
             FROM {table_expr}
         """
     else:
-        # For 1.x without existing bbox: add bbox column, preserve original geometry name
+        # Add a fresh covering bbox struct, preserving the original geometry name.
+        # Drop any columns whose bounds it duplicates: an old struct bbox and/or
+        # flat top-level xmin/ymin/xmax/ymax (common in DuckDB/CARTO exports),
+        # which would otherwise store the same bounds twice.
+        add_exclude = []
         if existing_bbox_col:
-            # Remove old bbox before adding new one
-            base_select = f"""
-                SELECT * EXCLUDE ({quoted_bbox}),
-                    STRUCT_PACK(
-                        xmin := {xmin_e},
-                        ymin := {ymin_e},
-                        xmax := {xmax_e},
-                        ymax := {ymax_e}
-                    ) AS bbox
-                FROM {table_expr}
-            """
-        else:
-            base_select = f"""
-                SELECT *,
-                    STRUCT_PACK(
-                        xmin := {xmin_e},
-                        ymin := {ymin_e},
-                        xmax := {xmax_e},
-                        ymax := {ymax_e}
-                    ) AS bbox
-                FROM {table_expr}
-            """
+            add_exclude.append(quoted_bbox)
+        add_exclude.extend(quote_identifier(c) for c in (drop_flat_bbox_cols or []))
+        exclude_prefix = f" EXCLUDE ({', '.join(add_exclude)})" if add_exclude else ""
+        base_select = f"""
+            SELECT *{exclude_prefix},
+                STRUCT_PACK(
+                    xmin := {xmin_e},
+                    ymin := {ymin_e},
+                    xmax := {xmax_e},
+                    ymax := {ymax_e}
+                ) AS bbox
+            FROM {table_expr}
+        """
 
     if skip_hilbert:
         return base_select
@@ -1071,6 +1112,16 @@ def _convert_spatial_path(
                 msg = "Pass 1: Reading input, adding bbox, and applying Hilbert ordering..."
         debug(msg)
 
+    # Web profile: if the input already carries flat top-level xmin/ymin/xmax/ymax
+    # columns, fold them into the covering bbox struct we are about to add rather
+    # than keeping both copies. Gated on force_include_bbox so default converts
+    # never silently drop user columns.
+    drop_flat_bbox_cols = []
+    if force_include_bbox and is_parquet and not skip_bbox and not preserve_existing_bbox:
+        drop_flat_bbox_cols = _detect_flat_bbox_columns(con, f"read_parquet('{input_file}')")
+        if drop_flat_bbox_cols and verbose:
+            debug(f"Folding existing flat bbox columns into covering struct: {drop_flat_bbox_cols}")
+
     query = _build_conversion_query(
         input_file,
         geom_column,
@@ -1082,6 +1133,7 @@ def _convert_spatial_path(
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
         encoding=geom_encoding,
+        drop_flat_bbox_cols=drop_flat_bbox_cols,
     )
 
     return query, geom_info
