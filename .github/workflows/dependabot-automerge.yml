@@ -27,14 +27,15 @@ jobs:
         uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
 
       # Majors are deliberately left for a human to review and merge.
-      - name: Approve and enable auto-merge for patch/minor updates
+      - name: Enable auto-merge for patch/minor updates
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        # The approve step is belt-and-suspenders for the review-required
-        # ruleset; auto-merge then waits for required status checks.
+        # No self-approval: the default GITHUB_TOKEN is not permitted to
+        # approve PRs, and main's branch protection requires zero approving
+        # reviews anyway. Auto-merge queues the PR; GitHub still blocks the
+        # merge until every required status check is green.
         run: |
-          gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
