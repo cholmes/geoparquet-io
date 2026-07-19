@@ -694,7 +694,7 @@ table = gpio.read('input.parquet').extract(bbox=(-122.5, 37.5, -122.0, 38.0))
 table = gpio.read('input.parquet').extract(where="population > 10000")
 ```
 
-#### `write(path, format=None, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, write_strategy='duckdb-kv', profile=None, verbose=False, ...)`
+#### `write(path, format=None, compression='ZSTD', compression_level=None, row_group_size_mb=None, row_group_rows=None, geoparquet_version=None, write_strategy='duckdb-kv', profile=None, verbose=False, optimize_for=None, ...)`
 
 Write the table to a GeoParquet file. Returns the output `Path` for chaining or confirmation.
 
@@ -741,6 +741,34 @@ set it explicitly, use the CLI `gpio extract --write-memory` flag; the Python
 API does not expose a memory-limit argument.
 
 See the [Write Strategies Guide](../guide/write-strategies.md) for detailed information on each strategy.
+
+**Web Optimization**
+
+Pass `optimize_for='web'` to produce a GeoParquet 2.0 file tuned for browser
+map viewers: native `GeospatialStatistics`, a covering `bbox` column,
+byte-targeted fetch-sized row groups, a Parquet page index, and ZSTD. This
+forces GeoParquet 2.0, routes the write through the streaming strategy, and
+auto-adds a covering `bbox` column if one is not already present.
+
+```python
+import geoparquet_io as gpio
+
+gpio.convert('buildings.gpkg').sort_hilbert().write(
+    'buildings_web.parquet', optimize_for='web'
+)
+
+# Tune the fetch unit (compressed MB per row group / per range request)
+gpio.convert('buildings.gpkg').sort_hilbert().write(
+    'buildings_web.parquet', optimize_for='web', row_group_size_mb=4
+)
+```
+
+| Parameter | Type | Description |
+|-----------|------|--------------|
+| `optimize_for` | str | `'web'` applies the web-visualization profile. Default: `None` |
+
+See the [Web-Optimized GeoParquet Guide](../guide/web-optimized-geoparquet.md)
+for the row group sizing rationale and the reader contract.
 
 **GeoParquet Version Options**
 
@@ -1246,6 +1274,43 @@ gpio.convert('data.shp') \
     .sort_hilbert() \
     .write('output.parquet')
 ```
+
+### One-Shot File-to-File Conversion
+
+Use `convert_geoparquet()` for a one-shot file-to-file conversion that mirrors
+`gpio convert geoparquet` without building a `Table` chain:
+
+```python
+from geoparquet_io import convert_geoparquet
+
+# Standard conversion
+convert_geoparquet("buildings.gpkg", "buildings.parquet")
+
+# Web-visualization-optimized GeoParquet 2.0 output
+convert_geoparquet("buildings.gpkg", "buildings_web.parquet", optimize_for="web")
+```
+
+`convert_geoparquet` is also importable from `geoparquet_io.api`. It returns
+the output `Path`.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `input_file` | str \| Path | Input file (Shapefile, GeoJSON, GeoPackage, CSV/TSV, etc.) |
+| `output_file` | str \| Path | Output GeoParquet file |
+| `optimize_for` | str | `'web'` applies the web-visualization profile. Default: `None` |
+| `skip_hilbert` | bool | Skip Hilbert ordering. Default: `False` |
+| `compression` | str | Compression codec. Default: `'ZSTD'` |
+| `compression_level` | int | Compression level. Default: `15` |
+| `row_group_rows` | int | Exact rows per row group. Default: `None` |
+| `row_group_size_mb` | int | Target row group size in MB (alternative to `row_group_rows`). Default: `None` |
+| `geoparquet_version` | str | GeoParquet version (`1.0`, `1.1`, `1.1-geoarrow`, `2.0`, or `None`) |
+| `profile` | str | AWS profile name for S3 authentication. Default: `None` |
+| `verbose` | bool | Print verbose output. Default: `False` |
+
+See the [Web-Optimized GeoParquet Guide](../guide/web-optimized-geoparquet.md)
+for details on `optimize_for='web'`.
 
 ### Writing to Other Formats (from GeoParquet)
 

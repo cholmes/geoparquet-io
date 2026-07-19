@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     import duckdb
     import pyarrow as pa
 
+    from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+
 # Valid compression values whitelist (prevents injection via compression param)
 VALID_COMPRESSIONS = frozenset({"ZSTD", "SNAPPY", "GZIP", "LZ4", "UNCOMPRESSED", "BROTLI"})
 
@@ -297,8 +299,15 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         memory_limit: str | None = None,
         geometry_info: dict | None = None,
         extra_kv_metadata: dict[str, str] | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA."""
+        """Write query results to GeoParquet using DuckDB COPY TO with KV_METADATA.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here (DuckDB COPY TO cannot emit a page
+        index; write_parquet_with_metadata routes web-profile writes to the
+        streaming strategy instead).
+        """
         from geoparquet_io.core.remote import is_remote_url, upload_if_remote
 
         configure_verbose(verbose)
@@ -549,8 +558,14 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        write_settings: ParquetWriteSettings | None = None,
     ) -> None:
-        """Write Arrow table to GeoParquet using DuckDB COPY TO with KV_METADATA."""
+        """Write Arrow table to GeoParquet using DuckDB COPY TO with KV_METADATA.
+
+        write_settings is accepted for signature compatibility with the write
+        strategy contract but ignored here; this strategy is unaffected by the
+        web-viz profile.
+        """
         from geoparquet_io.core.common import _detect_version_from_table
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 

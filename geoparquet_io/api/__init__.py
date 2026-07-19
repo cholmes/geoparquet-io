@@ -29,7 +29,14 @@ Also provides pure table-centric functions:
 from geoparquet_io.api import ops
 from geoparquet_io.api.ops import read_bigquery
 from geoparquet_io.api.pipeline import pipe
-from geoparquet_io.api.table import Table, convert, extract_arcgis, read, read_partition
+from geoparquet_io.api.table import (
+    Table,
+    convert,
+    convert_geoparquet,
+    extract_arcgis,
+    read,
+    read_partition,
+)
 from geoparquet_io.core.layers import list_layers
 
 __all__ = [
@@ -38,6 +45,7 @@ __all__ = [
     "read_partition",
     "read_bigquery",
     "convert",
+    "convert_geoparquet",
     "extract_arcgis",
     "list_layers",
     "pipe",

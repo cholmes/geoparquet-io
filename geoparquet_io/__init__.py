@@ -1,6 +1,7 @@
 from geoparquet_io.api import (
     Table,
     convert,
+    convert_geoparquet,
     extract_arcgis,
     list_layers,
     ops,
@@ -20,6 +21,7 @@ __all__ = [
     "read_partition",
     "read_bigquery",
     "convert",
+    "convert_geoparquet",
     "extract_arcgis",
     "list_layers",
     "Table",

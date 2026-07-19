@@ -21,6 +21,8 @@ class ParquetWriteSettings:
     compression_level: int = 15
     row_group_rows: int | None = None
     row_group_size_mb: int | None = None
+    write_page_index: bool = False
+    data_page_size: int | None = None
 
     # Best practice constants
     DEFAULT_COMPRESSION = "ZSTD"
@@ -50,7 +52,26 @@ class ParquetWriteSettings:
         if pa_compression_level is not None:
             kwargs["compression_level"] = pa_compression_level
 
+        kwargs["write_page_index"] = self.write_page_index
+        if self.data_page_size is not None:
+            kwargs["data_page_size"] = self.data_page_size
+
         return kwargs
+
+    @classmethod
+    def for_web_profile(
+        cls,
+        row_group_rows: int | None = None,
+        compression: str | None = None,
+        compression_level: int | None = None,
+    ) -> "ParquetWriteSettings":
+        """Create ParquetWriteSettings for web-viz optimization.
+
+        Imported lazily to avoid a core import cycle.
+        """
+        from geoparquet_io.core.web_profile import resolve_web_settings
+
+        return resolve_web_settings(row_group_rows, compression, compression_level)
 
 
 def calculate_row_group_size(

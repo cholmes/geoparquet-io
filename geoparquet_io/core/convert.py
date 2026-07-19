@@ -782,6 +782,48 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
     return f"SELECT * FROM ST_Read('{input_file}')"
 
 
+_FLAT_BBOX_NAMES = ("xmin", "ymin", "xmax", "ymax")
+_NUMERIC_DUCKDB_TYPES = frozenset(
+    {
+        "DOUBLE",
+        "FLOAT",
+        "REAL",
+        "DECIMAL",
+        "HUGEINT",
+        "BIGINT",
+        "INTEGER",
+        "SMALLINT",
+        "TINYINT",
+        "UBIGINT",
+        "UINTEGER",
+        "USMALLINT",
+        "UTINYINT",
+        "UHUGEINT",
+    }
+)
+
+
+def _detect_flat_bbox_columns(con, table_expr):
+    """Detect redundant flat top-level bbox columns in a parquet input.
+
+    Returns all four names (xmin, ymin, xmax, ymax) only when every one exists
+    as a numeric top-level column, otherwise []. The web profile uses this to
+    fold pre-existing flat bounds into the single covering bbox struct instead
+    of duplicating them (a partial set is not treated as a bbox).
+    """
+    try:
+        rows = con.execute(f"DESCRIBE SELECT * FROM {table_expr}").fetchall()
+    except duckdb.Error:
+        return []
+    numeric = {
+        name
+        for name, ctype, *_ in rows
+        if name in _FLAT_BBOX_NAMES
+        and str(ctype).split("(")[0].strip().upper() in _NUMERIC_DUCKDB_TYPES
+    }
+    return list(_FLAT_BBOX_NAMES) if numeric.issuperset(_FLAT_BBOX_NAMES) else []
+
+
 def _build_conversion_query(
     input_file,
     geom_column,
@@ -793,6 +835,7 @@ def _build_conversion_query(
     existing_bbox_col=None,
     preserve_existing_bbox=False,
     encoding="WKB",
+    drop_flat_bbox_cols=None,
 ):
     """Build SQL query for conversion with optional Hilbert ordering.
 
@@ -807,6 +850,9 @@ def _build_conversion_query(
         existing_bbox_col: Name of existing bbox column to remove (for parquet input)
         preserve_existing_bbox: If True, keep existing bbox column instead of adding new one
         encoding: GeoParquet geometry encoding (e.g. "WKB", "multipolygon")
+        drop_flat_bbox_cols: Flat top-level bbox columns (e.g. xmin/ymin/xmax/ymax)
+            to exclude when packing the covering bbox struct, so their bounds are
+            not stored twice (web-viz profile).
     """
     # For parquet files, read directly; for other formats use ST_Read
     if is_parquet:
@@ -856,30 +902,25 @@ def _build_conversion_query(
             FROM {table_expr}
         """
     else:
-        # For 1.x without existing bbox: add bbox column, preserve original geometry name
+        # Add a fresh covering bbox struct, preserving the original geometry name.
+        # Drop any columns whose bounds it duplicates: an old struct bbox and/or
+        # flat top-level xmin/ymin/xmax/ymax (common in DuckDB/CARTO exports),
+        # which would otherwise store the same bounds twice.
+        add_exclude = []
         if existing_bbox_col:
-            # Remove old bbox before adding new one
-            base_select = f"""
-                SELECT * EXCLUDE ({quoted_bbox}),
-                    STRUCT_PACK(
-                        xmin := {xmin_e},
-                        ymin := {ymin_e},
-                        xmax := {xmax_e},
-                        ymax := {ymax_e}
-                    ) AS bbox
-                FROM {table_expr}
-            """
-        else:
-            base_select = f"""
-                SELECT *,
-                    STRUCT_PACK(
-                        xmin := {xmin_e},
-                        ymin := {ymin_e},
-                        xmax := {xmax_e},
-                        ymax := {ymax_e}
-                    ) AS bbox
-                FROM {table_expr}
-            """
+            add_exclude.append(quoted_bbox)
+        add_exclude.extend(quote_identifier(c) for c in (drop_flat_bbox_cols or []))
+        exclude_prefix = f" EXCLUDE ({', '.join(add_exclude)})" if add_exclude else ""
+        base_select = f"""
+            SELECT *{exclude_prefix},
+                STRUCT_PACK(
+                    xmin := {xmin_e},
+                    ymin := {ymin_e},
+                    xmax := {xmax_e},
+                    ymax := {ymax_e}
+                ) AS bbox
+            FROM {table_expr}
+        """
 
     if skip_hilbert:
         return base_select
@@ -907,6 +948,7 @@ def _convert_csv_path(
     skip_invalid,
     verbose,
     geoparquet_version=None,
+    force_include_bbox=False,
 ):
     """Handle CSV/TSV conversion path. Returns SQL query.
 
@@ -914,11 +956,14 @@ def _convert_csv_path(
     to avoid re-evaluating TRY(ST_GeomFromText(...)) in downstream metadata
     queries. DuckDB 1.5 can segfault when ST_GeometryType() or spatial
     aggregates operate on inlined TRY() subqueries under parallel execution.
+
+    force_include_bbox: When True, always emit the covering bbox column even
+    for versions (e.g. 2.0) that would otherwise skip it (web-viz profile).
     """
     from geoparquet_io.core.common import should_skip_bbox
 
     # Determine if bbox should be skipped for this version
-    skip_bbox = should_skip_bbox(geoparquet_version)
+    skip_bbox = should_skip_bbox(geoparquet_version) and not force_include_bbox
 
     geom_info = _detect_csv_geometry_column(
         con, input_file, delimiter, wkt_column, lat_column, lon_column, verbose
@@ -980,9 +1025,19 @@ def _convert_csv_path(
 
 
 def _convert_spatial_path(
-    con, input_file, skip_hilbert, verbose, is_parquet=False, layer=None, geoparquet_version=None
+    con,
+    input_file,
+    skip_hilbert,
+    verbose,
+    is_parquet=False,
+    layer=None,
+    geoparquet_version=None,
+    force_include_bbox=False,
 ):
     """Handle standard spatial format conversion path.
+
+    force_include_bbox: When True, always emit the covering bbox column even
+    for versions (e.g. 2.0) that would otherwise skip it (web-viz profile).
 
     Returns:
         tuple: (query, geometry_info) where geometry_info contains primary/secondary columns
@@ -1011,7 +1066,7 @@ def _convert_spatial_path(
         return None, None
 
     # Determine if bbox should be skipped for this version
-    skip_bbox = should_skip_bbox(geoparquet_version)
+    skip_bbox = should_skip_bbox(geoparquet_version) and not force_include_bbox
 
     # Check for existing bbox column if input is parquet
     existing_bbox_col = None
@@ -1057,6 +1112,16 @@ def _convert_spatial_path(
                 msg = "Pass 1: Reading input, adding bbox, and applying Hilbert ordering..."
         debug(msg)
 
+    # Web profile: if the input already carries flat top-level xmin/ymin/xmax/ymax
+    # columns, fold them into the covering bbox struct we are about to add rather
+    # than keeping both copies. Gated on force_include_bbox so default converts
+    # never silently drop user columns.
+    drop_flat_bbox_cols = []
+    if force_include_bbox and is_parquet and not skip_bbox and not preserve_existing_bbox:
+        drop_flat_bbox_cols = _detect_flat_bbox_columns(con, f"read_parquet('{input_file}')")
+        if drop_flat_bbox_cols and verbose:
+            debug(f"Folding existing flat bbox columns into covering struct: {drop_flat_bbox_cols}")
+
     query = _build_conversion_query(
         input_file,
         geom_column,
@@ -1068,6 +1133,7 @@ def _convert_spatial_path(
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
         encoding=geom_encoding,
+        drop_flat_bbox_cols=drop_flat_bbox_cols,
     )
 
     return query, geom_info
@@ -1422,13 +1488,14 @@ def convert_to_geoparquet(
     profile=None,
     geoparquet_version=None,
     repair_geometry=True,
+    optimize_for: str | None = None,
 ):
     """
     Convert vector format to optimized GeoParquet.
 
     Applies best practices:
     - ZSTD compression
-    - 100k row groups
+    - 100k row groups (byte-targeted when optimize_for="web")
     - Bbox column with metadata
     - Hilbert spatial ordering (unless --skip-hilbert)
     - GeoParquet metadata (version configurable)
@@ -1456,12 +1523,20 @@ def convert_to_geoparquet(
             encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
+        optimize_for: Output optimization profile. "web" forces GeoParquet 2.0 with
+            native GeospatialStatistics, keeps the covering bbox column for viewport
+            pruning, byte-targets row-group size, and writes via the streaming
+            strategy with a Parquet page index.
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
     """
     configure_verbose(verbose)
     start_time = time.time()
+
+    is_web = optimize_for == "web"
+    if is_web:
+        geoparquet_version = "2.0"  # native GeospatialStatistics
 
     validate_profile_for_urls(profile, input_file, output_file)
     setup_aws_profile_if_needed(profile, input_file, output_file)
@@ -1496,6 +1571,7 @@ def convert_to_geoparquet(
                 skip_invalid,
                 verbose,
                 geoparquet_version=geoparquet_version,
+                force_include_bbox=is_web,
             )
             geometry_info = None
         else:
@@ -1507,6 +1583,7 @@ def convert_to_geoparquet(
                 is_parquet=is_parquet,
                 layer=layer,
                 geoparquet_version=geoparquet_version,
+                force_include_bbox=is_web,
             )
 
         # No geometry detected — error unless explicitly allowed
@@ -1547,21 +1624,75 @@ def convert_to_geoparquet(
             geom_col = "geometry" if is_csv else geometry_info["primary"]
             query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
-        write_parquet_with_metadata(
-            con,
-            query,
-            output_file,
-            original_metadata=None,
-            compression=compression,
-            compression_level=compression_level,
-            row_group_rows=row_group_rows,
-            row_group_size_mb=row_group_size_mb,
-            verbose=verbose,
-            profile=profile,
-            geoparquet_version=geoparquet_version,
-            input_crs=effective_crs,
-            geometry_info=geometry_info,
-        )
+        # Web-viz profile: byte-target the row-group size and route the write
+        # through the streaming strategy so native geo stats, the covering bbox
+        # column, and the Parquet page index all actually get produced (see
+        # write_parquet_with_metadata's rewrite_needed handling for why the
+        # strategy path, not the plain-COPY fast path, must be reached).
+        write_strategy = None
+        write_settings = None
+        effective_row_group_rows = row_group_rows
+        if is_web:
+            from pathlib import Path
+
+            from geoparquet_io.core.web_profile import (
+                WEB_WRITE_STRATEGY,
+                resolve_web_row_group_rows,
+                resolve_web_settings,
+            )
+
+            # Count cheaply at the source, not the built `query` -- counting the
+            # fully-built pipeline would re-run Hilbert sort / geometry repair /
+            # CRS transforms as a second heavy source scan, defeating the point
+            # of the web profile on large files. This is only a sizing proxy for
+            # resolve_web_row_group_rows, so exact parse settings don't matter.
+            try:
+                if is_parquet:
+                    total_rows = con.execute(
+                        "SELECT count(*) FROM read_parquet(?)", [input_url]
+                    ).fetchone()[0]
+                elif is_csv:
+                    total_rows = con.execute(
+                        "SELECT count(*) FROM read_csv_auto(?)", [input_url]
+                    ).fetchone()[0]
+                else:
+                    total_rows = con.execute(
+                        "SELECT count(*) FROM ST_Read(?)", [input_url]
+                    ).fetchone()[0]
+            except duckdb.Error:
+                total_rows = 0
+
+            input_size = Path(input_file).stat().st_size if Path(input_file).exists() else 0
+            effective_row_group_rows = resolve_web_row_group_rows(
+                total_rows=total_rows,
+                input_size_bytes=input_size,
+                target_mb=row_group_size_mb,
+                explicit_rows=row_group_rows,
+            )
+            write_settings = resolve_web_settings(
+                row_group_rows=effective_row_group_rows,
+                compression=compression,
+                compression_level=compression_level,
+            )
+            write_strategy = WEB_WRITE_STRATEGY
+
+        write_kwargs = {
+            "original_metadata": None,
+            "compression": compression,
+            "compression_level": compression_level,
+            "row_group_rows": effective_row_group_rows,
+            "row_group_size_mb": row_group_size_mb,
+            "verbose": verbose,
+            "profile": profile,
+            "geoparquet_version": geoparquet_version,
+            "input_crs": effective_crs,
+            "geometry_info": geometry_info,
+        }
+        if is_web:
+            write_kwargs["write_strategy"] = write_strategy
+            write_kwargs["write_settings"] = write_settings
+
+        write_parquet_with_metadata(con, query, output_file, **write_kwargs)
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 
     except duckdb.IOException as e:

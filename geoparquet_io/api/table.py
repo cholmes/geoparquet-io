@@ -329,6 +329,66 @@ def convert(
     return Table(arrow_table, geometry_column=geom_col)
 
 
+def convert_geoparquet(
+    input_file: str | Path,
+    output_file: str | Path,
+    *,
+    optimize_for: str | None = None,
+    skip_hilbert: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int = 15,
+    row_group_rows: int | None = None,
+    row_group_size_mb: int | None = None,
+    geoparquet_version: str | None = None,
+    profile: str | None = None,
+    verbose: bool = False,
+) -> Path:
+    """One-shot file->file GeoParquet conversion mirroring `gpio convert geoparquet`.
+
+    Pass optimize_for="web" to produce a web-visualization-optimized GeoParquet 2.0
+    file (native GeospatialStatistics, covering bbox, byte-targeted fetch-sized row
+    groups, page index) via the memory-safe streaming writer.
+
+    Args:
+        input_file: Path to input file (Shapefile, GeoJSON, GeoPackage, CSV/TSV, etc.)
+        output_file: Path to output GeoParquet file
+        optimize_for: Set to "web" to apply the web-visualization profile
+        skip_hilbert: Skip Hilbert ordering (faster, less optimal)
+        compression: Compression type (default: ZSTD)
+        compression_level: Compression level (default: 15)
+        row_group_rows: Rows per group (default: None)
+        row_group_size_mb: Target row group size in MB (alternative to row_group_rows)
+        geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None)
+        profile: AWS profile name for S3 authentication (default: None)
+        verbose: Print detailed progress
+
+    Returns:
+        Path to the written output file
+
+    Example:
+        >>> import geoparquet_io as gpio
+        >>> gpio.convert_geoparquet('data.gpkg', 'out.parquet', optimize_for='web')
+    """
+    from pathlib import Path as PathLib
+
+    from geoparquet_io.core.convert import convert_to_geoparquet
+
+    convert_to_geoparquet(
+        str(input_file),
+        str(output_file),
+        skip_hilbert=skip_hilbert,
+        verbose=verbose,
+        compression=compression,
+        compression_level=compression_level,
+        row_group_rows=row_group_rows,
+        row_group_size_mb=row_group_size_mb,
+        profile=profile,
+        geoparquet_version=geoparquet_version,
+        optimize_for=optimize_for,
+    )
+    return PathLib(output_file)
+
+
 def extract_arcgis(
     service_url: str,
     *,
@@ -829,6 +889,7 @@ class Table:
         write_strategy: str = "duckdb-kv",
         profile: str | None = None,
         verbose: bool = False,
+        optimize_for: str | None = None,
         # Format-specific options
         overwrite: bool = False,
         layer_name: str = "features",
@@ -861,6 +922,8 @@ class Table:
             write_strategy: Write strategy for GeoParquet ('in-memory', 'streaming',
                            'duckdb-kv', 'disk-rewrite'). Default: 'duckdb-kv'
             profile: AWS profile for S3 operations
+            optimize_for: 'web' produces a web-viz-optimized GeoParquet 2.0 file
+                (native stats, covering bbox, fetch-sized row groups, page index)
             overwrite: Overwrite existing file (GeoPackage, Shapefile)
             layer_name: Layer name for GeoPackage (default: 'features')
             include_wkt: Include WKT geometry column for CSV (default: True)
@@ -899,6 +962,7 @@ class Table:
                 write_strategy=write_strategy,
                 profile=profile,
                 verbose=verbose,
+                optimize_for=optimize_for,
             )
 
         # Handle other formats
@@ -946,6 +1010,7 @@ class Table:
         write_strategy: str,
         profile: str | None,
         verbose: bool = False,
+        optimize_for: str | None = None,
     ) -> Path:
         """Write table to GeoParquet format (supports local and cloud)."""
         import tempfile
@@ -955,6 +1020,59 @@ class Table:
         from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
+
+        is_web = optimize_for == "web"
+        table_to_write = self._table
+        web_settings = None
+
+        if is_web:
+            # Web profile is a fixed contract: v2.0 native stats + streaming writer,
+            # regardless of what the caller passed for version/strategy.
+            geoparquet_version = "2.0"
+            write_strategy = "streaming"
+
+            from geoparquet_io.core.common import (
+                _detect_bbox_column_from_table,
+                _flat_bbox_columns_in_table,
+            )
+
+            if _detect_bbox_column_from_table(table_to_write, verbose) is None:
+                from geoparquet_io.core.add.bbox import add_bbox_table
+
+                # Fold any pre-existing flat xmin/ymin/xmax/ymax columns into the
+                # covering struct rather than keeping both copies (mirrors the
+                # file-path convert; see _build_conversion_query).
+                flat_bbox_cols = _flat_bbox_columns_in_table(table_to_write)
+                table_to_write = add_bbox_table(
+                    table_to_write,
+                    bbox_column_name="bbox",
+                    geometry_column=self._geometry_column,
+                )
+                if flat_bbox_cols:
+                    table_to_write = table_to_write.drop(flat_bbox_cols)
+
+            from geoparquet_io.core.web_profile import (
+                resolve_web_row_group_rows,
+                resolve_web_settings,
+            )
+
+            total_rows = table_to_write.num_rows
+            # Deliberate proxy: this is the uncompressed in-memory Arrow size, not a
+            # compressed file size. Unlike the file-path convert (which sizes off the
+            # compressed source file on disk), there is no compressed source size to
+            # read from for an in-memory Table, so nbytes is the best available signal.
+            input_size = table_to_write.nbytes
+            row_group_rows = resolve_web_row_group_rows(
+                total_rows=total_rows,
+                input_size_bytes=input_size,
+                target_mb=(int(row_group_size_mb) if row_group_size_mb else None),
+                explicit_rows=row_group_rows,
+            )
+            web_settings = resolve_web_settings(
+                row_group_rows=row_group_rows,
+                compression=compression,
+                compression_level=compression_level,
+            )
 
         path_str = str(path)
         is_remote = is_remote_url(path_str)
@@ -1000,7 +1118,7 @@ class Table:
                 input_crs = parse_crs_string_to_projjson(input_crs)
 
             strategy.write_from_table(
-                table=self._table,
+                table=table_to_write,
                 output_path=str(local_path),
                 geometry_column=self._geometry_column,
                 geoparquet_version=geoparquet_version,
@@ -1010,6 +1128,7 @@ class Table:
                 row_group_rows=row_group_rows,
                 verbose=verbose,
                 input_crs=input_crs,
+                write_settings=web_settings,
             )
 
             # Upload to remote if needed
