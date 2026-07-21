@@ -1808,6 +1808,21 @@ def _ensure_v2_geo_metadata(
         # Release the read handle before rewriting (Windows requires it).
         del pf
 
+    _rewrite_file_with_geo_metadata(
+        output_path, geo_meta, compression, compression_level, row_group_rows
+    )
+    if verbose:
+        debug("Re-attached geo metadata (writer omitted it for M/ZM geometries)")
+
+
+def _rewrite_file_with_geo_metadata(
+    output_path: str,
+    geo_meta: dict,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    row_group_rows: int | None = None,
+) -> None:
+    """Rewrite a parquet file in place with the given geo metadata attached."""
     # geoarrow registration makes pyarrow round-trip the native GEOMETRY/
     # GEOGRAPHY logical types (and their CRS) instead of demoting to binary.
     import geoarrow.pyarrow  # noqa: F401
@@ -1825,7 +1840,7 @@ def _ensure_v2_geo_metadata(
         "UNCOMPRESSED": "none",
         "LZ4_RAW": "lz4",
     }
-    write_kwargs: dict = {"compression": codec_map.get(compression, "zstd")}
+    write_kwargs: dict = {"compression": codec_map.get(compression.upper(), "zstd")}
     if compression_level is not None and write_kwargs["compression"] in ("zstd", "gzip", "brotli"):
         write_kwargs["compression_level"] = compression_level
     if row_group_rows:
@@ -1834,8 +1849,85 @@ def _ensure_v2_geo_metadata(
     tmp_path = f"{output_path}.geometa.tmp"
     pq.write_table(table, tmp_path, **write_kwargs)
     os.replace(tmp_path, output_path)
-    if verbose:
-        debug("Re-attached geo metadata (writer omitted it for M/ZM geometries)")
+
+
+def collect_nonplanar_edges(input_file: str) -> dict[str, str]:
+    """Map geometry column -> non-planar edges value declared by the input.
+
+    Sources: the native GEOGRAPHY logical type's algorithm, and any non-planar
+    ``edges`` in the input's geo column metadata.
+    """
+    from geoparquet_io.core.duckdb_metadata import (
+        get_geo_metadata,
+        get_schema_info,
+        parse_geometry_logical_type,
+    )
+
+    edges_by_col: dict[str, str] = {}
+    try:
+        for col in get_schema_info(input_file):
+            logical = col.get("logical_type") or ""
+            if "GeographyType" in logical:
+                parsed = parse_geometry_logical_type(logical) or {}
+                edges_by_col[col["name"]] = parsed.get("algorithm") or "spherical"
+        geo_meta = get_geo_metadata(input_file) or {}
+        for name, col_meta in (geo_meta.get("columns") or {}).items():
+            edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
+            if edges and edges != "planar":
+                edges_by_col.setdefault(name, edges)
+    except Exception:
+        return {}
+    return edges_by_col
+
+
+def preserve_nonplanar_edges(
+    input_file: str,
+    output_file: str,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+) -> None:
+    """Carry non-planar edges declarations from input to output (#588).
+
+    DuckDB has no GEOGRAPHY type, so rewrites demote native GEOGRAPHY columns
+    to GEOMETRY and drop ``edges`` from regenerated metadata. Losing the edge
+    interpretation silently corrupts semantics (great-circle edges read as
+    planar), so re-attach it to the output's geo metadata.
+    """
+    edges_by_col = collect_nonplanar_edges(input_file)
+    if not edges_by_col:
+        return
+
+    pf = pq.ParquetFile(output_file)
+    try:
+        kv = pf.metadata.metadata or {}
+        if b"geo" not in kv:
+            warn(
+                "Input declares non-planar edges but output has no geo metadata "
+                f"to carry them ({', '.join(sorted(edges_by_col))}). Edge "
+                "interpretation is lost; avoid parquet-geo-only for geography data."
+            )
+            return
+        geo_meta = json.loads(kv[b"geo"].decode("utf-8"))
+    finally:
+        del pf
+
+    changed = False
+    for name, edges in edges_by_col.items():
+        col_meta = geo_meta.get("columns", {}).get(name)
+        if isinstance(col_meta, dict) and col_meta.get("edges") != edges:
+            col_meta["edges"] = edges
+            changed = True
+
+    if not changed:
+        return
+
+    _rewrite_file_with_geo_metadata(output_file, geo_meta, compression, compression_level)
+    warn(
+        "Native GEOGRAPHY is not preserved by the writer (DuckDB has no "
+        f"geography type); kept edges declaration in geo metadata for: "
+        f"{', '.join(sorted(edges_by_col))}"
+    )
 
 
 def _plain_copy_to(

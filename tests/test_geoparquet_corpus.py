@@ -373,12 +373,9 @@ class TestWritePath:
         "rel",
         WRITE_SUBSET
         + [
-            pytest.param(
-                "data/encodings/point-native-geography.parquet",
-                marks=pytest.mark.xfail(
-                    strict=True, reason="gpio #588: GEOGRAPHY rewritten as GEOMETRY, edges lost"
-                ),
-            ),
+            # Geography input: the native type demotes to GEOMETRY (DuckDB has
+            # no geography type) but the edges declaration must survive (#588).
+            "data/encodings/point-native-geography.parquet",
             "data/zm/linestring-xyzm-native-geometry.parquet",
         ],
     )
