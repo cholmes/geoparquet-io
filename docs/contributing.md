@@ -97,6 +97,7 @@ Coverage gates (both enforced in CI):
 | `@pytest.mark.slow` | marks tests as slow (deselect with '-m "not slow"') |
 | `@pytest.mark.network` | marks tests requiring network access (deselect with '-m "not network"') |
 | `@pytest.mark.integration` | marks end-to-end integration tests |
+| `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
 <!-- END GENERATED: test-markers -->
 
 ## Code Quality
