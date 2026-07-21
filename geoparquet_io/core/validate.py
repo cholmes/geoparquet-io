@@ -751,6 +751,7 @@ def _build_bbox_query(
             SELECT {geom_col}
             FROM read_parquet('{safe_url}')
             WHERE {geom_col} IS NOT NULL
+              AND NOT ST_IsEmpty({geom_expr})
             {limit_clause}
         )
     """
@@ -1595,6 +1596,7 @@ def _check_native_geo_stats_contains_data(
                 SELECT "{geom_col}"
                 FROM read_parquet('{safe_url}')
                 WHERE "{geom_col}" IS NOT NULL
+                  AND NOT ST_IsEmpty("{geom_col}")
                 {limit_clause}
             )
         """
