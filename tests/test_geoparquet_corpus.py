@@ -54,9 +54,9 @@ CORPUS = Path(__file__).parent / "data" / "geoparquet-testing"
 # Validation checks that misfire on valid corpus files, with the gpio issue
 # tracking each fix. test_validates_clean xfails while a file's failures are
 # all covered here and fails hard on anything new. Remove entries as fixes land.
-KNOWN_VALIDATION_BUGS = {
-    "coordinates_valid_for_crs": "#586 heuristic false positive on small projected coords",
-}
+# Empty since the #581-#586 fixes; kept so a regression re-adds an entry
+# instead of reshaping the tests.
+KNOWN_VALIDATION_BUGS: dict[str, str] = {}
 
 
 # Fixtures that themselves violate the spec (upstream geoparquet-testing bugs).
@@ -209,12 +209,7 @@ class TestValidFilesSpotChecks:
 # in each entry's comment).
 BAD_DATA_EXPECTATIONS = {
     "bbox-does-not-contain-geometry.parquet": ("auto", [r"bbox_contains_data_"], None),
-    # PROJJSON schema validation not implemented yet
-    "crs-invalid-projjson.parquet": (
-        "auto",
-        [r"crs_valid_", r"native_crs_format_"],
-        "#586 no PROJJSON schema validation",
-    ),
+    "crs-invalid-projjson.parquet": ("auto", [r"crs_valid_", r"native_crs_format_"], None),
     # Detected today by the coordinate heuristic; after #581/#586 the
     # deterministic metadata-vs-native comparison (v2_crs_consistency) carries it.
     "crs-mismatch-schema-vs-geo-metadata.parquet": (
@@ -227,18 +222,8 @@ BAD_DATA_EXPECTATIONS = {
         [r"edges"],
         "#586 no spherical-vs-planar data heuristic (may be wontfix)",
     ),
-    "epoch-on-unsupported-crs.parquet": (
-        "auto",
-        [r"epoch"],
-        "#586 no epoch-on-static-datum check",
-    ),
-    # Auto mode treats unparsable geo as "no metadata" and passes the file as
-    # parquet-geo-only; corrupt JSON should be flagged in any mode.
-    "geo-invalid-json.parquet": (
-        "auto",
-        [r"geo_metadata", r"geo_key"],
-        "#586 invalid geo JSON treated as no-metadata",
-    ),
+    "epoch-on-unsupported-crs.parquet": ("auto", [r"epoch"], None),
+    "geo-invalid-json.parquet": ("auto", [r"geo_metadata", r"geo_key"], None),
     "geo-invalid-utf8.parquet": ("auto", [r"geo_metadata", r"geo_key"], None),
     "geometry-types-mismatch-declared-point-actual-linestring.parquet": (
         "auto",
@@ -263,16 +248,8 @@ BAD_DATA_EXPECTATIONS = {
         "#586 no orientation-vs-data check",
     ),
     "primary-column-not-in-columns.parquet": ("auto", [r"primary_column_in_columns"], None),
-    "version-1-0-with-2-0-features.parquet": (
-        "auto",
-        [r"version"],
-        "#586 no version/feature gating check",
-    ),
-    "version-unknown.parquet": (
-        "auto",
-        [r"version"],
-        "#586 unknown geo version accepted in auto mode",
-    ),
+    "version-1-0-with-2-0-features.parquet": ("auto", [r"version_features"], None),
+    "version-unknown.parquet": ("auto", [r"version_known"], None),
     # The wkb-* fixtures carry no native logical type (writers refuse invalid
     # WKB), so 2.0-level detection fires on the missing native type rather
     # than on parsing the payload. A deterministic EWKB byte-probe is #586.

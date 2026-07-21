@@ -314,16 +314,22 @@ def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
             category="column_metadata",
         )
 
-    # Check if it's a valid PROJJSON object
+    # Check if it's a valid PROJJSON object. The PROJJSON schema requires a
+    # "type" member; JSON without it is not PROJJSON.
     if isinstance(crs, dict):
-        # PROJJSON should have $schema or at minimum type/name
-        if "$schema" in crs or "type" in crs or "name" in crs:
+        if "type" in crs:
             return ValidationCheck(
                 name=f"crs_valid_{col_name}",
                 status=CheckStatus.PASSED,
                 message=f'column "{col_name}" has valid PROJJSON CRS',
                 category="column_metadata",
             )
+        return ValidationCheck(
+            name=f"crs_valid_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f'column "{col_name}" CRS is missing the required PROJJSON "type" member',
+            category="column_metadata",
+        )
 
     return ValidationCheck(
         name=f"crs_valid_{col_name}",
@@ -446,14 +452,138 @@ def _check_epoch_valid(col_meta: dict, col_name: str) -> ValidationCheck:
             category="column_metadata",
         )
 
-    is_valid = isinstance(epoch, (int, float))
+    if not isinstance(epoch, (int, float)):
+        return ValidationCheck(
+            name=f"epoch_valid_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f'column "{col_name}" epoch must be a number',
+            category="column_metadata",
+        )
+
+    # A coordinate epoch only makes sense for a dynamic CRS. The default
+    # (absent crs = OGC:CRS84) and static datums do not support one.
+    crs = col_meta.get("crs")
+    try:
+        from pyproj import CRS as PyprojCRS
+
+        if isinstance(crs, dict):
+            try:
+                pyproj_crs = PyprojCRS.from_json_dict(crs)
+            except Exception:
+                # Partial PROJJSON: resolve via its authority:code id instead
+                crs_id = crs.get("id") or {}
+                pyproj_crs = PyprojCRS.from_user_input(
+                    f"{crs_id.get('authority')}:{crs_id.get('code')}"
+                )
+        else:
+            pyproj_crs = PyprojCRS.from_user_input("OGC:CRS84")
+        datum_type = pyproj_crs.datum.type_name if pyproj_crs.datum else ""
+        # Dynamic frames (ITRF...) fully support epochs. A datum ensemble
+        # (EPSG:4326, OGC:CRS84) cannot carry one — there is no single frame
+        # the epoch could refer to. A specific static frame (e.g. GDA2020) is
+        # tolerated with a warning: epochs are commonly attached there in
+        # practice (plate-motion workflows) even though the frame is static.
+        if "Ensemble" in datum_type:
+            return ValidationCheck(
+                name=f"epoch_valid_{col_name}",
+                status=CheckStatus.FAILED,
+                message=f'column "{col_name}" declares epoch {epoch} on a datum ensemble',
+                details=f"Datum type: {datum_type}. "
+                "Coordinate epochs apply to dynamic reference frames (e.g. ITRF).",
+                category="column_metadata",
+            )
+        if "Dynamic" not in datum_type:
+            return ValidationCheck(
+                name=f"epoch_valid_{col_name}",
+                status=CheckStatus.WARNING,
+                message=f'column "{col_name}" declares epoch {epoch} on a static CRS',
+                details=f"Datum type: {datum_type or 'unknown'}. "
+                "Epochs are only meaningful for dynamic reference frames.",
+                category="column_metadata",
+            )
+    except Exception:
+        # CRS not resolvable (or explicit null): can't judge the datum; the
+        # numeric epoch itself is fine.
+        pass
+
     return ValidationCheck(
         name=f"epoch_valid_{col_name}",
-        status=CheckStatus.PASSED if is_valid else CheckStatus.FAILED,
-        message=f'column "{col_name}" has valid epoch: {epoch}'
-        if is_valid
-        else f'column "{col_name}" epoch must be a number',
+        status=CheckStatus.PASSED,
+        message=f'column "{col_name}" has valid epoch: {epoch}',
         category="column_metadata",
+    )
+
+
+_KNOWN_VERSION_MAJORS = ("1.", "2.")
+
+
+def _check_version_known(geo_meta: dict) -> ValidationCheck:
+    """The declared version must be a known GeoParquet major version."""
+    version = geo_meta.get("version")
+    if version is None:
+        # _check_version_present reports the absence; nothing to judge here.
+        return ValidationCheck(
+            name="version_known",
+            status=CheckStatus.SKIPPED,
+            message="no version to check",
+            category="core_metadata",
+        )
+    if isinstance(version, str) and version.startswith(_KNOWN_VERSION_MAJORS):
+        return ValidationCheck(
+            name="version_known",
+            status=CheckStatus.PASSED,
+            message=f"version {version} is a known GeoParquet version",
+            category="core_metadata",
+        )
+    return ValidationCheck(
+        name="version_known",
+        status=CheckStatus.FAILED,
+        message=f"unknown GeoParquet version: {version!r}",
+        details="Known versions are 1.x and 2.x",
+        category="core_metadata",
+    )
+
+
+def _check_version_features(parquet_file: str, geo_meta: dict) -> ValidationCheck:
+    """1.x metadata must not be combined with 2.0-only features (native types)."""
+    version = geo_meta.get("version") or ""
+    if not (isinstance(version, str) and version.startswith("1.")):
+        return ValidationCheck(
+            name="version_features_match",
+            status=CheckStatus.PASSED,
+            message="version permits declared features",
+            category="core_metadata",
+        )
+    try:
+        import pyarrow.parquet as pq
+
+        schema = pq.ParquetFile(parquet_file).metadata.schema
+        native_cols = [
+            schema.column(i).name
+            for i in range(len(schema))
+            if str(schema.column(i).logical_type).startswith(("Geometry", "Geography"))
+        ]
+    except Exception:
+        return ValidationCheck(
+            name="version_features_match",
+            status=CheckStatus.SKIPPED,
+            message="could not inspect Parquet schema",
+            category="core_metadata",
+        )
+    if native_cols:
+        return ValidationCheck(
+            name="version_features_match",
+            status=CheckStatus.FAILED,
+            message=f"version {version} declared but file uses native Parquet "
+            f"GEOMETRY/GEOGRAPHY types ({', '.join(native_cols)})",
+            details="Native geospatial logical types require GeoParquet 2.0",
+            category="core_metadata",
+        )
+    return ValidationCheck(
+        name="version_features_match",
+        status=CheckStatus.PASSED,
+        message="declared features match the declared version",
+        category="core_metadata",
     )
 
 
@@ -2368,14 +2498,16 @@ def _check_coordinates_valid_for_crs(
         is_geo = is_geographic_crs(crs)
 
         # Check bounds based on CRS type
+        geo_warning = None
         if is_geo:
             issues = _check_geographic_bounds(actual, crs_bounds)
         else:
             issues = _check_projected_bounds(actual, crs_bounds)
-            # Also check for geographic coords in projected CRS
+            # Geographic-looking coords in a projected CRS is only a heuristic:
+            # small legitimate projected values (near the origin) look identical
+            # to misdeclared lon/lat, so it warns instead of failing. The
+            # deterministic mismatch detection is v2_crs_consistency.
             geo_warning = _detect_geographic_in_projected(actual)
-            if geo_warning:
-                issues.append(geo_warning)
 
         if issues:
             return ValidationCheck(
@@ -2383,6 +2515,15 @@ def _check_coordinates_valid_for_crs(
                 status=CheckStatus.FAILED,
                 message=f"coordinates outside valid range for CRS ({total} checked)",
                 details="; ".join(issues),
+                category="data_validation",
+            )
+
+        if geo_warning:
+            return ValidationCheck(
+                name=check_name,
+                status=CheckStatus.WARNING,
+                message=f"possible CRS mismatch ({total} checked)",
+                details=geo_warning,
                 category="data_validation",
             )
 
@@ -2542,6 +2683,20 @@ def validate_geoparquet(
                 status=CheckStatus.FAILED,
                 message="file metadata is not readable (corrupt or invalid encoding)",
                 details=str(e),
+                category="core_metadata",
+            )
+        )
+        return result
+
+    # A geo key that exists but doesn't parse must fail in ANY mode; without
+    # this, auto-detect classifies the file as plain parquet-geo-only and a
+    # corrupt file passes validation.
+    if geo_meta is None and kv_metadata and b"geo" in kv_metadata:
+        result.checks.append(
+            ValidationCheck(
+                name="geo_metadata_parse",
+                status=CheckStatus.FAILED,
+                message="'geo' metadata key exists but is not valid JSON",
                 category="core_metadata",
             )
         )
@@ -2765,6 +2920,8 @@ def _run_geoparquet_checks(
 
     checks.append(_check_metadata_is_json(geo_meta))
     checks.append(_check_version_present(geo_meta))
+    checks.append(_check_version_known(geo_meta))
+    checks.append(_check_version_features(parquet_file, geo_meta))
     checks.append(_check_primary_column_present(geo_meta))
     checks.append(_check_columns_present(geo_meta))
     checks.append(_check_primary_column_in_columns(geo_meta))
