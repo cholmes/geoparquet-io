@@ -426,9 +426,6 @@ class TestWritePath:
         assert parsed and parsed.get("crs"), "native CRS lost on rewrite"
         assert "3857" in str(parsed["crs"]) or "Pseudo-Mercator" in str(parsed["crs"])
 
-    @pytest.mark.xfail(
-        strict=True, reason="gpio #587: auto version mode silently downgrades 2.0 to 1.1"
-    )
     @pytest.mark.parametrize("rel", WRITE_SUBSET[:3])
     def test_auto_rewrite_preserves_v2(self, rel, tmp_path):
         src = CORPUS / rel

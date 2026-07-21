@@ -1479,6 +1479,16 @@ def convert_to_geoparquet(
         require_single_file(input_file, "convert")
 
     try:
+        # Auto version mode: preserve a parquet input's GeoParquet version
+        # (and upgrade native-geo-only inputs to 2.0) instead of silently
+        # falling back to the 1.1 default and stripping native types (#587).
+        if geoparquet_version is None and is_parquet:
+            from geoparquet_io.core.common import resolve_geoparquet_version_from_file
+
+            geoparquet_version = resolve_geoparquet_version_from_file(input_file, verbose)
+            if verbose and geoparquet_version:
+                debug(f"Auto-detected GeoParquet version from input: {geoparquet_version}")
+
         effective_crs = _determine_effective_crs(
             input_file, input_url, crs, is_csv, is_parquet, con, verbose
         )

@@ -844,6 +844,32 @@ def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None)
     return pa.table(dict(zip([f.name for f in target_schema], new_columns, strict=True)))
 
 
+def resolve_geoparquet_version_from_file(parquet_file: str, verbose: bool = False) -> str | None:
+    """
+    Resolve the auto-mode GeoParquet write version from a parquet input file.
+
+    Implements the documented --geoparquet-version default: preserve the input
+    version (1.x normalizes to 1.1, matching extract_version_from_metadata),
+    upgrade native-geo-only inputs to 2.0, otherwise None (caller defaults).
+
+    Returns None when the file cannot be inspected (e.g., remote without
+    credentials) so callers fall back to the default.
+    """
+    try:
+        info = detect_geoparquet_file_type(parquet_file, verbose)
+    except Exception:
+        return None
+
+    file_type = info.get("file_type")
+    if file_type == "geoparquet_v2":
+        return "2.0"
+    if file_type == "parquet_geo_only":
+        return "2.0"
+    if file_type == "geoparquet_v1":
+        return "1.1"
+    return None
+
+
 def _detect_version_from_table(table, verbose: bool = False) -> str | None:
     """
     Detect GeoParquet version from table's schema metadata.
