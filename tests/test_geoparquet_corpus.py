@@ -379,12 +379,7 @@ class TestWritePath:
                     strict=True, reason="gpio #588: GEOGRAPHY rewritten as GEOMETRY, edges lost"
                 ),
             ),
-            pytest.param(
-                "data/zm/linestring-xyzm-native-geometry.parquet",
-                marks=pytest.mark.xfail(
-                    strict=True, reason="gpio #589: XYZM 2.0 write drops geo metadata"
-                ),
-            ),
+            "data/zm/linestring-xyzm-native-geometry.parquet",
         ],
     )
     def test_explicit_v2_rewrite_preserves(self, rel, tmp_path):

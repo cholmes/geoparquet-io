@@ -1714,6 +1714,130 @@ def write_geoparquet_via_arrow(
             )
 
 
+_GEO_TYPE_CODE_BASES = {
+    1: "Point",
+    2: "LineString",
+    3: "Polygon",
+    4: "MultiPoint",
+    5: "MultiLineString",
+    6: "MultiPolygon",
+    7: "GeometryCollection",
+}
+_GEO_TYPE_CODE_SUFFIXES = {0: "", 1: " Z", 2: " M", 3: " ZM"}
+
+
+def _geo_code_to_type_name(code: int) -> str | None:
+    """Map a Parquet geospatial type code (e.g. 3002) to 'LineString ZM'."""
+    dim, base = divmod(code, 1000)
+    name = _GEO_TYPE_CODE_BASES.get(base)
+    suffix = _GEO_TYPE_CODE_SUFFIXES.get(dim)
+    if name is None or suffix is None:
+        return None
+    return name + suffix
+
+
+def _ensure_v2_geo_metadata(
+    output_path: str,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    row_group_rows: int | None = None,
+    verbose: bool = False,
+) -> None:
+    """Attach GeoParquet 2.0 geo metadata if the writer omitted it (#589).
+
+    DuckDB 1.5.4's V2 writer skips the geo KV metadata for M/ZM geometries.
+    Rebuild it from the file's native geospatial statistics, mirroring the
+    shape DuckDB writes for XY/XYZ data, and rewrite the file in place.
+    """
+    pf = pq.ParquetFile(output_path)
+    try:
+        kv = pf.metadata.metadata or {}
+        if b"geo" in kv:
+            return
+        schema = pf.metadata.schema
+        geo_col_names = {}
+        for i in range(len(schema)):
+            logical = str(schema.column(i).logical_type)
+            if logical.startswith(("Geometry", "Geography")):
+                geo_col_names[i] = schema.column(i).name
+        if not geo_col_names:
+            return
+
+        columns = {}
+        for i, name in geo_col_names.items():
+            codes: set[int] = set()
+            bbox = None
+            zrange = None
+            for rg in range(pf.metadata.num_row_groups):
+                stats = pf.metadata.row_group(rg).column(i).geo_statistics
+                if stats is None:
+                    continue
+                codes.update(stats.geospatial_types or [])
+                if stats.xmin is not None:
+                    if bbox is None:
+                        bbox = [stats.xmin, stats.ymin, stats.xmax, stats.ymax]
+                    else:
+                        bbox = [
+                            min(bbox[0], stats.xmin),
+                            min(bbox[1], stats.ymin),
+                            max(bbox[2], stats.xmax),
+                            max(bbox[3], stats.ymax),
+                        ]
+                if stats.zmin is not None:
+                    if zrange is None:
+                        zrange = [stats.zmin, stats.zmax]
+                    else:
+                        zrange = [min(zrange[0], stats.zmin), max(zrange[1], stats.zmax)]
+
+            geometry_types = sorted(
+                t for t in (_geo_code_to_type_name(c) for c in codes) if t is not None
+            )
+            col_meta: dict = {"encoding": "WKB", "geometry_types": geometry_types}
+            if bbox is not None:
+                # RFC 7946 order; 6 values when a Z range exists (M is never
+                # part of bbox per spec).
+                if zrange is not None:
+                    col_meta["bbox"] = [bbox[0], bbox[1], zrange[0], bbox[2], bbox[3], zrange[1]]
+                else:
+                    col_meta["bbox"] = bbox
+            columns[name] = col_meta
+
+        primary = "geometry" if "geometry" in columns else sorted(columns)[0]
+        geo_meta = {"version": "2.0.0", "primary_column": primary, "columns": columns}
+    finally:
+        # Release the read handle before rewriting (Windows requires it).
+        del pf
+
+    # geoarrow registration makes pyarrow round-trip the native GEOMETRY/
+    # GEOGRAPHY logical types (and their CRS) instead of demoting to binary.
+    import geoarrow.pyarrow  # noqa: F401
+
+    table = pq.read_table(output_path)
+    new_meta = dict(table.schema.metadata or {})
+    new_meta[b"geo"] = json.dumps(geo_meta).encode()
+    table = table.replace_schema_metadata(new_meta)
+
+    codec_map = {
+        "ZSTD": "zstd",
+        "GZIP": "gzip",
+        "BROTLI": "brotli",
+        "SNAPPY": "snappy",
+        "UNCOMPRESSED": "none",
+        "LZ4_RAW": "lz4",
+    }
+    write_kwargs: dict = {"compression": codec_map.get(compression, "zstd")}
+    if compression_level is not None and write_kwargs["compression"] in ("zstd", "gzip", "brotli"):
+        write_kwargs["compression_level"] = compression_level
+    if row_group_rows:
+        write_kwargs["row_group_size"] = row_group_rows
+
+    tmp_path = f"{output_path}.geometa.tmp"
+    pq.write_table(table, tmp_path, **write_kwargs)
+    os.replace(tmp_path, output_path)
+    if verbose:
+        debug("Re-attached geo metadata (writer omitted it for M/ZM geometries)")
+
+
 def _plain_copy_to(
     con,
     query: str,
@@ -1790,6 +1914,19 @@ def _plain_copy_to(
         debug(f"Executing plain COPY TO with {duckdb_compression} compression...")
 
     con.execute(copy_query)
+
+    # DuckDB 1.5.4's V2 writer omits the geo KV metadata for geometries with
+    # an M dimension (XY/XYZ are written correctly). Without it the output
+    # silently degrades to parquet-geo-only, so repair it from the file's own
+    # native geospatial statistics (#589).
+    if duckdb_version == "V2":
+        _ensure_v2_geo_metadata(
+            output_path,
+            compression=duckdb_compression,
+            compression_level=compression_level,
+            row_group_rows=row_group_rows,
+            verbose=verbose,
+        )
 
     if verbose:
         import pyarrow.parquet as pq
