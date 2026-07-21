@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 import duckdb
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.exceptions import GeoParquetError
@@ -127,12 +128,13 @@ def _pyarrow_get_schema_info(parquet_file: str) -> list[dict] | None:
 
         # Get schema info with proper type mapping
         for field in schema:
-            # First check Arrow schema for logical type (GeoArrow extension types)
-            logical_type = _get_pyarrow_logical_type(field)
-
-            # If not found in Arrow schema, check Parquet physical schema
-            # This handles native Parquet GEOMETRY/GEOGRAPHY logical types
-            if logical_type is None and field.name in parquet_col_map:
+            # Prefer the Parquet physical schema's native GEOMETRY/GEOGRAPHY
+            # logical type: it is stable, while the Arrow-level view of the
+            # same column flips to a geoarrow extension type (dropping the
+            # Geometry/Geography distinction) once geoarrow.pyarrow has been
+            # imported anywhere in the process.
+            logical_type = None
+            if field.name in parquet_col_map:
                 parquet_col = parquet_col_map[field.name]
                 if parquet_col.logical_type is not None:
                     logical_type_str = str(parquet_col.logical_type)
@@ -144,9 +146,22 @@ def _pyarrow_get_schema_info(parquet_file: str) -> list[dict] | None:
                     elif logical_type_str.startswith("Geography("):
                         logical_type = "GeographyType" + logical_type_str[9:]
 
+            # Fall back to the Arrow schema (GeoArrow extension types, e.g.
+            # 1.1-geoarrow files with no native Parquet logical type)
+            if logical_type is None:
+                logical_type = _get_pyarrow_logical_type(field)
+
+            # Report the storage type for extension fields: whether pyarrow
+            # sees geoarrow.wkb here depends on process-global extension
+            # registration (importing geoarrow.pyarrow anywhere flips it), and
+            # schema info must not vary with import order.
+            field_type = field.type
+            if isinstance(field_type, pa.ExtensionType):
+                field_type = field_type.storage_type
+
             col_info = {
                 "name": field.name,
-                "type": str(field.type),
+                "type": str(field_type),
                 "type_length": None,
                 "repetition_type": "OPTIONAL" if field.nullable else "REQUIRED",
                 "num_children": 0,

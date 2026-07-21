@@ -55,14 +55,9 @@ CORPUS = Path(__file__).parent / "data" / "geoparquet-testing"
 # tracking each fix. test_validates_clean xfails while a file's failures are
 # all covered here and fails hard on anything new. Remove entries as fixes land.
 KNOWN_VALIDATION_BUGS = {
-    "v2_crs_in_parquet_type": "#581 CRS84-default equivalence",
-    "v2_crs_consistency": "#581 CRS84-default equivalence",
-    "edges_valid": "#582 missing 2.0 ellipsoidal edges values",
     "geometry_types_list": "#583 Z/M suffixed types rejected",
     "geometry_types_match_data": "#583 data scan drops Z/M suffix",
     "native_geo_types_match": "#583 native stats comparison drops Z/M suffix",
-    "native_geo_stats_contains_data": "#584 POINT EMPTY counted as outside bbox",
-    "bbox_contains_data": "#584 POINT EMPTY counted as outside bbox",
     "coordinates_valid_for_crs": "#586 heuristic false positive on small projected coords",
 }
 
@@ -247,11 +242,7 @@ BAD_DATA_EXPECTATIONS = {
         [r"geo_metadata", r"geo_key"],
         "#586 invalid geo JSON treated as no-metadata",
     ),
-    "geo-invalid-utf8.parquet": (
-        "auto",
-        [r"geo_metadata", r"geo_key"],
-        "#585 validator crashes on invalid UTF-8 metadata",
-    ),
+    "geo-invalid-utf8.parquet": ("auto", [r"geo_metadata", r"geo_key"], None),
     "geometry-types-mismatch-declared-point-actual-linestring.parquet": (
         "auto",
         [r"geometry_types_match_data_"],
@@ -268,8 +259,7 @@ BAD_DATA_EXPECTATIONS = {
     # only when GeoParquet 2.0 is explicitly demanded.
     "missing-geo-metadata.parquet": ("2.0", [r"version_match"], None),
     "missing-primary-column.parquet": ("auto", [r"primary_column_present"], None),
-    # Auto mode crashes on the None version (#585); 2.0 mode detects it.
-    "missing-version.parquet": ("2.0", [r"version_match", r"version_present"], None),
+    "missing-version.parquet": ("auto", [r"version_present"], None),
     "orientation-ccw-declared-rings-cw.parquet": (
         "auto",
         [r"orientation"],
@@ -300,11 +290,9 @@ BAD_DATA_EXPECTATIONS = {
     "zm-declared-xyz-actual-xy.parquet": ("auto", [r"geometry_types_match_data_"], None),
 }
 
-# Files where validate_geoparquet currently raises instead of reporting (#585).
-CRASHES_ON_VALIDATE = {
-    "geo-invalid-utf8.parquet": "#585 GeoParquetError on invalid UTF-8 geo metadata",
-    "missing-version.parquet": "#585 TypeError comparing None version in auto mode",
-}
+# Files where validate_geoparquet raises instead of reporting. Empty since the
+# #585 fixes; kept so a regression re-adds an entry instead of reshaping tests.
+CRASHES_ON_VALIDATE: dict[str, str] = {}
 
 
 def _bad_data_params():
