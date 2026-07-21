@@ -55,9 +55,6 @@ CORPUS = Path(__file__).parent / "data" / "geoparquet-testing"
 # tracking each fix. test_validates_clean xfails while a file's failures are
 # all covered here and fails hard on anything new. Remove entries as fixes land.
 KNOWN_VALIDATION_BUGS = {
-    "geometry_types_list": "#583 Z/M suffixed types rejected",
-    "geometry_types_match_data": "#583 data scan drops Z/M suffix",
-    "native_geo_types_match": "#583 native stats comparison drops Z/M suffix",
     "coordinates_valid_for_crs": "#586 heuristic false positive on small projected coords",
 }
 
@@ -286,7 +283,13 @@ BAD_DATA_EXPECTATIONS = {
     ),
     "wkb-with-srid-prefix.parquet": ("auto", [r"native_geo_type_present_"], None),
     "wkb-wrong-type-byte.parquet": ("auto", [r"native_geo_type_present_"], None),
-    "zm-declared-xy-actual-xyz.parquet": ("auto", [r"native_geo_types_match_"], None),
+    # Native stats (computed from data) agree with the data, so detection
+    # comes from the geo-metadata declaration disagreeing with the scan.
+    "zm-declared-xy-actual-xyz.parquet": (
+        "auto",
+        [r"geometry_types_match_data_", r"native_geo_types_match_"],
+        None,
+    ),
     "zm-declared-xyz-actual-xy.parquet": ("auto", [r"geometry_types_match_data_"], None),
 }
 
