@@ -240,11 +240,39 @@ Validates file structure and metadata against the GeoParquet specification:
 - Auto-detects version unless `--geoparquet-version` is specified
 - Optional data validation against metadata claims
 
+**Metadata checks include:**
+
+- **Version sanity** — an unknown `geo` metadata version (e.g. `99.0.0`) fails
+  validation, even in auto mode. Version/feature mismatches also fail: a file
+  declaring version 1.0 while using GeoParquet 2.0 native Parquet geo types, or
+  the 1.1-only `covering` key, is flagged as inconsistent.
+- **CRS structure** — PROJJSON `crs` objects must carry the required `type`
+  member, and it must be a known PROJJSON CRS type.
+- **Datum-aware epoch validation** — a coordinate `epoch` on a datum ensemble
+  (e.g. EPSG:4326, or the OGC:CRS84 default when `crs` is omitted) fails; on a
+  specific static frame (e.g. GDA2020) it warns; on a dynamic frame (e.g. ITRF)
+  it passes. With an explicit `"crs": null` the datum cannot be verified, so an
+  epoch produces a warning.
+- **Malformed metadata** — a `geo` key containing invalid JSON or a non-object
+  value fails cleanly in auto mode instead of crashing.
+- **Dimension-aware geometry types** — `geometry_types` entries carry Z/M
+  suffixes (`"Point Z"`, `"LineString ZM"`), and validation matches declared
+  suffixes against the actual coordinate dimensions in both directions
+  (declared-but-absent and present-but-undeclared).
+
 **Exit codes:**
 
 - `0` - All checks passed
 - `1` - One or more checks failed
 - `2` - Warnings only (all required checks passed)
+
+!!! note "Coordinate/CRS mismatch heuristic is now a warning"
+    The heuristic that flags geographic-looking coordinates (values within
+    ±180/±90) under a projected CRS reports a **WARNING** instead of a failure,
+    so `gpio check spec` exits with code `2` instead of `1` for affected files.
+    Update CI pipelines that gate only on exit code `1`. The deterministic
+    CRS-consistency check for GeoParquet 2.0 native geo statistics still fails
+    on a real mismatch.
 
 ### STAC Validation
 
