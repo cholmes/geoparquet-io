@@ -448,6 +448,45 @@ def validate_compression_settings(compression, compression_level, verbose=False)
     return compression, compression_level, compression_desc
 
 
+def zm_suffix_sql(geom_expr: str, sep: str = " ") -> str:
+    """SQL fragment producing the dimension suffix (''/'{sep}Z'/'{sep}M'/'{sep}ZM').
+
+    The GeoParquet spec treats "LineString" and "LineString ZM" as distinct
+    geometry_types entries, so any SQL type scan must append this suffix to
+    ST_GeometryType() output instead of collapsing dimensions.
+    """
+    return (
+        f"CASE WHEN ST_HasZ({geom_expr}) AND ST_HasM({geom_expr}) THEN '{sep}ZM' "
+        f"WHEN ST_HasZ({geom_expr}) THEN '{sep}Z' "
+        f"WHEN ST_HasM({geom_expr}) THEN '{sep}M' "
+        f"ELSE '' END"
+    )
+
+
+def split_zm_suffix(name: str) -> tuple[str, str]:
+    """Split a spec geometry type into (base, suffix): 'Point ZM' -> ('Point', ' ZM').
+
+    Names without a dimension suffix (and non-string inputs) return ('' suffix).
+    """
+    if isinstance(name, str):
+        for suffix in (" ZM", " Z", " M"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)], suffix
+    return name, ""
+
+
+# DuckDB ST_GeometryType names ("POINT") -> GeoParquet spec names ("Point").
+_DUCKDB_TO_SPEC_TYPE = {
+    "POINT": "Point",
+    "LINESTRING": "LineString",
+    "POLYGON": "Polygon",
+    "MULTIPOINT": "MultiPoint",
+    "MULTILINESTRING": "MultiLineString",
+    "MULTIPOLYGON": "MultiPolygon",
+    "GEOMETRYCOLLECTION": "GeometryCollection",
+}
+
+
 def compute_geometry_types_via_sql(
     con,
     query: str,
@@ -462,7 +501,8 @@ def compute_geometry_types_via_sql(
         geometry_column: Name of geometry column
 
     Returns:
-        List of geometry type names (e.g., ["Point", "Polygon"]) or empty list if column not in query
+        List of spec geometry type names with dimension suffixes
+        (e.g., ["Point", "LineString ZM"]) or empty list if column not in query
     """
     # Check if geometry column exists in query result
     try:
@@ -481,29 +521,21 @@ def compute_geometry_types_via_sql(
 
     # Escape column name for SQL (double any embedded quotes)
     escaped_col = geometry_column.replace('"', '""')
+    quoted_col = f'"{escaped_col}"'
+    typed_expr = f"ST_GeometryType({quoted_col}) || {zm_suffix_sql(quoted_col)}"
     types_query = f"""
-        SELECT DISTINCT ST_GeometryType("{escaped_col}") as geom_type
+        SELECT DISTINCT {typed_expr} as geom_type
         FROM ({query})
-        WHERE "{escaped_col}" IS NOT NULL
+        WHERE {quoted_col} IS NOT NULL
     """
     results = con.execute(types_query).fetchall()
-
-    # DuckDB returns types like "POINT", "POLYGON" - convert to GeoParquet format
-    type_map = {
-        "POINT": "Point",
-        "LINESTRING": "LineString",
-        "POLYGON": "Polygon",
-        "MULTIPOINT": "MultiPoint",
-        "MULTILINESTRING": "MultiLineString",
-        "MULTIPOLYGON": "MultiPolygon",
-        "GEOMETRYCOLLECTION": "GeometryCollection",
-    }
 
     types = []
     for (geom_type,) in results:
         if geom_type:
-            normalized = type_map.get(geom_type.upper(), geom_type)
-            types.append(normalized)
+            base, suffix = split_zm_suffix(geom_type)
+            normalized = _DUCKDB_TO_SPEC_TYPE.get(base.upper(), base)
+            types.append(normalized + suffix)
 
     return sorted(set(types))
 
@@ -1806,13 +1838,26 @@ def _ensure_v2_geo_metadata(
         geo_meta = {"version": "2.0.0", "primary_column": primary, "columns": columns}
     finally:
         # Release the read handle before rewriting (Windows requires it).
-        del pf
+        pf.close()
 
     _rewrite_file_with_geo_metadata(
         output_path, geo_meta, compression, compression_level, row_group_rows
     )
     if verbose:
         debug("Re-attached geo metadata (writer omitted it for M/ZM geometries)")
+
+
+def _infer_row_group_size(output_path: str) -> int | None:
+    """Max rows per existing row group, so a rewrite can mirror the file's layout."""
+    pf = pq.ParquetFile(output_path)
+    try:
+        num_groups = pf.metadata.num_row_groups
+        if num_groups == 0:
+            return None
+        return max(pf.metadata.row_group(i).num_rows for i in range(num_groups))
+    finally:
+        # Release the read handle before any rewrite (Windows requires it).
+        pf.close()
 
 
 def _rewrite_file_with_geo_metadata(
@@ -1827,17 +1872,26 @@ def _rewrite_file_with_geo_metadata(
     # GEOGRAPHY logical types (and their CRS) instead of demoting to binary.
     import geoarrow.pyarrow  # noqa: F401
 
+    # Preserve the file's own row-group layout when the caller didn't specify
+    # one — pyarrow's ~1Mi-row default would otherwise collapse the groups.
+    if not row_group_rows:
+        row_group_rows = _infer_row_group_size(output_path)
+
     table = pq.read_table(output_path)
     new_meta = dict(table.schema.metadata or {})
     new_meta[b"geo"] = json.dumps(geo_meta).encode()
     table = table.replace_schema_metadata(new_meta)
 
+    # Keys cover every normalized name callers can pass (DuckDB COPY names
+    # from _plain_copy_to's compression_map plus pyarrow-style variants).
     codec_map = {
         "ZSTD": "zstd",
         "GZIP": "gzip",
         "BROTLI": "brotli",
         "SNAPPY": "snappy",
         "UNCOMPRESSED": "none",
+        "NONE": "none",
+        "LZ4": "lz4",
         "LZ4_RAW": "lz4",
     }
     write_kwargs: dict = {"compression": codec_map.get(compression.upper(), "zstd")}
@@ -1847,8 +1901,13 @@ def _rewrite_file_with_geo_metadata(
         write_kwargs["row_group_size"] = row_group_rows
 
     tmp_path = f"{output_path}.geometa.tmp"
-    pq.write_table(table, tmp_path, **write_kwargs)
-    os.replace(tmp_path, output_path)
+    try:
+        pq.write_table(table, tmp_path, **write_kwargs)
+        os.replace(tmp_path, output_path)
+    finally:
+        # os.replace consumes the tmp file on success; clean it up on failure.
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def collect_nonplanar_edges(input_file: str) -> dict[str, str]:
@@ -1880,11 +1939,27 @@ def collect_nonplanar_edges(input_file: str) -> dict[str, str]:
     return edges_by_col
 
 
+def _edges_for_output_version(edges: str, geo_version: str) -> str:
+    """Map an edges value to one representable in the output's spec version.
+
+    GeoParquet 1.x only allows {"planar", "spherical"}; ellipsoidal algorithms
+    (vincenty/karney/andoyer/thomas) from 2.0/native inputs degrade to
+    "spherical" with a warning. 2.0 outputs keep the algorithm verbatim.
+    """
+    if not str(geo_version).startswith("1."):
+        return edges
+    if edges in ("planar", "spherical"):
+        return edges
+    warn(f"edges algorithm '{edges}' is not representable in GeoParquet 1.x; writing 'spherical'")
+    return "spherical"
+
+
 def preserve_nonplanar_edges(
     input_file: str,
     output_file: str,
     compression: str = "ZSTD",
     compression_level: int | None = None,
+    row_group_rows: int | None = None,
     verbose: bool = False,
 ) -> None:
     """Carry non-planar edges declarations from input to output (#588).
@@ -1910,10 +1985,13 @@ def preserve_nonplanar_edges(
             return
         geo_meta = json.loads(kv[b"geo"].decode("utf-8"))
     finally:
-        del pf
+        # Release the read handle before rewriting (Windows requires it).
+        pf.close()
 
+    geo_version = str(geo_meta.get("version") or "")
     changed = False
     for name, edges in edges_by_col.items():
+        edges = _edges_for_output_version(edges, geo_version)
         col_meta = geo_meta.get("columns", {}).get(name)
         if isinstance(col_meta, dict) and col_meta.get("edges") != edges:
             col_meta["edges"] = edges
@@ -1922,7 +2000,9 @@ def preserve_nonplanar_edges(
     if not changed:
         return
 
-    _rewrite_file_with_geo_metadata(output_file, geo_meta, compression, compression_level)
+    _rewrite_file_with_geo_metadata(
+        output_file, geo_meta, compression, compression_level, row_group_rows
+    )
     warn(
         "Native GEOGRAPHY is not preserved by the writer (DuckDB has no "
         f"geography type); kept edges declaration in geo metadata for: "

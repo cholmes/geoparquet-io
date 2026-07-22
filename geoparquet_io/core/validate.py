@@ -13,6 +13,7 @@ from typing import Any
 
 from rich.console import Console
 
+from geoparquet_io.core.common import split_zm_suffix, zm_suffix_sql
 from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
 from geoparquet_io.core.exceptions import GeoParquetError
 
@@ -237,22 +238,7 @@ def _check_encoding_valid(col_meta: dict, col_name: str) -> ValidationCheck:
 
 def _strip_zm_suffix(geometry_type: str) -> str:
     """Return the base geometry type without a spec " Z"/" M"/" ZM" suffix."""
-    if not isinstance(geometry_type, str):
-        return geometry_type
-    for suffix in (" ZM", " Z", " M"):
-        if geometry_type.endswith(suffix):
-            return geometry_type[: -len(suffix)]
-    return geometry_type
-
-
-def _zm_suffix_sql(geom_expr: str, sep: str = " ") -> str:
-    """SQL fragment producing the dimension suffix (''/'{sep}Z'/'{sep}M'/'{sep}ZM')."""
-    return (
-        f"CASE WHEN ST_HasZ({geom_expr}) AND ST_HasM({geom_expr}) THEN '{sep}ZM' "
-        f"WHEN ST_HasZ({geom_expr}) THEN '{sep}Z' "
-        f"WHEN ST_HasM({geom_expr}) THEN '{sep}M' "
-        f"ELSE '' END"
-    )
+    return split_zm_suffix(geometry_type)[0]
 
 
 def _check_geometry_types_list(col_meta: dict, col_name: str) -> ValidationCheck:
@@ -791,7 +777,7 @@ def _check_geometry_types_match_data(
         # Get both distinct types and total count in one query. The dimension
         # suffix matters: "LineString" and "LineString ZM" are distinct
         # geometry_types per spec, so the scan must not collapse them.
-        typed_expr = f"ST_GeometryType({geom_expr}) || {_zm_suffix_sql(geom_expr)}"
+        typed_expr = f"ST_GeometryType({geom_expr}) || {zm_suffix_sql(geom_expr)}"
         query = f"""
             SELECT {typed_expr} as geom_type, COUNT(*) as cnt
             FROM (
@@ -827,15 +813,8 @@ def _check_geometry_types_match_data(
             if t:
                 # Strip ST_ prefix if present, split off the dimension suffix,
                 # map the base name, then re-append the suffix ("Point Z").
-                clean_type = t.replace("ST_", "").upper()
-                suffix = ""
-                for candidate in (" ZM", " Z", " M"):
-                    if clean_type.endswith(candidate):
-                        suffix = candidate
-                        clean_type = clean_type[: -len(candidate)]
-                        break
-                normalized = geom_type_mapping.get(clean_type, t)
-                normalized_found.add(normalized + suffix)
+                base, suffix = split_zm_suffix(t.replace("ST_", "").upper())
+                normalized_found.add(geom_type_mapping.get(base, t) + suffix)
 
         declared_set = set(declared_types) if declared_types else set()
 
@@ -1849,7 +1828,7 @@ def _check_native_geo_types_match(
         # naming is dimension-aware ("linestring_m"), so append the matching
         # suffix from ST_HasZ/ST_HasM instead of comparing base names only.
         quoted_col = f'"{geom_col}"'
-        typed_expr = f"ST_GeometryType({quoted_col}) || {_zm_suffix_sql(quoted_col, sep='_')}"
+        typed_expr = f"ST_GeometryType({quoted_col}) || {zm_suffix_sql(quoted_col, sep='_')}"
         if sample_size == 0:
             # Check all rows
             actual_result = con.execute(f"""
