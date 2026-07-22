@@ -1034,6 +1034,7 @@ def _execute_extraction(
             geoparquet_version=geoparquet_version,
             write_strategy=write_strategy,
             memory_limit=memory_limit,
+            input_file=input_parquet,
         )
 
         # Get extracted row count from output file metadata (fast - reads footer only)

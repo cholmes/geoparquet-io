@@ -489,6 +489,7 @@ def _hilbert_order_file_based(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            input_file=input_parquet,
         )
         con.close()
         if temp_file_created and temp_file:
@@ -532,6 +533,7 @@ def _hilbert_order_file_based(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            input_file=input_parquet,
         )
         if verbose:
             debug("Hilbert ordering completed successfully")

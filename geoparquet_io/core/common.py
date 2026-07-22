@@ -876,6 +876,17 @@ def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None)
     return pa.table(dict(zip([f.name for f in target_schema], new_columns, strict=True)))
 
 
+def _resolve_auto_version(detected: str | None) -> str | None:
+    """Shared auto-mode decision for CLI and API write paths.
+
+    Preserve a detected 1.x/2.0 version; upgrade native-geo-only inputs to 2.0
+    (the documented --geoparquet-version default contract).
+    """
+    if detected == "parquet-geo-only":
+        return "2.0"
+    return detected
+
+
 def resolve_geoparquet_version_from_file(parquet_file: str, verbose: bool = False) -> str | None:
     """
     Resolve the auto-mode GeoParquet write version from a parquet input file.
@@ -892,14 +903,23 @@ def resolve_geoparquet_version_from_file(parquet_file: str, verbose: bool = Fals
     except Exception:
         return None
 
-    file_type = info.get("file_type")
-    if file_type == "geoparquet_v2":
-        return "2.0"
-    if file_type == "parquet_geo_only":
-        return "2.0"
-    if file_type == "geoparquet_v1":
-        return "1.1"
-    return None
+    detected = {
+        "geoparquet_v2": "2.0",
+        "parquet_geo_only": "parquet-geo-only",
+        "geoparquet_v1": "1.1",
+    }.get(info.get("file_type"))
+    return _resolve_auto_version(detected)
+
+
+def resolve_geoparquet_version_from_table(table, verbose: bool = False) -> str | None:
+    """
+    Resolve the auto-mode GeoParquet write version from an Arrow table.
+
+    API-side counterpart of resolve_geoparquet_version_from_file, sharing the
+    same decision (_resolve_auto_version) so ``gpio.read(f).write(out)`` picks
+    the same version the CLI would for the same input file (todo 043).
+    """
+    return _resolve_auto_version(_detect_version_from_table(table, verbose))
 
 
 def _detect_version_from_table(table, verbose: bool = False) -> str | None:
@@ -1954,22 +1974,46 @@ def _edges_for_output_version(edges: str, geo_version: str) -> str:
     return "spherical"
 
 
-def preserve_nonplanar_edges(
-    input_file: str,
+def _collect_nonplanar_edges_from_metadata(original_metadata: dict | None) -> dict[str, str]:
+    """Map geometry column -> non-planar edges declared in an input KV metadata dict.
+
+    Fallback for write paths that carry the input's KV metadata but not its
+    path (the native GEOGRAPHY logical-type half needs the file itself).
+    """
+    if not original_metadata:
+        return {}
+    geo_data = original_metadata.get("geo") or original_metadata.get(b"geo")
+    if not geo_data:
+        return {}
+    try:
+        if isinstance(geo_data, bytes):
+            geo_data = geo_data.decode("utf-8")
+        geo_meta = json.loads(geo_data) if isinstance(geo_data, str) else geo_data
+        edges_by_col: dict[str, str] = {}
+        for name, col_meta in (geo_meta.get("columns") or {}).items():
+            edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
+            if edges and edges != "planar":
+                edges_by_col[name] = edges
+        return edges_by_col
+    except Exception:
+        return {}
+
+
+def _apply_nonplanar_edges(
+    edges_by_col: dict[str, str],
     output_file: str,
     compression: str = "ZSTD",
     compression_level: int | None = None,
     row_group_rows: int | None = None,
     verbose: bool = False,
 ) -> None:
-    """Carry non-planar edges declarations from input to output (#588).
+    """Re-attach non-planar edges declarations to an output's geo metadata (#588).
 
     DuckDB has no GEOGRAPHY type, so rewrites demote native GEOGRAPHY columns
     to GEOMETRY and drop ``edges`` from regenerated metadata. Losing the edge
     interpretation silently corrupts semantics (great-circle edges read as
     planar), so re-attach it to the output's geo metadata.
     """
-    edges_by_col = collect_nonplanar_edges(input_file)
     if not edges_by_col:
         return
 
@@ -2126,6 +2170,7 @@ def write_parquet_with_metadata(
     memory_limit: str | None = None,
     geometry_info: dict | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    input_file: str | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2165,6 +2210,10 @@ def write_parquet_with_metadata(
             - "metadata": dict mapping column names to their metadata (crs, encoding, etc.)
         extra_kv_metadata: Additional Parquet file-level KV metadata as {key: json_string}.
             Written alongside the 'geo' key (e.g., for Vecorel collection metadata).
+        input_file: Path to the input parquet file, when the write rewrites an
+            existing file. Enables full-fidelity non-planar edges preservation
+            (native GEOGRAPHY logical types are only visible in the file's
+            schema); without it, edges still fall back to original_metadata.
 
     Returns:
         None
@@ -2308,6 +2357,20 @@ def write_parquet_with_metadata(
 
             strategy.write_from_query(**write_kwargs)
 
+        # Non-planar edges must survive every rewrite path (#588): DuckDB
+        # regenerates geo metadata without `edges`, silently demoting geography
+        # data to planar. Runs on the local temp file, so remote outputs are
+        # patched before upload.
+        _preserve_edges_after_write(
+            input_file,
+            original_metadata,
+            actual_output,
+            compression=compression,
+            compression_level=compression_level,
+            row_group_rows=row_group_rows,
+            verbose=verbose,
+        )
+
         # Auto-fix vecorel schema compliance when collection metadata is present
         if not is_remote:
             _auto_fix_vecorel_if_needed(actual_output, extra_kv_metadata, original_metadata)
@@ -2320,6 +2383,34 @@ def write_parquet_with_metadata(
                 is_directory=False,
                 verbose=verbose,
             )
+
+
+def _preserve_edges_after_write(
+    input_file: str | None,
+    original_metadata: dict | None,
+    output_path: str,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    row_group_rows: int | None = None,
+    verbose: bool = False,
+) -> None:
+    """Restore non-planar edges dropped by the writer, on any rewrite path.
+
+    Prefers the input file (sees native GEOGRAPHY logical types as well as geo
+    metadata); falls back to the input's KV metadata dict when only that is
+    available (e.g. partition staging rewrites).
+    """
+    edges_by_col = collect_nonplanar_edges(input_file) if input_file else {}
+    if not edges_by_col:
+        edges_by_col = _collect_nonplanar_edges_from_metadata(original_metadata)
+    _apply_nonplanar_edges(
+        edges_by_col,
+        output_path,
+        compression=compression,
+        compression_level=compression_level,
+        row_group_rows=row_group_rows,
+        verbose=verbose,
+    )
 
 
 def _auto_fix_vecorel_if_needed(

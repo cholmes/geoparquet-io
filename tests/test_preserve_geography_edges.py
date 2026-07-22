@@ -109,3 +109,68 @@ def test_v2_keeps_ellipsoidal_edges_verbatim(vincenty_input, tmp_path):
     )
     geo = get_geo_metadata(str(out))
     assert geo["columns"]["geometry"].get("edges") == "vincenty", geo["columns"]["geometry"]
+
+
+# --- Edges preservation must cover every rewrite path, not just convert (todo 037) ---
+
+
+def test_extract_preserves_spherical_edges(spherical_input, tmp_path):
+    from geoparquet_io.core.extract import extract
+
+    out = tmp_path / "out.parquet"
+    extract(str(spherical_input), str(out))
+    geo = get_geo_metadata(str(out))
+    assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
+
+
+def test_sort_hilbert_preserves_spherical_edges(spherical_input, tmp_path):
+    from geoparquet_io.core.hilbert_order import hilbert_order
+
+    out = tmp_path / "out.parquet"
+    hilbert_order(str(spherical_input), str(out), geoparquet_version="2.0")
+    geo = get_geo_metadata(str(out))
+    assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
+
+
+def test_sort_by_column_preserves_spherical_edges(spherical_input, tmp_path):
+    from geoparquet_io.core.sort_by_column import sort_by_column
+
+    out = tmp_path / "out.parquet"
+    sort_by_column(str(spherical_input), str(out), columns="id")
+    geo = get_geo_metadata(str(out))
+    assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
+
+
+def test_reproject_preserves_spherical_edges(spherical_input, tmp_path):
+    from geoparquet_io.core.reproject import reproject
+
+    out = tmp_path / "out.parquet"
+    reproject(str(spherical_input), str(out), target_crs="EPSG:3857")
+    geo = get_geo_metadata(str(out))
+    assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
+
+
+def test_remote_output_preserves_spherical_edges(spherical_input, tmp_path, monkeypatch):
+    """Remote outputs are patched on the local temp file before upload."""
+    import shutil
+
+    import geoparquet_io.core.common as common
+
+    uploaded = {}
+
+    def fake_upload(local, _remote, **kwargs):
+        dest = tmp_path / "uploaded.parquet"
+        shutil.copy(str(local), str(dest))
+        uploaded["dest"] = dest
+
+    monkeypatch.setattr(common, "upload_if_remote", fake_upload)
+
+    convert_to_geoparquet(
+        str(spherical_input),
+        "s3://fake-bucket/out.parquet",
+        skip_hilbert=True,
+        geoparquet_version="2.0",
+    )
+    assert "dest" in uploaded, "upload hook was not invoked for the remote output"
+    geo = get_geo_metadata(str(uploaded["dest"]))
+    assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]

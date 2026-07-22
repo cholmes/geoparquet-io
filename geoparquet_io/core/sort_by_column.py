@@ -212,6 +212,7 @@ def sort_by_column(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            input_file=input_parquet,
         )
 
         success(f"Sorted by {', '.join(column_list)} to: {output_parquet}")

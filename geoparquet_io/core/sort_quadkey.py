@@ -259,6 +259,7 @@ def sort_by_quadkey(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            input_file=input_parquet,
         )
 
         if remove_quadkey_column:

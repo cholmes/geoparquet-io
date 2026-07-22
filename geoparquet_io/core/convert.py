@@ -1594,21 +1594,10 @@ def convert_to_geoparquet(
             geoparquet_version=geoparquet_version,
             input_crs=effective_crs,
             geometry_info=geometry_info,
+            # Geography inputs: DuckDB demotes GEOGRAPHY to GEOMETRY and drops
+            # the edges declaration; the shared write path restores it (#588).
+            input_file=input_file if is_parquet and has_geometry else None,
         )
-
-        # Geography inputs: DuckDB demotes GEOGRAPHY to GEOMETRY and drops
-        # the edges declaration from regenerated metadata; restore it (#588).
-        if is_parquet and has_geometry and not is_remote_url(output_file):
-            from geoparquet_io.core.common import preserve_nonplanar_edges
-
-            preserve_nonplanar_edges(
-                input_file,
-                output_file,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_rows=row_group_rows,
-                verbose=verbose,
-            )
 
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 

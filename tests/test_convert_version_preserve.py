@@ -74,3 +74,34 @@ def test_explicit_version_still_wins(v2_input, tmp_path):
     convert_to_geoparquet(str(v2_input), str(out), skip_hilbert=True, geoparquet_version="1.1")
     assert get_geoparquet_version(str(out)) == "1.1.0"
     assert not has_native_geo_types(str(out))
+
+
+# --- Reproject auto mode must match convert's contract (todo 040) ---
+
+
+def test_reproject_auto_upgrades_parquet_geo_only_to_v2(pgo_input, tmp_path):
+    """Auto + native-geo-only input must write 2.0, not strip to 1.1 WKB."""
+    from geoparquet_io.core.reproject import reproject
+
+    out = tmp_path / "out.parquet"
+    reproject(str(pgo_input), str(out), target_crs="EPSG:3857", geoparquet_version=None)
+    assert get_geoparquet_version(str(out)) == "2.0.0"
+    assert has_native_geo_types(str(out))
+
+
+def test_reproject_auto_preserves_v2(v2_input, tmp_path):
+    from geoparquet_io.core.reproject import reproject
+
+    out = tmp_path / "out.parquet"
+    reproject(str(v2_input), str(out), target_crs="EPSG:3857", geoparquet_version=None)
+    assert get_geoparquet_version(str(out)) == "2.0.0"
+    assert has_native_geo_types(str(out))
+
+
+def test_reproject_explicit_version_still_wins(pgo_input, tmp_path):
+    from geoparquet_io.core.reproject import reproject
+
+    out = tmp_path / "out.parquet"
+    reproject(str(pgo_input), str(out), target_crs="EPSG:3857", geoparquet_version="1.1")
+    assert get_geoparquet_version(str(out)) == "1.1.0"
+    assert not has_native_geo_types(str(out))
