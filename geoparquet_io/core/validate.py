@@ -440,29 +440,11 @@ def _check_bbox_valid(col_meta: dict, col_name: str) -> ValidationCheck:
     )
 
 
-def _check_epoch_valid(col_meta: dict, col_name: str) -> ValidationCheck:
-    """Check 13: optional 'epoch' must be a number."""
-    epoch = col_meta.get("epoch")
+_CRS_ABSENT = object()
 
-    if epoch is None:
-        return ValidationCheck(
-            name=f"epoch_valid_{col_name}",
-            status=CheckStatus.PASSED,
-            message=f'column "{col_name}" has no epoch',
-            category="column_metadata",
-        )
 
-    if not isinstance(epoch, (int, float)):
-        return ValidationCheck(
-            name=f"epoch_valid_{col_name}",
-            status=CheckStatus.FAILED,
-            message=f'column "{col_name}" epoch must be a number',
-            category="column_metadata",
-        )
-
-    # A coordinate epoch only makes sense for a dynamic CRS. The default
-    # (absent crs = OGC:CRS84) and static datums do not support one.
-    crs = col_meta.get("crs")
+def _resolve_datum_type(crs: Any) -> str | None:
+    """Resolve a CRS value's datum type name via pyproj; None when unresolvable."""
     try:
         from pyproj import CRS as PyprojCRS
 
@@ -477,41 +459,68 @@ def _check_epoch_valid(col_meta: dict, col_name: str) -> ValidationCheck:
                 )
         else:
             pyproj_crs = PyprojCRS.from_user_input("OGC:CRS84")
-        datum_type = pyproj_crs.datum.type_name if pyproj_crs.datum else ""
-        # Dynamic frames (ITRF...) fully support epochs. A datum ensemble
-        # (EPSG:4326, OGC:CRS84) cannot carry one — there is no single frame
-        # the epoch could refer to. A specific static frame (e.g. GDA2020) is
-        # tolerated with a warning: epochs are commonly attached there in
-        # practice (plate-motion workflows) even though the frame is static.
-        if "Ensemble" in datum_type:
-            return ValidationCheck(
-                name=f"epoch_valid_{col_name}",
-                status=CheckStatus.FAILED,
-                message=f'column "{col_name}" declares epoch {epoch} on a datum ensemble',
-                details=f"Datum type: {datum_type}. "
-                "Coordinate epochs apply to dynamic reference frames (e.g. ITRF).",
-                category="column_metadata",
-            )
-        if "Dynamic" not in datum_type:
-            return ValidationCheck(
-                name=f"epoch_valid_{col_name}",
-                status=CheckStatus.WARNING,
-                message=f'column "{col_name}" declares epoch {epoch} on a static CRS',
-                details=f"Datum type: {datum_type or 'unknown'}. "
-                "Epochs are only meaningful for dynamic reference frames.",
-                category="column_metadata",
-            )
+        return pyproj_crs.datum.type_name if pyproj_crs.datum else ""
     except Exception:
-        # CRS not resolvable (or explicit null): can't judge the datum; the
-        # numeric epoch itself is fine.
-        pass
+        return None
 
-    return ValidationCheck(
-        name=f"epoch_valid_{col_name}",
-        status=CheckStatus.PASSED,
-        message=f'column "{col_name}" has valid epoch: {epoch}',
-        category="column_metadata",
-    )
+
+def _check_epoch_valid(col_meta: dict, col_name: str) -> ValidationCheck:
+    """Check 13: optional 'epoch' must be a number on a dynamic CRS."""
+
+    def _result(status, message, details=None):
+        return ValidationCheck(
+            name=f"epoch_valid_{col_name}",
+            status=status,
+            message=message,
+            details=details,
+            category="column_metadata",
+        )
+
+    epoch = col_meta.get("epoch")
+    if epoch is None:
+        return _result(CheckStatus.PASSED, f'column "{col_name}" has no epoch')
+    if not isinstance(epoch, (int, float)):
+        return _result(CheckStatus.FAILED, f'column "{col_name}" epoch must be a number')
+
+    # A coordinate epoch only makes sense for a dynamic CRS. The default
+    # (absent crs = OGC:CRS84) and static datums do not support one. An
+    # explicit null crs is distinct from absent: there is no CRS to judge.
+    crs = col_meta.get("crs", _CRS_ABSENT)
+    if crs is None:
+        return _result(
+            CheckStatus.WARNING,
+            f'column "{col_name}" declares epoch {epoch} but CRS is null; cannot verify datum type',
+        )
+    if crs is _CRS_ABSENT:
+        crs = None  # resolves to the OGC:CRS84 default below
+
+    datum_type = _resolve_datum_type(crs)
+    if datum_type is None:
+        return _result(
+            CheckStatus.WARNING,
+            f'column "{col_name}" declares epoch {epoch} but the CRS datum '
+            "could not be resolved for epoch validation",
+        )
+    # Dynamic frames (ITRF...) fully support epochs. A datum ensemble
+    # (EPSG:4326, OGC:CRS84) cannot carry one — there is no single frame
+    # the epoch could refer to. A specific static frame (e.g. GDA2020) is
+    # tolerated with a warning: epochs are commonly attached there in
+    # practice (plate-motion workflows) even though the frame is static.
+    if "Ensemble" in datum_type:
+        return _result(
+            CheckStatus.FAILED,
+            f'column "{col_name}" declares epoch {epoch} on a datum ensemble',
+            details=f"Datum type: {datum_type}. "
+            "Coordinate epochs apply to dynamic reference frames (e.g. ITRF).",
+        )
+    if "Dynamic" not in datum_type:
+        return _result(
+            CheckStatus.WARNING,
+            f'column "{col_name}" declares epoch {epoch} on a static CRS',
+            details=f"Datum type: {datum_type or 'unknown'}. "
+            "Epochs are only meaningful for dynamic reference frames.",
+        )
+    return _result(CheckStatus.PASSED, f'column "{col_name}" has valid epoch: {epoch}')
 
 
 _KNOWN_VERSION_MAJORS = ("1.", "2.")
@@ -2036,29 +2045,49 @@ def _check_v2_crs_consistency(geo_meta: dict, schema_info: list, geom_col: str) 
     )
 
 
+def _edges_schema_facts(schema_info: list, geom_col: str) -> tuple[bool, bool, str | None]:
+    """Return (is_geography, is_planar_geometry, schema_algorithm) for a column."""
+    from geoparquet_io.core.duckdb_metadata import parse_geometry_logical_type
+
+    for col in schema_info:
+        if col.get("name") != geom_col:
+            continue
+        logical_type = col.get("logical_type") or ""
+        if "GeographyType" in logical_type:
+            parsed = parse_geometry_logical_type(logical_type)
+            algorithm = parsed.get("algorithm", "spherical") if parsed else None
+            return True, False, algorithm
+        return False, "GeometryType" in logical_type, None
+    return False, False, None
+
+
 def _check_v2_edges_consistency(
     geo_meta: dict, schema_info: list, geom_col: str
 ) -> ValidationCheck:
     """Check V2-5: edges in metadata must match algorithm in Parquet GEOGRAPHY type."""
-    from geoparquet_io.core.duckdb_metadata import parse_geometry_logical_type
-
     col_meta = geo_meta.get("columns", {}).get(geom_col, {})
     metadata_edges = col_meta.get("edges", "planar")  # Default is planar
 
-    # Find schema algorithm
-    schema_algorithm = None
-    is_geography = False
-    for col in schema_info:
-        if col.get("name") == geom_col:
-            logical_type = col.get("logical_type") or ""
-            if "GeographyType" in logical_type:
-                is_geography = True
-                parsed = parse_geometry_logical_type(logical_type)
-                if parsed:
-                    schema_algorithm = parsed.get("algorithm", "spherical")  # Default
-            break
+    is_geography, is_planar_geometry, schema_algorithm = _edges_schema_facts(schema_info, geom_col)
 
     if not is_geography:
+        # The Parquet GEOMETRY logical type is defined as planar; a metadata
+        # claim of spherical/ellipsoidal edges contradicts it for readers that
+        # only honor the logical type. The 2.0 metadata schema still permits
+        # this shape (most writers cannot emit the GEOGRAPHY logical type and
+        # carry edges in geo metadata instead — gpio's own convert does), so
+        # this is an interoperability warning, not a spec violation.
+        if is_planar_geometry and metadata_edges != "planar":
+            return ValidationCheck(
+                name=f"v2_edges_consistency_{geom_col}",
+                status=CheckStatus.WARNING,
+                message=f"metadata declares non-planar edges '{metadata_edges}' "
+                "but column has planar GEOMETRY logical type",
+                details="Readers honoring only the Parquet logical type will "
+                "treat edges as planar; the GEOGRAPHY logical type expresses "
+                "this natively in GeoParquet 2.0",
+                category="geoparquet_2_0",
+            )
         return ValidationCheck(
             name=f"v2_edges_consistency_{geom_col}",
             status=CheckStatus.SKIPPED,
@@ -2184,7 +2213,7 @@ def _extract_epsg_from_dict(crs: dict) -> int | None:
     crs_id = crs.get("id", {})
     if not isinstance(crs_id, dict):
         return None
-    if crs_id.get("authority", "").upper() != "EPSG":
+    if str(crs_id.get("authority", "")).upper() != "EPSG":
         return None
     try:
         return int(crs_id.get("code", 0))
@@ -2267,7 +2296,8 @@ def _is_ogc_crs84(crs: Any) -> bool:
     if isinstance(crs, dict):
         crs_id = crs.get("id", {})
         if isinstance(crs_id, dict):
-            authority = crs_id.get("authority", "").upper()
+            # str() guards against malformed metadata with non-string values
+            authority = str(crs_id.get("authority", "")).upper()
             code = str(crs_id.get("code", "")).upper()
             return authority == "OGC" and code == "CRS84"
 
@@ -2565,26 +2595,51 @@ def _get_crs_from_schema(schema_info: list, geom_col: str) -> Any:
     return None
 
 
+def _complete_crs_id(crs: dict) -> tuple[str, str] | None:
+    """Normalized (authority, code) when both are present and non-empty, else None."""
+    crs_id = crs.get("id")
+    if not isinstance(crs_id, dict):
+        return None
+    authority = str(crs_id.get("authority") or "").upper()
+    code = str(crs_id.get("code") or "").upper()
+    if authority and code:
+        return (authority, code)
+    return None
+
+
 def _crs_equals(crs1: Any, crs2: Any) -> bool:
     """Compare two CRS values for equality."""
     if crs1 is None and crs2 is None:
         return True
     if crs1 is None or crs2 is None:
         return False
+    if not (isinstance(crs1, dict) and isinstance(crs2, dict)):
+        # Direct comparison for strings
+        return crs1 == crs2
 
-    # If both are dicts, compare EPSG codes if available
-    if isinstance(crs1, dict) and isinstance(crs2, dict):
-        id1 = crs1.get("id", {})
-        id2 = crs2.get("id", {})
-        if isinstance(id1, dict) and isinstance(id2, dict):
-            if id1.get("authority") == id2.get("authority"):
-                return id1.get("code") == id2.get("code")
+    # When both sides carry a complete authority:code id, trust it (the spec
+    # treats the id as authoritative).
+    id1 = _complete_crs_id(crs1)
+    id2 = _complete_crs_id(crs2)
+    if id1 and id2:
+        return id1 == id2
 
-        # Fall back to comparing names
-        return crs1.get("name") == crs2.get("name")
+    # Structurally identical PROJJSON is equal even if pyproj can't parse it.
+    if crs1 == crs2:
+        return True
 
-    # Direct comparison for strings
-    return crs1 == crs2
+    # At least one side lacks a usable id: compare semantically. Axis order is
+    # ignored because GeoParquet fixes coordinate order to (x, y). Fail closed
+    # on pyproj errors — an unverifiable CRS must not satisfy a consistency
+    # check.
+    try:
+        from pyproj import CRS as PyprojCRS
+
+        return PyprojCRS.from_json_dict(crs1).equals(
+            PyprojCRS.from_json_dict(crs2), ignore_axis_order=True
+        )
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -2688,15 +2743,16 @@ def validate_geoparquet(
         )
         return result
 
-    # A geo key that exists but doesn't parse must fail in ANY mode; without
-    # this, auto-detect classifies the file as plain parquet-geo-only and a
-    # corrupt file passes validation.
-    if geo_meta is None and kv_metadata and b"geo" in kv_metadata:
+    # A geo key that exists but doesn't parse to a JSON object must fail in
+    # ANY mode; without this, auto-detect classifies the file as plain
+    # parquet-geo-only and a corrupt file passes validation — and valid-JSON
+    # non-object values (list, string, number) would crash downstream checks.
+    if not isinstance(geo_meta, dict) and kv_metadata and b"geo" in kv_metadata:
         result.checks.append(
             ValidationCheck(
                 name="geo_metadata_parse",
                 status=CheckStatus.FAILED,
-                message="'geo' metadata key exists but is not valid JSON",
+                message="'geo' metadata key exists but is not a valid JSON object",
                 category="core_metadata",
             )
         )
@@ -2907,12 +2963,12 @@ def _run_geoparquet_checks(
     # Core metadata checks (1.0+)
     checks.append(_check_geo_key_exists(kv_metadata))
 
-    if geo_meta is None:
+    if not isinstance(geo_meta, dict):
         checks.append(
             ValidationCheck(
                 name="geo_metadata_parse",
                 status=CheckStatus.FAILED,
-                message="failed to parse 'geo' metadata as JSON",
+                message="failed to parse 'geo' metadata as a JSON object",
                 category="core_metadata",
             )
         )
