@@ -132,11 +132,14 @@ addopts = [
     "--cov=geoparquet_io",
     "--cov-report=term-missing",
     "--cov-fail-under=67",
+    # The geoparquet-testing submodule ships its own pytest suite; never collect it.
+    "--ignore=tests/data/geoparquet-testing",
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "network: marks tests requiring network access (deselect with '-m \"not network\"')",
     "integration: marks end-to-end integration tests",
+    "corpus: tests against the official geoparquet-testing corpus (requires git submodule)",
 ]
 
 [tool.ruff]
@@ -323,7 +326,7 @@ verbose = false
 # site/ (mkdocs build) and mutants/ (mutmut working tree) are gitignored
 # build artifacts; scanning them made test_codespell_passes fail on any
 # machine that had built docs or run mutation testing locally.
-skip = ".git,*.lock,*.parquet,*.json,tests/data/*,.venv,uv.lock,site,mutants"
+skip = ".git,*.lock,*.parquet,*.json,tests/data/*,geoparquet-testing,.venv,uv.lock,site,mutants"
 ignore-words-list = "nd,ot,crs,inout,hel,bu"
 check-filenames = true
 

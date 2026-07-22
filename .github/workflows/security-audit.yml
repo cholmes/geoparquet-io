@@ -36,6 +36,10 @@ jobs:
           # No direct git push happens here (create-pull-request uses its own
           # token input), so don't leave GITHUB_TOKEN credentials in .git/config.
           persist-credentials: false
+          # The verification pytest run includes the corpus conformance suite,
+          # which lives in the geoparquet-testing submodule — without it those
+          # tests silently skip and an upgrade could be "verified" untested.
+          submodules: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2

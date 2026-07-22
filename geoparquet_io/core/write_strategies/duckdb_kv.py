@@ -573,12 +573,18 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         try:
             con.register("input_table", table)
 
-            # Convert WKB bytes to GEOMETRY for proper spatial processing
-            escaped_geom = geometry_column.replace('"', '""')
-            query = f"""
-                SELECT * REPLACE (ST_GeomFromWKB("{escaped_geom}") AS "{escaped_geom}")
-                FROM input_table
-            """
+            # Convert WKB bytes to GEOMETRY for proper spatial processing.
+            # geoarrow.wkb extension columns already register as GEOMETRY in
+            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error.
+            geom_type = table.schema.field(geometry_column).type
+            if getattr(geom_type, "extension_name", None) == "geoarrow.wkb":
+                query = "SELECT * FROM input_table"
+            else:
+                escaped_geom = geometry_column.replace('"', '""')
+                query = f"""
+                    SELECT * REPLACE (ST_GeomFromWKB("{escaped_geom}") AS "{escaped_geom}")
+                    FROM input_table
+                """
 
             self.write_from_query(
                 con=con,

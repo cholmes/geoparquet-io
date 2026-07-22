@@ -369,61 +369,17 @@ def compute_geometry_types_via_sql(
     """
     Compute distinct geometry types from query using DuckDB.
 
-    Uses ST_GeometryType to get distinct types and normalizes them
-    to GeoParquet format (e.g., "POINT" -> "Point").
-
-    Args:
-        con: DuckDB connection with spatial extension loaded
-        query: SQL query containing geometry column
-        geometry_column: Name of geometry column
+    Delegates to the canonical dimension-aware implementation in
+    ``geoparquet_io.core.common`` (lazy import: common imports this module
+    at top level, so a module-level import here would be circular).
 
     Returns:
-        List of geometry type names (e.g., ["Point", "Polygon"])
-        or empty list if column not in query
+        List of spec geometry type names with dimension suffixes
+        (e.g., ["Point", "LineString ZM"]) or empty list if column not in query
     """
-    # Check if geometry column exists in query result
-    try:
-        columns = _get_query_columns(con, query)
-        if geometry_column not in columns:
-            return []
-    except (duckdb.Error, RuntimeError, ValueError, AttributeError):
-        # If we can't determine schema, return empty list rather than failing
-        return []
+    from geoparquet_io.core.common import compute_geometry_types_via_sql as _impl
 
-    # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) can't use ST_GeometryType.
-    # For native encodings, geometry_types is already known from the encoding name;
-    # returning [] here is valid — GeoParquet allows omitting geometry_types.
-    col_type = _get_query_column_type(con, query, geometry_column) or ""
-    if "STRUCT" in col_type:
-        return []
-
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    types_query = f"""
-        SELECT DISTINCT ST_GeometryType("{escaped_col}") as geom_type
-        FROM ({query})
-        WHERE "{escaped_col}" IS NOT NULL
-    """
-    results = con.execute(types_query).fetchall()
-
-    # DuckDB returns types like "POINT", "POLYGON" - convert to GeoParquet format
-    type_map = {
-        "POINT": "Point",
-        "LINESTRING": "LineString",
-        "POLYGON": "Polygon",
-        "MULTIPOINT": "MultiPoint",
-        "MULTILINESTRING": "MultiLineString",
-        "MULTIPOLYGON": "MultiPolygon",
-        "GEOMETRYCOLLECTION": "GeometryCollection",
-    }
-
-    types = []
-    for (geom_type,) in results:
-        if geom_type:
-            normalized = type_map.get(geom_type.upper(), geom_type)
-            types.append(normalized)
-
-    return sorted(set(types))
+    return _impl(con, query, geometry_column)
 
 
 # =============================================================================

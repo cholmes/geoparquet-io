@@ -1383,6 +1383,17 @@ def _determine_effective_crs(
     return detected
 
 
+def _validate_output_metadata(output_file: str):
+    """Cheap metadata-level validation of the final output; None if it can't run."""
+    from geoparquet_io.core.validate import validate_geoparquet
+
+    try:
+        return validate_geoparquet(output_file, validate_data=False)
+    except Exception as e:  # never let the report step fail the conversion
+        debug(f"Post-conversion validation could not run: {e}")
+        return None
+
+
 def _report_conversion_results(output_file: str, start_time: float, is_geo: bool = True) -> None:
     """Report conversion results with timing and file size."""
     elapsed = time.time() - start_time
@@ -1396,10 +1407,22 @@ def _report_conversion_results(output_file: str, start_time: float, is_geo: bool
         progress(f"Output: {output_file} ({format_size(file_size)})")
     else:
         progress(f"Output: {output_file}")
-    if is_geo:
-        success("✓ Output passes GeoParquet validation")
-    else:
+
+    if not is_geo:
         success("✓ Converted to optimized Parquet (no geometry)")
+        return
+
+    # Only claim a validation pass after actually validating the final output
+    # (post any metadata repairs). Remote outputs skip the extra fetch.
+    result = None if is_remote_url(output_file) else _validate_output_metadata(output_file)
+    if result is None:
+        progress("Conversion complete (run 'gpio check spec' to validate)")
+    elif result.is_valid:
+        success("✓ Output passes GeoParquet validation (metadata checks)")
+    else:
+        warn(
+            "Output did not pass GeoParquet metadata validation — run 'gpio check spec' for details"
+        )
 
 
 def convert_to_geoparquet(
@@ -1479,6 +1502,18 @@ def convert_to_geoparquet(
         require_single_file(input_file, "convert")
 
     try:
+        # Auto version mode: preserve a parquet input's GeoParquet version
+        # (and upgrade native-geo-only inputs to 2.0) instead of silently
+        # falling back to the 1.1 default and stripping native types (#587).
+        if geoparquet_version is None and is_parquet:
+            from geoparquet_io.core.common import resolve_geoparquet_version_from_file
+
+            geoparquet_version = resolve_geoparquet_version_from_file(input_file, verbose)
+            if geoparquet_version:
+                debug(f"Auto-detected GeoParquet version from input: {geoparquet_version}")
+            else:
+                debug("Could not detect input GeoParquet version; using writer default")
+
         effective_crs = _determine_effective_crs(
             input_file, input_url, crs, is_csv, is_parquet, con, verbose
         )
@@ -1561,7 +1596,11 @@ def convert_to_geoparquet(
             geoparquet_version=geoparquet_version,
             input_crs=effective_crs,
             geometry_info=geometry_info,
+            # Geography inputs: DuckDB demotes GEOGRAPHY to GEOMETRY and drops
+            # the edges declaration; the shared write path restores it (#588).
+            input_file=input_file if is_parquet and has_geometry else None,
         )
+
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)
 
     except duckdb.IOException as e:

@@ -181,8 +181,15 @@ def read(path: str | Path, **kwargs) -> Table:
         >>> table = gpio.read('data.parquet')
         >>> table.add_bbox().write('output.parquet')
     """
+    from geoparquet_io.core.common import resolve_geoparquet_version_from_file
+
     arrow_table = pq.read_table(str(path), **kwargs)
-    return Table(arrow_table)
+    table = Table(arrow_table)
+    # CLI-parity auto-version hint (todo 043): remember the file-based decision
+    # so write() picks the same version the CLI would for this input, even when
+    # native geometry columns were demoted to plain binary by pq.read_table.
+    table._auto_version_hint = resolve_geoparquet_version_from_file(str(path))
+    return table
 
 
 def read_partition(
@@ -462,6 +469,11 @@ class Table:
         """
         self._table = table
         self._geometry_column = geometry_column or self._detect_geometry_column()
+        # Auto-version hint captured at read time (see read()): pq.read_table
+        # demotes native geometry columns to plain binary when geoarrow isn't
+        # registered, so the table alone can't always tell a native-geo-only
+        # source from generic WKB. None when the table wasn't read from a file.
+        self._auto_version_hint: str | None = None
 
     def _detect_geometry_column(self) -> str | None:
         """Detect geometry column from metadata or common names."""
@@ -955,6 +967,21 @@ class Table:
         from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
+
+        # Auto mode: resolve to a concrete version with the same decision the
+        # CLI uses (native-geo-only → 2.0), falling back to the hint captured
+        # at read() time, then the default. Passing a concrete version keeps
+        # output self-consistent (a None version made duckdb-kv keep the native
+        # GEOMETRY logical type while stamping 1.1.0/WKB geo metadata).
+        if geoparquet_version is None:
+            from geoparquet_io.core.common import resolve_geoparquet_version_from_table
+            from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
+
+            geoparquet_version = (
+                resolve_geoparquet_version_from_table(self._table, verbose)
+                or self._auto_version_hint
+                or DEFAULT_GEOPARQUET_VERSION
+            )
 
         path_str = str(path)
         is_remote = is_remote_url(path_str)

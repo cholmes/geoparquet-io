@@ -26,6 +26,20 @@ The `data/` directory contains test GeoParquet files:
 - `places_test.parquet` - 766 rows with place data including bbox column
 - `buildings_test.parquet` - 42 rows with building geometries
 
+### geoparquet-testing corpus (submodule)
+
+`data/geoparquet-testing/` is a git submodule vendoring the official
+[geoparquet-testing](https://github.com/geoparquet/geoparquet-testing) corpus,
+used by `test_geoparquet_corpus.py` (marker: `corpus`). Initialize it with:
+
+```bash
+git submodule update --init
+```
+
+Without it those tests skip with a hint. The pin is a specific upstream commit;
+bump it deliberately (fixture changes can alter expected results — see the
+adjudication notes in `test_geoparquet_corpus.py`).
+
 ## Running Tests
 
 ### Run all tests

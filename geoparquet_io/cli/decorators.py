@@ -270,16 +270,17 @@ def geoparquet_version_option(func):
     - 2.0: GeoParquet 2.0 with native Parquet geo types
     - parquet-geo-only: Native Parquet geo types without GeoParquet metadata
 
-    If not specified, auto-detects from input: preserves input version,
-    upgrades native geo types to 2.0, defaults to 1.1.
+    If not specified, auto-detects from input: preserves 2.0, writes 1.1 for
+    1.x inputs (1.0 upgrades to 1.1), upgrades bare native geo types to 2.0,
+    defaults to 1.1.
     """
     return click.option(
         "--geoparquet-version",
         type=click.Choice(["1.0", "1.1", "1.1-geoarrow", "2.0", "parquet-geo-only"]),
         default=None,
         help="GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only). "
-        "Auto-detects from input if not specified: preserves input version, "
-        "upgrades native geo types to 2.0, defaults to 1.1.",
+        "Auto-detects from input if not specified: preserves 2.0; 1.x inputs "
+        "write 1.1; bare native geo types upgrade to 2.0; defaults to 1.1.",
     )(func)
 
 

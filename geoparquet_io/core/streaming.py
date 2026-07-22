@@ -613,6 +613,11 @@ def extract_version_from_metadata(metadata: dict | None) -> str | None:
                     # Upgrade all 1.x versions to 1.1 (backwards compatible)
                     if major == "1":
                         return "1.1"
+                    # Flatten any 2.x to "2.0" — the highest 2.x this writer
+                    # knows — so this path agrees with its file-based twin,
+                    # resolve_geoparquet_version_from_file (common.py).
+                    if major == "2":
+                        return "2.0"
                     return f"{major}.{parts[1]}"
         return None
     except (json.JSONDecodeError, UnicodeDecodeError):

@@ -10,6 +10,18 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **New spec-validation checks in `gpio check spec` (#586).** Validation now
+  fails on unknown `geo` metadata versions (e.g. `99.0.0`) even in auto mode;
+  on version/feature mismatches (1.0 metadata using GeoParquet 2.0 native geo
+  types or the 1.1-only `covering` key); on PROJJSON `crs` objects missing the
+  required `type` member or using an unknown PROJJSON CRS type; and on a `geo`
+  key containing invalid JSON or a non-object value (clean failure instead of
+  a crash). Epoch validation is now datum-aware via pyproj: a coordinate
+  `epoch` on a datum ensemble (e.g. EPSG:4326, or the CRS84 default) fails, on
+  a specific static frame (e.g. GDA2020) warns, and on a dynamic frame (e.g.
+  ITRF) passes; an explicit `"crs": null` plus epoch warns since the datum
+  cannot be verified.
+
 - **`gpio process aggregate a5`**, **`gpio process aggregate h3`**, and
   **`gpio process aggregate admin`**: aggregate large GeoParquet datasets into A5 grid
   cells, H3 hexagonal cells, or administrative regions with per-bucket `count`,
@@ -71,6 +83,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Changed
 
+- **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
+  `gpio check spec` heuristic that flags geographic-looking coordinates (values
+  within ±180/±90) under a projected CRS now reports a WARNING instead of
+  FAILED, so affected files exit with code `2` (warnings) instead of `1`.
+  Callers gating on exit codes should update. The deterministic CRS-consistency
+  check for GeoParquet 2.0 native geo statistics still fails on a real
+  mismatch.
+
+- **`--geoparquet-version` auto mode preserves the input version (#587,
+  #594).** When the flag is omitted, `gpio convert` and `gpio convert
+  reproject` now preserve GeoParquet 2.0 inputs (previously silently
+  downgraded to 1.1), upgrade bare native-geo Parquet (no `geo` metadata) to
+  2.0, and write 1.1 for 1.x inputs. An explicit `--geoparquet-version` always
+  wins. The Python API resolves auto the same way, so
+  `gpio.read('native.parquet').write('out.parquet')` writes true 2.0 native
+  output like the CLI.
+
 - **BREAKING**: Renamed `--profile` to `--aws-profile` for clarity
   - Only affects AWS S3 operations (convert, extract, upload commands)
   - Local operations no longer have this flag
@@ -91,6 +120,18 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Non-planar edges metadata survives rewrites (#588).** `"edges":
+  "spherical"` (e.g. from BigQuery GEOGRAPHY extracts) is now preserved across
+  `convert`, `extract`, `sort`, `convert reproject`, and `partition`
+  rewrites — including remote (S3/GCS/Azure) outputs — instead of being
+  silently demoted to planar. GeoParquet 2.0 ellipsoidal edges algorithms
+  (`vincenty`, `karney`, `andoyer`, `thomas`) are mapped to `"spherical"` with
+  a warning when writing 1.x output; 2.0 outputs keep the algorithm verbatim.
+- **Z/M geometry types written and validated dimension-aware (#583, #589).**
+  Written `geometry_types` metadata now carries the spec's dimension suffixes
+  (`"Point Z"`, `"LineString ZM"`), and `gpio check spec` matches declared
+  suffixes against the actual coordinate dimensions in both directions
+  (declared-but-absent and present-but-undeclared).
 - **`gpio partition … --auto` is now extent-aware (#524).** Auto-resolution
   previously assumed data was spread uniformly across the entire globe, so
   regional/national datasets got a far-too-coarse resolution — collapsing into a
