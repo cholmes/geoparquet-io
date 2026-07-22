@@ -390,3 +390,42 @@ def crs_srid_file(test_data_dir):
     indicating EPSG:5070.
     """
     return str(test_data_dir / "crs-srid.parquet")
+
+
+# ---------------------------------------------------------------------------
+# Graceful skip when an optional DuckDB community extension is unavailable
+# ---------------------------------------------------------------------------
+# Community extensions (e.g. 'geography' for S2 support) are built per DuckDB
+# release. When a DuckDB version ships before an extension has been rebuilt for
+# it, `INSTALL ... FROM community` returns HTTP 404 and gpio raises
+# ExtensionUnavailableError -- the correct production behaviour, which we keep.
+#
+# We pin DuckDB (pyproject) to a version that publishes 'geography', so in CI
+# the S2 tests run for real. This hook is a defensive safety net: if a test
+# environment ever ends up on a DuckDB whose optional extension is genuinely
+# unpublished, the affected tests SKIP instead of hard-failing and reddening
+# the whole matrix.
+#
+# Tests that deliberately assert ExtensionUnavailableError catch it themselves
+# (via pytest.raises), so the exception never escapes to this hook -- only
+# feature tests that hit an unavailable extension are converted to skips.
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Convert an unhandled ExtensionUnavailableError into a clean skip."""
+    outcome = yield
+    excinfo = outcome.excinfo
+    if excinfo is None:
+        return
+
+    # Import lazily so conftest has no import-time dependency on package internals.
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    exc = excinfo[1]
+    if isinstance(exc, ExtensionUnavailableError):
+        outcome.force_exception(
+            pytest.skip.Exception(
+                f"Optional DuckDB community extension '{exc.name}' is not "
+                f"available for DuckDB {exc.duckdb_version} in this environment "
+                f"(community extensions are built per DuckDB release)."
+            )
+        )
