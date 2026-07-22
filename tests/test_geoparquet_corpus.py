@@ -24,8 +24,9 @@ One corpus bug was found (CORPUS_BUG_FILES): the data/zm/ fixtures declare
 geometry_types ["LineString"] without the " Z"/" M"/" ZM" suffix the spec
 mandates for 3D/measured data ("a ' Z' suffix gets added", "It is expected
 that this field is strictly correct") — the very violation bad_data/
-zm-declared-xy-actual-xyz.parquet exists to test. Reported upstream; these
-xfails are non-strict so a fixed corpus pin turns them green automatically.
+zm-declared-xy-actual-xyz.parquet exists to test. Reported upstream; once a
+fixed corpus pin lands, test_validates_clean fails loudly on each stale entry
+so CORPUS_BUG_FILES gets cleaned up instead of masking future regressions.
 """
 
 import json
@@ -59,8 +60,30 @@ CORPUS = Path(__file__).parent / "data" / "geoparquet-testing"
 KNOWN_VALIDATION_BUGS: dict[str, str] = {}
 
 
+# Floors just below the current per-tier corpus counts (data=42, samples=9,
+# bad_data=22 at the pinned commit). An empty or restructured submodule makes
+# rglob return [] and pytest's empty-parameter-set default silently SKIPs every
+# parametrized test; test_corpus_tier_minimum_files turns that into a loud
+# failure. Raise these floors when the corpus grows.
+CORPUS_TIER_MINIMUMS = {"data": 40, "samples": 8, "bad_data": 15}
+
+
+@pytest.mark.parametrize(("tier", "minimum"), sorted(CORPUS_TIER_MINIMUMS.items()))
+def test_corpus_tier_minimum_files(tier, minimum):
+    """Guard: a shrunken/missing tier must fail loudly, not skip everything silently."""
+    if not (CORPUS / "data").exists():
+        pytest.skip("run: git submodule update --init")
+    count = len(list((CORPUS / tier).rglob("*.parquet")))
+    assert count >= minimum, (
+        f"{tier}/ has {count} parquet files, expected >= {minimum} — the corpus "
+        "submodule pin changed or is incomplete; every missing file is a "
+        "conformance test that silently stopped running"
+    )
+
+
 # Fixtures that themselves violate the spec (upstream geoparquet-testing bugs).
-# Non-strict xfail: they pass again once the corpus pin advances past the fix.
+# test_validates_clean xfails while an entry still reproduces and fails hard
+# once it stops reproducing, forcing removal of stale entries after a pin bump.
 CORPUS_BUG_FILES = {
     "data/zm/linestring-xyz-native-geometry.parquet": (
         "corpus bug: declares ['LineString'] for XYZ data; spec requires 'LineString Z'"
@@ -140,11 +163,16 @@ class TestValidFilesRead:
         failed = _failed_checks(result)
         if rel in CORPUS_BUG_FILES:
             # Spec-violating fixture: failing validation is the CORRECT outcome
-            # (today it fails for the wrong reason, gpio #583). Non-strict so a
-            # fixed corpus pin flips it green without editing this file.
+            # (today it fails for the wrong reason, gpio #583). If validation is
+            # clean the fixture was fixed upstream — force removal of the stale
+            # entry so it cannot mask a future regression on this file.
             if failed:
                 pytest.xfail(CORPUS_BUG_FILES[rel])
-            return
+            pytest.fail(
+                f"CORPUS_BUG_FILES entry no longer needed for {rel} — validation "
+                "is clean at this corpus pin; remove the entry (and the matching "
+                "test_zm_dimensions_parsed xfail if it now XPASSes)"
+            )
         if not failed:
             return
         refs = _known_bug_refs(failed)
@@ -260,11 +288,12 @@ BAD_DATA_EXPECTATIONS = {
     ),
     "wkb-with-srid-prefix.parquet": ("auto", [r"native_geo_type_present_"], None),
     "wkb-wrong-type-byte.parquet": ("auto", [r"native_geo_type_present_"], None),
-    # Native stats (computed from data) agree with the data, so detection
-    # comes from the geo-metadata declaration disagreeing with the scan.
+    # Native stats are computed from the data itself, so native_geo_types_match_
+    # can never fire here — they always agree with the data. Detection comes
+    # solely from the geo-metadata declaration disagreeing with the scan.
     "zm-declared-xy-actual-xyz.parquet": (
         "auto",
-        [r"geometry_types_match_data_", r"native_geo_types_match_"],
+        [r"geometry_types_match_data_"],
         None,
     ),
     "zm-declared-xyz-actual-xy.parquet": ("auto", [r"geometry_types_match_data_"], None),
@@ -306,7 +335,9 @@ class TestBadData:
         if not manifest_path.exists():
             pytest.skip("run: git submodule update --init")
         manifest = set(json.loads(manifest_path.read_text()))
-        on_disk = {f.name for f in (CORPUS / "bad_data").glob("*.parquet")}
+        # rglob to mirror _corpus_files collection: a nested bad_data file must
+        # not dodge the guard just because it sits in a subdirectory.
+        on_disk = {f.name for f in (CORPUS / "bad_data").rglob("*.parquet")}
         assert manifest == on_disk
         assert set(BAD_DATA_EXPECTATIONS) == manifest
 
@@ -430,11 +461,10 @@ class TestCliWiring:
             pytest.skip("run: git submodule update --init")
         runner = CliRunner()
         good_result = runner.invoke(cli, ["check", "spec", str(good), "--json"])
-        # Exit 0 (pass) or 2 (warnings only); 1 would mean spec failures. The
-        # good file currently trips known validation bugs (#581 et al.), so
-        # accept 0/1/2 but require valid JSON output; tighten to {0, 2} when
-        # KNOWN_VALIDATION_BUGS empties.
-        assert good_result.exit_code in (0, 1, 2), good_result.output
+        # Exit 0 (pass) or 2 (warnings only); 1 means spec failures, which a
+        # valid corpus file must never trip now that KNOWN_VALIDATION_BUGS is
+        # empty (#597).
+        assert good_result.exit_code in (0, 2), good_result.output
         json.loads(good_result.output)
         bad_result = runner.invoke(cli, ["check", "spec", str(bad), "--json"])
         assert bad_result.exit_code == 1, bad_result.output
