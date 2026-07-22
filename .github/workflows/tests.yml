@@ -375,17 +375,65 @@ jobs:
           # test's verdict. --forked confines a crash to the one test that
           # crashed; --timeout caps a hung remote; --reruns absorbs transient
           # network errors.
+          # -rfE prints a short "FAILED/ERROR" summary at the tail; tee keeps
+          # a copy so the run-summary + tracking-issue steps below can name the
+          # tests that failed. pipefail (on by default for GitHub's bash steps,
+          # set explicitly here as insurance) makes the pipeline exit with
+          # pytest's status, so a failure still marks this step failed.
+          set -o pipefail
           uv run pytest -p no:xdist --forked -m network \
             --ignore=tests/test_security.py \
             --timeout=180 --timeout-method=thread \
             --reruns 2 --reruns-delay 10 \
-            -v --tb=short --no-cov
+            -v --tb=short --no-cov -rfE \
+            2>&1 | tee network-test-output.txt
+
+      - name: Surface network-test failure in run summary
+        # continue-on-error above keeps the job badge green even though the
+        # step's real outcome was 'failure' — which has misled triage. Make the
+        # failure legible in the run summary and capture the failing test names
+        # for the tracking issue. Pass/fail semantics are untouched: this only
+        # runs on the failure path and only adds information.
+        if: steps.nettests.outcome == 'failure'
+        run: |
+          {
+            echo "## ⚠️ Live network tests FAILED (non-blocking)"
+            echo ""
+            echo "The \`network-tests\` step outcome was **failure**, but the job"
+            echo "badge stays green by design (live third-party services). See the"
+            echo "tracking issue for history."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -E '^(FAILED|ERROR)' network-test-output.txt \
+               > network-test-failures.txt; then
+            {
+              echo "Failing tests:"
+              echo ""
+              echo '```'
+              cat network-test-failures.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_No individual FAILED/ERROR lines were captured (the step may" \
+                 "have crashed before pytest reported)._" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Open or update tracking issue on failure
         if: steps.nettests.outcome == 'failure'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const fs = require('fs');
+            // Failing-test names captured by the "Surface network-test failure"
+            // step (pytest -rfE short summary). Best-effort: absent if the step
+            // crashed before pytest reported.
+            let failures = '';
+            try {
+              failures = fs.readFileSync('network-test-failures.txt', 'utf8').trim();
+            } catch {}
+            const failuresBlock = failures
+              ? ['**Failing tests:**', '', '```', failures, '```']
+              : ['_Failing test names were not captured — see the run log._'];
             const title = '🌐 Network tests failing against live services';
             const body = [
               '## Automated network-test report',
@@ -394,6 +442,8 @@ jobs:
               'live third-party services, so this usually means a remote',
               'endpoint changed, broke, or throttled us — but it can also be',
               'a real regression in our extractors.',
+              '',
+              ...failuresBlock,
               '',
               `- **Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
               `- **Date**: ${new Date().toISOString().split('T')[0]}`,
