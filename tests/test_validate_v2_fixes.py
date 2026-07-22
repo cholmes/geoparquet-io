@@ -136,7 +136,9 @@ class TestEmptyGeometryContainment:
             )
         finally:
             con.close()
-        assert check.status in (CheckStatus.PASSED, CheckStatus.SKIPPED), check.message
+        # Two non-empty points must be checked and pass; a loose
+        # PASSED-or-SKIPPED assertion could mask a containment regression.
+        assert check.status == CheckStatus.PASSED, check.message
 
 
 class TestSchemaInfoRegistrationIndependent:

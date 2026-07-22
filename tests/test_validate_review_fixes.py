@@ -18,12 +18,21 @@ import pyarrow.parquet as pq
 import pytest
 from pyproj import CRS as PyprojCRS
 
+from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.validate import (
     CheckStatus,
+    _check_crs_valid,
     _check_epoch_valid,
     _check_v2_edges_consistency,
+    _check_version_features,
+    _check_version_known,
     _crs_equals,
+    _interpret_bbox_result,
+    _is_crs84_equivalent,
     _is_ogc_crs84,
+    _is_read_failure,
+    _normalize_found_geometry_type,
+    _version_at_least,
     validate_geoparquet,
 )
 
@@ -199,3 +208,176 @@ class TestEpochCrsHandling:
         crs = {"id": {"authority": "XYZ", "code": 1}}
         check = _check_epoch_valid({"epoch": 2020.0, "crs": crs}, "geometry")
         assert check.status == CheckStatus.WARNING, check.message
+
+
+# =============================================================================
+# P3 polish batch (todos 046/047)
+# =============================================================================
+
+
+class TestVacuousBboxPass:
+    """046-V1: a 0-geometry check must SKIP, not vouch for the bbox."""
+
+    def test_zero_checked_is_skipped(self):
+        check = _interpret_bbox_result((0, 0), "geometry")
+        assert check.status == CheckStatus.SKIPPED, check.message
+        assert "no non-empty geometries" in check.message
+
+    def test_nonzero_pass_unchanged(self):
+        check = _interpret_bbox_result((3, 3), "geometry")
+        assert check.status == CheckStatus.PASSED
+
+    def test_failure_unchanged(self):
+        check = _interpret_bbox_result((3, 2), "geometry")
+        assert check.status == CheckStatus.FAILED
+
+
+class TestReadFailureVsCorruption:
+    """046-V2: I/O failures must not be reported as corruption."""
+
+    def test_io_error_in_chain_is_read_failure(self):
+        try:
+            raise GeoParquetError("Cannot read file: x") from FileNotFoundError("x")
+        except GeoParquetError as e:
+            assert _is_read_failure(e)
+
+    def test_unicode_error_in_chain_is_corruption(self):
+        try:
+            raise GeoParquetError("Cannot read file: x") from UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "invalid start byte"
+            )
+        except GeoParquetError as e:
+            assert not _is_read_failure(e)
+
+    def test_bare_value_error_is_corruption(self):
+        assert not _is_read_failure(ValueError("bad metadata"))
+
+
+class TestCrs84UrnEquivalence:
+    """046-V3: URN spellings of CRS84/EPSG:4326 must be recognized."""
+
+    @pytest.mark.parametrize(
+        "crs",
+        [
+            "urn:ogc:def:crs:OGC:1.3:CRS84",
+            "urn:ogc:def:crs:OGC::CRS84",
+            "urn:ogc:def:crs:EPSG::4326",
+        ],
+    )
+    def test_urn_forms_equivalent(self, crs):
+        assert _is_crs84_equivalent(crs)
+
+    def test_other_crs_still_not_equivalent(self):
+        assert not _is_crs84_equivalent("EPSG:3857")
+        assert not _is_crs84_equivalent("urn:ogc:def:crs:EPSG::3857")
+
+
+class TestVersionAtLeast:
+    """046-V4: version compares must parse, not compare lexicographically."""
+
+    def test_short_and_full_forms(self):
+        assert _version_at_least("2.0", 2, 0)
+        assert _version_at_least("2.0.0", 2, 0)
+        assert not _version_at_least("1.1.0", 2, 0)
+
+    def test_prerelease_tag_ignored(self):
+        assert _version_at_least("1.0.0-beta.1", 1, 0)
+        assert not _version_at_least("1.0.0-beta.1", 1, 1)
+
+    def test_not_lexicographic(self):
+        # "1.10.0" < "1.2.0" lexicographically; numerically it is greater.
+        assert _version_at_least("1.10.0", 1, 2)
+
+    def test_garbage_and_non_string_false(self):
+        assert not _version_at_least("banana", 1, 0)
+        assert not _version_at_least(None, 1, 0)
+        assert not _version_at_least(1.0, 1, 0)
+
+
+class TestVersionKnownNonString:
+    """046-V5: non-string versions get an honest message, not 'unknown 1.0'."""
+
+    def test_non_string_version_fails_with_type_message(self):
+        check = _check_version_known({"version": 1.0})
+        assert check.status == CheckStatus.FAILED
+        assert "must be a string" in check.message
+
+    def test_string_versions_unchanged(self):
+        assert _check_version_known({"version": "1.0.0"}).status == CheckStatus.PASSED
+        assert _check_version_known({"version": "99.0.0"}).status == CheckStatus.FAILED
+
+
+class TestVersionFeaturesPolish:
+    """046-V6: no contradictory PASS, 1.1-only 'covering' detection, skip reasons."""
+
+    def test_non_string_version_skips_instead_of_passing(self):
+        check = _check_version_features("does-not-exist.parquet", {"version": 1.0})
+        assert check.status == CheckStatus.SKIPPED
+        assert "not a string" in check.message
+
+    def test_1_0_with_covering_fails(self):
+        geo = {
+            "version": "1.0.0",
+            "columns": {"geometry": {"encoding": "WKB", "covering": {"bbox": {}}}},
+        }
+        # Returns before the schema read, so no file is needed.
+        check = _check_version_features("does-not-exist.parquet", geo)
+        assert check.status == CheckStatus.FAILED
+        assert "covering" in check.message
+
+    def test_1_1_with_covering_passes(self, tmp_path):
+        out = tmp_path / "plain.parquet"
+        pq.write_table(pa.table({"geometry": [WKB_POINT]}), out)
+        geo = {
+            "version": "1.1.0",
+            "columns": {"geometry": {"encoding": "WKB", "covering": {"bbox": {}}}},
+        }
+        check = _check_version_features(str(out), geo)
+        assert check.status == CheckStatus.PASSED, check.message
+
+    def test_schema_read_error_reason_in_message(self, tmp_path):
+        check = _check_version_features(str(tmp_path / "missing.parquet"), {"version": "1.1.0"})
+        assert check.status == CheckStatus.SKIPPED
+        assert "could not inspect Parquet schema:" in check.message
+        # The reason itself must be included, not just the preamble.
+        assert check.message.split("could not inspect Parquet schema:")[1].strip()
+
+
+class TestProjjsonTypeMember:
+    """046-V7: the PROJJSON 'type' value must come from the schema's known set."""
+
+    def test_made_up_type_fails(self):
+        check = _check_crs_valid({"crs": {"type": "TotallyMadeUp"}}, "geometry")
+        assert check.status == CheckStatus.FAILED
+        assert "TotallyMadeUp" in check.message
+
+    @pytest.mark.parametrize(
+        "crs_type",
+        [
+            "GeographicCRS",
+            "GeodeticCRS",
+            "ProjectedCRS",
+            "CompoundCRS",
+            "BoundCRS",
+            "VerticalCRS",
+            "EngineeringCRS",
+            "DerivedGeographicCRS",
+            "DerivedProjectedCRS",
+        ],
+    )
+    def test_known_types_pass(self, crs_type):
+        check = _check_crs_valid({"crs": {"type": crs_type}}, "geometry")
+        assert check.status == CheckStatus.PASSED, check.message
+
+
+class TestGeomTypeNormalization:
+    """046-V10: unmapped base types must not get their Z/M suffix doubled."""
+
+    def test_unmapped_base_no_double_suffix(self):
+        assert _normalize_found_geometry_type("TRIANGLE Z") == "TRIANGLE Z"
+
+    def test_mapped_with_suffix(self):
+        assert _normalize_found_geometry_type("MULTIPOINT ZM") == "MultiPoint ZM"
+
+    def test_st_prefix_stripped(self):
+        assert _normalize_found_geometry_type("ST_POINT") == "Point"

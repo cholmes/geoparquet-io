@@ -156,7 +156,9 @@ def _pyarrow_get_schema_info(parquet_file: str) -> list[dict] | None:
             # registration (importing geoarrow.pyarrow anywhere flips it), and
             # schema info must not vary with import order.
             field_type = field.type
-            if isinstance(field_type, pa.ExtensionType):
+            # BaseExtensionType also covers C++-defined extensions (e.g.
+            # pyarrow's built-in ones), which pa.ExtensionType would miss.
+            if isinstance(field_type, pa.BaseExtensionType):
                 field_type = field_type.storage_type
 
             col_info = {

@@ -105,3 +105,27 @@ def test_reproject_explicit_version_still_wins(pgo_input, tmp_path):
     reproject(str(pgo_input), str(out), target_crs="EPSG:3857", geoparquet_version="1.1")
     assert get_geoparquet_version(str(out)) == "1.1.0"
     assert not has_native_geo_types(str(out))
+
+
+# --- 2.x normalization must agree across detection paths (todo 047-C2) ---
+
+
+def test_streaming_metadata_path_flattens_future_2x_to_2_0():
+    """extract_version_from_metadata must agree with the file-based twin
+    (resolve_geoparquet_version_from_file), which flattens any 2.x to "2.0"."""
+    import json
+
+    from geoparquet_io.core.streaming import extract_version_from_metadata
+
+    meta = {b"geo": json.dumps({"version": "2.1.0"}).encode()}
+    assert extract_version_from_metadata(meta) == "2.0"
+
+
+def test_streaming_metadata_path_known_versions_unchanged():
+    import json
+
+    from geoparquet_io.core.streaming import extract_version_from_metadata
+
+    for declared, expected in [("1.0.0", "1.1"), ("1.1.0", "1.1"), ("2.0.0", "2.0")]:
+        meta = {b"geo": json.dumps({"version": declared}).encode()}
+        assert extract_version_from_metadata(meta) == expected, declared

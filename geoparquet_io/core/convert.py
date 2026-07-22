@@ -1509,8 +1509,10 @@ def convert_to_geoparquet(
             from geoparquet_io.core.common import resolve_geoparquet_version_from_file
 
             geoparquet_version = resolve_geoparquet_version_from_file(input_file, verbose)
-            if verbose and geoparquet_version:
+            if geoparquet_version:
                 debug(f"Auto-detected GeoParquet version from input: {geoparquet_version}")
+            else:
+                debug("Could not detect input GeoParquet version; using writer default")
 
         effective_crs = _determine_effective_crs(
             input_file, input_url, crs, is_csv, is_parquet, con, verbose

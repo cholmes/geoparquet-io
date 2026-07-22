@@ -119,3 +119,32 @@ def test_rewrite_preserves_lz4_codec_unit(tmp_path):
     _rewrite_file_with_geo_metadata(str(path), {"version": "2.0.0"}, "LZ4", None, None)
     codec = pq.ParquetFile(str(path)).metadata.row_group(0).column(0).compression
     assert codec in ("LZ4", "LZ4_RAW"), codec
+
+
+# --- Primary-column choice for multi-geometry repairs (todo 047-C6) ---
+
+
+def test_repair_uses_real_primary_column_not_alphabetical(tmp_path):
+    """With two geometry columns, the repair must honor the caller's primary
+    column instead of picking the alphabetically-first one."""
+    from geoparquet_io.core.common import _ensure_v2_geo_metadata
+
+    path = tmp_path / "two_geoms.parquet"
+    con = get_duckdb_connection(load_spatial=True)
+    con.execute(f"""
+        COPY (
+          SELECT * FROM (VALUES
+            (1, ST_GeomFromText('LINESTRING M (0 0 0, 1 1 10)'),
+                ST_GeomFromText('POINT M (5 5 1)'))
+          ) t(id, a_geom, the_geom)
+        ) TO '{path.as_posix()}' (FORMAT PARQUET, GEOPARQUET_VERSION 'V2')
+    """)
+    con.close()
+    # Precondition: the DuckDB M-dimension bug leaves the file without geo KV.
+    assert (pq.ParquetFile(str(path)).metadata.metadata or {}).get(b"geo") is None
+
+    _ensure_v2_geo_metadata(str(path), primary_column="the_geom")
+
+    geo = json.loads(pq.ParquetFile(str(path)).metadata.metadata[b"geo"])
+    assert set(geo["columns"]) == {"a_geom", "the_geom"}
+    assert geo["primary_column"] == "the_geom"

@@ -29,7 +29,7 @@ class TestVersionKnown:
 
 
 class TestVersionFeatures:
-    def _write(self, tmp_path, version_option, geo_version):
+    def _write(self, tmp_path, version_option):
         from geoparquet_io.core.common import get_duckdb_connection
 
         path = tmp_path / "f.parquet"
@@ -42,12 +42,12 @@ class TestVersionFeatures:
         return path
 
     def test_v1_metadata_with_native_types_fails(self, tmp_path):
-        path = self._write(tmp_path, "V2", "1.0.0")
+        path = self._write(tmp_path, "V2")
         check = _check_version_features(str(path), {"version": "1.0.0"})
         assert check.status == CheckStatus.FAILED
 
     def test_v2_metadata_with_native_types_passes(self, tmp_path):
-        path = self._write(tmp_path, "V2", "2.0.0")
+        path = self._write(tmp_path, "V2")
         check = _check_version_features(str(path), {"version": "2.0.0"})
         assert check.status == CheckStatus.PASSED
 

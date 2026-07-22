@@ -273,6 +273,29 @@ def _check_geometry_types_list(col_meta: dict, col_name: str) -> ValidationCheck
     )
 
 
+# CRS type values allowed by the PROJJSON v0.7 schema's "crs" definition.
+_PROJJSON_CRS_TYPES = frozenset(
+    {
+        "GeodeticCRS",
+        "GeographicCRS",
+        "ProjectedCRS",
+        "VerticalCRS",
+        "CompoundCRS",
+        "BoundCRS",
+        "EngineeringCRS",
+        "ParametricCRS",
+        "TemporalCRS",
+        "DerivedGeodeticCRS",
+        "DerivedGeographicCRS",
+        "DerivedProjectedCRS",
+        "DerivedVerticalCRS",
+        "DerivedEngineeringCRS",
+        "DerivedParametricCRS",
+        "DerivedTemporalCRS",
+    }
+)
+
+
 def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
     """Check 9: optional 'crs' must be null or a PROJJSON object.
 
@@ -301,19 +324,28 @@ def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
         )
 
     # Check if it's a valid PROJJSON object. The PROJJSON schema requires a
-    # "type" member; JSON without it is not PROJJSON.
+    # "type" member drawn from its known CRS type set; JSON without it (or
+    # with a made-up type) is not PROJJSON.
     if isinstance(crs, dict):
-        if "type" in crs:
+        if "type" not in crs:
             return ValidationCheck(
                 name=f"crs_valid_{col_name}",
-                status=CheckStatus.PASSED,
-                message=f'column "{col_name}" has valid PROJJSON CRS',
+                status=CheckStatus.FAILED,
+                message=f'column "{col_name}" CRS is missing the required PROJJSON "type" member',
+                category="column_metadata",
+            )
+        if crs["type"] not in _PROJJSON_CRS_TYPES:
+            return ValidationCheck(
+                name=f"crs_valid_{col_name}",
+                status=CheckStatus.FAILED,
+                message=f'column "{col_name}" CRS has unknown PROJJSON type: {crs["type"]!r}',
+                details=f"Known PROJJSON CRS types: {', '.join(sorted(_PROJJSON_CRS_TYPES))}",
                 category="column_metadata",
             )
         return ValidationCheck(
             name=f"crs_valid_{col_name}",
-            status=CheckStatus.FAILED,
-            message=f'column "{col_name}" CRS is missing the required PROJJSON "type" member',
+            status=CheckStatus.PASSED,
+            message=f'column "{col_name}" has valid PROJJSON CRS',
             category="column_metadata",
         )
 
@@ -348,6 +380,26 @@ def _check_orientation_valid(col_meta: dict, col_name: str) -> ValidationCheck:
     )
 
 
+def _version_at_least(version: Any, major: int, minor: int = 0) -> bool:
+    """True when a GeoParquet version string is >= major.minor.
+
+    Parses instead of comparing lexicographically (which breaks on "1.10.0"
+    vs "1.2.0"). Handles "2.0", "2.0.0", and pre-release forms like
+    "1.0.0-beta.1" (the pre-release tag is ignored). Non-string or
+    unparsable versions return False.
+    """
+    if not isinstance(version, str):
+        return False
+    core = version.split("-", 1)[0].split("+", 1)[0]
+    parts = core.split(".")
+    try:
+        v_major = int(parts[0])
+        v_minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return False
+    return (v_major, v_minor) >= (major, minor)
+
+
 def _check_edges_valid(
     col_meta: dict, col_name: str, geo_version: str = "1.0.0"
 ) -> ValidationCheck:
@@ -367,7 +419,7 @@ def _check_edges_valid(
         )
 
     valid_edges = list(VALID_EDGES_GEOPARQUET)
-    if (geo_version or "1.0.0") >= "2.0.0":
+    if _version_at_least(geo_version, 2, 0):
         valid_edges += [e for e in VALID_EDGES_PARQUET_GEO if e not in valid_edges]
 
     is_valid = edges in valid_edges
@@ -523,7 +575,19 @@ def _check_version_known(geo_meta: dict) -> ValidationCheck:
             message="no version to check",
             category="core_metadata",
         )
-    if isinstance(version, str) and version.startswith(_KNOWN_VERSION_MAJORS):
+    if not isinstance(version, str):
+        return ValidationCheck(
+            name="version_known",
+            status=CheckStatus.FAILED,
+            message=f"version must be a string (got {type(version).__name__}: {version!r})",
+            details="Known versions are 1.x and 2.x",
+            category="core_metadata",
+        )
+    # Policy: prefix-match known majors so any 1.x/2.x patch release passes
+    # (the corpus depends on this). Versions from a future major hard-FAIL:
+    # their semantics are unknown and must not silently validate against
+    # today's rules.
+    if version.startswith(_KNOWN_VERSION_MAJORS):
         return ValidationCheck(
             name="version_known",
             status=CheckStatus.PASSED,
@@ -539,15 +603,41 @@ def _check_version_known(geo_meta: dict) -> ValidationCheck:
     )
 
 
+def _columns_declaring_covering(geo_meta: dict) -> list[str]:
+    """Names of geometry columns whose metadata declares the 1.1-only 'covering' key."""
+    return sorted(
+        name
+        for name, col in (geo_meta.get("columns") or {}).items()
+        if isinstance(col, dict) and "covering" in col
+    )
+
+
 def _check_version_features(parquet_file: str, geo_meta: dict) -> ValidationCheck:
-    """1.x metadata must not be combined with 2.0-only features (native types)."""
-    version = geo_meta.get("version") or ""
-    if not (isinstance(version, str) and version.startswith("1.")):
+    """1.x metadata must not be combined with features from a newer version."""
+
+    def _result(status, message, details=None):
         return ValidationCheck(
             name="version_features_match",
-            status=CheckStatus.PASSED,
-            message="version permits declared features",
+            status=status,
+            message=message,
+            details=details,
             category="core_metadata",
+        )
+
+    version = geo_meta.get("version")
+    if not isinstance(version, str):
+        # version_known already FAILs a non-string version; a PASS here would
+        # contradict it, so decline to judge features instead.
+        return _result(CheckStatus.SKIPPED, "version is not a string; feature check not applicable")
+    if not version.startswith("1."):
+        return _result(CheckStatus.PASSED, "version permits declared features")
+    covering_cols = _columns_declaring_covering(geo_meta)
+    if covering_cols and not _version_at_least(version, 1, 1):
+        return _result(
+            CheckStatus.FAILED,
+            f"version {version} declared but columns use the 1.1-only "
+            f"'covering' key ({', '.join(covering_cols)})",
+            details="'covering' was introduced in GeoParquet 1.1",
         )
     try:
         import pyarrow.parquet as pq
@@ -558,28 +648,16 @@ def _check_version_features(parquet_file: str, geo_meta: dict) -> ValidationChec
             for i in range(len(schema))
             if str(schema.column(i).logical_type).startswith(("Geometry", "Geography"))
         ]
-    except Exception:
-        return ValidationCheck(
-            name="version_features_match",
-            status=CheckStatus.SKIPPED,
-            message="could not inspect Parquet schema",
-            category="core_metadata",
-        )
+    except Exception as e:
+        return _result(CheckStatus.SKIPPED, f"could not inspect Parquet schema: {e}")
     if native_cols:
-        return ValidationCheck(
-            name="version_features_match",
-            status=CheckStatus.FAILED,
-            message=f"version {version} declared but file uses native Parquet "
+        return _result(
+            CheckStatus.FAILED,
+            f"version {version} declared but file uses native Parquet "
             f"GEOMETRY/GEOGRAPHY types ({', '.join(native_cols)})",
             details="Native geospatial logical types require GeoParquet 2.0",
-            category="core_metadata",
         )
-    return ValidationCheck(
-        name="version_features_match",
-        status=CheckStatus.PASSED,
-        message="declared features match the declared version",
-        category="core_metadata",
-    )
+    return _result(CheckStatus.PASSED, "declared features match the declared version")
 
 
 # =============================================================================
@@ -753,6 +831,30 @@ def _check_encoding_matches_data(
     )
 
 
+# Uppercase DuckDB geometry type names -> expected GeoParquet casing.
+_GEOM_TYPE_DISPLAY = {
+    "POINT": "Point",
+    "LINESTRING": "LineString",
+    "POLYGON": "Polygon",
+    "MULTIPOINT": "MultiPoint",
+    "MULTILINESTRING": "MultiLineString",
+    "MULTIPOLYGON": "MultiPolygon",
+    "GEOMETRYCOLLECTION": "GeometryCollection",
+}
+
+
+def _normalize_found_geometry_type(raw: str) -> str:
+    """Map a DuckDB type + dimension suffix ("MULTIPOINT Z") to spec casing.
+
+    Strips any ST_ prefix, splits off the Z/M/ZM suffix, maps the base name,
+    then re-appends the suffix ("MultiPoint Z"). Unmapped base names keep the
+    uppercase base (never the raw string, which still carries the suffix and
+    would double it: "TRIANGLE Z Z").
+    """
+    base, suffix = split_zm_suffix(raw.replace("ST_", "").upper())
+    return _GEOM_TYPE_DISPLAY.get(base, base) + suffix
+
+
 def _check_geometry_types_match_data(
     parquet_file: str, geom_col: str, declared_types: list, con, sample_size: int
 ) -> ValidationCheck:
@@ -797,24 +899,7 @@ def _check_geometry_types_match_data(
                 found_types[row[0]] = row[1]
                 total_count += row[1]
 
-        # Normalize type names (DuckDB returns like "POINT", we want "Point")
-        # Explicit mapping from uppercase DuckDB names to expected GeoParquet names
-        geom_type_mapping = {
-            "POINT": "Point",
-            "LINESTRING": "LineString",
-            "POLYGON": "Polygon",
-            "MULTIPOINT": "MultiPoint",
-            "MULTILINESTRING": "MultiLineString",
-            "MULTIPOLYGON": "MultiPolygon",
-            "GEOMETRYCOLLECTION": "GeometryCollection",
-        }
-        normalized_found = set()
-        for t in found_types.keys():
-            if t:
-                # Strip ST_ prefix if present, split off the dimension suffix,
-                # map the base name, then re-append the suffix ("Point Z").
-                base, suffix = split_zm_suffix(t.replace("ST_", "").upper())
-                normalized_found.add(geom_type_mapping.get(base, t) + suffix)
+        normalized_found = {_normalize_found_geometry_type(t) for t in found_types.keys() if t}
 
         declared_set = set(declared_types) if declared_types else set()
 
@@ -931,6 +1016,15 @@ def _interpret_bbox_result(result: tuple | None, geom_col: str) -> ValidationChe
     """
     if result:
         total, within = result
+        if total == 0:
+            # All rows were NULL or EMPTY; claiming PASS "(0 checked)" would
+            # vouch for a bbox nothing was tested against.
+            return ValidationCheck(
+                name=f"bbox_contains_data_{geom_col}",
+                status=CheckStatus.SKIPPED,
+                message="no non-empty geometries to check against declared bbox",
+                category="data_validation",
+            )
         if total == within:
             return ValidationCheck(
                 name=f"bbox_contains_data_{geom_col}",
@@ -1766,6 +1860,15 @@ def _check_native_geo_stats_contains_data(
 
         if result:
             total, within = result
+            if total == 0:
+                # All rows were NULL or EMPTY; a PASS "(0 checked)" would
+                # vouch for statistics nothing was tested against.
+                return ValidationCheck(
+                    name=f"native_geo_stats_contains_data_{geom_col}",
+                    status=CheckStatus.SKIPPED,
+                    message="no non-empty geometries to check against geospatial statistics",
+                    category="parquet_geo_types",
+                )
             if total == within:
                 return ValidationCheck(
                     name=f"native_geo_stats_contains_data_{geom_col}",
@@ -2263,7 +2366,14 @@ def _is_crs84_equivalent(crs: Any) -> bool:
         except Exception:
             return False
     if isinstance(crs, str):
-        return crs.upper() in ("OGC:CRS84", "EPSG:4326", "SRID:4326")
+        return crs.strip().upper() in (
+            "OGC:CRS84",
+            "EPSG:4326",
+            "SRID:4326",
+            "URN:OGC:DEF:CRS:OGC:1.3:CRS84",
+            "URN:OGC:DEF:CRS:OGC::CRS84",
+            "URN:OGC:DEF:CRS:EPSG::4326",
+        )
     return False
 
 
@@ -2626,6 +2736,28 @@ def _crs_equals(crs1: Any, crs2: Any) -> bool:
 # =============================================================================
 
 
+def _is_read_failure(exc: BaseException | None) -> bool:
+    """True when an exception chain indicates an I/O/read failure.
+
+    Distinguishes "the file could not be fetched" (missing path, permissions,
+    network) from "the file's content is corrupt" so remote read failures are
+    not misreported as corruption. Walks __cause__/__context__ because
+    GeoParquetError wraps the underlying error.
+    """
+    import duckdb
+
+    io_types: tuple[type, ...] = (OSError, duckdb.IOException)
+    if hasattr(duckdb, "HTTPException"):
+        io_types = (*io_types, duckdb.HTTPException)
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, io_types):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def validate_geoparquet(
     parquet_file: str,
     target_version: str | None = None,
@@ -2662,6 +2794,12 @@ def validate_geoparquet(
 
     safe_url = safe_file_url(parquet_file, verbose=verbose)
 
+    def _metadata_failure_message(exc: Exception) -> str:
+        """Honest failure text: an unreadable file is not evidence of corruption."""
+        if _is_read_failure(exc):
+            return "could not read file (I/O or network error)"
+        return "file metadata is not readable (corrupt or invalid encoding)"
+
     # Auto-detect file type. Corrupt metadata (e.g. invalid UTF-8 in the geo
     # value) must yield a FAILED report, never an exception.
     try:
@@ -2676,7 +2814,7 @@ def validate_geoparquet(
             ValidationCheck(
                 name="geo_metadata_parse",
                 status=CheckStatus.FAILED,
-                message="file metadata is not readable (corrupt or invalid encoding)",
+                message=_metadata_failure_message(e),
                 details=str(e),
                 category="core_metadata",
             )
@@ -2715,7 +2853,7 @@ def validate_geoparquet(
             ValidationCheck(
                 name="geo_metadata_parse",
                 status=CheckStatus.FAILED,
-                message="file metadata is not readable (corrupt or invalid encoding)",
+                message=_metadata_failure_message(e),
                 details=str(e),
                 category="core_metadata",
             )
@@ -3014,7 +3152,7 @@ def _run_geoparquet_checks(
 
     # Version-specific checks
     # GeoParquet 1.1 checks - covering was removed in 2.0, so only run for 1.x
-    is_v1_1 = geo_version >= "1.1.0" and geo_version < "2.0.0"
+    is_v1_1 = _version_at_least(geo_version, 1, 1) and not _version_at_least(geo_version, 2, 0)
     if is_v1_1:
         for col_name, col_meta in columns.items():
             checks.append(_check_covering_is_object(col_meta, col_name))
@@ -3028,7 +3166,7 @@ def _run_geoparquet_checks(
                 checks.append(_check_covering_bbox_field_types(col_meta, col_name, schema_info))
 
     # File extension check applies to 1.1+
-    if geo_version >= "1.1.0":
+    if _version_at_least(geo_version, 1, 1):
         checks.append(_check_file_extension(parquet_file))
 
     # GeoParquet 2.0 checks - run Parquet native geo type checks first

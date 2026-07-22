@@ -900,7 +900,8 @@ def resolve_geoparquet_version_from_file(parquet_file: str, verbose: bool = Fals
     """
     try:
         info = detect_geoparquet_file_type(parquet_file, verbose)
-    except Exception:
+    except Exception as e:
+        debug(f"Version auto-detect failed for {parquet_file}: {e}; falling back to default")
         return None
 
     detected = {
@@ -1788,18 +1789,80 @@ def _geo_code_to_type_name(code: int) -> str | None:
     return name + suffix
 
 
+def _geography_edges_from_logical(logical: str) -> str | None:
+    """Edges value implied by a native Geography logical type string.
+
+    Returns the declared algorithm (e.g. "spherical", "vincenty"), defaulting
+    to "spherical" (the Parquet spec default) when none is spelled out.
+    Returns None for non-Geography logical types.
+    """
+    if not logical.startswith("Geography"):
+        return None
+    match = re.search(r"algorithm=([A-Za-z_]+)", logical)
+    return match.group(1).lower() if match else "spherical"
+
+
+def _geo_col_meta_from_stats(pf, col_index: int, logical: str) -> dict:
+    """Build one geo column metadata dict from a column's native geo statistics."""
+    codes: set[int] = set()
+    bbox = None
+    zrange = None
+    for rg in range(pf.metadata.num_row_groups):
+        stats = pf.metadata.row_group(rg).column(col_index).geo_statistics
+        if stats is None:
+            continue
+        codes.update(stats.geospatial_types or [])
+        if stats.xmin is not None:
+            # Limitation: min/max-merging row-group extents assumes planar
+            # edges; geography data crossing the antimeridian can yield an
+            # over-wide (though never under-covering) bbox here.
+            if bbox is None:
+                bbox = [stats.xmin, stats.ymin, stats.xmax, stats.ymax]
+            else:
+                bbox = [
+                    min(bbox[0], stats.xmin),
+                    min(bbox[1], stats.ymin),
+                    max(bbox[2], stats.xmax),
+                    max(bbox[3], stats.ymax),
+                ]
+        if stats.zmin is not None:
+            if zrange is None:
+                zrange = [stats.zmin, stats.zmax]
+            else:
+                zrange = [min(zrange[0], stats.zmin), max(zrange[1], stats.zmax)]
+
+    geometry_types = sorted(t for t in (_geo_code_to_type_name(c) for c in codes) if t is not None)
+    col_meta: dict = {"encoding": "WKB", "geometry_types": geometry_types}
+    if bbox is not None:
+        # RFC 7946 order; 6 values when a Z range exists (M is never
+        # part of bbox per spec).
+        if zrange is not None:
+            col_meta["bbox"] = [bbox[0], bbox[1], zrange[0], bbox[2], bbox[3], zrange[1]]
+        else:
+            col_meta["bbox"] = bbox
+    # A Geography logical type carries edge semantics the geo metadata must
+    # not drop: synthesize the matching edges declaration (#588).
+    edges = _geography_edges_from_logical(logical)
+    if edges:
+        col_meta["edges"] = edges
+    return col_meta
+
+
 def _ensure_v2_geo_metadata(
     output_path: str,
     compression: str = "ZSTD",
     compression_level: int | None = None,
     row_group_rows: int | None = None,
     verbose: bool = False,
+    primary_column: str | None = None,
 ) -> None:
     """Attach GeoParquet 2.0 geo metadata if the writer omitted it (#589).
 
     DuckDB 1.5.4's V2 writer skips the geo KV metadata for M/ZM geometries.
     Rebuild it from the file's native geospatial statistics, mirroring the
     shape DuckDB writes for XY/XYZ data, and rewrite the file in place.
+    ``primary_column`` names the real geometry column for multi-geometry
+    files; without it the fallback is "geometry", then alphabetical.
     """
     pf = pq.ParquetFile(output_path)
     try:
@@ -1807,54 +1870,25 @@ def _ensure_v2_geo_metadata(
         if b"geo" in kv:
             return
         schema = pf.metadata.schema
-        geo_col_names = {}
+        geo_cols: dict[int, tuple[str, str]] = {}
         for i in range(len(schema)):
             logical = str(schema.column(i).logical_type)
             if logical.startswith(("Geometry", "Geography")):
-                geo_col_names[i] = schema.column(i).name
-        if not geo_col_names:
+                geo_cols[i] = (schema.column(i).name, logical)
+        if not geo_cols:
             return
 
-        columns = {}
-        for i, name in geo_col_names.items():
-            codes: set[int] = set()
-            bbox = None
-            zrange = None
-            for rg in range(pf.metadata.num_row_groups):
-                stats = pf.metadata.row_group(rg).column(i).geo_statistics
-                if stats is None:
-                    continue
-                codes.update(stats.geospatial_types or [])
-                if stats.xmin is not None:
-                    if bbox is None:
-                        bbox = [stats.xmin, stats.ymin, stats.xmax, stats.ymax]
-                    else:
-                        bbox = [
-                            min(bbox[0], stats.xmin),
-                            min(bbox[1], stats.ymin),
-                            max(bbox[2], stats.xmax),
-                            max(bbox[3], stats.ymax),
-                        ]
-                if stats.zmin is not None:
-                    if zrange is None:
-                        zrange = [stats.zmin, stats.zmax]
-                    else:
-                        zrange = [min(zrange[0], stats.zmin), max(zrange[1], stats.zmax)]
+        columns = {
+            name: _geo_col_meta_from_stats(pf, i, logical)
+            for i, (name, logical) in geo_cols.items()
+        }
 
-            geometry_types = sorted(
-                t for t in (_geo_code_to_type_name(c) for c in codes) if t is not None
-            )
-            col_meta: dict = {"encoding": "WKB", "geometry_types": geometry_types}
-            if bbox is not None:
-                # RFC 7946 order; 6 values when a Z range exists (M is never
-                # part of bbox per spec).
-                if zrange is not None:
-                    col_meta["bbox"] = [bbox[0], bbox[1], zrange[0], bbox[2], bbox[3], zrange[1]]
-                else:
-                    col_meta["bbox"] = bbox
-            columns[name] = col_meta
-
-        primary = "geometry" if "geometry" in columns else sorted(columns)[0]
+        if primary_column and primary_column in columns:
+            primary = primary_column
+        elif "geometry" in columns:
+            primary = "geometry"
+        else:
+            primary = sorted(columns)[0]
         geo_meta = {"version": "2.0.0", "primary_column": primary, "columns": columns}
     finally:
         # Release the read handle before rewriting (Windows requires it).
@@ -1954,7 +1988,8 @@ def collect_nonplanar_edges(input_file: str) -> dict[str, str]:
             edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
             if edges and edges != "planar":
                 edges_by_col.setdefault(name, edges)
-    except Exception:
+    except Exception as e:
+        debug(f"Could not collect edges metadata from {input_file}: {e}")
         return {}
     return edges_by_col
 
@@ -2047,10 +2082,13 @@ def _apply_nonplanar_edges(
     _rewrite_file_with_geo_metadata(
         output_file, geo_meta, compression, compression_level, row_group_rows
     )
+    # Neutral wording: the input may have declared edges via metadata only,
+    # without ever having a native GEOGRAPHY logical type.
     warn(
-        "Native GEOGRAPHY is not preserved by the writer (DuckDB has no "
-        f"geography type); kept edges declaration in geo metadata for: "
-        f"{', '.join(sorted(edges_by_col))}"
+        "Preserved non-planar edges declaration in geo metadata for: "
+        f"{', '.join(sorted(edges_by_col))}. Note: DuckDB has no geography "
+        "type, so any native GEOGRAPHY input is rewritten as GEOMETRY (the "
+        "edges metadata carries the interpretation)."
     )
 
 
@@ -2142,6 +2180,7 @@ def _plain_copy_to(
             compression_level=compression_level,
             row_group_rows=row_group_rows,
             verbose=verbose,
+            primary_column=geometry_column,
         )
 
     if verbose:

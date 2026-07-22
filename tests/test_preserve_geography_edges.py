@@ -174,3 +174,29 @@ def test_remote_output_preserves_spherical_edges(spherical_input, tmp_path, monk
     assert "dest" in uploaded, "upload hook was not invoked for the remote output"
     geo = get_geo_metadata(str(uploaded["dest"]))
     assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
+
+
+# --- Geography edges synthesis in metadata repair (todo 047-C7) ---
+
+
+class TestGeographyEdgesFromLogical:
+    """_ensure_v2_geo_metadata must synthesize `edges` for Geography columns."""
+
+    def test_algorithm_extracted(self):
+        from geoparquet_io.core.common import _geography_edges_from_logical
+
+        assert (
+            _geography_edges_from_logical("Geography(crs=OGC:CRS84, algorithm=vincenty)")
+            == "vincenty"
+        )
+
+    def test_defaults_to_spherical_without_algorithm(self):
+        from geoparquet_io.core.common import _geography_edges_from_logical
+
+        assert _geography_edges_from_logical("Geography(crs=OGC:CRS84)") == "spherical"
+
+    def test_geometry_logical_type_yields_none(self):
+        from geoparquet_io.core.common import _geography_edges_from_logical
+
+        assert _geography_edges_from_logical("Geometry(crs=OGC:CRS84)") is None
+        assert _geography_edges_from_logical("") is None
