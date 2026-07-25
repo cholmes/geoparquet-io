@@ -1,5 +1,7 @@
 """Tests for core/duckdb_utils.py module."""
 
+from unittest import mock
+
 import duckdb
 import pytest
 
@@ -411,3 +413,30 @@ class TestAmbientS3Config:
             result = con.execute("SELECT current_setting('s3_region')").fetchone()
             assert result[0] == "eu-west-1"
             con.close()
+
+
+class TestExtensionInstallWarning:
+    """A failed extension INSTALL must warn instead of being swallowed."""
+
+    def test_failed_spatial_install_warns(self, caplog):
+        """INSTALL spatial failures are surfaced to the user (issue #574)."""
+        real_execute = duckdb.DuckDBPyConnection.execute
+
+        def failing_install(self, sql, *args, **kwargs):
+            if sql.strip().startswith("INSTALL spatial"):
+                raise duckdb.IOException("permission denied creating extension dir")
+            return real_execute(self, sql, *args, **kwargs)
+
+        with caplog.at_level("WARNING", logger="geoparquet_io"):
+            with mock.patch.object(duckdb.DuckDBPyConnection, "execute", failing_install):
+                try:
+                    get_duckdb_connection()
+                except duckdb.Error:
+                    # LOAD may still fail if the extension really isn't there;
+                    # the warning is what this test guards.
+                    pass
+
+        assert any(
+            "spatial" in record.message and "permission denied" in record.message
+            for record in caplog.records
+        ), f"no warning about the failed install: {[r.message for r in caplog.records]}"

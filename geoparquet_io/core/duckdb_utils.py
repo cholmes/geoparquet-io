@@ -11,6 +11,8 @@ from contextvars import ContextVar
 
 import duckdb
 
+from geoparquet_io.core.logging_config import warn
+
 # Per-bucket cache for S3 buckets that require authentication
 # Buckets not in this set are accessed without credentials (works for public buckets)
 _s3_cache_lock = threading.Lock()
@@ -314,10 +316,13 @@ def get_duckdb_connection(
     if load_spatial:
         try:
             con.execute("INSTALL spatial;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
+        except Exception as e:
+            # Don't fail here: the extension may already be installed, and
+            # parallel installs race with each other.
             # See: https://github.com/duckdb/duckdb/issues/12589
-            pass
+            # But do warn, so a genuine failure (e.g. the extension directory
+            # is not writable) isn't hidden behind an opaque LOAD error.
+            warn(f"Warning: could not install the DuckDB 'spatial' extension: {e}")
         con.execute("LOAD spatial;")
         # DuckDB 1.5+: ensure lon/lat = x/y axis order globally.
         # Replaces per-call always_xy := true in ST_Transform.
@@ -327,9 +332,9 @@ def get_duckdb_connection(
     if load_httpfs:
         try:
             con.execute("INSTALL httpfs;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
-            pass
+        except Exception as e:
+            # Same rationale as the spatial extension above.
+            warn(f"Warning: could not install the DuckDB 'httpfs' extension: {e}")
         con.execute("LOAD httpfs;")
 
         # Only configure AWS credentials if explicitly requested (for private buckets)
