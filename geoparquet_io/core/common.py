@@ -992,12 +992,27 @@ def _detect_version_from_table(table, verbose: bool = False) -> str | None:
         return None
 
 
+def _table_bbox_struct_ok(table, column_name: str) -> bool:
+    """True when ``column_name`` is a struct column with the bbox fields."""
+    import pyarrow as pa
+
+    try:
+        field = table.schema.field(column_name)
+    except KeyError:
+        return False
+    return pa.types.is_struct(field.type) and {"xmin", "ymin", "xmax", "ymax"}.issubset(
+        {f.name for f in field.type}
+    )
+
+
 def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
     """
     Detect bbox struct column from Arrow table schema.
 
-    Looks for columns with conventional names (bbox, bounds, extent) that have
-    the required struct fields (xmin, ymin, xmax, ymax).
+    Consults the GeoParquet ``covering.bbox`` metadata first (the authoritative
+    pointer, which may use a non-conventional name), then falls back to columns
+    with conventional names (bbox, bounds, extent) that have the required
+    struct fields (xmin, ymin, xmax, ymax).
 
     Args:
         table: PyArrow Table to check
@@ -1007,6 +1022,15 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
         str: Name of bbox column if found, None otherwise
     """
     import pyarrow as pa
+
+    from geoparquet_io.core.crs_utils import parse_geo_metadata_from_schema
+
+    geo_meta = parse_geo_metadata_from_schema(table.schema.metadata)
+    covering_column = _bbox_column_from_covering(geo_meta)
+    if covering_column and _table_bbox_struct_ok(table, covering_column):
+        if verbose:
+            debug(f"Found bbox column from covering metadata: {covering_column}")
+        return covering_column
 
     conventional_suffixes = ["bbox", "bounds", "extent"]
     required_fields = {"xmin", "ymin", "xmax", "ymax"}
@@ -2613,6 +2637,53 @@ def format_size(size_bytes):
     return f"{size_bytes:.2f} TB"
 
 
+#: Struct fields a bbox covering column must expose.
+_BBOX_REQUIRED_FIELDS = frozenset({"xmin", "ymin", "xmax", "ymax"})
+
+
+def _bbox_column_from_covering(geo_meta) -> str | None:
+    """Return the bbox column name referenced by GeoParquet ``covering.bbox``.
+
+    The covering metadata is the authoritative pointer to a file's bbox column
+    (its name need not follow any convention). Returns ``None`` when absent or
+    malformed.
+    """
+    if not isinstance(geo_meta, dict):
+        return None
+    columns = geo_meta.get("columns", {})
+    if not isinstance(columns, dict):
+        return None
+    for col_info in columns.values():
+        if not isinstance(col_info, dict):
+            continue
+        covering = col_info.get("covering")
+        bbox_refs = covering.get("bbox") if isinstance(covering, dict) else None
+        if (
+            isinstance(bbox_refs, dict)
+            and _BBOX_REQUIRED_FIELDS.issubset(bbox_refs)
+            and all(isinstance(ref, list) and len(ref) == 2 for ref in bbox_refs.values())
+        ):
+            return bbox_refs["xmin"][0]
+    return None
+
+
+def _schema_struct_child_names(schema_info, column_name) -> set | None:
+    """Child field names of struct column ``column_name`` from a flat
+    ``parquet_schema()`` listing; ``None`` if the column is absent or not a struct."""
+    for i, col in enumerate(schema_info):
+        if col.get("name") != column_name:
+            continue
+        num_children = col.get("num_children") or 0
+        if num_children < 1:
+            return None
+        return {
+            schema_info[i + j].get("name", "")
+            for j in range(1, num_children + 1)
+            if i + j < len(schema_info)
+        }
+    return None
+
+
 def _find_bbox_column_in_schema(schema_info, verbose):
     """Find bbox column in schema by conventional names or structure.
 
@@ -2742,12 +2813,22 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
             if name:  # Skip empty names
                 debug(f"  {name}: {col_type}")
 
-    # Find the bbox column in the schema
-    bbox_column_name = _find_bbox_column_in_schema(schema_info, verbose)
+    # Find the bbox column: the authoritative covering metadata first (spec-valid
+    # files may use non-conventional names), then the naming-convention fallback.
+    geo_meta = get_geo_metadata(safe_url)
+    bbox_column_name = None
+    covering_column = _bbox_column_from_covering(geo_meta)
+    if covering_column:
+        children = _schema_struct_child_names(schema_info, covering_column)
+        if children and _BBOX_REQUIRED_FIELDS.issubset(children):
+            bbox_column_name = covering_column
+            if verbose:
+                debug(f"Found bbox column from covering metadata: {covering_column}")
+    if bbox_column_name is None:
+        bbox_column_name = _find_bbox_column_in_schema(schema_info, verbose)
     has_bbox_column = bbox_column_name is not None
 
-    # Get geo metadata and check for bbox covering
-    geo_meta = get_geo_metadata(safe_url)
+    # Check for bbox covering in the geo metadata
     has_bbox_metadata = _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose)
 
     # Determine status and message

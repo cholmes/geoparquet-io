@@ -37,7 +37,9 @@ from geoparquet_io.core.process.aggregate.common import (
 from geoparquet_io.core.process.aggregate.grid_common import (
     _resolve_bbox_column_for_file,
     _validate_bucket_point_args,
+    _validate_keying_columns_for_file,
     bucket_point_expr,
+    build_exclude_clause,
 )
 
 
@@ -65,7 +67,7 @@ def _build_joined_sql(
     admin_geom_col: str,
     admin_bbox_col: str | None = None,
     where: str | None = None,
-    exclude_input_columns: tuple[str, ...] = (),
+    exclude_sql: str = "",
 ) -> str:
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
@@ -83,9 +85,12 @@ def _build_joined_sql(
     ``where`` is applied to the inner input scan, so the spatial join, metrics,
     and breakdowns all see only the filtered rows (#568). The caller validates
     the clause. Hive partition columns are visible to it (#612); see
-    :func:`aggregate_source_relation`. ``exclude_input_columns`` drops columns
+    :func:`aggregate_source_relation`. ``exclude_sql`` is a prebuilt
+    `` EXCLUDE (...)`` clause (see ``build_exclude_clause``) dropping columns
     (typically the geometry) from the passthrough SELECT so their Parquet pages
-    are never read.
+    are never read; building it with ``build_exclude_clause`` keeps it
+    existence-checked, so a geometry-less bbox-only input never trips a binder
+    error on a nonexistent column.
     """
     if admin_bbox_col:
         bbox_filter = (
@@ -96,11 +101,6 @@ def _build_joined_sql(
         )
     else:
         bbox_filter = ""
-    if exclude_input_columns:
-        cols = ", ".join(quote_identifier(c) for c in exclude_input_columns)
-        exclude_sql = f" EXCLUDE ({cols})"
-    else:
-        exclude_sql = ""
     return f"""
         SELECT s.*,
                b.{quote_identifier(code_col)} AS __admin_code,
@@ -220,6 +220,8 @@ def aggregate_by_admin(
     _validate_bucket_point_args(bucket_point, bbox_column)
     if bucket_point == "bbox":
         bbox_column = _resolve_bbox_column_for_file(input_parquet, bbox_column, verbose)
+    # Fail on a bad keying column before the (possibly network-bound) dataset setup.
+    _validate_keying_columns_for_file(input_parquet, bucket_point, bbox_column, verbose)
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
     mapping = admin_dataset.get_level_column_mapping()
@@ -266,7 +268,7 @@ def aggregate_by_admin(
             admin_geom_col,
             admin_bbox_col,
             where=where,
-            exclude_input_columns=exclude_cols,
+            exclude_sql=build_exclude_clause(con, read_rel, exclude_cols),
         )
 
         # When a breakdown is requested, materialize the spatial join once so that
