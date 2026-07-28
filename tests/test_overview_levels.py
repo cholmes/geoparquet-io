@@ -1,0 +1,129 @@
+"""Unit tests for overview zoom-band selection (pure functions, no DuckDB)."""
+
+import pytest
+
+from geoparquet_io.core.process.overview.levels import (
+    Band,
+    estimate_bytes_per_cell,
+    select_bands,
+)
+
+
+def uniform_worst_counts(cells: int, max_zoom: int = 12) -> dict[int, int]:
+    """Worst tile cell-count for cells spread globally/uniformly: total / 4^z."""
+    return {z: max(1, cells // (4**z)) for z in range(max_zoom + 1)}
+
+
+def point_mass_worst_counts(cells: int, max_zoom: int = 12) -> dict[int, int]:
+    """Worst tile cell-count when every cell lands in the same tile at all zooms."""
+    return dict.fromkeys(range(max_zoom + 1), cells)
+
+
+class TestSelectBands:
+    def test_global_uniform_steps_down_with_zoom(self):
+        # A5-like global grids: 12 * 4^L cells, spread uniformly.
+        candidates = [4, 6, 8, 10]
+        worst = {lvl: uniform_worst_counts(12 * 4**lvl) for lvl in candidates}
+        bands = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+        assert bands == [
+            Band(4, 0, 1),
+            Band(6, 2, 3),
+            Band(8, 4, 5),
+            Band(10, 6, None),
+        ]
+
+    def test_point_mass_coarsest_extends_to_zoom_zero(self):
+        # Nothing fits at z0 -- the coarsest band must still start at z0
+        # (a single oversized z0 tile is acceptable; the cap guards it).
+        candidates = [3, 7]
+        worst = {
+            3: point_mass_worst_counts(6000),
+            7: {z: (20000 if z < 4 else 1000) for z in range(13)},
+        }
+        bands = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+        assert bands[0].level == 3
+        assert bands[0].minzoom == 0
+        assert bands == [Band(3, 0, 3), Band(7, 4, None)]
+
+    def test_base_fits_everywhere_yields_single_band(self):
+        candidates = [2, 5]
+        worst = {2: uniform_worst_counts(10), 5: uniform_worst_counts(100)}
+        bands = select_bands(worst, candidates, bytes_per_cell=50.0, max_tile_kb=500)
+        assert bands == [Band(5, 0, None)]
+
+    def test_band_invariants(self):
+        candidates = [4, 6, 8, 10]
+        worst = {lvl: uniform_worst_counts(12 * 4**lvl) for lvl in candidates}
+        bands = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+
+        # First band starts at z0; final band is open-ended.
+        assert bands[0].minzoom == 0
+        assert bands[-1].maxzoom is None
+        # Contiguous zoom coverage with no gaps or overlaps.
+        for prev, nxt in zip(bands, bands[1:], strict=False):
+            assert prev.maxzoom is not None
+            assert nxt.minzoom == prev.maxzoom + 1
+        # Monotonically finer levels.
+        levels = [b.level for b in bands]
+        assert levels == sorted(levels)
+        assert len(set(levels)) == len(levels)
+        # Base level is the final band.
+        assert bands[-1].level == candidates[-1]
+
+    def test_bytes_per_cell_override_shifts_transitions(self):
+        candidates = [4, 10]
+        worst = {lvl: uniform_worst_counts(12 * 4**lvl) for lvl in candidates}
+        cheap = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+        pricey = select_bands(worst, candidates, bytes_per_cell=400.0, max_tile_kb=500)
+        # More bytes per cell means the fine level only fits at a higher zoom.
+        assert pricey[-1].minzoom > cheap[-1].minzoom
+
+    def test_probe_exhaustion_forces_base_band(self):
+        # Nothing ever fits inside the probed zoom range: the coarsest level
+        # covers the probed zooms and the base still gets an open-ended band.
+        candidates = [2, 9]
+        worst = {
+            2: point_mass_worst_counts(50000, max_zoom=5),
+            9: point_mass_worst_counts(100000, max_zoom=5),
+        }
+        bands = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+        assert bands == [Band(2, 0, 5), Band(9, 6, None)]
+
+    def test_explicit_candidates_restrict_selection(self):
+        # Only the passed candidates may appear, even if other levels would fit.
+        candidates = [6, 10]
+        worst = {lvl: uniform_worst_counts(12 * 4**lvl) for lvl in candidates}
+        bands = select_bands(worst, candidates, bytes_per_cell=100.0, max_tile_kb=500)
+        assert {b.level for b in bands} <= {6, 10}
+
+    def test_band_is_frozen(self):
+        band = Band(4, 0, 3)
+        with pytest.raises(AttributeError):
+            band.level = 5
+
+
+class TestEstimateBytesPerCell:
+    def test_geometry_mode_ordering(self):
+        kwargs = {"num_attributes": 3}
+        none = estimate_bytes_per_cell(out_geometry="none", **kwargs)
+        centroid = estimate_bytes_per_cell(out_geometry="centroid", **kwargs)
+        polygon = estimate_bytes_per_cell(out_geometry="polygon", **kwargs)
+        both = estimate_bytes_per_cell(out_geometry="both", **kwargs)
+        assert none < centroid < polygon < both
+
+    def test_more_attributes_cost_more(self):
+        small = estimate_bytes_per_cell(num_attributes=1, out_geometry="polygon")
+        big = estimate_bytes_per_cell(num_attributes=10, out_geometry="polygon")
+        assert big > small
+
+    def test_estimator_sanity_gba_like_schema(self):
+        # Loose regression against recorded GlobalBuildingAtlas measurements:
+        # a5 res-5 z0 tile ~= 297 KB and res-6 z0 ~= 791 KB with all cells kept
+        # in one tile. For plausible res-5/6 populated-cell counts those imply
+        # roughly 25-125 compressed bytes per cell, so a GBA-like schema
+        # (count + 4 numeric rollups, polygon geometry) must land in that
+        # ballpark. Generous tolerance on purpose: this is a conservative
+        # budgeting heuristic, not a codec model -- do not tighten it to match
+        # one dataset.
+        est = estimate_bytes_per_cell(num_attributes=5, out_geometry="polygon")
+        assert 40 <= est <= 160

@@ -991,6 +991,36 @@ Every output row carries `admin_code` and `admin_name` bucket identifiers. Featu
 !!! note "Known limitation"
     `admin_name` currently equals the ISO code (same as `admin_code`).
 
+#### `overview(level, cell_column=None)`
+
+Roll an aggregate table up to a coarser overview level by true cell hierarchy
+(`a5_cell_to_parent` / `h3_cell_to_parent`; admin region codes collapse to
+their ISO country prefix). The table must be a `process aggregate` output.
+
+```python
+import geoparquet_io as gpio
+
+# Grid aggregate: roll res-10 cells up to res 6
+coarse = gpio.read('cells.parquet').overview(6)
+coarse.write('cells_r6.parquet')
+
+# Region-level admin aggregate: roll up to country
+by_country = gpio.read('by_region.parquet').overview('country')
+by_country.write('by_region_country.parquet')
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `level` | int or str | required | Coarser grid resolution, or `"country"` for admin |
+| `cell_column` | str | None | Cell id column when auto-detection fails |
+
+`count`, `sum_*`, `min_*`, `max_*`, and breakdown `count_*` columns roll up
+exactly; `avg_*` is count-weighted (exact when the metric had no NULLs). For
+file-based batch building of several levels (with auto level selection), use
+`ops.create_overviews`.
+
 ### Sub-Partitioning Utilities
 
 For working with directories of partitioned files, gpio provides utilities to find and sub-partition large files.
@@ -1425,6 +1455,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
 | `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
 | `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
+| `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, output_dir=None, ...)` | Build coarser overview levels from an aggregate file |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

@@ -422,6 +422,66 @@ def aggregate_admin(
     )
 
 
+def create_overviews(
+    input_parquet: str,
+    *,
+    levels: str | list | None = None,
+    max_tile_kb: int = 500,
+    bytes_per_cell: float | None = None,
+    cell_column: str | None = None,
+    output_dir: str | None = None,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geoparquet_version: str | None = None,
+    verbose: bool = False,
+) -> list[tuple[int | str, str]]:
+    """
+    Build coarser overview levels from an aggregate GeoParquet file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, rolls up by
+    true cell hierarchy, and writes one GeoParquet sibling per coarser level
+    (``cells.parquet`` -> ``cells_r4.parquet``; admin ->
+    ``by_region_country.parquet``). Counts, sums, mins, maxes, and breakdown
+    counts roll up exactly; averages are count-weighted (exact when the
+    metric had no NULLs).
+
+    Args:
+        input_parquet: Path to a `gpio process aggregate` output
+        levels: Explicit levels (comma string or list; admin: "country").
+            Default: auto-select against max_tile_kb
+        max_tile_kb: Tile-size budget in KB for auto level selection (default: 500)
+        bytes_per_cell: Override the estimated compressed bytes per cell
+        cell_column: Cell id column when auto-detection fails
+        output_dir: Directory for overview files (default: beside the input)
+        compression: Parquet compression codec (default: ZSTD)
+        compression_level: Optional compression level
+        geoparquet_version: GeoParquet version to write
+        verbose: Enable verbose output
+
+    Returns:
+        List of (level, output_path) tuples, coarse to fine
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_overviews('cells.parquet', levels=[4, 7])
+        [(4, 'cells_r4.parquet'), (7, 'cells_r7.parquet')]
+    """
+    from geoparquet_io.core.process.overview import create_overviews as _create_overviews
+
+    return _create_overviews(
+        input_parquet,
+        levels=levels,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        cell_column=cell_column,
+        output_dir=output_dir,
+        compression=compression,
+        compression_level=compression_level,
+        geoparquet_version=geoparquet_version,
+        verbose=verbose,
+    )
+
+
 def add_kdtree(
     table: pa.Table,
     column_name: str = "kdtree_cell",

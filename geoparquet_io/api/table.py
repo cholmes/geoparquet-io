@@ -1513,6 +1513,33 @@ class Table:
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
+    def overview(
+        self,
+        level: int | str,
+        cell_column: str | None = None,
+    ) -> Table:
+        """
+        Roll an aggregate table up to a coarser overview level.
+
+        The table must be a `process aggregate` output (carrying an
+        ``a5_cell``/``h3_cell``/``admin_code`` column plus ``count``). Counts,
+        sums, mins, maxes, and breakdown counts roll up exactly; averages are
+        count-weighted (exact when the metric had no NULLs).
+
+        Args:
+            level: Target level -- a coarser grid resolution, or ``"country"``
+                for a region-level admin aggregate
+            cell_column: Cell id column when auto-detection fails
+
+        Returns:
+            New Table with one row per parent cell
+        """
+        from geoparquet_io.core.process.overview import rollup_table
+
+        result = rollup_table(self._table, level, cell_column=cell_column)
+        has_geometry = "geometry" in result.column_names
+        return Table(result, "geometry" if has_geometry else None)
+
     def add_s2(
         self,
         column_name: str = "s2_cell",

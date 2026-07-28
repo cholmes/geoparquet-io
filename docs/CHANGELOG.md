@@ -10,6 +10,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **`gpio process overview` (#570)**: derive coarser aggregate levels from an
+  existing `gpio process aggregate` output. The scheme (`a5_cell`/`h3_cell`/
+  `admin_code`) and base level are detected from the file; cells roll up by
+  true hierarchy (`a5_cell_to_parent`/`h3_cell_to_parent`; admin region→country
+  via ISO code prefix with cached Overture country polygons). `count`, `sum_*`,
+  `min_*`, `max_*`, and breakdown `count_*` columns roll up exactly; `avg_*` is
+  count-weighted (exact when the metric has no NULLs). Levels are explicit
+  (`--levels 4,7`) or auto-selected against a tile-size budget
+  (`--max-tile-kb`, default 500) using a worst-tile probe of parent-cell
+  centroids in DuckDB. Outputs are siblings (`cells_r7.parquet`,
+  `by_region_country.parquet`). Python API: `ops.create_overviews`,
+  `Table.overview`.
+
 - **`--bucket-point` on `gpio process aggregate` (#567).** Grid/admin keying
   can now derive its per-feature point from a bbox covering column
   (`--bucket-point bbox`, auto-detected or via `--bbox-column`) or an existing

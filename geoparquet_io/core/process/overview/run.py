@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Orchestration for `gpio process overview`: build coarser aggregate levels.
+
+Reads an existing `gpio process aggregate` output (small), rolls it up to one
+or more coarser levels -- explicit via ``levels`` or auto-selected against a
+tile-size budget -- and writes one GeoParquet sibling per level.
+"""
+
+from __future__ import annotations
+
+import gc
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.exceptions import InvalidParameterError
+from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.logging_config import configure_verbose, debug, success
+from geoparquet_io.core.logging_config import info as log_info
+from geoparquet_io.core.partition.auto_resolution import _register_quadkey_udf
+from geoparquet_io.core.process.aggregate.common import geometry_to_geom_expr
+from geoparquet_io.core.process.overview.detect import (
+    AggregateInfo,
+    detect_aggregate_info,
+)
+from geoparquet_io.core.process.overview.levels import (
+    DEFAULT_MAX_TILE_KB,
+    Band,
+    estimate_bytes_per_cell,
+    probe_worst_tile_counts,
+    select_bands,
+)
+from geoparquet_io.core.process.overview.rollup import (
+    ADMIN_PARENT_EXPR,
+    GRID_PARENT_TEMPLATES,
+    GRID_SCHEMES,
+    build_level_sql,
+    validate_level,
+)
+
+
+def overview_output_path(
+    input_parquet: str, scheme: str, level: int | str, output_dir: str | None = None
+) -> str:
+    """Sibling path for one overview level.
+
+    Grid: ``cells.parquet`` -> ``cells_r7.parquet``. Admin: ``by_region.parquet``
+    -> ``by_region_country.parquet``.
+    """
+    path = Path(input_parquet)
+    directory = Path(output_dir) if output_dir else path.parent
+    suffix = path.suffix or ".parquet"
+    if scheme == "admin":
+        return str(directory / f"{path.stem}_{level}{suffix}")
+    return str(directory / f"{path.stem}_r{level}{suffix}")
+
+
+def parse_levels(levels, info: AggregateInfo) -> list[int | str]:
+    """Normalize an explicit ``levels`` parameter (comma string or list)."""
+    if isinstance(levels, str):
+        raw: list = [part.strip() for part in levels.split(",") if part.strip()]
+    else:
+        raw = list(levels)
+    if not raw:
+        raise InvalidParameterError("levels", "no levels given")
+    parsed = [validate_level(info, level) for level in raw]
+    if len(set(parsed)) != len(parsed):
+        raise InvalidParameterError("levels", f"duplicate levels in {parsed}")
+    if info.scheme == "admin":
+        return parsed
+    return sorted(parsed)
+
+
+def _grid_cells_probe_sql(info: AggregateInfo, source_sql: str, level: int) -> str:
+    """One lon/lat row per distinct level-``level`` parent cell of a grid input."""
+    qcol = quote_identifier(info.cell_column)
+    if level == info.base_level:
+        parent = qcol
+    else:
+        parent = GRID_PARENT_TEMPLATES[info.scheme].format(cell=qcol, level=level)
+    # a5_cell_to_lonlat returns [lon, lat]; h3_cell_to_latlng returns [lat, lng].
+    if info.scheme == "a5":
+        lonlat = "a5_cell_to_lonlat(__parent)"
+        lon, lat = "__ll[1]", "__ll[2]"
+    else:
+        lonlat = "h3_cell_to_latlng(__parent)"
+        lon, lat = "__ll[2]", "__ll[1]"
+    return (
+        f"SELECT {lon} AS lon, {lat} AS lat FROM ("
+        f"SELECT {lonlat} AS __ll FROM ("
+        f"SELECT DISTINCT {parent} AS __parent FROM ({source_sql}) "
+        f"WHERE {qcol} IS NOT NULL))"
+    )
+
+
+def _admin_cells_probe_sql(con, info: AggregateInfo, source_sql: str, level: str) -> str:
+    """One lon/lat row per admin bucket at ``level`` ('region' base or 'country')."""
+    if info.out_geometry == "none":
+        raise InvalidParameterError(
+            "levels",
+            "cannot auto-select admin overview zoom bands for an aggregate "
+            "without geometry; pass explicit levels",
+        )
+    geom_expr = geometry_to_geom_expr(con, f"({source_sql})", "geometry")
+    centroids = (
+        f"SELECT admin_code, ST_X(__c) AS lon, ST_Y(__c) AS lat FROM ("
+        f"SELECT admin_code, ST_Centroid({geom_expr}) AS __c FROM ({source_sql}) "
+        "WHERE geometry IS NOT NULL AND admin_code != 'unassigned')"
+    )
+    if level == "region":
+        return f"SELECT lon, lat FROM ({centroids})"
+    return (
+        f"SELECT AVG(lon) AS lon, AVG(lat) AS lat FROM ({centroids}) GROUP BY {ADMIN_PARENT_EXPR}"
+    )
+
+
+def plan_bands(
+    con,
+    source_sql: str,
+    info: AggregateInfo,
+    levels: list[int | str] | None = None,
+    max_tile_kb: int = DEFAULT_MAX_TILE_KB,
+    bytes_per_cell: float | None = None,
+    verbose: bool = False,
+) -> list[Band]:
+    """Probe worst-tile cell counts and select zoom bands for the pyramid.
+
+    ``levels`` (already validated, coarse-to-fine, excluding the base) restricts
+    the candidate set; the base level is always the final candidate.
+    """
+    if info.scheme == "admin":
+        candidates: list[int | str] = ["country", "region"]
+    elif levels is not None:
+        candidates = [*levels, info.base_level]
+    else:
+        scheme = GRID_SCHEMES[info.scheme]
+        candidates = [*range(scheme.min_resolution, int(info.base_level)), info.base_level]
+
+    bpc = bytes_per_cell or estimate_bytes_per_cell(info.num_attributes, info.out_geometry)
+    _register_quadkey_udf(con)
+    worst: dict[int | str, dict[int, int]] = {}
+    for level in candidates:
+        if info.scheme == "admin":
+            cells_sql = _admin_cells_probe_sql(con, info, source_sql, str(level))
+        else:
+            cells_sql = _grid_cells_probe_sql(info, source_sql, int(level))
+        worst[level] = probe_worst_tile_counts(con, cells_sql)
+    bands = select_bands(worst, candidates, bpc, max_tile_kb)
+    if verbose:
+        debug(f"Estimated {bpc:.0f} bytes/cell; selected bands: {bands}")
+    return bands
+
+
+def _auto_levels(con, source_sql, info, max_tile_kb, bytes_per_cell, verbose):
+    """Auto-select the overview levels to build (excludes the base level)."""
+    if info.scheme == "admin":
+        # The admin ladder has exactly one coarser level; no probing needed.
+        return ["country"]
+    bands = plan_bands(
+        con,
+        source_sql,
+        info,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        verbose=verbose,
+    )
+    return [band.level for band in bands if band.level != info.base_level]
+
+
+def _write_overview(table, out_path, info, compression, compression_level, gpq_version, verbose):
+    if info.out_geometry == "none":
+        kwargs = {"compression": compression}
+        if compression_level is not None:
+            kwargs["compression_level"] = compression_level
+        pq.write_table(table, out_path, **kwargs)
+        return
+    write_geoparquet_table(
+        table,
+        out_path,
+        geometry_column="geometry",
+        compression=compression,
+        compression_level=compression_level,
+        geoparquet_version=gpq_version,
+        verbose=verbose,
+    )
+
+
+def create_overviews(
+    input_parquet: str,
+    *,
+    levels=None,
+    max_tile_kb: int = DEFAULT_MAX_TILE_KB,
+    bytes_per_cell: float | None = None,
+    cell_column: str | None = None,
+    output_dir: str | None = None,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geoparquet_version: str | None = None,
+    verbose: bool = False,
+    show_sql: bool = False,
+) -> list[tuple[int | str, str]]:
+    """Build coarser overview levels from an aggregate GeoParquet file.
+
+    Args:
+        input_parquet: Path to a `gpio process aggregate` output.
+        levels: Explicit levels to build (comma string or list). Grid schemes
+            take resolutions coarser than the input's base; admin takes
+            ``country``. Default: auto-select against ``max_tile_kb``.
+        max_tile_kb: Tile-size budget (KB) driving auto level selection.
+        bytes_per_cell: Override the estimated compressed bytes per cell.
+        cell_column: Cell id column when auto-detection fails.
+        output_dir: Directory for overview files (default: beside the input).
+        compression: Parquet compression codec (default ZSTD).
+        compression_level: Optional compression level.
+        geoparquet_version: GeoParquet spec version to write.
+        verbose: Enable verbose debug logging.
+        show_sql: Log the rollup SQL.
+
+    Returns:
+        List of ``(level, output_path)`` for every overview written,
+        coarse to fine.
+    """
+    configure_verbose(verbose)
+    input_url = safe_file_url(input_parquet, verbose)
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
+    try:
+        con.execute("SET geometry_always_xy = true")
+        relation = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+        info = detect_aggregate_info(con, relation, cell_column)
+        source_sql = f"SELECT * FROM {relation}"
+
+        if levels is not None:
+            target_levels = parse_levels(levels, info)
+        else:
+            target_levels = _auto_levels(
+                con, source_sql, info, max_tile_kb, bytes_per_cell, verbose
+            )
+        if not target_levels:
+            log_info("Base level fits the tile budget at every zoom; no overview levels needed")
+            return []
+
+        results: list[tuple[int | str, str]] = []
+        for level in target_levels:
+            sql = build_level_sql(con, info, source_sql, level)
+            if show_sql or verbose:
+                debug(sql)
+            table = con.execute(sql).arrow().read_all()
+            out_path = overview_output_path(input_parquet, info.scheme, level, output_dir)
+            _write_overview(
+                table,
+                out_path,
+                info,
+                compression,
+                compression_level,
+                geoparquet_version,
+                verbose,
+            )
+            success(f"Wrote level {level} overview ({table.num_rows} rows) -> {out_path}")
+            results.append((level, out_path))
+        return results
+    finally:
+        con.close()
+        # Release GDAL/spatial native handles before the next spatial connection
+        # opens; leaked native state can segfault sibling xdist tests.
+        gc.collect()

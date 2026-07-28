@@ -85,6 +85,7 @@ from geoparquet_io.core.process.aggregate.by_admin import (
     aggregate_by_admin as aggregate_by_admin_impl,
 )
 from geoparquet_io.core.process.aggregate.by_h3 import aggregate_by_h3 as aggregate_by_h3_impl
+from geoparquet_io.core.process.overview import create_overviews as create_overviews_impl
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -7023,8 +7024,98 @@ def _aggregate_error(exc: Exception, where: str | None) -> click.ClickException:
 @cli.group()
 @click.pass_context
 def process(ctx):
-    """Transform or reduce GeoParquet data (aggregate, ...)."""
+    """Transform or reduce GeoParquet data (aggregate, overview, ...)."""
     pass
+
+
+@process.command(name="overview")
+@click.argument("input_parquet")
+@click.option(
+    "--levels",
+    default=None,
+    help=(
+        "Comma-separated coarser levels to build (grid resolutions like '4,7'; "
+        "admin: 'country'). Default: auto-select against --max-tile-kb."
+    ),
+)
+@click.option(
+    "--max-tile-kb",
+    type=int,
+    default=500,
+    show_default=True,
+    help="Tile-size budget in KB driving auto level selection.",
+)
+@click.option(
+    "--bytes-per-cell",
+    type=float,
+    default=None,
+    help="Override the estimated compressed bytes per cell used in auto selection.",
+)
+@click.option(
+    "--cell-column",
+    default=None,
+    help="Cell id column when auto-detection fails (default: a5_cell/h3_cell/admin_code).",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory for overview files (default: alongside the input).",
+)
+@compression_options
+@verbose_option
+@geoparquet_version_option
+@show_sql_option
+@click.pass_context
+def process_overview(
+    ctx,
+    input_parquet,
+    levels,
+    max_tile_kb,
+    bytes_per_cell,
+    cell_column,
+    output_dir,
+    compression,
+    compression_level,
+    verbose,
+    geoparquet_version,
+    show_sql,
+):
+    """Build coarser overview levels from an aggregate output.
+
+    Reads a `gpio process aggregate` output, detects its scheme (a5/h3/admin)
+    and base level, and writes one GeoParquet sibling per coarser level
+    (`cells.parquet` -> `cells_r4.parquet`; admin -> `by_region_country.parquet`).
+    Counts, sums, mins, maxes, and breakdown counts roll up exactly; averages
+    are count-weighted.
+
+    Examples:
+
+        gpio process overview cells.parquet
+
+        gpio process overview cells.parquet --levels 4,7
+
+        gpio process overview by_region.parquet --levels country
+
+        gpio process overview cells.parquet --max-tile-kb 300
+    """
+    with _activate_s3(ctx):
+        try:
+            create_overviews_impl(
+                input_parquet,
+                levels=levels,
+                max_tile_kb=max_tile_kb,
+                bytes_per_cell=bytes_per_cell,
+                cell_column=cell_column,
+                output_dir=output_dir,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                geoparquet_version=geoparquet_version,
+                verbose=verbose,
+                show_sql=show_sql,
+            )
+        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 @process.group(name="aggregate")
