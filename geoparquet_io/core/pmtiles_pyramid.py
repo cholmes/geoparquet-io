@@ -137,24 +137,35 @@ def _merge_pyramid_metadata(pmtiles_path: str, pyramid: dict) -> None:
 
     Full read/write round-trip via the pmtiles package (tile data is copied
     verbatim; the writer recomputes header offsets and zoom bounds).
+
+    The archive is read fully into memory first so that no handle on either
+    file remains open when ``os.replace`` runs. In particular, pmtiles'
+    ``MmapSource`` must NOT be used here: it wraps the file in an ``mmap``
+    that lives on inside the reader's ``get_bytes`` closure with no way to
+    close it, and on Windows an open memory map keeps the file locked (even
+    after the file object itself is closed), failing the replace with
+    WinError 5/32.
     """
-    from pmtiles.reader import MmapSource, Reader, all_tiles
+    from pmtiles.reader import MemorySource, Reader, all_tiles
     from pmtiles.tile import zxy_to_tileid
     from pmtiles.writer import Writer
 
-    tmp_path = pmtiles_path + ".meta.tmp"
-    # Both handles must be closed before os.replace (Windows).
     with open(pmtiles_path, "rb") as source_file:
-        source = MmapSource(source_file)
-        reader = Reader(source)
-        header = reader.header()
-        metadata = reader.metadata()
-        metadata["gpio:pyramid"] = pyramid
-        with open(tmp_path, "wb") as out:
-            writer = Writer(out)
-            for zxy, data in all_tiles(source):
-                writer.write_tile(zxy_to_tileid(*zxy), data)
-            writer.finalize(header, metadata)
+        archive_bytes = source_file.read()
+    # No handles on the original archive remain past this point.
+
+    source = MemorySource(archive_bytes)
+    reader = Reader(source)
+    header = reader.header()
+    metadata = reader.metadata()
+    metadata["gpio:pyramid"] = pyramid
+
+    tmp_path = pmtiles_path + ".meta.tmp"
+    with open(tmp_path, "wb") as out:
+        writer = Writer(out)
+        for zxy, data in all_tiles(source):
+            writer.write_tile(zxy_to_tileid(*zxy), data)
+        writer.finalize(header, metadata)
     os.replace(tmp_path, pmtiles_path)
 
 

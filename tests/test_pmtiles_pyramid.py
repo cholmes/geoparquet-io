@@ -409,7 +409,7 @@ class TestRunTileJoin:
 
 class TestMergePyramidMetadata:
     def test_roundtrip_preserves_tiles_and_merges_key(self, tmp_path):
-        from pmtiles.reader import MmapSource, Reader
+        from pmtiles.reader import MemorySource, Reader
         from pmtiles.tile import Compression, TileType, zxy_to_tileid
         from pmtiles.writer import Writer
 
@@ -431,15 +431,16 @@ class TestMergePyramidMetadata:
         pyramid = {"scheme": "a5", "bands": [{"level": 5, "minzoom": 0, "maxzoom": 3}]}
         _merge_pyramid_metadata(str(archive), pyramid)
 
-        with open(archive, "rb") as f:
-            reader = Reader(MmapSource(f))
-            metadata = reader.metadata()
-            assert metadata["gpio:pyramid"] == pyramid
-            assert metadata["name"] == "orig"  # existing metadata preserved
-            assert reader.get(0, 0, 0) == b"tile-z0"
-            assert reader.get(1, 0, 0) == b"tile-z1"
-            assert reader.header()["min_zoom"] == 0
-            assert reader.header()["max_zoom"] == 1
+        # MemorySource (not MmapSource): an mmap would keep the file locked
+        # on Windows until GC, breaking tmp_path cleanup.
+        reader = Reader(MemorySource(archive.read_bytes()))
+        metadata = reader.metadata()
+        assert metadata["gpio:pyramid"] == pyramid
+        assert metadata["name"] == "orig"  # existing metadata preserved
+        assert reader.get(0, 0, 0) == b"tile-z0"
+        assert reader.get(1, 0, 0) == b"tile-z1"
+        assert reader.header()["min_zoom"] == 0
+        assert reader.header()["max_zoom"] == 1
         assert not (tmp_path / "t.pmtiles.meta.tmp").exists()
 
 
@@ -560,11 +561,14 @@ def _write_points(path):
 
 
 def _read_pyramid_metadata(path):
-    from pmtiles.reader import MmapSource, Reader
+    """Read header + metadata via MemorySource: no mmap, so no lingering
+    file lock on Windows (an mmap survives its file object until GC)."""
+    from pathlib import Path as _Path
 
-    with open(path, "rb") as f:
-        reader = Reader(MmapSource(f))
-        return reader.header(), reader.metadata()
+    from pmtiles.reader import MemorySource, Reader
+
+    reader = Reader(MemorySource(_Path(path).read_bytes()))
+    return reader.header(), reader.metadata()
 
 
 integration = pytest.mark.skipif(
