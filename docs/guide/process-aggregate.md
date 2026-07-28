@@ -163,6 +163,10 @@ Use `--where` to aggregate only a subset of rows — a year, a category, a confi
         --where "\"crop:name\" = 'wheat'"
     gpio process aggregate admin fields.parquet by_country.parquet --level country \
         --where "confidence >= 50"
+
+    # Hive partition columns are filterable too
+    gpio process aggregate h3 "fields/**/*.parquet" cells.parquet --resolution 8 \
+        --where "year = 2025"
     ```
 
 === "Python"
@@ -176,6 +180,10 @@ Use `--where` to aggregate only a subset of rows — a year, a category, a confi
     )
     result.write('cells.parquet')
     ```
+
+On a hive-partitioned input (`year=2025/...`), the partition columns are part of the scan, so `--where "year = 2025"` filters on them and DuckDB prunes the partitions it does not need. Partition columns never appear in the aggregated output.
+
+The clause must be a single filtering expression: a `;` statement separator outside a quoted string is rejected, as are keywords that modify data (`DROP`, `DELETE`, `INSERT`, ...).
 
 ### Output Geometry
 

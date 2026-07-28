@@ -25,6 +25,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
     validate_where_clause,
+    where_sql_fragment,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -32,6 +33,7 @@ from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, info, success
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
+    aggregate_source_relation,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
@@ -97,14 +99,15 @@ def read_grid_source_sql(
     CRS-less / already-CRS84 input is left untouched.
 
     ``where`` is applied to this source scan, so keying, metrics, and breakdowns
-    all see only the filtered rows (#568). The caller validates the clause.
+    all see only the filtered rows (#568). The caller validates the clause. Hive
+    partition columns are visible to it (#612); see
+    :func:`aggregate_source_relation`.
     """
-    read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+    read_rel = aggregate_source_relation(input_url)
     geom_expr = crs_transform_sql_expr(geometry_to_geom_expr(con, read_rel, geom_col), source_crs)
-    where_sql = f" WHERE ({where})" if where else ""
     return (
         f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom "
-        f"FROM {read_rel}{where_sql}"
+        f"FROM {read_rel}{where_sql_fragment(where)}"
     )
 
 
@@ -188,7 +191,14 @@ def wrap_grid_geometry(
 
 
 def _resolve_resolution(
-    scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=None
+    scheme,
+    input_parquet,
+    resolution,
+    auto,
+    target_per_cell,
+    max_cells,
+    verbose,
+    where: str | None = None,
 ):
     """Resolve the explicit or auto resolution and validate against scheme bounds.
 
@@ -358,10 +368,9 @@ def aggregate_grid_table(
         geom_expr = crs_transform_sql_expr(
             geometry_to_geom_expr(con, "__agg_input", geom_col), source_crs
         )
-        where_sql = f" WHERE ({where})" if where else ""
         source_sql = (
             f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col,))}, "
-            f"{geom_expr} AS __geom FROM __agg_input{where_sql}"
+            f"{geom_expr} AS __geom FROM __agg_input{where_sql_fragment(where)}"
         )
         final_sql = build_grid_query(
             con,

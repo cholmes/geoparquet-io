@@ -6999,6 +6999,25 @@ def pmtiles_create(
 # =============================================================================
 
 
+def _aggregate_error(exc: Exception, where: str | None) -> click.ClickException:
+    """Turn an aggregation failure into a message a user can act on.
+
+    A bad ``--where`` clause surfaces as a raw DuckDB binder/parser error that
+    echoes the whole generated SQL, which buries the actual cause. Drop the SQL
+    echo and name ``--where`` as the likely culprit (gpio #612). Non-DuckDB
+    errors (validation, bad parameters) already read well and pass through.
+    """
+    if not isinstance(exc, duckdb.Error):
+        return click.ClickException(str(exc))
+    message = str(exc).split("\nLINE ")[0].strip()
+    if where:
+        message += (
+            f'\n\nThis is most likely caused by --where "{where}" '
+            "-- check the column names and SQL syntax."
+        )
+    return click.ClickException(message)
+
+
 @cli.group()
 @click.pass_context
 def process(ctx):
@@ -7085,7 +7104,7 @@ def process_aggregate_a5(
                 where=where,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise _aggregate_error(exc, where) from exc
 
 
 @process_aggregate.command(name="h3")
@@ -7155,7 +7174,7 @@ def process_aggregate_h3(
                 where=where,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise _aggregate_error(exc, where) from exc
 
 
 @process_aggregate.command(name="admin")
@@ -7239,7 +7258,7 @@ def process_aggregate_admin(
                 where=where,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
-            raise click.ClickException(str(exc)) from exc
+            raise _aggregate_error(exc, where) from exc
 
 
 if __name__ == "__main__":

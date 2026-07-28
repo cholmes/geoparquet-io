@@ -981,6 +981,7 @@ result.write('by_region.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per region: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
 
 Every output row carries `admin_code` and `admin_name` bucket identifiers. Features outside all regions go into an `unassigned` bucket.
 

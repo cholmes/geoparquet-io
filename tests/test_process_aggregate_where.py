@@ -65,7 +65,9 @@ def test_read_grid_source_sql_appends_where(tmp_path):
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         sql = read_grid_source_sql(con, str(src), "geometry", where="area > 3")
-        assert "WHERE (area > 3)" in sql
+        # The clause is closed on its own line so a trailing `--` comment in it
+        # cannot swallow the paren (#612).
+        assert "WHERE (area > 3\n)" in sql
         count = con.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()[0]
         assert count == 2  # areas 4.0 and 6.0
         # No clause -> unchanged behavior
@@ -88,7 +90,7 @@ def test_build_joined_sql_injects_where_into_inner_scan():
         where="\"crop:name\" = 'wheat'",
     )
     inner = sql.split(") s")[0]  # the input-scan subquery
-    assert "WHERE (\"crop:name\" = 'wheat')" in inner
+    assert "WHERE (\"crop:name\" = 'wheat'\n)" in inner
 
 
 def test_where_validation_rejects_dangerous_keywords(tmp_path):
@@ -179,6 +181,64 @@ def test_aggregate_auto_threads_where_to_auto_resolution(tmp_path, monkeypatch):
     assert captured.get("where") == "area > 3"
 
 
+def test_count_query_nests_where_in_subquery():
+    """The clause must never trail a top-level statement (#612 injection)."""
+    from geoparquet_io.core.partition.auto_resolution import _count_query
+
+    sql = _count_query("f.parquet", "area > 3")
+    assert "FROM (SELECT 1 FROM 'f.parquet'" in sql
+    assert sql.rstrip().endswith("AS __filtered")
+    assert _count_query("f.parquet", None) == "SELECT COUNT(*) FROM 'f.parquet'"
+
+
+def test_auto_resolution_rejects_statement_separator(tmp_path):
+    """A ``;`` payload must be refused before any SQL runs (#612)."""
+    from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, FOUR_POINTS)
+    pwned = tmp_path / "pwned.csv"
+    payload = f"1=1); COPY (SELECT 42 AS x) TO '{pwned}'; SELECT COUNT(*) FROM '{src}' WHERE (1=1"
+    with pytest.raises(ValidationError):
+        calculate_auto_resolution(str(src), "quadkey", target_rows_per_partition=1, where=payload)
+    assert not pwned.exists()
+
+
+def test_cli_auto_where_injection_writes_no_file(tmp_path):
+    """End-to-end: --auto --where cannot be used to run a second statement (#612)."""
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, FOUR_POINTS)
+    pwned = tmp_path / "pwned_cli.csv"
+    payload = f"1=1); COPY (SELECT 42 AS x) TO '{pwned}'; SELECT COUNT(*) FROM '{src}' WHERE (1=1"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "process",
+            "aggregate",
+            "a5",
+            str(src),
+            str(tmp_path / "o.parquet"),
+            "--auto",
+            "--where",
+            payload,
+        ],
+    )
+    assert result.exit_code != 0, result.output
+    assert not pwned.exists()
+
+
+def test_auto_empty_filter_result_names_the_filter(tmp_path):
+    """An empty filter result must blame the filter, not the file (#612)."""
+    from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, FOUR_POINTS)
+    with pytest.raises(ValueError, match="--where"):
+        calculate_auto_resolution(
+            str(src), "quadkey", target_rows_per_partition=1, where="area > 1000"
+        )
+
+
 def test_probe_distinct_cell_counts_respects_where(tmp_path):
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
     from geoparquet_io.core.partition.auto_resolution import (
@@ -198,6 +258,172 @@ def test_probe_distinct_cell_counts_respects_where(tmp_path):
         )
         assert counts_all == [2]
         assert counts_filtered == [1]
+    finally:
+        con.close()
+
+
+def test_probe_filters_beneath_the_sample(tmp_path):
+    """The sample must be drawn from the *filtered* rows, not filtered afterwards.
+
+    DuckDB puts the FILTER above RESERVOIR_SAMPLE when the clause sits next to
+    ``USING SAMPLE``, so a selective filter left only a fraction of the sample
+    and --auto over-resolved (#612).
+    """
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.partition.auto_resolution import (
+        _probe_distinct_cell_counts,
+        _register_quadkey_udf,
+    )
+
+    src = tmp_path / "f.parquet"
+    # 100 wheat rows at 100 distinct locations + 900 corn rows stacked on one spot.
+    rows = [(-170.0 + 3.0 * i, 10.0 + (i % 20), "wheat", 1.0) for i in range(100)]
+    rows += [(10.0, 50.0, "corn", 1.0)] * 900
+    _write_points_geoparquet(src, rows)
+
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        _register_quadkey_udf(con)
+        counts = _probe_distinct_cell_counts(
+            con,
+            str(src),
+            "quadkey",
+            "geometry",
+            " USING SAMPLE 200 ROWS",
+            [8],
+            where="crop = 'wheat'",
+        )
+    finally:
+        con.close()
+    # All 100 matching rows fit the 200-row budget, so every distinct cell is seen.
+    assert counts == [100]
+
+
+def test_read_grid_source_sql_tolerates_trailing_sql_comment(tmp_path):
+    """A trailing ``--`` comment must not swallow what follows the clause (#612)."""
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.process.aggregate.grid_common import read_grid_source_sql
+
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, FOUR_POINTS)
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        sql = read_grid_source_sql(con, str(src), "geometry", where="area > 3 -- big only")
+        assert con.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()[0] == 2
+    finally:
+        con.close()
+
+
+def test_where_error_message_names_the_where_option():
+    """An invalid clause must point at --where, not dump the generated SQL (#612)."""
+    import duckdb as _duckdb
+
+    from geoparquet_io.cli.main import _aggregate_error
+
+    exc = _duckdb.Error(
+        'Binder Error: Referenced column "yr" not found in FROM clause!\n'
+        "LINE 1: SELECT * EXCLUDE (...) FROM read_parquet('x.parquet') WHERE (yr = 2025)"
+    )
+    err = _aggregate_error(exc, "yr = 2025")
+    assert "--where" in str(err)
+    assert "yr = 2025" in str(err)
+    assert "LINE 1" not in str(err)
+    # Non-DuckDB errors pass through untouched.
+    assert str(_aggregate_error(ValueError("plain"), "yr = 2025")) == "plain"
+
+
+# ---------------------------------------------------------------------------
+# Hive-partitioned input: --where must be able to filter on partition columns
+# ---------------------------------------------------------------------------
+
+
+def _write_hive_points(root):
+    """Write year=2024/ and year=2025/ partitions of two points each."""
+    for year, rows in (
+        (2024, [(10.0, 50.0, "wheat", 1.0), (10.001, 50.001, "corn", 2.0)]),
+        (2025, [(10.002, 50.002, "wheat", 3.0)]),
+    ):
+        part = root / f"year={year}"
+        part.mkdir(parents=True, exist_ok=True)
+        _write_points_geoparquet(part / "data.parquet", rows)
+    return str(root / "**" / "*.parquet")
+
+
+def test_read_grid_source_sql_can_filter_on_hive_partition_column(tmp_path):
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.process.aggregate.grid_common import read_grid_source_sql
+
+    glob = _write_hive_points(tmp_path / "hive")
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        sql = read_grid_source_sql(con, glob, "geometry", where="year = 2025")
+        assert con.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()[0] == 1
+        sql_all = read_grid_source_sql(con, glob, "geometry")
+        assert con.execute(f"SELECT COUNT(*) FROM ({sql_all})").fetchone()[0] == 3
+    finally:
+        con.close()
+
+
+def test_grid_aggregation_output_has_no_hive_partition_column(tmp_path):
+    """Enabling hive partitioning must not leak partition columns into the output."""
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.process.aggregate.grid_common import (
+        GridScheme,
+        build_grid_query,
+        read_grid_source_sql,
+    )
+
+    # A scheme keyed by plain SQL so the test needs no community extension.
+    scheme = GridScheme(
+        name="test",
+        extension="",
+        min_resolution=0,
+        max_resolution=10,
+        default_column="test_cell",
+        key_template="CAST(floor(ST_X({geom}) * {res}) AS VARCHAR)",
+        boundary_template="{cell}",
+        latlng_template="{cell}",
+        poly_wkb_template="ST_AsWKB(ST_Point(0, 0))",
+        centroid_wkb_template="ST_AsWKB(ST_Point(0, 0))",
+    )
+    glob = _write_hive_points(tmp_path / "hive")
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        source_sql = read_grid_source_sql(con, glob, "geometry")
+        sql = build_grid_query(con, scheme, source_sql, 1, "test_cell", None, "crop", 20, "polygon")
+        cols = set(con.execute(sql).arrow().read_all().column_names)
+        assert "year" not in cols
+        assert {"test_cell", "count", "geometry"} <= cols
+    finally:
+        con.close()
+
+
+def test_admin_joined_sql_can_filter_on_hive_partition_column(tmp_path):
+    """The admin input scan exposes hive partition columns to --where too."""
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.process.aggregate.by_admin import _build_joined_sql
+
+    glob = _write_hive_points(tmp_path / "hive")
+    admin = tmp_path / "admin.parquet"
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    try:
+        con.execute(
+            f"""
+            COPY (SELECT 'XX' AS country,
+                         ST_GeomFromText('POLYGON((0 0, 20 0, 20 60, 0 60, 0 0))') AS geometry)
+            TO '{admin}' (FORMAT PARQUET)
+            """
+        )
+        sql = _build_joined_sql(
+            glob,
+            "geometry",
+            f"read_parquet('{admin}')",
+            "country",
+            "country",
+            "geometry",
+            where="year = 2025",
+        )
+        assert con.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()[0] == 1
     finally:
         con.close()
 

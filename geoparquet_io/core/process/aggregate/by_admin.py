@@ -13,6 +13,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
     validate_where_clause,
+    where_sql_fragment,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -24,6 +25,7 @@ from geoparquet_io.core.partition.admin_hierarchical import (
 )
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
+    aggregate_source_relation,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
@@ -73,7 +75,8 @@ def _build_joined_sql(
 
     ``where`` is applied to the inner input scan, so the spatial join, metrics,
     and breakdowns all see only the filtered rows (#568). The caller validates
-    the clause.
+    the clause. Hive partition columns are visible to it (#612); see
+    :func:`aggregate_source_relation`.
     """
     if admin_bbox_col:
         bbox_filter = (
@@ -84,7 +87,6 @@ def _build_joined_sql(
         )
     else:
         bbox_filter = ""
-    where_sql = f" WHERE ({where})" if where else ""
     return f"""
         SELECT s.*,
                b.{quote_identifier(code_col)} AS __admin_code,
@@ -92,8 +94,8 @@ def _build_joined_sql(
                ST_AsWKB(b.{quote_identifier(admin_geom_col)}) AS __admin_geom
         FROM (
             SELECT *, ST_Centroid({input_geom_expr}) AS __cen
-            FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
-            {where_sql}
+            FROM {aggregate_source_relation(input_url)}
+            {where_sql_fragment(where)}
         ) s
         LEFT JOIN {admin_ref} b
           ON {bbox_filter}ST_Intersects(b.{quote_identifier(admin_geom_col)}, s.__cen)
@@ -205,7 +207,7 @@ def aggregate_by_admin(
 
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
-        read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+        read_rel = aggregate_source_relation(input_url)
         # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input so ST_Intersects
         # does not fail on a CRS mismatch and the centroid lands correctly (#525).
         source_crs = extract_crs_from_parquet(input_parquet, verbose)

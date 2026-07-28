@@ -18,6 +18,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `--breakdown` pivots, and `--auto` resolution sizing all reflect only the
   matching rows. Semantics and safety validation match `gpio extract --where`;
   also available on the Python API (`aggregate_a5/h3/admin(..., where=...)`).
+  On a hive-partitioned input the clause can filter on partition columns
+  (`--where "year = 2025"`). A `;` statement separator outside a quoted string
+  is now rejected in every `--where` clause (`extract` included), since DuckDB
+  executes multi-statement strings.
 
 - **New spec-validation checks in `gpio check spec` (#586).** Validation now
   fails on unknown `geo` metadata versions (e.g. `99.0.0`) even in auto mode;
