@@ -172,9 +172,13 @@ def _auto_levels(
     bytes_per_cell: float | None,
     verbose: bool,
 ) -> list[int | str]:
-    """Auto-select the overview levels to build (excludes the base level)."""
-    if info.scheme == "admin":
-        # The admin ladder has exactly one coarser level; no probing needed.
+    """Auto-select the overview levels to build (excludes the base level).
+
+    Admin and grid schemes share the probe-based selection, so both return
+    ``[]`` when the base level already fits the budget. A geometry-less admin
+    aggregate cannot be probed; it falls back to the only coarser level.
+    """
+    if info.scheme == "admin" and info.out_geometry == "none":
         return ["country"]
     bands = plan_bands(
         con,

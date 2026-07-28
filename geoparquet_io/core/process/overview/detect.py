@@ -19,7 +19,10 @@ from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.process.aggregate.by_a5 import A5_SCHEME
 from geoparquet_io.core.process.aggregate.by_h3 import H3_SCHEME
-from geoparquet_io.core.process.aggregate.common import geometry_to_geom_expr
+from geoparquet_io.core.process.aggregate.common import (
+    VALID_METRIC_FUNCS,
+    geometry_to_geom_expr,
+)
 
 VALID_SCHEMES = ("a5", "h3", "admin")
 # Default cell column per scheme, single-sourced from the aggregate engine's
@@ -150,7 +153,11 @@ def _classify_columns(columns: list[tuple[str, str]], cell_column: str, scheme: 
     special = {cell_column, "count", "geometry", "centroid"}
     if scheme == "admin":
         special.add("admin_name")
-    prefix_to_func = {"sum_": "sum", "count_": "sum", "min_": "min", "max_": "max", "avg_": "avg"}
+    # Single-sourced from the aggregate engine's metric functions so adding a
+    # metric func there cannot silently drop its columns here; breakdown
+    # count_* columns roll up as sums.
+    prefix_to_func = {f"{func}_": func for func in sorted(VALID_METRIC_FUNCS)}
+    prefix_to_func["count_"] = "sum"
 
     rollups: list[RollupColumn] = []
     dropped: list[str] = []

@@ -326,7 +326,7 @@ def create_pmtiles_pyramid(
     input_path: str,
     output_path: str,
     *,
-    levels=None,
+    levels: str | list[int | str] | None = None,
     max_tile_kb: int = 500,
     bytes_per_cell: float | None = None,
     layer_mode: str = "grouped",
@@ -429,7 +429,10 @@ def create_pmtiles_pyramid(
             band_files.append(band_file)
 
         if include_features:
-            assert features_source is not None and feat_min is not None
+            # Guarded by the parameter validation above; explicit raise (not
+            # assert) so the check survives python -O.
+            if features_source is None or feat_min is None:  # pragma: no cover
+                raise RuntimeError("features band requested without a source or min zoom")
             features_file = os.path.join(tmpdir, "band_features.pmtiles")
             debug(f"Tiling raw features from zoom {feat_min}")
             create_pmtiles_from_geoparquet(

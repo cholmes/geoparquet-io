@@ -27,7 +27,6 @@ from geoparquet_io.core.process.aggregate.grid_common import GridScheme, wrap_gr
 from geoparquet_io.core.process.overview.detect import (
     AggregateInfo,
     detect_aggregate_info,
-    ensure_grid_extension,
 )
 
 GRID_SCHEMES: dict[str, GridScheme] = {"a5": A5_SCHEME, "h3": H3_SCHEME}
@@ -188,10 +187,10 @@ def rollup_table(
     try:
         con.execute("SET geometry_always_xy = true")
         con.register("__overview_input", table)
+        # detect_aggregate_info installs/loads the grid extension while probing
+        # the base level, so no extra ensure_grid_extension call is needed.
         info = detect_aggregate_info(con, "__overview_input", cell_column, scheme)
         level = validate_level(info, level)
-        if info.scheme in GRID_SCHEMES:
-            ensure_grid_extension(con, info.scheme)
         sql = build_level_sql(con, info, "SELECT * FROM __overview_input", level)
         return con.execute(sql).arrow().read_all()
     finally:

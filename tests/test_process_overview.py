@@ -504,7 +504,6 @@ class TestGridRollupStubbed:
         from geoparquet_io.core.process.overview import rollup_table
 
         _no_extension(monkeypatch)
-        monkeypatch.setattr(rollup_mod, "ensure_grid_extension", lambda con, scheme: None)
         real_factory = get_duckdb_connection
 
         def stubbed_connection(**kwargs):
@@ -908,7 +907,9 @@ class TestAdminRollup:
         src = tmp_path / "by_region.parquet"
         _write_admin_region_aggregate(src)
 
-        results = create_overviews(str(src))
+        # bytes_per_cell forces the country level into the plan (3 region
+        # cells blow the z0 budget, 2 countries fit).
+        results = create_overviews(str(src), bytes_per_cell=200000.0)
         assert results == [("country", str(tmp_path / "by_region_country.parquet"))]
 
         table = pq.read_table(results[0][1])
@@ -964,6 +965,21 @@ class TestAdminRollup:
         src = tmp_path / "by_region.parquet"
         _write_admin_region_aggregate(src)
         results = create_overviews(str(src), levels="country")
+        assert [lvl for lvl, _ in results] == ["country"]
+
+    def test_admin_auto_skips_when_base_fits(self, tmp_path):
+        """Admin auto mode probes like grid auto mode: when the region base
+        already fits the budget at every zoom, no overview is built."""
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        assert create_overviews(str(src), bytes_per_cell=1.0) == []
+
+    def test_admin_auto_without_geometry_builds_country(self, tmp_path):
+        """A geometry-less admin aggregate cannot be probed; auto mode falls
+        back to the only coarser level."""
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src, with_geometry=False)
+        results = create_overviews(str(src))
         assert [lvl for lvl, _ in results] == ["country"]
 
     def test_invalid_admin_level_errors(self, tmp_path):
@@ -1030,7 +1046,18 @@ class TestCli:
         outdir.mkdir()
         _write_admin_region_aggregate(src)
         runner = CliRunner()
-        result = runner.invoke(cli, ["process", "overview", str(src), "--output-dir", str(outdir)])
+        result = runner.invoke(
+            cli,
+            [
+                "process",
+                "overview",
+                str(src),
+                "--output-dir",
+                str(outdir),
+                "--bytes-per-cell",
+                "200000",
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert (outdir / "by_region_country.parquet").exists()
 
