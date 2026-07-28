@@ -1,5 +1,7 @@
 """Tests for `gpio process overview` (aggregate rollups to coarser levels)."""
 
+from pathlib import Path
+
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -10,7 +12,10 @@ from geoparquet_io.cli.main import cli
 from geoparquet_io.core.admin_datasets import OvertureAdminDataset
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.overview import create_overviews
-from geoparquet_io.core.process.overview.detect import detect_aggregate_file
+from geoparquet_io.core.process.overview.detect import (
+    detect_aggregate_file,
+    detect_aggregate_info,
+)
 from geoparquet_io.core.process.overview.run import overview_output_path
 
 # ---------------------------------------------------------------------------
@@ -143,25 +148,576 @@ class TestDetection:
 
 
 # ---------------------------------------------------------------------------
+# Grid detection / rollup with stub UDFs (fast: no community extensions)
+# ---------------------------------------------------------------------------
+#
+# The a5/h3 helper functions are stubbed with DuckDB Python UDFs so the SQL
+# paths execute for real without installing community extensions. Stub cell id
+# encoding: id = resolution * 1000 + n; parent(id, L) = L * 1000 + n // 4.
+
+
+def _register_a5_stubs(con):
+    con.create_function("a5_get_resolution", lambda c: c // 1000, ["UBIGINT"], "INTEGER")
+    con.create_function(
+        "a5_cell_to_parent",
+        lambda c, lvl: lvl * 1000 + (c % 1000) // 4,
+        ["UBIGINT", "INTEGER"],
+        "UBIGINT",
+    )
+    con.create_function(
+        "a5_cell_to_lonlat",
+        lambda c: [float(c % 100), float(c % 60)],
+        ["UBIGINT"],
+        "DOUBLE[]",
+    )
+
+
+def _no_extension(monkeypatch):
+    """Skip INSTALL/LOAD of grid community extensions (stubs stand in)."""
+    from geoparquet_io.core.process.overview import detect as detect_mod
+
+    monkeypatch.setattr(detect_mod, "ensure_grid_extension", lambda con, scheme: None)
+
+
+def _stub_grid_aggregate_table(cells, counts, values):
+    return pa.table(
+        {
+            "a5_cell": pa.array(cells, type=pa.uint64()),
+            "count": pa.array(counts, type=pa.int64()),
+            "sum_v": pa.array(values, type=pa.float64()),
+            "avg_v": pa.array(values, type=pa.float64()),
+            "min_v": pa.array(values, type=pa.float64()),
+            "max_v": pa.array(values, type=pa.float64()),
+        }
+    )
+
+
+class TestGridDetectionStubbed:
+    def test_detect_a5(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register("agg", _stub_grid_aggregate_table([7000, 7001], [1, 2], [1.0, 2.0]))
+        info = detect_aggregate_info(con, "agg")
+        assert info.scheme == "a5"
+        assert info.cell_column == "a5_cell"
+        assert info.base_level == 7
+        assert info.out_geometry == "none"
+        # count + sum/avg/min/max rollups feed the bytes-per-cell estimate.
+        assert info.num_attributes == 5
+        # An explicit --cell-column override resolves to the same scheme.
+        override = detect_aggregate_info(con, "agg", cell_column="a5_cell")
+        assert (override.scheme, override.base_level) == ("a5", 7)
+        con.close()
+
+    def test_detect_h3(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        con.create_function("h3_get_resolution", lambda c: 7, ["VARCHAR"], "INTEGER")
+        con.register(
+            "agg",
+            pa.table({"h3_cell": ["871fb4662ffffff", "871fb4663ffffff"], "count": [1, 2]}),
+        )
+        info = detect_aggregate_info(con, "agg")
+        assert info.scheme == "h3"
+        assert info.cell_column == "h3_cell"
+        assert info.base_level == 7
+        con.close()
+
+    def test_detect_mixed_resolutions_errors(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register("agg", _stub_grid_aggregate_table([6000, 7000], [1, 2], [1.0, 2.0]))
+        with pytest.raises(InvalidParameterError, match="[Mm]ixed"):
+            detect_aggregate_info(con, "agg")
+        con.close()
+
+    def test_detect_all_null_cells_errors(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register(
+            "agg",
+            pa.table({"a5_cell": pa.array([None, None], type=pa.uint64()), "count": [1, 2]}),
+        )
+        with pytest.raises(InvalidParameterError, match="non-NULL"):
+            detect_aggregate_info(con, "agg")
+        con.close()
+
+    def test_cell_column_override_missing_errors(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        con.register("agg", pa.table({"count": [1]}))
+        with pytest.raises(InvalidParameterError, match="not found"):
+            detect_aggregate_info(con, "agg", cell_column="mycell")
+        con.close()
+
+    def test_cell_column_override_scheme_inference(self, monkeypatch):
+        import duckdb as _duckdb
+
+        from geoparquet_io.core.process.overview.detect import _scheme_for_column
+
+        con = _duckdb.connect()
+        con.register(
+            "t",
+            pa.table({"h3ish": ["871fb4662ffffff"], "adminish": ["US-CA"]}),
+        )
+        # Integer-typed override is a5 without probing.
+        assert _scheme_for_column(con, "t", "irrelevant", "UBIGINT") == "a5"
+        # 15-hex-char strings are h3; anything else is admin.
+        assert _scheme_for_column(con, "t", "h3ish", "VARCHAR") == "h3"
+        assert _scheme_for_column(con, "t", "adminish", "VARCHAR") == "admin"
+        con.close()
+
+    def test_ensure_grid_extension_statements(self):
+        from geoparquet_io.core.process.overview.detect import ensure_grid_extension
+
+        class RecordingCon:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, sql):
+                self.statements.append(sql)
+
+        con = RecordingCon()
+        ensure_grid_extension(con, "a5")
+        assert con.statements == ["INSTALL a5 FROM community", "LOAD a5"]
+
+
+class TestOutGeometryInference:
+    def test_both_when_centroid_column_present(self, tmp_path):
+        src = tmp_path / "by_region.parquet"
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+        con.execute(
+            f"""
+            COPY (
+                SELECT 'US-CA' AS admin_code, 1 AS count,
+                       ST_Buffer(ST_Point(0, 0), 1.0) AS geometry,
+                       ST_Point(0, 0) AS centroid
+            ) TO '{src}' (FORMAT PARQUET)
+            """
+        )
+        con.close()
+        assert detect_aggregate_file(str(src)).out_geometry == "both"
+
+    def test_centroid_when_geometry_is_points(self, tmp_path):
+        src = tmp_path / "by_region.parquet"
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+        con.execute(
+            f"""
+            COPY (
+                SELECT 'US-CA' AS admin_code, 1 AS count, ST_Point(0, 0) AS geometry
+            ) TO '{src}' (FORMAT PARQUET)
+            """
+        )
+        con.close()
+        assert detect_aggregate_file(str(src)).out_geometry == "centroid"
+
+
+class TestGridRollupStubbed:
+    def test_create_overviews_explicit_level(self, tmp_path, monkeypatch):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview import run as run_mod
+
+        _no_extension(monkeypatch)
+        real_factory = get_duckdb_connection
+
+        def stubbed_connection(**kwargs):
+            con = real_factory(**kwargs)
+            _register_a5_stubs(con)
+            return con
+
+        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+
+        src = tmp_path / "cells.parquet"
+        # Parents at level 5: 7000,7001 -> 5000; 7004,7005 -> 5001.
+        pq.write_table(
+            _stub_grid_aggregate_table(
+                [7000, 7001, 7004, 7005], [1, 2, 3, 4], [1.0, 2.0, 3.0, 4.0]
+            ),
+            src,
+        )
+        results = create_overviews(str(src), levels="5", compression_level=9, show_sql=True)
+        assert results == [(5, str(tmp_path / "cells_r5.parquet"))]
+
+        out = pq.read_table(results[0][1])
+        rows = dict(zip(out.column("a5_cell").to_pylist(), range(out.num_rows), strict=True))
+        assert set(rows) == {5000, 5001}
+
+        def col(name, cell):
+            return out.column(name)[rows[cell]].as_py()
+
+        assert col("count", 5000) == 3
+        assert col("sum_v", 5000) == pytest.approx(3.0)
+        # Count-weighted: (1*1.0 + 2*2.0) / 3.
+        assert col("avg_v", 5000) == pytest.approx(5.0 / 3.0)
+        assert col("min_v", 5000) == 1.0
+        assert col("max_v", 5000) == 2.0
+        assert col("count", 5001) == 7
+        assert col("avg_v", 5001) == pytest.approx(25.0 / 7.0)
+
+    def test_create_overviews_auto_levels(self, tmp_path, monkeypatch):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview import run as run_mod
+
+        _no_extension(monkeypatch)
+        real_factory = get_duckdb_connection
+
+        def stubbed_connection(**kwargs):
+            con = real_factory(**kwargs)
+            _register_a5_stubs(con)
+            return con
+
+        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+
+        src = tmp_path / "cells.parquet"
+        pq.write_table(
+            _stub_grid_aggregate_table(
+                [7000, 7001, 7004, 7005], [1, 2, 3, 4], [1.0, 2.0, 3.0, 4.0]
+            ),
+            src,
+        )
+        # Absurd bytes-per-cell: nothing fits, so only the coarsest level (0)
+        # is selected and the base is deferred past the probe range.
+        results = create_overviews(str(src), max_tile_kb=1, bytes_per_cell=1e9)
+        assert [lvl for lvl, _ in results] == [0]
+        assert (tmp_path / "cells_r0.parquet").exists()
+
+    def test_create_overviews_base_fits_builds_nothing(self, tmp_path, monkeypatch):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview import run as run_mod
+
+        _no_extension(monkeypatch)
+        real_factory = get_duckdb_connection
+
+        def stubbed_connection(**kwargs):
+            con = real_factory(**kwargs)
+            _register_a5_stubs(con)
+            return con
+
+        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+
+        src = tmp_path / "cells.parquet"
+        pq.write_table(_stub_grid_aggregate_table([7000, 7001], [1, 2], [1.0, 2.0]), src)
+        # Tiny bytes-per-cell: the base level fits at z0, so no overviews.
+        assert create_overviews(str(src), bytes_per_cell=1.0) == []
+
+    def test_plan_bands_grid_explicit_levels(self, monkeypatch):
+        import duckdb as _duckdb
+
+        from geoparquet_io.core.process.overview.run import plan_bands
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register("agg", _stub_grid_aggregate_table([7000, 7001], [1, 2], [1.0, 2.0]))
+        info = detect_aggregate_info(con, "agg")
+        bands = plan_bands(
+            con, "SELECT * FROM agg", info, levels=[5], bytes_per_cell=1.0, verbose=True
+        )
+        # Everything fits immediately -> single base band; candidates were
+        # restricted to the explicit level + base.
+        assert [band.level for band in bands] == [7]
+        assert bands[0].minzoom == 0 and bands[0].maxzoom is None
+        con.close()
+
+    def test_rollup_table_grid_stubbed(self, monkeypatch):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview import rollup as rollup_mod
+        from geoparquet_io.core.process.overview import rollup_table
+
+        _no_extension(monkeypatch)
+        monkeypatch.setattr(rollup_mod, "ensure_grid_extension", lambda con, scheme: None)
+        real_factory = get_duckdb_connection
+
+        def stubbed_connection(**kwargs):
+            con = real_factory(**kwargs)
+            _register_a5_stubs(con)
+            return con
+
+        monkeypatch.setattr(rollup_mod, "get_duckdb_connection", stubbed_connection)
+
+        result = rollup_table(
+            _stub_grid_aggregate_table([7000, 7001, 7004], [1, 2, 3], [1.0, 2.0, 3.0]), 5
+        )
+        rows = dict(
+            zip(
+                result.column("a5_cell").to_pylist(),
+                result.column("count").to_pylist(),
+                strict=True,
+            )
+        )
+        assert rows == {5000: 3, 5001: 3}
+
+    def test_plan_bands_admin_without_geometry_errors(self, tmp_path):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview.run import plan_bands
+
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src, with_geometry=False)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            relation = f"read_parquet('{src}')"
+            info = detect_aggregate_info(con, relation)
+            with pytest.raises(InvalidParameterError, match="without geometry"):
+                plan_bands(con, f"SELECT * FROM {relation}", info)
+        finally:
+            con.close()
+
+
+class TestProbeWorstTileCounts:
+    def test_counts_shrink_with_zoom(self):
+        from geoparquet_io.core.partition.auto_resolution import _register_quadkey_udf
+        from geoparquet_io.core.process.overview.levels import probe_worst_tile_counts
+
+        con = duckdb.connect()
+        _register_quadkey_udf(con)
+        # Two nearby points, one far away, one beyond the WebMercator lat
+        # domain (exercises the clamp).
+        cells_sql = (
+            "SELECT * FROM (VALUES (2.0, 48.0), (2.001, 48.001), (-100.0, 40.0), (100.0, 89.0)) "
+            "t(lon, lat)"
+        )
+        counts = probe_worst_tile_counts(con, cells_sql, max_zoom=8)
+        assert set(counts) == set(range(9))
+        assert counts[0] == 4  # everything lands in the single z0 tile
+        assert counts[8] >= 1
+        assert all(counts[z + 1] <= counts[z] for z in range(8))
+        con.close()
+
+    def test_empty_input(self):
+        from geoparquet_io.core.partition.auto_resolution import _register_quadkey_udf
+        from geoparquet_io.core.process.overview.levels import probe_worst_tile_counts
+
+        con = duckdb.connect()
+        _register_quadkey_udf(con)
+        counts = probe_worst_tile_counts(
+            con, "SELECT NULL::DOUBLE AS lon, NULL::DOUBLE AS lat WHERE false", max_zoom=2
+        )
+        assert counts == {0: 0, 1: 0, 2: 0}
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Rollup SQL builders (pure string construction, nothing executed)
+# ---------------------------------------------------------------------------
+
+
+def _grid_info(scheme="a5", out_geometry="polygon"):
+    from geoparquet_io.core.process.overview.detect import AggregateInfo, RollupColumn
+
+    return AggregateInfo(
+        scheme=scheme,
+        cell_column=f"{scheme}_cell",
+        base_level=7,
+        rollup_columns=(
+            RollupColumn("sum_area", "sum"),
+            RollupColumn("avg_height", "avg"),
+            RollupColumn("min_year", "min"),
+            RollupColumn("max_year", "max"),
+            RollupColumn("count_barn", "sum", cast_to_bigint=True),
+        ),
+        out_geometry=out_geometry,
+    )
+
+
+def _admin_info(out_geometry="polygon"):
+    from geoparquet_io.core.process.overview.detect import AggregateInfo, RollupColumn
+
+    return AggregateInfo(
+        scheme="admin",
+        cell_column="admin_code",
+        base_level="region",
+        rollup_columns=(RollupColumn("sum_area", "sum"),),
+        out_geometry=out_geometry,
+    )
+
+
+class TestRollupSqlBuilders:
+    def test_grid_rollup_sql_polygon(self):
+        from geoparquet_io.core.process.overview.rollup import build_grid_rollup_sql
+
+        sql = build_grid_rollup_sql(_grid_info(), "SELECT * FROM src", 5)
+        assert 'a5_cell_to_parent("a5_cell", 5)' in sql
+        assert 'CASE WHEN "a5_cell" IS NULL THEN NULL' in sql  # unassigned guard
+        assert "GROUP BY __parent" in sql
+        assert "CAST(SUM(count) AS BIGINT) AS count" in sql
+        assert 'SUM("avg_height" * count) / NULLIF(SUM(count), 0)' in sql
+        assert 'CAST(SUM("count_barn") AS BIGINT)' in sql
+        assert "a5_cell_to_boundary" in sql  # polygon regenerated from cell id
+
+    def test_grid_rollup_sql_h3_both(self):
+        from geoparquet_io.core.process.overview.rollup import build_grid_rollup_sql
+
+        sql = build_grid_rollup_sql(_grid_info("h3", out_geometry="both"), "SELECT * FROM s", 4)
+        assert 'h3_cell_to_parent("h3_cell", 4)' in sql
+        assert "h3_cell_to_boundary_wkt" in sql
+        assert "AS centroid" in sql
+
+    def test_grid_rollup_sql_none_geometry(self):
+        from geoparquet_io.core.process.overview.rollup import build_grid_rollup_sql
+
+        sql = build_grid_rollup_sql(_grid_info(out_geometry="none"), "SELECT * FROM s", 5)
+        assert "boundary" not in sql
+        assert "geometry" not in sql
+
+    def test_admin_rollup_sql_polygon(self):
+        from geoparquet_io.core.process.overview.rollup import build_admin_rollup_sql
+
+        sql = build_admin_rollup_sql(
+            _admin_info(), "SELECT * FROM s", "read_parquet('c.parquet')", '"country"', "geometry"
+        )
+        assert "split_part(admin_code, '-', 1)" in sql
+        assert "'unassigned'" in sql  # unassigned passes through
+        assert "ST_Union_Agg" in sql  # multi-row countries are unioned
+        assert "LEFT JOIN" in sql
+        assert "AS geometry" in sql
+
+    def test_admin_rollup_sql_geometry_modes(self):
+        from geoparquet_io.core.process.overview.rollup import build_admin_rollup_sql
+
+        centroid = build_admin_rollup_sql(
+            _admin_info("centroid"), "SELECT * FROM s", "read_parquet('c')", '"country"', "g"
+        )
+        assert "ST_Centroid" in centroid
+        both = build_admin_rollup_sql(
+            _admin_info("both"), "SELECT * FROM s", "read_parquet('c')", '"country"', "g"
+        )
+        assert "AS centroid" in both
+
+    def test_admin_rollup_sql_none_geometry_skips_join(self):
+        from geoparquet_io.core.process.overview.rollup import (
+            build_admin_rollup_sql,
+            build_level_sql,
+        )
+
+        sql = build_admin_rollup_sql(_admin_info("none"), "SELECT * FROM s", None, None, None)
+        assert "LEFT JOIN" not in sql
+        # build_level_sql takes the no-country-cache shortcut (con unused).
+        assert build_level_sql(None, _admin_info("none"), "SELECT * FROM s", "country") == sql
+
+    def test_validate_level_grid_non_integer_errors(self):
+        from geoparquet_io.core.process.overview.rollup import validate_level
+
+        with pytest.raises(InvalidParameterError, match="integer"):
+            validate_level(_grid_info(), "country")
+        assert validate_level(_grid_info(), "5") == 5
+
+    def test_validate_level_not_coarser_errors(self):
+        from geoparquet_io.core.process.overview.rollup import validate_level
+
+        with pytest.raises(InvalidParameterError, match="coarser"):
+            validate_level(_grid_info(), 7)  # equal to base
+        with pytest.raises(InvalidParameterError, match="coarser"):
+            validate_level(_grid_info(), 9)  # finer than base
+
+    def test_grid_probe_sql_variants(self):
+        from geoparquet_io.core.process.overview.run import _grid_cells_probe_sql
+
+        non_base = _grid_cells_probe_sql(_grid_info(), "SELECT * FROM s", 5)
+        assert 'a5_cell_to_parent("a5_cell", 5)' in non_base
+        assert "a5_cell_to_lonlat" in non_base
+        # At the base level the cell is its own parent -- no parent call.
+        base = _grid_cells_probe_sql(_grid_info(), "SELECT * FROM s", 7)
+        assert "a5_cell_to_parent" not in base
+        # h3 returns [lat, lng]; lon must come from index 2.
+        h3 = _grid_cells_probe_sql(_grid_info("h3"), "SELECT * FROM s", 5)
+        assert "h3_cell_to_latlng" in h3
+        assert "__ll[2] AS lon" in h3
+
+    def test_parse_levels_duplicates_error(self):
+        from geoparquet_io.core.process.overview.run import parse_levels
+
+        with pytest.raises(InvalidParameterError, match="duplicate"):
+            parse_levels([5, 5], _grid_info())
+        with pytest.raises(InvalidParameterError, match="no levels"):
+            parse_levels("", _grid_info())
+        assert parse_levels("5, 3", _grid_info()) == [3, 5]
+
+
+# ---------------------------------------------------------------------------
+# In-memory rollups and API wrappers (fast)
+# ---------------------------------------------------------------------------
+
+
+class TestInMemoryAndWrappers:
+    @pytest.mark.usefixtures("fake_country_cache")
+    def test_rollup_table_admin(self, tmp_path):
+        from geoparquet_io.core.process.overview import rollup_table
+
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        result = rollup_table(pq.read_table(src), "country")
+        codes = result.column("admin_code").to_pylist()
+        assert set(codes) == {"US", "FR", "unassigned"}
+        assert sum(result.column("count").to_pylist()) == 10
+
+    @pytest.mark.usefixtures("fake_country_cache")
+    def test_table_overview_admin(self, tmp_path):
+        from geoparquet_io.api.table import Table
+
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        result = Table(pq.read_table(src)).overview("country")
+        assert "admin_code" in result.column_names
+        assert result.geometry_column == "geometry"
+
+    def test_ops_create_overviews_wrapper(self, monkeypatch):
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.process import overview as overview_pkg
+
+        recorded = {}
+
+        def fake(input_parquet, **kwargs):
+            recorded["input"] = input_parquet
+            recorded.update(kwargs)
+            return [(4, "cells_r4.parquet")]
+
+        monkeypatch.setattr(overview_pkg, "create_overviews", fake)
+        result = ops.create_overviews("cells.parquet", levels=[4], max_tile_kb=300)
+        assert result == [(4, "cells_r4.parquet")]
+        assert recorded["input"] == "cells.parquet"
+        assert recorded["levels"] == [4]
+        assert recorded["max_tile_kb"] == 300
+
+
+# ---------------------------------------------------------------------------
 # Output naming
 # ---------------------------------------------------------------------------
 
 
 class TestOutputNaming:
+    # Compare Path objects / name+parent, not raw strings: the separator is
+    # platform-specific (backslashes on Windows).
+
     def test_grid_naming(self):
-        assert overview_output_path("/x/cells.parquet", "a5", 7) == "/x/cells_r7.parquet"
-        assert overview_output_path("/x/cells.parquet", "h3", 4) == "/x/cells_r4.parquet"
+        r7 = Path(overview_output_path("/x/cells.parquet", "a5", 7))
+        assert r7.name == "cells_r7.parquet"
+        assert r7.parent == Path("/x")
+        assert Path(overview_output_path("/x/cells.parquet", "h3", 4)).name == "cells_r4.parquet"
 
     def test_admin_naming(self):
-        assert (
-            overview_output_path("/x/by_region.parquet", "admin", "country")
-            == "/x/by_region_country.parquet"
-        )
+        out = Path(overview_output_path("/x/by_region.parquet", "admin", "country"))
+        assert out.name == "by_region_country.parquet"
+        assert out.parent == Path("/x")
 
     def test_output_dir_override(self):
-        assert overview_output_path("/x/cells.parquet", "a5", 4, output_dir="/y") == (
-            "/y/cells_r4.parquet"
-        )
+        out = Path(overview_output_path("/x/cells.parquet", "a5", 4, output_dir="/y"))
+        assert out.name == "cells_r4.parquet"
+        assert out.parent == Path("/y")
 
 
 # ---------------------------------------------------------------------------

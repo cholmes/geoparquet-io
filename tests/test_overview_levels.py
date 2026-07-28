@@ -2,6 +2,7 @@
 
 import pytest
 
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.overview.levels import (
     Band,
     estimate_bytes_per_cell,
@@ -100,6 +101,10 @@ class TestSelectBands:
         band = Band(4, 0, 3)
         with pytest.raises(AttributeError):
             band.level = 5
+
+    def test_empty_candidates_error(self):
+        with pytest.raises(InvalidParameterError, match="candidate"):
+            select_bands({}, [], bytes_per_cell=100.0)
 
 
 class TestEstimateBytesPerCell:
