@@ -172,13 +172,24 @@ def _merge_pyramid_metadata(pmtiles_path: str, pyramid: dict) -> None:
     metadata = reader.metadata()
     metadata["gpio:pyramid"] = pyramid
 
-    tmp_path = pmtiles_path + ".meta.tmp"
-    with open(tmp_path, "wb") as out:
-        writer = Writer(out)
-        for zxy, data in all_tiles(source):
-            writer.write_tile(zxy_to_tileid(*zxy), data)
-        writer.finalize(header, metadata)
-    os.replace(tmp_path, pmtiles_path)
+    # Unpredictable temp name in the output dir (same filesystem for the
+    # atomic replace; not symlink-followable like a fixed "<output>.meta.tmp").
+    tmp = tempfile.NamedTemporaryFile(
+        dir=os.path.dirname(os.path.abspath(pmtiles_path)),
+        prefix=Path(pmtiles_path).name + ".",
+        suffix=".meta.tmp",
+        delete=False,
+    )
+    try:
+        with tmp:
+            writer = Writer(tmp)
+            for zxy, data in all_tiles(source):
+                writer.write_tile(zxy_to_tileid(*zxy), data)
+            writer.finalize(header, metadata)
+        os.replace(tmp.name, pmtiles_path)
+    except BaseException:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
 
 
 def _resolve_band_sources(

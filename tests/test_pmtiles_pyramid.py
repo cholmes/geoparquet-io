@@ -485,7 +485,71 @@ class TestMergePyramidMetadata:
         assert reader.get(1, 0, 0) == b"tile-z1"
         assert reader.header()["min_zoom"] == 0
         assert reader.header()["max_zoom"] == 1
-        assert not (tmp_path / "t.pmtiles.meta.tmp").exists()
+        # No temp file strays behind.
+        assert [p.name for p in tmp_path.iterdir()] == ["t.pmtiles"]
+
+    def _write_minimal_archive(self, path):
+        from pmtiles.tile import Compression, TileType, zxy_to_tileid
+        from pmtiles.writer import Writer
+
+        header = {
+            "tile_type": TileType.MVT,
+            "tile_compression": Compression.GZIP,
+            "min_zoom": 0,
+            "max_zoom": 0,
+        }
+        with open(path, "wb") as f:
+            writer = Writer(f)
+            writer.write_tile(zxy_to_tileid(0, 0, 0), b"tile-z0")
+            writer.finalize(header, {"name": "orig"})
+
+    def test_rewrite_never_memory_maps_the_archive(self, tmp_path, monkeypatch):
+        """A live mmap keeps an OS handle on the file, so os.replace fails on
+        Windows. Guards against MmapSource being reintroduced here."""
+        import mmap
+
+        from geoparquet_io.core.pmtiles_pyramid import _merge_pyramid_metadata
+
+        archive = tmp_path / "t.pmtiles"
+        self._write_minimal_archive(archive)
+
+        def forbidden_mmap(*args, **kwargs):
+            raise AssertionError("the metadata rewrite must not mmap the archive")
+
+        monkeypatch.setattr(mmap, "mmap", forbidden_mmap)
+        _merge_pyramid_metadata(str(archive), {"scheme": "a5", "bands": []})
+
+        assert [p.name for p in tmp_path.iterdir()] == ["t.pmtiles"]
+
+    def test_failed_rewrite_cleans_up_temp_file(self, tmp_path, monkeypatch):
+        from pmtiles.writer import Writer
+
+        from geoparquet_io.core.pmtiles_pyramid import _merge_pyramid_metadata
+
+        archive = tmp_path / "t.pmtiles"
+        self._write_minimal_archive(archive)
+        original = archive.read_bytes()
+
+        def boom(self, tileid, data):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(Writer, "write_tile", boom)
+        with pytest.raises(OSError, match="No space left"):
+            _merge_pyramid_metadata(str(archive), {"scheme": "a5", "bands": []})
+
+        # The original is untouched and no temp file is stranded.
+        assert [p.name for p in tmp_path.iterdir()] == ["t.pmtiles"]
+        assert archive.read_bytes() == original
+
+    def test_unreadable_archive_strands_nothing(self, tmp_path):
+        from geoparquet_io.core.pmtiles_pyramid import _merge_pyramid_metadata
+
+        archive = tmp_path / "bad.pmtiles"
+        archive.write_bytes(b"this is not a pmtiles archive at all")
+        with pytest.raises(Exception):  # noqa: B017 - any parse failure counts
+            _merge_pyramid_metadata(str(archive), {"scheme": "a5", "bands": []})
+        assert [p.name for p in tmp_path.iterdir()] == ["bad.pmtiles"]
+        assert archive.read_bytes() == b"this is not a pmtiles archive at all"
 
 
 class TestPyramidMetadataPayload:
