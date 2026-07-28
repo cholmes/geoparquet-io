@@ -27,6 +27,7 @@ from geoparquet_io.core.process.overview.detect import (
 )
 from geoparquet_io.core.process.overview.levels import (
     DEFAULT_MAX_TILE_KB,
+    MAX_PROBE_ZOOM,
     Band,
     estimate_bytes_per_cell,
     probe_worst_tile_counts,
@@ -124,11 +125,14 @@ def plan_bands(
     max_tile_kb: int = DEFAULT_MAX_TILE_KB,
     bytes_per_cell: float | None = None,
     verbose: bool = False,
+    max_probe_zoom: int | None = None,
 ) -> list[Band]:
     """Probe worst-tile cell counts and select zoom bands for the pyramid.
 
     ``levels`` (already validated, coarse-to-fine, excluding the base) restricts
     the candidate set; the base level is always the final candidate.
+    ``max_probe_zoom`` caps the probed zoom range (e.g. to an archive's max
+    zoom) so band transitions never land beyond it.
     """
     if info.scheme == "admin":
         candidates: list[int | str] = ["country", "region"]
@@ -139,6 +143,7 @@ def plan_bands(
         candidates = [*range(scheme.min_resolution, int(info.base_level)), info.base_level]
 
     bpc = bytes_per_cell or estimate_bytes_per_cell(info.num_attributes, info.out_geometry)
+    probe_zoom = MAX_PROBE_ZOOM if max_probe_zoom is None else max(0, max_probe_zoom)
     _register_quadkey_udf(con)
     worst: dict[int | str, dict[int, int]] = {}
     for level in candidates:
@@ -146,7 +151,7 @@ def plan_bands(
             cells_sql = _admin_cells_probe_sql(con, info, source_sql, str(level))
         else:
             cells_sql = _grid_cells_probe_sql(info, source_sql, int(level))
-        worst[level] = probe_worst_tile_counts(con, cells_sql)
+        worst[level] = probe_worst_tile_counts(con, cells_sql, max_zoom=probe_zoom)
     bands = select_bands(worst, candidates, bpc, max_tile_kb)
     if verbose:
         debug(f"Estimated {bpc:.0f} bytes/cell; selected bands: {bands}")

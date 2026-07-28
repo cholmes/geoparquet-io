@@ -36,7 +36,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
-| `gpio pmtiles` | create | PMTiles generation commands. Generate PMTiles from... |
+| `gpio pmtiles` | create, pyramid | PMTiles generation commands. Generate PMTiles from... |
 | `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview,... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |

@@ -155,6 +155,69 @@ For national- or global-overview maps over dense data, re-enable the size limit 
     )
     ```
 
+## PMTiles Pyramids
+
+A fine-grained aggregate (say A5 resolution 10 over billions of buildings) renders beautifully zoomed in but overflows tile limits at low zooms, forcing tippecanoe to drop the densest cells — exactly the hotspots you care about. `gpio pmtiles pyramid` fixes this by building a **banded archive**: coarser aggregate levels serve low zooms, finer levels take over as you zoom in, and (optionally) the raw features appear at the highest zooms.
+
+Levels come from [`gpio process overview`](process-overview.md) — existing `_r*` siblings are reused, missing ones are built automatically — and each level is pinned to the zoom band where its worst tile fits `--max-tile-kb` (default 500 KB). One tippecanoe run per band, merged with `tile-join` (ships with tippecanoe), with the bands recorded in the archive metadata under `gpio:pyramid`.
+
+=== "CLI"
+
+    ```bash
+    # Auto bands from the tile budget (builds temp overviews if missing)
+    gpio pmtiles pyramid cells.parquet cells.pmtiles
+
+    # Explicit overview levels and a capped base band
+    gpio pmtiles pyramid cells.parquet out.pmtiles --levels 5 --max-zoom 10
+
+    # Country cells -> region cells -> raw polygons in one archive
+    gpio pmtiles pyramid by_region.parquet out.pmtiles \
+        --include-features --features-source buildings.parquet --max-zoom 8
+    ```
+
+=== "Python"
+
+    ```python
+    from geoparquet_io.api import ops
+
+    ops.create_pmtiles_pyramid('cells.parquet', 'cells.pmtiles')
+
+    ops.create_pmtiles_pyramid(
+        'cells.parquet',
+        'pyramid.pmtiles',
+        include_features=True,
+        features_source='buildings.parquet',
+        max_zoom=8,
+    )
+    ```
+
+### Layer Modes
+
+`--layer-mode` controls how bands map to vector tile layers, which drives how you style them in MapLibre:
+
+| Mode | Layers | MapLibre styling |
+|------|--------|------------------|
+| `single` | one layer named after the output file | One `source-layer` for everything. Bands never overlap zooms, so a single style layer renders seamlessly across the whole zoom range. |
+| `grouped` *(default)* | `aggregate` + `features` | Two style layers: one for `source-layer: "aggregate"` (all cell levels share the schema, so one `fill-color` ramp on `count` just works), one for `source-layer: "features"` (raw attributes differ). |
+| `per-level` | `r5`, `r10`, … (or `country`, `region`) + `features` | One style layer per `source-layer` — style each resolution independently, or toggle levels client-side for comparison. |
+
+For example, with the default `grouped` mode:
+
+```js
+map.addLayer({
+  id: 'cells',
+  type: 'fill',
+  source: 'pyramid',            // your pmtiles source
+  'source-layer': 'aggregate',  // every aggregate band lands here
+  paint: {
+    'fill-color': ['interpolate', ['linear'], ['get', 'count'],
+                   1, '#ffffcc', 10000, '#800026'],
+  },
+});
+```
+
+Because each zoom is served by exactly one band, no zoom-range filtering is needed in the style. The `gpio:pyramid` metadata key lists every band (`level`, `layer`, `minzoom`, `maxzoom`) if a client wants to introspect the archive.
+
 ## Common Workflows
 
 ### Filter Before Converting
