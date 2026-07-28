@@ -51,7 +51,7 @@ class GridScheme:
 
     Templates use ``str.format`` placeholders:
 
-    - ``key_template``: ``{geom}`` (a GEOMETRY expression), ``{res}`` -> cell id
+    - ``key_template``: ``{pt}`` (a POINT GEOMETRY expression), ``{res}`` -> cell id
     - ``boundary_template``: ``{cell}`` -> per-row boundary intermediate
     - ``latlng_template``: ``{cell}`` -> per-row centroid intermediate
     - ``poly_wkb_template``: ``{bnd}`` (boundary intermediate alias) -> WKB polygon
@@ -75,8 +75,13 @@ class GridScheme:
 
 # Internal column aliases used while building the aggregation. Any input column
 # with one of these names is dropped from the SELECT * passthrough so a generated
-# column can never be shadowed by a same-named user column.
-_RESERVED_INTERNAL = ("__geom", "__key", "__bnd", "__ll")
+# column can never be shadowed by a same-named user column. ("__geom" is kept
+# reserved for inputs that carry a stale column from earlier gpio versions.)
+_RESERVED_INTERNAL = ("__geom", "__pt", "__key", "__bnd", "__ll")
+
+# --bucket-point mode keywords; any other value names an existing point column.
+BUCKET_POINT_GEOMETRY = "geometry"
+BUCKET_POINT_BBOX = "bbox"
 
 
 def _exclude_reserved(con, relation: str, extra: tuple[str, ...] = ()) -> str:
@@ -90,10 +95,50 @@ def _exclude_reserved(con, relation: str, extra: tuple[str, ...] = ()) -> str:
     return f" EXCLUDE ({', '.join(quote_identifier(c) for c in drop)})" if drop else ""
 
 
+def _validate_bucket_point_args(bucket_point: str, bbox_column: str | None) -> None:
+    """Reject option combinations that would silently do the wrong thing."""
+    if bbox_column and bucket_point != BUCKET_POINT_BBOX:
+        raise InvalidParameterError("bucket-point", "--bbox-column requires --bucket-point bbox")
+
+
+def bucket_point_expr(
+    con, relation: str, geom_col: str, source_crs, bucket_point: str, bbox_column: str | None
+) -> tuple[str, tuple[str, ...]]:
+    """Build the keying-point expression for a source relation.
+
+    Returns ``(pt_expr, exclude_columns)``. ``pt_expr`` yields a lon/lat POINT
+    (reprojected from a non-CRS84 ``source_crs``, #525). In ``bbox`` and
+    point-column modes the main geometry column is excluded from the passthrough
+    SELECT so Parquet projection pushdown never reads its column chunks (#567).
+    """
+    if bucket_point == BUCKET_POINT_GEOMETRY:
+        geom_expr = crs_transform_sql_expr(
+            geometry_to_geom_expr(con, relation, geom_col), source_crs
+        )
+        return f"ST_Centroid({geom_expr})", ()
+    if bucket_point == BUCKET_POINT_BBOX:
+        qbox = quote_identifier(bbox_column)
+        pt = f"ST_Point(({qbox}.xmin + {qbox}.xmax) / 2.0, ({qbox}.ymin + {qbox}.ymax) / 2.0)"
+        # The bbox covering column is stored in the file's CRS, same as geometry.
+        return crs_transform_sql_expr(pt, source_crs), (geom_col,)
+    # Any other value names an existing (point) geometry column. ST_Centroid is a
+    # no-op for points and keeps non-point columns keyable rather than erroring.
+    point_expr = crs_transform_sql_expr(
+        geometry_to_geom_expr(con, relation, bucket_point), source_crs
+    )
+    return f"ST_Centroid({point_expr})", (geom_col,)
+
+
 def read_grid_source_sql(
-    con, input_url: str, geom_col: str, source_crs=None, where: str | None = None
+    con,
+    input_url: str,
+    geom_col: str,
+    source_crs=None,
+    where: str | None = None,
+    bucket_point: str = BUCKET_POINT_GEOMETRY,
+    bbox_column: str | None = None,
 ) -> str:
-    """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
+    """Source relation exposing the original columns plus a keying POINT ``__pt``.
 
     Detects whether the input geometry column is read as GEOMETRY (real GeoParquet)
     or BLOB (plain WKB) so it works on both. Grid keying expects lon/lat, so a
@@ -104,11 +149,17 @@ def read_grid_source_sql(
     all see only the filtered rows (#568). The caller validates the clause. Hive
     partition columns are visible to it (#612); see
     :func:`aggregate_source_relation`.
+
+    ``bucket_point`` selects where ``__pt`` comes from: the geometry centroid
+    (default), the center of a bbox covering column, or an existing point column
+    (#567) -- the latter two skip reading the geometry column entirely.
     """
     read_rel = aggregate_source_relation(input_url)
-    geom_expr = crs_transform_sql_expr(geometry_to_geom_expr(con, read_rel, geom_col), source_crs)
+    pt_expr, exclude = bucket_point_expr(
+        con, read_rel, geom_col, source_crs, bucket_point, bbox_column
+    )
     return (
-        f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom "
+        f"SELECT *{_exclude_reserved(con, read_rel, exclude)}, {pt_expr} AS __pt "
         f"FROM {read_rel}{where_sql_fragment(where)}"
     )
 
@@ -125,13 +176,13 @@ def build_grid_query(
     out_geometry: str,
     metric_nodata: str | None = None,
 ) -> str:
-    """Build the full grid aggregation SQL from a source relation exposing ``__geom``."""
+    """Build the full grid aggregation SQL from a source relation exposing ``__pt``."""
     metrics, nodata_values = validate_metric_nodata(metric, metric_nodata)
     # Resolve metric column types so sentinel literals match the column's actual
     # precision (REAL vs DOUBLE, #613) and non-numeric columns fail up-front.
     column_types = resolve_metric_column_types(con, source_sql, metrics) if nodata_values else None
 
-    key_expr = scheme.key_template.format(geom="__geom", res=resolution)
+    key_expr = scheme.key_template.format(pt="__pt", res=resolution)
     keyed_sql = f"SELECT *, {key_expr} AS __key FROM ({source_sql})"
 
     # Materialize the keyed relation once when a breakdown is requested so that
@@ -241,6 +292,40 @@ def _resolve_resolution(
     return resolution
 
 
+def _resolve_bbox_column_for_file(
+    input_parquet: str, bbox_column: str | None, verbose: bool
+) -> str:
+    """Return the bbox covering column to key from, auto-detecting when not given."""
+    from geoparquet_io.core.common import check_bbox_structure
+
+    if bbox_column:
+        return bbox_column
+    detected = check_bbox_structure(input_parquet, verbose).get("bbox_column_name")
+    if not detected:
+        raise InvalidParameterError(
+            "bucket-point",
+            "--bucket-point bbox requires a bbox covering column, but none was "
+            "detected. Pass --bbox-column NAME or use --bucket-point geometry.",
+        )
+    return detected
+
+
+def _resolve_bbox_column_for_table(table, bbox_column: str | None) -> str:
+    """Table-path variant of bbox column resolution (Arrow schema detection)."""
+    from geoparquet_io.core.common import _detect_bbox_column_from_table
+
+    if bbox_column:
+        return bbox_column
+    detected = _detect_bbox_column_from_table(table)
+    if not detected:
+        raise InvalidParameterError(
+            "bucket-point",
+            "bucket_point='bbox' requires a bbox covering column, but none was "
+            "detected. Pass bbox_column or use bucket_point='geometry'.",
+        )
+    return detected
+
+
 def _validate_out_geometry(out_geometry: str) -> None:
     if out_geometry not in VALID_OUT_GEOMETRY:
         raise InvalidParameterError(
@@ -270,6 +355,8 @@ def aggregate_grid_file(
     show_sql: bool = False,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = BUCKET_POINT_GEOMETRY,
+    bbox_column: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into grid cells. Writes the output file."""
     configure_verbose(verbose)
@@ -280,6 +367,9 @@ def aggregate_grid_file(
     # Validate metric/nodata pairing before any expensive setup (--auto scanning,
     # CRS reads, connection + community-extension install).
     validate_metric_nodata(metric, metric_nodata)
+    _validate_bucket_point_args(bucket_point, bbox_column)
+    if bucket_point == BUCKET_POINT_BBOX:
+        bbox_column = _resolve_bbox_column_for_file(input_parquet, bbox_column, verbose)
     resolution = _resolve_resolution(
         scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=where
     )
@@ -294,7 +384,15 @@ def aggregate_grid_file(
         con.execute(f"LOAD {scheme.extension}")
         con.execute("SET geometry_always_xy = true")
 
-        source_sql = read_grid_source_sql(con, input_url, geom_col, source_crs, where=where)
+        source_sql = read_grid_source_sql(
+            con,
+            input_url,
+            geom_col,
+            source_crs,
+            where=where,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
+        )
         final_sql = build_grid_query(
             con,
             scheme,
@@ -358,6 +456,8 @@ def aggregate_grid_table(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = BUCKET_POINT_GEOMETRY,
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """Aggregate an in-memory Arrow table into grid cells. Returns a new Arrow table."""
     cell_column = cell_column or scheme.default_column
@@ -366,6 +466,9 @@ def aggregate_grid_table(
         validate_where_clause(where)
     # Validate metric/nodata pairing before connection setup and extension install.
     validate_metric_nodata(metric, metric_nodata)
+    _validate_bucket_point_args(bucket_point, bbox_column)
+    if bucket_point == BUCKET_POINT_BBOX:
+        bbox_column = _resolve_bbox_column_for_table(table, bbox_column)
     if not scheme.min_resolution <= resolution <= scheme.max_resolution:
         raise InvalidParameterError(
             "resolution",
@@ -381,12 +484,12 @@ def aggregate_grid_table(
         con.execute("SET geometry_always_xy = true")
         con.register("__agg_input", table)
         source_crs = extract_crs_from_table(table, geom_col)
-        geom_expr = crs_transform_sql_expr(
-            geometry_to_geom_expr(con, "__agg_input", geom_col), source_crs
+        pt_expr, exclude = bucket_point_expr(
+            con, "__agg_input", geom_col, source_crs, bucket_point, bbox_column
         )
         source_sql = (
-            f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col,))}, "
-            f"{geom_expr} AS __geom FROM __agg_input{where_sql_fragment(where)}"
+            f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col, *exclude))}, "
+            f"{pt_expr} AS __pt FROM __agg_input{where_sql_fragment(where)}"
         )
         final_sql = build_grid_query(
             con,

@@ -22,9 +22,7 @@ H3_SCHEME = GridScheme(
     max_resolution=15,
     default_column=DEFAULT_H3_COLUMN_NAME,
     # h3_latlng_to_cell_string takes (lat, lng) -> note Y before X.
-    key_template=(
-        "h3_latlng_to_cell_string(ST_Y(ST_Centroid({geom})), ST_X(ST_Centroid({geom})), {res})"
-    ),
+    key_template="h3_latlng_to_cell_string(ST_Y({pt}), ST_X({pt}), {res})",
     # h3_cell_to_boundary_wkt returns a WKT polygon directly.
     boundary_template="h3_cell_to_boundary_wkt({cell})",
     latlng_template="h3_cell_to_latlng({cell})",
@@ -53,6 +51,8 @@ def aggregate_by_h3(
     show_sql: bool = False,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into H3 cells. Writes the output file."""
     aggregate_grid_file(
@@ -75,6 +75,8 @@ def aggregate_by_h3(
         show_sql=show_sql,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -89,6 +91,8 @@ def aggregate_h3_table(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """Aggregate an in-memory Arrow table by h3 cell. Returns a new Arrow table."""
     return aggregate_grid_table(
@@ -103,4 +107,6 @@ def aggregate_h3_table(
         geometry_column=geometry_column,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )

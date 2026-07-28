@@ -214,6 +214,61 @@ Use `--where` to aggregate only a subset of rows — a year, a category, a confi
 On a hive-partitioned input (`year=2025/...`), the partition columns are part of the scan, so `--where "year = 2025"` filters on them and DuckDB prunes the partitions it does not need. Partition columns never appear in the aggregated output.
 
 The clause must be a single filtering expression: a `;` statement separator outside a quoted string is rejected, as are keywords that modify data (`DROP`, `DELETE`, `INSERT`, ...).
+### Bucketing Point
+
+Grid keying reduces every feature to a single point (by default the geometry
+centroid) just to pick a cell — and with the default cell-polygon output, the
+input geometry is read *only* to compute that point. For large polygon datasets
+where geometry dominates file size, `--bucket-point bbox` derives the point from
+a [bbox covering column](add.md) instead and **skips reading the geometry column
+entirely**, cutting the scan to a small fraction:
+
+| Value | Keying point | Reads geometry column? |
+|-------|--------------|------------------------|
+| `geometry` *(default)* | `ST_Centroid(geometry)` | yes |
+| `bbox` | Center of the bbox covering column | **no** |
+| `<column>` | An existing point column | **no** |
+
+The bbox column is auto-detected from naming conventions (`bbox`, `*_bbox`,
+`bounds`, `extent` structs with `xmin`/`ymin`/`xmax`/`ymax`); pass
+`--bbox-column NAME` for nonstandard names. Bbox center differs from the true
+centroid only for L-shaped/very elongated features — negligible at aggregation
+resolutions, where keying by centroid is already an approximation.
+
+=== "CLI"
+
+    ```bash
+    # 225 GB of building polygons, but only the bbox + height columns are read
+    gpio process aggregate a5 buildings.parquet cells.parquet --auto \
+        --bucket-point bbox --metric "avg:height"
+
+    # Nonstandard bbox column name
+    gpio process aggregate a5 buildings.parquet cells.parquet --resolution 8 \
+        --bucket-point bbox --bbox-column geometry_bbox
+
+    # Key from an existing point column
+    gpio process aggregate h3 parcels.parquet cells.parquet --resolution 8 \
+        --bucket-point anchor_point
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('buildings.parquet').aggregate_a5(
+        resolution=10,
+        metric="avg:height",
+        bucket_point="bbox",
+    )
+    result.write('cells.parquet')
+    ```
+
+!!! note "`--auto` still probes the geometry column"
+    Auto-resolution sizing samples geometry centroids over a bounded sample
+    (≤500k rows), so `--auto` reads a small slice of the geometry column even
+    with `--bucket-point bbox`. Pass `--resolution` explicitly to avoid touching
+    geometry altogether.
 
 ### Output Geometry
 

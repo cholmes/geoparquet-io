@@ -10,6 +10,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **`--bucket-point` on `gpio process aggregate` (#567).** Grid/admin keying
+  can now derive its per-feature point from a bbox covering column
+  (`--bucket-point bbox`, auto-detected or via `--bbox-column`) or an existing
+  point column, instead of the geometry centroid. Since the default output
+  synthesizes cell polygons from the cell id, the (usually huge) geometry
+  column is excluded from the scan entirely — Parquet projection pushdown
+  skips its column chunks, making low-zoom aggregation of large polygon
+  datasets (e.g. 225 GB of building footprints with a `bbox` column)
+  dramatically cheaper, with no DuckDB pre-step. Also on the Python API as
+  `aggregate_a5/h3/admin(..., bucket_point=..., bbox_column=...)`.
+
 - **`--where` row filter on `gpio process aggregate` (#568).** All three
   subcommands (`a5`, `h3`, `admin`) accept a DuckDB WHERE clause that filters
   input rows before aggregation — slice a dataset by year, category, or
