@@ -6,6 +6,8 @@ Thin scheme definition over the shared engine in ``grid_common``.
 
 from __future__ import annotations
 
+import pyarrow as pa
+
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
 from geoparquet_io.core.process.aggregate.grid_common import (
     GridScheme,
@@ -87,7 +89,7 @@ def aggregate_a5_table(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
-):
+) -> pa.Table:
     """Aggregate an in-memory Arrow table by a5 cell. Returns a new Arrow table."""
     return aggregate_grid_table(
         A5_SCHEME,

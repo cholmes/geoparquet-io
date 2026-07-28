@@ -29,8 +29,11 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   of building heights comes back at `-313 m`). All three subcommands (`a5`,
   `h3`, `admin`) now accept `--metric-nodata "-999"` (comma-separate multiple
   sentinels) to map those values to `NULL` before aggregation: `sum`/`avg`/
-  `min`/`max` ignore them while `count` still counts every feature. Also on
-  the Python API as `aggregate_a5/h3/admin(..., metric_nodata=...)`.
+  `min`/`max` ignore them while `count` still counts every feature. `nan` is
+  accepted for NaN-encoded nodata, and sentinels are compared at the metric
+  column's own precision so the classic float32 nodata `-3.4028235e+38`
+  matches `REAL` columns. Also on the Python API as
+  `aggregate_a5/h3/admin(..., metric_nodata=...)`.
 
 - **New spec-validation checks in `gpio check spec` (#586).** Validation now
   fails on unknown `geo` metadata versions (e.g. `99.0.0`) even in auto mode;

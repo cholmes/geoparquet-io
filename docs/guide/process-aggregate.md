@@ -48,7 +48,10 @@ Rules of thumb:
   sentinel drags `avg`/`sum` toward garbage and `min` reports the sentinel
   itself. Pass `--metric-nodata "-999"` (comma-separate multiple sentinels) to
   map them to `NULL` before aggregation — `sum`/`avg`/`min`/`max` then ignore
-  those values while `count` still counts every feature.
+  those values while `count` still counts every feature. `nan` is accepted for
+  NaN-encoded nodata, and sentinels are compared at the metric column's own
+  precision, so the classic float32 nodata `-3.4028235e+38` matches `REAL`
+  (float32) columns correctly. Sentinels apply only to numeric metric columns.
 
 === "CLI"
 

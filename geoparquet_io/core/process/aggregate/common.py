@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -11,6 +12,33 @@ from geoparquet_io.core.exceptions import InvalidParameterError
 
 VALID_METRIC_FUNCS = {"sum", "avg", "min", "max"}
 VALID_OUT_GEOMETRY = {"polygon", "centroid", "both", "none"}
+
+# Strict SQL-safe numeric literal: ASCII digits only (float() also accepts
+# Unicode digits, underscores, inf/Infinity -- none of which are valid SQL).
+_NUMERIC_TOKEN_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$", re.ASCII)
+_NAN_TOKEN_RE = re.compile(r"^[+-]?nan$", re.IGNORECASE | re.ASCII)
+
+# DuckDB numeric type names (DESCRIBE output). REAL columns report as FLOAT.
+_NUMERIC_SQL_TYPES = {
+    "TINYINT",
+    "SMALLINT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "UTINYINT",
+    "USMALLINT",
+    "UINTEGER",
+    "UBIGINT",
+    "UHUGEINT",
+    "FLOAT",
+    "REAL",
+    "DOUBLE",
+}
+
+
+def _is_numeric_sql_type(col_type: str) -> bool:
+    t = col_type.upper()
+    return t in _NUMERIC_SQL_TYPES or t.startswith(("DECIMAL", "NUMERIC"))
 
 
 def aggregate_source_relation(input_url: str) -> str:
@@ -96,10 +124,13 @@ def parse_metrics(metric_str: str | None) -> list[MetricSpec]:
 def parse_metric_nodata(nodata_str: str | None) -> list[str]:
     """Parse a --metric-nodata string into validated numeric literals.
 
-    Accepts comma-separated numbers (e.g. ``"-999"`` or ``"-999,-9999"``). Each
-    token must parse as a number; the original token is preserved verbatim in the
-    generated SQL so integer sentinels stay integer literals (no float coercion
-    of the compared column).
+    Accepts comma-separated finite numbers (e.g. ``"-999"`` or ``"-999,-9999"``)
+    plus the special token ``nan`` (a common float nodata encoding), which is
+    normalized to lowercase ``"nan"`` and rendered as a typed NaN literal at SQL
+    build time. Numeric tokens are validated against a strict ASCII literal
+    pattern (``float()`` alone also accepts Unicode digits, underscores and
+    inf/Infinity, none of which are safe to splice into SQL) and preserved
+    verbatim so integer sentinels stay integer literals.
     """
     if nodata_str is None:
         return []
@@ -108,14 +139,16 @@ def parse_metric_nodata(nodata_str: str | None) -> list[str]:
         token = raw.strip()
         if not token:
             continue
-        try:
-            float(token)
-        except ValueError:
+        if _NAN_TOKEN_RE.match(token):
+            values.append("nan")
+            continue
+        if not _NUMERIC_TOKEN_RE.match(token) or not math.isfinite(float(token)):
             raise InvalidParameterError(
                 "metric-nodata",
-                f"NoData sentinel '{token}' is not a number. "
-                'Pass comma-separated numeric values, e.g. "-999" or "-999,-9999".',
-            ) from None
+                f"NoData sentinel '{token}' is not a finite number. "
+                'Pass comma-separated numeric values (e.g. "-999" or "-999,-9999"); '
+                '"nan" is also accepted for NaN sentinels.',
+            )
         values.append(token)
     if not values:
         raise InvalidParameterError(
@@ -126,26 +159,100 @@ def parse_metric_nodata(nodata_str: str | None) -> list[str]:
     return values
 
 
-def _nodata_wrapped_column(column: str, nodata_values: list[str]) -> str:
+def validate_metric_nodata(
+    metric: str | None, metric_nodata: str | None
+) -> tuple[list[MetricSpec], list[str]]:
+    """Parse and cross-validate the metric and metric-nodata parameters together.
+
+    Shared by the grid and admin aggregation paths (CLI and Python API), so the
+    wording stays flag-neutral. Returns ``(metrics, nodata_values)``.
+    """
+    metrics = parse_metrics(metric)
+    nodata_values = parse_metric_nodata(metric_nodata)
+    if nodata_values and not metrics:
+        raise InvalidParameterError(
+            "metric-nodata",
+            "NoData sentinels require at least one metric (they only affect metric columns)",
+        )
+    return metrics, nodata_values
+
+
+def resolve_metric_column_types(con, select_sql: str, metrics: list[MetricSpec]) -> dict[str, str]:
+    """Resolve the DuckDB type of each metric column via a cheap DESCRIBE bind.
+
+    ``select_sql`` must be a SELECT statement exposing the metric columns.
+    Returns ``{column: TYPE}`` (uppercase). Resolution failures (e.g. a missing
+    column) return partial/empty info so the original error surfaces from the
+    real query instead of an opaque bind error here.
+    """
+    if not metrics:
+        return {}
+    columns = sorted({m.column for m in metrics})
+    col_list = ", ".join(quote_identifier(c) for c in columns)
+    try:
+        rows = con.execute(f"DESCRIBE SELECT {col_list} FROM ({select_sql})").fetchall()
+    except Exception:  # noqa: BLE001 - typing is best-effort; real query reports errors
+        return {}
+    return {row[0]: str(row[1]).upper() for row in rows}
+
+
+def _nodata_literal(token: str, col_type: str | None) -> str:
+    """Render one validated sentinel token as a SQL literal matched to ``col_type``.
+
+    - ``nan`` becomes a typed NaN cast (DuckDB evaluates ``NaN = NaN`` as TRUE,
+      so NULLIF/IN work).
+    - For REAL (float32) columns, the literal is cast to REAL so the comparison
+      happens at float32 precision; a bare DOUBLE literal like -3.4028235e+38
+      would never equal the widened REAL value (#613).
+    - Everything else keeps the validated token verbatim (integer sentinels stay
+      integer literals; fractional sentinels never round onto integer columns).
+    """
+    is_real = col_type in ("FLOAT", "REAL")
+    if token == "nan":
+        return f"CAST('nan' AS {'REAL' if is_real else 'DOUBLE'})"
+    if is_real:
+        return f"CAST({token} AS REAL)"
+    return token
+
+
+def _nodata_wrapped_column(
+    column: str, nodata_values: list[str], col_type: str | None = None
+) -> str:
     """SQL expression mapping sentinel values of ``column`` to NULL."""
     qcol = quote_identifier(column)
-    if len(nodata_values) == 1:
-        return f"NULLIF({qcol}, {nodata_values[0]})"
-    in_list = ", ".join(nodata_values)
+    literals = [_nodata_literal(tok, col_type) for tok in nodata_values]
+    if len(literals) == 1:
+        return f"NULLIF({qcol}, {literals[0]})"
+    in_list = ", ".join(literals)
     return f"CASE WHEN {qcol} IN ({in_list}) THEN NULL ELSE {qcol} END"
 
 
-def build_metric_select(metrics: list[MetricSpec], nodata_values: list[str] | None = None) -> str:
+def build_metric_select(
+    metrics: list[MetricSpec],
+    nodata_values: list[str] | None = None,
+    column_types: dict[str, str] | None = None,
+) -> str:
     """Build the comma-joined aggregate expressions for the SELECT (no leading comma).
 
     When ``nodata_values`` is given, each metric column is wrapped so sentinel
     values become NULL before aggregation (#566) -- sum/avg/min/max then ignore
     them, while the separate ``COUNT(*)`` still counts every feature.
+
+    ``column_types`` (from :func:`resolve_metric_column_types`) lets sentinel
+    literals be cast to the column's actual type and rejects sentinel use on
+    non-numeric metric columns up-front instead of mid-query.
     """
     parts = []
     for m in metrics:
         if nodata_values:
-            col_expr = _nodata_wrapped_column(m.column, nodata_values)
+            col_type = (column_types or {}).get(m.column)
+            if col_type is not None and not _is_numeric_sql_type(col_type):
+                raise InvalidParameterError(
+                    "metric-nodata",
+                    f"NoData sentinels apply only to numeric metric columns; "
+                    f"column '{m.column}' has type {col_type}",
+                )
+            col_expr = _nodata_wrapped_column(m.column, nodata_values, col_type)
         else:
             col_expr = quote_identifier(m.column)
         parts.append(f"{m.func.upper()}({col_expr}) AS {quote_identifier(m.output_name)}")

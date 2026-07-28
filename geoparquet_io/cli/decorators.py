@@ -367,8 +367,8 @@ def metric_nodata_option(func):
     return click.option(
         "--metric-nodata",
         default=None,
-        help='NoData sentinel value(s) in --metric columns, e.g. "-999" or "-999,-9999". '
-        "Mapped to NULL before sum/avg/min/max; count is unaffected.",
+        help='NoData sentinel value(s) in --metric columns, e.g. "-999" or "-999,-9999" '
+        '("nan" matches NaN). Mapped to NULL before sum/avg/min/max; count is unaffected.',
     )(func)
 
 

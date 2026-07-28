@@ -930,7 +930,7 @@ result.write('cells_stats.parquet')
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
 | `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
-| `metric_nodata` | str | None | NoData sentinel value(s) mapped to NULL in metric columns, e.g. `"-999"` or `"-999,-9999"` |
+| `metric_nodata` | str | None | NoData sentinel value(s) mapped to NULL in metric columns, e.g. `"-999"` or `"-999,-9999"` (`"nan"` matches NaN) |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
 

@@ -25,14 +25,15 @@ from geoparquet_io.core.partition.admin_hierarchical import (
 )
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
+    MetricSpec,
     aggregate_source_relation,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
     geometry_to_geom_expr,
-    parse_metric_nodata,
-    parse_metrics,
     resolve_breakdown_values,
+    resolve_metric_column_types,
+    validate_metric_nodata,
 )
 
 
@@ -104,7 +105,11 @@ def _build_joined_sql(
 
 
 def _build_agg_sql(
-    joined_sql: str, metrics, breakdown_select: str, nodata_values: list[str] | None = None
+    joined_sql: str,
+    metrics: list[MetricSpec],
+    breakdown_select: str,
+    nodata_values: list[str] | None = None,
+    column_types: dict[str, str] | None = None,
 ) -> str:
     """Build the GROUP BY aggregation on top of the spatial join."""
     agg_parts = [
@@ -113,7 +118,9 @@ def _build_agg_sql(
         "ANY_VALUE(__admin_geom) AS __admin_geom",
         "COUNT(*) AS count",
     ]
-    metric_select = build_metric_select(metrics, nodata_values=nodata_values)
+    metric_select = build_metric_select(
+        metrics, nodata_values=nodata_values, column_types=column_types
+    )
     if metric_select:
         agg_parts.append(metric_select)
     if breakdown_select:
@@ -189,12 +196,7 @@ def aggregate_by_admin(
         )
     if where:
         validate_where_clause(where)
-    metrics = parse_metrics(metric)
-    nodata_values = parse_metric_nodata(metric_nodata)
-    if nodata_values and not metrics:
-        raise InvalidParameterError(
-            "metric-nodata", "--metric-nodata requires --metric (it only affects metric columns)"
-        )
+    metrics, nodata_values = validate_metric_nodata(metric, metric_nodata)
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
     mapping = admin_dataset.get_level_column_mapping()
@@ -218,6 +220,14 @@ def aggregate_by_admin(
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
         read_rel = aggregate_source_relation(input_url)
+        # Resolve metric column types from the input so sentinel literals match the
+        # column's actual precision (REAL vs DOUBLE, #613) and non-numeric metric
+        # columns fail up-front instead of mid-query.
+        column_types = (
+            resolve_metric_column_types(con, f"SELECT * FROM {read_rel}", metrics)
+            if nodata_values
+            else None
+        )
         # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input so ST_Intersects
         # does not fail on a CRS mismatch and the centroid lands correctly (#525).
         source_crs = extract_crs_from_parquet(input_parquet, verbose)
@@ -247,9 +257,11 @@ def aggregate_by_admin(
             )
             colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
             breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
-            agg_sql = _build_agg_sql(joined_ref, metrics, breakdown_select, nodata_values)
+            agg_sql = _build_agg_sql(
+                joined_ref, metrics, breakdown_select, nodata_values, column_types
+            )
         else:
-            agg_sql = _build_agg_sql(joined_sql, metrics, "", nodata_values)
+            agg_sql = _build_agg_sql(joined_sql, metrics, "", nodata_values, column_types)
         final_sql = _wrap_admin_geometry(agg_sql, out_geometry)
 
         if show_sql or verbose:
