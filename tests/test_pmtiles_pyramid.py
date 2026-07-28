@@ -109,6 +109,18 @@ class TestFeatureZoomResolution:
         with pytest.raises(InvalidParameterError, match="features"):
             _resolve_feature_zooms(max_zoom=None, features_min_zoom=None, include_features=True)
 
+    def test_features_min_zoom_zero_errors(self):
+        # Deriving base_max = -1 would hand tippecanoe `-z -1`.
+        with pytest.raises(InvalidParameterError, match="features_min_zoom"):
+            _resolve_feature_zooms(max_zoom=None, features_min_zoom=0, include_features=True)
+
+    def test_features_min_zoom_not_above_max_zoom_errors(self):
+        # Overlapping bands would double-render zooms into both bands.
+        with pytest.raises(InvalidParameterError, match="features_min_zoom"):
+            _resolve_feature_zooms(max_zoom=8, features_min_zoom=8, include_features=True)
+        with pytest.raises(InvalidParameterError, match="features_min_zoom"):
+            _resolve_feature_zooms(max_zoom=8, features_min_zoom=5, include_features=True)
+
 
 class TestTileJoinCommand:
     def test_basic_command(self):
@@ -313,6 +325,38 @@ class TestOrchestration:
         create_pmtiles_pyramid(str(src), str(out), **_BAND_FORCING)
 
         assert fake_tools["tiles"][0]["input"] == sibling
+
+    def test_band_planning_capped_by_derived_base_max(self, tmp_path, fake_tools):
+        """--include-features --features-min-zoom N without --max-zoom must plan
+        bands against the derived base max (N-1), not the full probe range --
+        otherwise the base band can invert (minzoom > maxzoom) and intermediate
+        bands overlap the features band."""
+        from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid
+
+        src = tmp_path / "by_region.parquet"
+        features = tmp_path / "features.parquet"
+        out = tmp_path / "pyramid.pmtiles"
+        _write_admin_region_aggregate(src)
+        features.write_bytes(b"")  # never read: tiling is faked
+
+        create_pmtiles_pyramid(
+            str(src),
+            str(out),
+            bytes_per_cell=1e9,  # nothing fits: coarse band stretches to the cap
+            include_features=True,
+            features_source=str(features),
+            features_min_zoom=3,
+        )
+
+        tiles = fake_tools["tiles"]
+        assert [t["layer"] for t in tiles] == ["aggregate", "aggregate", "features"]
+        # Derived base max is 2: the country band ends at 1, the base region
+        # band gets exactly zoom 2, and the features band starts at 3.
+        assert (tiles[0]["min_zoom"], tiles[0]["max_zoom"]) == (0, 1)
+        assert (tiles[1]["min_zoom"], tiles[1]["max_zoom"]) == (2, 2)
+        assert tiles[2]["min_zoom"] == 3
+        for tile in tiles[:2]:
+            assert tile["min_zoom"] <= tile["max_zoom"]
 
     def test_grouped_mode_with_features(self, tmp_path, fake_tools):
         from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid

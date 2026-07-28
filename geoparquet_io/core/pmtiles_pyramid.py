@@ -94,8 +94,20 @@ def _resolve_feature_zooms(
                 "to know where the features band starts",
             )
         return max_zoom, max_zoom + 1
+    if features_min_zoom < 1:
+        raise InvalidParameterError(
+            "features_min_zoom",
+            f"got {features_min_zoom}; must be >= 1 so the aggregate bands keep at least zoom 0",
+        )
     if max_zoom is None:
         return features_min_zoom - 1, features_min_zoom
+    if features_min_zoom <= max_zoom:
+        raise InvalidParameterError(
+            "features_min_zoom",
+            f"got {features_min_zoom}; must be greater than --max-zoom "
+            f"({max_zoom}) so the features band does not overlap the "
+            "aggregate bands",
+        )
     return max_zoom, features_min_zoom
 
 
@@ -231,7 +243,12 @@ def _pyramid_metadata(
 
 
 def _detect_and_plan(
-    input_path, levels, max_tile_kb, bytes_per_cell, max_zoom, verbose
+    input_path: str,
+    levels: str | list[int | str] | None,
+    max_tile_kb: int,
+    bytes_per_cell: float | None,
+    base_max_zoom: int | None,
+    verbose: bool,
 ) -> tuple[AggregateInfo, list[Band]]:
     """Detect the aggregate's shape and select zoom bands for the pyramid."""
     input_url = safe_file_url(input_path, verbose)
@@ -247,8 +264,9 @@ def _detect_and_plan(
                 "with --out-geometry polygon or centroid before tiling",
             )
         parsed_levels = parse_levels(levels, info) if levels is not None else None
-        # Cap band transitions at max_zoom-1 so the base band starts by max_zoom.
-        max_probe = max_zoom - 1 if max_zoom is not None else None
+        # Cap band transitions one below the base band's max zoom so the base
+        # band starts by that zoom (and never inverts into minzoom > maxzoom).
+        max_probe = base_max_zoom - 1 if base_max_zoom is not None else None
         bands = plan_bands(
             con,
             f"SELECT * FROM {relation}",
@@ -339,7 +357,7 @@ def create_pmtiles_pyramid(
         raise TileJoinNotFoundError()
 
     info, bands = _detect_and_plan(
-        input_path, levels, max_tile_kb, bytes_per_cell, max_zoom, verbose
+        input_path, levels, max_tile_kb, bytes_per_cell, base_max, verbose
     )
     stem = Path(output_path).stem
 
