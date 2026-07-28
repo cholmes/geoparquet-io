@@ -214,6 +214,24 @@ class TestValidateWhereClause:
         assert "DROP" in error_msg
         assert "DELETE" in error_msg
 
+    def test_unquoted_semicolon_blocked(self):
+        """A statement separator outside string literals is rejected even when no
+        blocklisted keyword appears (e.g. COPY-based injection, gpio #612)."""
+        with pytest.raises(GeoParquetError) as exc_info:
+            validate_where_clause("1=1); COPY (SELECT 42 AS x) TO '/tmp/pwned.csv'; SELECT (1=1")
+        assert ";" in str(exc_info.value)
+
+    def test_bare_semicolon_blocked(self):
+        with pytest.raises(GeoParquetError):
+            validate_where_clause("1=1;")
+
+    def test_semicolon_inside_single_quoted_literal_allowed(self):
+        validate_where_clause("name = 'a;b'")
+        validate_where_clause("note = 'it''s; fine'")
+
+    def test_semicolon_inside_double_quoted_identifier_allowed(self):
+        validate_where_clause('"weird;col" = 5')
+
 
 class TestConvertGeojsonToWkt:
     """Tests for convert_geojson_to_wkt function."""

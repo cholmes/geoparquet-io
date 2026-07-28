@@ -13,7 +13,11 @@ import math
 
 from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
 from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    quote_identifier,
+    validate_where_clause,
+    where_sql_fragment,
+)
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, warn
@@ -33,6 +37,20 @@ _INDEX_EXTENSIONS = {
     "s2": ["INSTALL geography FROM community", "LOAD geography"],
     "quadkey": [],
 }
+
+
+def _count_query(url: str, where: str | None) -> str:
+    """``COUNT(*)`` over ``url``, with any WHERE clause nested in a subquery.
+
+    The nesting is a safety boundary, not cosmetics: interpolated into a
+    top-level statement the clause sits at the end of the string, where a
+    separator could start a second statement (DuckDB's ``execute()`` runs
+    multi-statement strings). Inside the subquery it cannot reach the top level.
+    :func:`validate_where_clause` rejects separators as well (gpio #612).
+    """
+    if not where:
+        return f"SELECT COUNT(*) FROM '{url}'"
+    return f"SELECT COUNT(*) FROM (SELECT 1 FROM '{url}'{where_sql_fragment(where)}) AS __filtered"
 
 
 def _get_total_row_count(
@@ -67,9 +85,7 @@ def _get_total_row_count(
         if profile:
             setup_aws_profile_if_needed(profile, input_parquet)
 
-        where_sql = f" WHERE ({where})" if where else ""
-        query = f"SELECT COUNT(*) FROM '{input_url}'{where_sql}"
-        result = con.execute(query).fetchone()
+        result = con.execute(_count_query(input_url, where)).fetchone()
         return result[0] if result else 0
     finally:
         if con is not None:
@@ -374,15 +390,16 @@ def _probe_distinct_cell_counts(
     (``ST_X/ST_Y(ST_Centroid(geom))``), so probe counts track real partitioning.
     It is computed once per sampled row and reused for lon and lat.
 
-    ``where`` filters rows before sampling (DuckDB applies USING SAMPLE after
-    the WHERE clause), so the probe sees the same rows the aggregation will.
+    ``where`` restricts the probe to the rows the aggregation will see. The
+    filter is nested *beneath* the sample: a WHERE sitting next to ``USING
+    SAMPLE`` is planned as a FILTER *above* RESERVOIR_SAMPLE, so a selective
+    clause would leave only a fraction of the sample budget and the probe would
+    over-resolve (gpio #612). Nesting also keeps the clause away from the top
+    level of the statement, where it could otherwise chain a second one.
     """
     centroid = f"ST_Centroid({geom_sql})"
-    where_sql = f" WHERE ({where})" if where else ""
-    sample_cte = (
-        f"SELECT ST_X(c) AS lon, ST_Y(c) AS lat "
-        f"FROM (SELECT {centroid} AS c FROM '{url}'{where_sql}{sample_clause})"
-    )
+    filtered = f"(SELECT {centroid} AS c FROM '{url}'{where_sql_fragment(where)})"
+    sample_cte = f"SELECT ST_X(c) AS lon, ST_Y(c) AS lat FROM {filtered}{sample_clause}"
     if index_type == "quadkey":
         # A level-r quadkey is the length-r prefix of a finer one, so compute the
         # finest quadkey once per row and take substrings (avoids a UDF call per
@@ -568,6 +585,11 @@ def calculate_auto_resolution(
     if max_partitions <= 0:
         raise ValueError(f"max_partitions must be a positive integer, got {max_partitions}")
 
+    # Shared partition entry point: callers may pass a clause straight through,
+    # so validate here rather than trusting each of them to have done it (#612).
+    if where:
+        validate_where_clause(where)
+
     if verbose:
         debug(f"Calculating auto-resolution for {spatial_index_type}...")
 
@@ -578,6 +600,13 @@ def calculate_auto_resolution(
         debug(f"Total rows: {total_rows:,}")
 
     if total_rows == 0:
+        # Name the filter when there is one: the file may be full of rows and
+        # only the clause empty-handed, which "no rows" alone would misattribute.
+        if where:
+            raise ValueError(
+                f'No rows match the --where filter "{where}", so there is nothing to size '
+                "the resolution on. Check the clause, or pass an explicit resolution."
+            )
         raise ValueError("Input file has no rows")
 
     # Calculate resolution based on spatial index type
