@@ -273,11 +273,65 @@ class TestGridDetectionStubbed:
             "t",
             pa.table({"h3ish": ["871fb4662ffffff"], "adminish": ["US-CA"]}),
         )
-        # Integer-typed override is a5 without probing.
-        assert _scheme_for_column(con, "t", "irrelevant", "UBIGINT") == "a5"
+        # Integer columns are a5 only when the name says so.
+        assert _scheme_for_column(con, "t", "my_a5_cells", "UBIGINT") == "a5"
         # 15-hex-char strings are h3; anything else is admin.
         assert _scheme_for_column(con, "t", "h3ish", "VARCHAR") == "h3"
         assert _scheme_for_column(con, "t", "adminish", "VARCHAR") == "admin"
+        con.close()
+
+    def test_integer_cell_column_without_a5_name_refuses_to_guess(self):
+        # H3 ids are commonly stored as UBIGINT too; routing them through the
+        # a5 hierarchy would silently produce wrong output. Require --scheme.
+        import duckdb as _duckdb
+
+        con = _duckdb.connect()
+        con.register(
+            "agg",
+            pa.table({"cells": pa.array([123, 456], type=pa.uint64()), "count": [1, 2]}),
+        )
+        with pytest.raises(InvalidParameterError, match="scheme"):
+            detect_aggregate_info(con, "agg", cell_column="cells")
+        con.close()
+
+    def test_scheme_override_h3_integer_ids(self, monkeypatch):
+        # Packed (UBIGINT) H3 ids only work via an explicit scheme override.
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        con.create_function("h3_get_resolution", lambda c: 7, ["UBIGINT"], "INTEGER")
+        con.register(
+            "agg",
+            pa.table({"h3_id": pa.array([1, 2], type=pa.uint64()), "count": [1, 2]}),
+        )
+        info = detect_aggregate_info(con, "agg", cell_column="h3_id", scheme="h3")
+        assert info.scheme == "h3"
+        assert info.cell_column == "h3_id"
+        assert info.base_level == 7
+        con.close()
+
+    def test_scheme_override_uses_default_column(self, monkeypatch):
+        import duckdb as _duckdb
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register("agg", _stub_grid_aggregate_table([7000, 7001], [1, 2], [1.0, 2.0]))
+        info = detect_aggregate_info(con, "agg", scheme="a5")
+        assert (info.scheme, info.cell_column, info.base_level) == ("a5", "a5_cell", 7)
+        # A scheme whose default column is missing fails loudly.
+        with pytest.raises(InvalidParameterError, match="not found"):
+            detect_aggregate_info(con, "agg", scheme="h3")
+        con.close()
+
+    def test_invalid_scheme_errors(self):
+        import duckdb as _duckdb
+
+        con = _duckdb.connect()
+        con.register("agg", pa.table({"a5_cell": pa.array([1], type=pa.uint64()), "count": [1]}))
+        with pytest.raises(InvalidParameterError, match="[Ii]nvalid scheme"):
+            detect_aggregate_info(con, "agg", scheme="s2")
         con.close()
 
     def test_ensure_grid_extension_statements(self):
@@ -330,7 +384,7 @@ class TestOutGeometryInference:
 class TestGridRollupStubbed:
     def test_create_overviews_explicit_level(self, tmp_path, monkeypatch):
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-        from geoparquet_io.core.process.overview import run as run_mod
+        from geoparquet_io.core.process.overview import detect as detect_mod
 
         _no_extension(monkeypatch)
         real_factory = get_duckdb_connection
@@ -340,7 +394,7 @@ class TestGridRollupStubbed:
             _register_a5_stubs(con)
             return con
 
-        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+        monkeypatch.setattr(detect_mod, "get_duckdb_connection", stubbed_connection)
 
         src = tmp_path / "cells.parquet"
         # Parents at level 5: 7000,7001 -> 5000; 7004,7005 -> 5001.
@@ -371,7 +425,7 @@ class TestGridRollupStubbed:
 
     def test_create_overviews_auto_levels(self, tmp_path, monkeypatch):
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-        from geoparquet_io.core.process.overview import run as run_mod
+        from geoparquet_io.core.process.overview import detect as detect_mod
 
         _no_extension(monkeypatch)
         real_factory = get_duckdb_connection
@@ -381,7 +435,7 @@ class TestGridRollupStubbed:
             _register_a5_stubs(con)
             return con
 
-        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+        monkeypatch.setattr(detect_mod, "get_duckdb_connection", stubbed_connection)
 
         src = tmp_path / "cells.parquet"
         pq.write_table(
@@ -398,7 +452,7 @@ class TestGridRollupStubbed:
 
     def test_create_overviews_base_fits_builds_nothing(self, tmp_path, monkeypatch):
         from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-        from geoparquet_io.core.process.overview import run as run_mod
+        from geoparquet_io.core.process.overview import detect as detect_mod
 
         _no_extension(monkeypatch)
         real_factory = get_duckdb_connection
@@ -408,7 +462,7 @@ class TestGridRollupStubbed:
             _register_a5_stubs(con)
             return con
 
-        monkeypatch.setattr(run_mod, "get_duckdb_connection", stubbed_connection)
+        monkeypatch.setattr(detect_mod, "get_duckdb_connection", stubbed_connection)
 
         src = tmp_path / "cells.parquet"
         pq.write_table(_stub_grid_aggregate_table([7000, 7001], [1, 2], [1.0, 2.0]), src)
@@ -671,7 +725,7 @@ class TestInMemoryAndWrappers:
 
         src = tmp_path / "by_region.parquet"
         _write_admin_region_aggregate(src)
-        result = Table(pq.read_table(src)).overview("country")
+        result = Table(pq.read_table(src)).overview("country", scheme="admin")
         assert "admin_code" in result.column_names
         assert result.geometry_column == "geometry"
 
@@ -687,11 +741,15 @@ class TestInMemoryAndWrappers:
             return [(4, "cells_r4.parquet")]
 
         monkeypatch.setattr(overview_pkg, "create_overviews", fake)
-        result = ops.create_overviews("cells.parquet", levels=[4], max_tile_kb=300)
+        result = ops.create_overviews(
+            "cells.parquet", levels=[4], max_tile_kb=300, scheme="a5", show_sql=True
+        )
         assert result == [(4, "cells_r4.parquet")]
         assert recorded["input"] == "cells.parquet"
         assert recorded["levels"] == [4]
         assert recorded["max_tile_kb"] == 300
+        assert recorded["scheme"] == "a5"
+        assert recorded["show_sql"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -784,7 +842,7 @@ class TestCli:
         runner = CliRunner()
         result = runner.invoke(cli, ["process", "overview", "--help"])
         assert result.exit_code == 0
-        for opt in ("--levels", "--max-tile-kb", "--bytes-per-cell", "--cell-column"):
+        for opt in ("--levels", "--max-tile-kb", "--bytes-per-cell", "--cell-column", "--scheme"):
             assert opt in result.output
 
     @pytest.mark.usefixtures("fake_country_cache")

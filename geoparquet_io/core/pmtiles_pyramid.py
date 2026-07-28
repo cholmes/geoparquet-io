@@ -8,16 +8,13 @@ under a ``gpio:pyramid`` key in the archive's metadata JSON.
 
 from __future__ import annotations
 
-import gc
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.pmtiles import (
     TippecanoeNotFoundError,
@@ -25,7 +22,11 @@ from geoparquet_io.core.pmtiles import (
     _validate_path,
     create_pmtiles_from_geoparquet,
 )
-from geoparquet_io.core.process.overview.detect import AggregateInfo, detect_aggregate_info
+from geoparquet_io.core.process.overview.detect import (
+    AggregateInfo,
+    aggregate_connection,
+    detect_aggregate_info,
+)
 from geoparquet_io.core.process.overview.levels import Band
 from geoparquet_io.core.process.overview.run import (
     create_overviews,
@@ -262,11 +263,7 @@ def _detect_and_plan(
     verbose: bool,
 ) -> tuple[AggregateInfo, list[Band]]:
     """Detect the aggregate's shape and select zoom bands for the pyramid."""
-    input_url = safe_file_url(input_path, verbose)
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
-    try:
-        con.execute("SET geometry_always_xy = true")
-        relation = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+    with aggregate_connection(input_path, verbose) as (con, relation):
         info = detect_aggregate_info(con, relation)
         if info.out_geometry == "none":
             raise InvalidParameterError(
@@ -289,11 +286,6 @@ def _detect_and_plan(
             max_probe_zoom=max_probe,
         )
         return info, bands
-    finally:
-        con.close()
-        # Release GDAL/spatial native handles before the next spatial connection
-        # opens; leaked native state can segfault sibling xdist tests.
-        gc.collect()
 
 
 def create_pmtiles_pyramid(

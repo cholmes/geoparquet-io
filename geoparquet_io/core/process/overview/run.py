@@ -8,21 +8,22 @@ tile-size budget -- and writes one GeoParquet sibling per level.
 
 from __future__ import annotations
 
-import gc
+from collections.abc import Sequence
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.logging_config import info as log_info
 from geoparquet_io.core.partition.auto_resolution import _register_quadkey_udf
 from geoparquet_io.core.process.aggregate.common import geometry_to_geom_expr
 from geoparquet_io.core.process.overview.detect import (
     AggregateInfo,
+    aggregate_connection,
     detect_aggregate_info,
 )
 from geoparquet_io.core.process.overview.levels import (
@@ -58,7 +59,7 @@ def overview_output_path(
     return str(directory / f"{path.stem}_r{level}{suffix}")
 
 
-def parse_levels(levels, info: AggregateInfo) -> list[int | str]:
+def parse_levels(levels: str | Sequence[int | str], info: AggregateInfo) -> list[int | str]:
     """Normalize an explicit ``levels`` parameter (comma string or list)."""
     if isinstance(levels, str):
         raw: list = [part.strip() for part in levels.split(",") if part.strip()]
@@ -158,7 +159,14 @@ def plan_bands(
     return bands
 
 
-def _auto_levels(con, source_sql, info, max_tile_kb, bytes_per_cell, verbose):
+def _auto_levels(
+    con,
+    source_sql: str,
+    info: AggregateInfo,
+    max_tile_kb: int,
+    bytes_per_cell: float | None,
+    verbose: bool,
+) -> list[int | str]:
     """Auto-select the overview levels to build (excludes the base level)."""
     if info.scheme == "admin":
         # The admin ladder has exactly one coarser level; no probing needed.
@@ -174,7 +182,15 @@ def _auto_levels(con, source_sql, info, max_tile_kb, bytes_per_cell, verbose):
     return [band.level for band in bands if band.level != info.base_level]
 
 
-def _write_overview(table, out_path, info, compression, compression_level, gpq_version, verbose):
+def _write_overview(
+    table: pa.Table,
+    out_path: str,
+    info: AggregateInfo,
+    compression: str,
+    compression_level: int | None,
+    gpq_version: str | None,
+    verbose: bool,
+) -> None:
     if info.out_geometry == "none":
         kwargs = {"compression": compression}
         if compression_level is not None:
@@ -195,10 +211,11 @@ def _write_overview(table, out_path, info, compression, compression_level, gpq_v
 def create_overviews(
     input_parquet: str,
     *,
-    levels=None,
+    levels: str | list[int | str] | None = None,
     max_tile_kb: int = DEFAULT_MAX_TILE_KB,
     bytes_per_cell: float | None = None,
     cell_column: str | None = None,
+    scheme: str | None = None,
     output_dir: str | None = None,
     compression: str = "ZSTD",
     compression_level: int | None = None,
@@ -216,6 +233,8 @@ def create_overviews(
         max_tile_kb: Tile-size budget (KB) driving auto level selection.
         bytes_per_cell: Override the estimated compressed bytes per cell.
         cell_column: Cell id column when auto-detection fails.
+        scheme: Bucketing scheme (a5/h3/admin) when inference is ambiguous,
+            e.g. H3 ids stored as integers.
         output_dir: Directory for overview files (default: beside the input).
         compression: Parquet compression codec (default ZSTD).
         compression_level: Optional compression level.
@@ -228,12 +247,8 @@ def create_overviews(
         coarse to fine.
     """
     configure_verbose(verbose)
-    input_url = safe_file_url(input_parquet, verbose)
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
-    try:
-        con.execute("SET geometry_always_xy = true")
-        relation = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
-        info = detect_aggregate_info(con, relation, cell_column)
+    with aggregate_connection(input_parquet, verbose) as (con, relation):
+        info = detect_aggregate_info(con, relation, cell_column, scheme)
         source_sql = f"SELECT * FROM {relation}"
 
         if levels is not None:
@@ -265,8 +280,3 @@ def create_overviews(
             success(f"Wrote level {level} overview ({table.num_rows} rows) -> {out_path}")
             results.append((level, out_path))
         return results
-    finally:
-        con.close()
-        # Release GDAL/spatial native handles before the next spatial connection
-        # opens; leaked native state can segfault sibling xdist tests.
-        gc.collect()

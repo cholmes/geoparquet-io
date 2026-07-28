@@ -8,13 +8,27 @@ column rolls up to a coarser level, and what output geometry to regenerate.
 
 from __future__ import annotations
 
+import gc
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
+from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import warn
+from geoparquet_io.core.process.aggregate.by_a5 import A5_SCHEME
+from geoparquet_io.core.process.aggregate.by_h3 import H3_SCHEME
 from geoparquet_io.core.process.aggregate.common import geometry_to_geom_expr
+
+VALID_SCHEMES = ("a5", "h3", "admin")
+# Default cell column per scheme, single-sourced from the aggregate engine's
+# GridScheme descriptors so the two stay in lockstep.
+DEFAULT_CELL_COLUMNS = {
+    "a5": A5_SCHEME.default_column,
+    "h3": H3_SCHEME.default_column,
+    "admin": "admin_code",
+}
 
 _INTEGER_TYPES = {
     "TINYINT",
@@ -73,8 +87,25 @@ def _describe_columns(con, relation: str) -> list[tuple[str, str]]:
     ]
 
 
-def _detect_scheme(con, relation: str, columns: dict[str, str], cell_column: str | None):
+def _detect_scheme(
+    con,
+    relation: str,
+    columns: dict[str, str],
+    cell_column: str | None,
+    scheme: str | None = None,
+):
     """Return (cell_column, scheme)."""
+    if scheme is not None:
+        if scheme not in VALID_SCHEMES:
+            raise InvalidParameterError(
+                "scheme", f"invalid scheme '{scheme}'. Valid: {', '.join(VALID_SCHEMES)}"
+            )
+        cell_col = cell_column or DEFAULT_CELL_COLUMNS[scheme]
+        if cell_col not in columns:
+            raise InvalidParameterError(
+                "cell_column", f"column '{cell_col}' not found in the input"
+            )
+        return cell_col, scheme
     if cell_column is not None:
         if cell_column not in columns:
             raise InvalidParameterError(
@@ -97,7 +128,16 @@ def _detect_scheme(con, relation: str, columns: dict[str, str], cell_column: str
 def _scheme_for_column(con, relation: str, name: str, dtype: str) -> str:
     """Infer the scheme for an explicitly named cell column."""
     if dtype in _INTEGER_TYPES:
-        return "a5"
+        if "a5" in name.lower():
+            return "a5"
+        # a5 ids and packed H3 ids are both integers; guessing a5 here would
+        # silently roll H3 data up the wrong hierarchy.
+        raise InvalidParameterError(
+            "cell_column",
+            f"cannot infer a grid scheme for integer column '{name}' "
+            "(a5 and packed H3 ids are both stored as integers). "
+            "Pass --scheme a5 or --scheme h3 to disambiguate.",
+        )
     qcol = quote_identifier(name)
     row = con.execute(f"SELECT {qcol} FROM {relation} WHERE {qcol} IS NOT NULL LIMIT 1").fetchone()
     if row and isinstance(row[0], str) and _H3_STRING_RE.match(row[0]):
@@ -175,17 +215,21 @@ def _detect_admin_base_level(con, relation: str, cell_column: str) -> str:
     return "region"
 
 
-def detect_aggregate_info(con, relation: str, cell_column: str | None = None) -> AggregateInfo:
+def detect_aggregate_info(
+    con, relation: str, cell_column: str | None = None, scheme: str | None = None
+) -> AggregateInfo:
     """Detect scheme, base level, column roles, and output geometry.
 
     ``relation`` must be usable in a FROM clause (``read_parquet('...')`` or a
     registered table name). ``con`` needs the spatial extension loaded; grid
     community extensions are installed on demand for base-level probing.
+    ``scheme`` (a5/h3/admin) skips scheme inference for ambiguous cell columns
+    (e.g. H3 ids stored as integers).
     """
     ordered = _describe_columns(con, relation)
     columns = dict(ordered)
 
-    cell_col, scheme = _detect_scheme(con, relation, columns, cell_column)
+    cell_col, scheme = _detect_scheme(con, relation, columns, cell_column, scheme)
     if "count" not in columns:
         raise InvalidParameterError(
             "input",
@@ -211,15 +255,30 @@ def detect_aggregate_info(con, relation: str, cell_column: str | None = None) ->
     )
 
 
-def detect_aggregate_file(input_parquet: str, cell_column: str | None = None) -> AggregateInfo:
+def detect_aggregate_file(
+    input_parquet: str, cell_column: str | None = None, scheme: str | None = None
+) -> AggregateInfo:
     """File-path convenience wrapper around :func:`detect_aggregate_info`."""
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
+    with aggregate_connection(input_parquet) as (con, relation):
+        return detect_aggregate_info(con, relation, cell_column, scheme)
 
-    url = safe_file_url(input_parquet, verbose=False)
+
+@contextmanager
+def aggregate_connection(input_parquet: str, verbose: bool = False):
+    """Yield ``(con, relation)`` for reading an aggregate file.
+
+    Shared connection boilerplate for every consumer of an aggregate file
+    (overview building, pyramid planning, file detection): spatial + httpfs
+    connection, lon/lat axis order, and a ``read_parquet`` relation string.
+    """
+    url = safe_file_url(input_parquet, verbose)
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
     try:
-        relation = f"read_parquet('{url}', hive_partitioning=false, union_by_name=true)"
-        return detect_aggregate_info(con, relation, cell_column)
+        con.execute("SET geometry_always_xy = true")
+        yield con, f"read_parquet('{url}', hive_partitioning=false, union_by_name=true)"
     finally:
         con.close()
+        # Release GDAL/spatial native handles before the next spatial
+        # connection opens; leaked native state can segfault sibling
+        # xdist tests.
+        gc.collect()

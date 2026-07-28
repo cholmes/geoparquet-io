@@ -425,15 +425,17 @@ def aggregate_admin(
 def create_overviews(
     input_parquet: str,
     *,
-    levels: str | list | None = None,
+    levels: str | list[int | str] | None = None,
     max_tile_kb: int = 500,
     bytes_per_cell: float | None = None,
     cell_column: str | None = None,
+    scheme: str | None = None,
     output_dir: str | None = None,
     compression: str = "ZSTD",
     compression_level: int | None = None,
     geoparquet_version: str | None = None,
     verbose: bool = False,
+    show_sql: bool = False,
 ) -> list[tuple[int | str, str]]:
     """
     Build coarser overview levels from an aggregate GeoParquet file.
@@ -452,11 +454,14 @@ def create_overviews(
         max_tile_kb: Tile-size budget in KB for auto level selection (default: 500)
         bytes_per_cell: Override the estimated compressed bytes per cell
         cell_column: Cell id column when auto-detection fails
+        scheme: Bucketing scheme (a5/h3/admin) when inference is ambiguous,
+            e.g. H3 ids stored as integers
         output_dir: Directory for overview files (default: beside the input)
         compression: Parquet compression codec (default: ZSTD)
         compression_level: Optional compression level
         geoparquet_version: GeoParquet version to write
         verbose: Enable verbose output
+        show_sql: Log the rollup SQL
 
     Returns:
         List of (level, output_path) tuples, coarse to fine
@@ -474,11 +479,13 @@ def create_overviews(
         max_tile_kb=max_tile_kb,
         bytes_per_cell=bytes_per_cell,
         cell_column=cell_column,
+        scheme=scheme,
         output_dir=output_dir,
         compression=compression,
         compression_level=compression_level,
         geoparquet_version=geoparquet_version,
         verbose=verbose,
+        show_sql=show_sql,
     )
 
 
@@ -1548,7 +1555,7 @@ def create_pmtiles_pyramid(
     input_path: str,
     output_path: str,
     *,
-    levels: str | list | None = None,
+    levels: str | list[int | str] | None = None,
     max_tile_kb: int = 500,
     bytes_per_cell: float | None = None,
     layer_mode: str = "grouped",

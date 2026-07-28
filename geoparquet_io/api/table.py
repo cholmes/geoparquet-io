@@ -1517,6 +1517,7 @@ class Table:
         self,
         level: int | str,
         cell_column: str | None = None,
+        scheme: str | None = None,
     ) -> Table:
         """
         Roll an aggregate table up to a coarser overview level.
@@ -1530,13 +1531,15 @@ class Table:
             level: Target level -- a coarser grid resolution, or ``"country"``
                 for a region-level admin aggregate
             cell_column: Cell id column when auto-detection fails
+            scheme: Bucketing scheme (``a5``/``h3``/``admin``) when inference
+                is ambiguous, e.g. H3 ids stored as integers
 
         Returns:
             New Table with one row per parent cell
         """
         from geoparquet_io.core.process.overview import rollup_table
 
-        result = rollup_table(self._table, level, cell_column=cell_column)
+        result = rollup_table(self._table, level, cell_column=cell_column, scheme=scheme)
         has_geometry = "geometry" in result.column_names
         return Table(result, "geometry" if has_geometry else None)
 

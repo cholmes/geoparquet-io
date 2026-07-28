@@ -7182,6 +7182,15 @@ def process(ctx):
     help="Cell id column when auto-detection fails (default: a5_cell/h3_cell/admin_code).",
 )
 @click.option(
+    "--scheme",
+    type=click.Choice(["a5", "h3", "admin"]),
+    default=None,
+    help=(
+        "Bucketing scheme of the cell column when inference is ambiguous "
+        "(e.g. H3 ids stored as integers)."
+    ),
+)
+@click.option(
     "--output-dir",
     type=click.Path(),
     default=None,
@@ -7199,6 +7208,7 @@ def process_overview(
     max_tile_kb,
     bytes_per_cell,
     cell_column,
+    scheme,
     output_dir,
     compression,
     compression_level,
@@ -7232,6 +7242,7 @@ def process_overview(
                 max_tile_kb=max_tile_kb,
                 bytes_per_cell=bytes_per_cell,
                 cell_column=cell_column,
+                scheme=scheme,
                 output_dir=output_dir,
                 compression=compression.upper(),
                 compression_level=compression_level,

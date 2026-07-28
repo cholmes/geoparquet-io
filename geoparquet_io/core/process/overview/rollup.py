@@ -170,7 +170,9 @@ def build_level_sql(con, info: AggregateInfo, source_sql: str, level: int | str)
     return build_grid_rollup_sql(info, source_sql, int(level))
 
 
-def rollup_table(table, level: int | str, cell_column: str | None = None):
+def rollup_table(
+    table, level: int | str, cell_column: str | None = None, scheme: str | None = None
+):
     """Roll an in-memory aggregate Arrow table up to ``level``.
 
     In-memory counterpart of one `gpio process overview` level, backing
@@ -180,7 +182,7 @@ def rollup_table(table, level: int | str, cell_column: str | None = None):
     try:
         con.execute("SET geometry_always_xy = true")
         con.register("__overview_input", table)
-        info = detect_aggregate_info(con, "__overview_input", cell_column)
+        info = detect_aggregate_info(con, "__overview_input", cell_column, scheme)
         level = validate_level(info, level)
         if info.scheme in GRID_SCHEMES:
             ensure_grid_extension(con, info.scheme)
