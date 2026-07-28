@@ -57,10 +57,10 @@ Cells roll up by **true hierarchy** — `a5_cell_to_parent` / `h3_cell_to_parent
 | `sum_*` | sum | exact |
 | `min_*` / `max_*` | min / max | exact |
 | `count_*` breakdowns (incl. `count_other`) | sum | exact |
-| `avg_*` | count-weighted mean | exact **when the metric had no NULLs** |
+| `avg_*` | count-weighted mean over children with a value | exact **when the metric had no NULLs** |
 
 !!! note "The `avg_*` caveat"
-    A child cell's `avg_x` was computed over its non-NULL values, but the rollup weights it by the cell's full `count`. When some features had NULL `x`, the weighting is approximate. With no NULLs, the count-weighted mean is exactly the mean over all original features.
+    A child cell's `avg_x` was computed over its non-NULL values, but the rollup weights it by the cell's full `count` (children whose `avg_x` is entirely NULL are excluded). When some features had NULL `x`, the weighting is approximate. With no NULLs, the count-weighted mean is exactly the mean over all original features.
 
 Columns that don't match a rollup role are dropped with a warning. The `unassigned` bucket (features with no assignable cell/region) flows through with a NULL geometry.
 
@@ -72,7 +72,7 @@ Without `--levels`, gpio picks levels against the `--max-tile-kb` budget (defaul
 2. For each candidate level and zoom, parent-cell centroids are assigned to WebMercator tiles in DuckDB and the **worst tile's** cell count gives the estimated tile size. Because the probe uses your actual cells, regional datasets work without special casing.
 3. Walking up from z0, the finest level that fits each zoom is chosen until the base level fits; consecutive picks merge into bands. The coarsest band always extends to z0 even if a single z0 tile overflows.
 
-The selected bands drive which levels are materialized; the same selection powers `gpio pmtiles pyramid` zoom bands.
+The selected bands drive which levels are materialized; the same selection powers `gpio pmtiles pyramid` zoom bands. If the base level already fits the budget at every zoom — for grid and admin inputs alike — no overview is built. (A geometry-less admin aggregate cannot be probed and falls back to building `country`.)
 
 ## Options
 
@@ -82,7 +82,9 @@ The selected bands drive which levels are materialized; the same selection power
 | `--max-tile-kb` | 500 | Tile-size budget driving auto selection |
 | `--bytes-per-cell` | estimated | Override the compressed bytes-per-cell estimate |
 | `--cell-column` | auto | Cell id column when detection fails |
+| `--scheme` | auto | Bucketing scheme (`a5`/`h3`/`admin`) when inference is ambiguous, e.g. H3 ids stored as integers |
 | `--output-dir` | input's directory | Where to write overview files |
+| `--force` | off | Overwrite existing overview output files |
 
 Compression (`--compression`, `--compression-level`), `--geoparquet-version`, `--verbose`, and `--show-sql` behave as elsewhere in gpio.
 

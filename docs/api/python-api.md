@@ -1015,6 +1015,7 @@ by_country.write('by_region_country.parquet')
 |-----------|------|---------|-------------|
 | `level` | int or str | required | Coarser grid resolution, or `"country"` for admin |
 | `cell_column` | str | None | Cell id column when auto-detection fails |
+| `scheme` | str | None | Bucketing scheme (`a5`/`h3`/`admin`) when inference is ambiguous, e.g. H3 ids stored as integers |
 
 `count`, `sum_*`, `min_*`, `max_*`, and breakdown `count_*` columns roll up
 exactly; `avg_*` is count-weighted (exact when the metric had no NULLs). For
@@ -1455,7 +1456,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
 | `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
 | `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
-| `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, output_dir=None, ...)` | Build coarser overview levels from an aggregate file |
+| `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, scheme=None, output_dir=None, force=False, ...)` | Build coarser overview levels from an aggregate file |
 | `ops.create_pmtiles_pyramid(input_path, output_path, levels=None, max_tile_kb=500, layer_mode='grouped', include_features=False, features_source=None, max_zoom=None, ...)` | Build a zoom-banded multi-level PMTiles archive from an aggregate file (requires tippecanoe + tile-join) |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
