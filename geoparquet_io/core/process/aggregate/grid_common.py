@@ -21,7 +21,11 @@ from geoparquet_io.core.crs_utils import (
     extract_crs_from_parquet,
     extract_crs_from_table,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -82,17 +86,26 @@ def _exclude_reserved(con, relation: str, extra: tuple[str, ...] = ()) -> str:
     return f" EXCLUDE ({', '.join(quote_identifier(c) for c in drop)})" if drop else ""
 
 
-def read_grid_source_sql(con, input_url: str, geom_col: str, source_crs=None) -> str:
+def read_grid_source_sql(
+    con, input_url: str, geom_col: str, source_crs=None, where: str | None = None
+) -> str:
     """Source relation exposing the original columns plus a GEOMETRY ``__geom``.
 
     Detects whether the input geometry column is read as GEOMETRY (real GeoParquet)
     or BLOB (plain WKB) so it works on both. Grid keying expects lon/lat, so a
     non-CRS84 ``source_crs`` is reprojected to OGC:CRS84 before keying (#525); a
     CRS-less / already-CRS84 input is left untouched.
+
+    ``where`` is applied to this source scan, so keying, metrics, and breakdowns
+    all see only the filtered rows (#568). The caller validates the clause.
     """
     read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
     geom_expr = crs_transform_sql_expr(geometry_to_geom_expr(con, read_rel, geom_col), source_crs)
-    return f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom FROM {read_rel}"
+    where_sql = f" WHERE ({where})" if where else ""
+    return (
+        f"SELECT *{_exclude_reserved(con, read_rel)}, {geom_expr} AS __geom "
+        f"FROM {read_rel}{where_sql}"
+    )
 
 
 def build_grid_query(
@@ -175,10 +188,14 @@ def wrap_grid_geometry(
 
 
 def _resolve_resolution(
-    scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose
+    scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=None
 ):
-    """Resolve the explicit or auto resolution and validate against scheme bounds."""
-    from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+    """Resolve the explicit or auto resolution and validate against scheme bounds.
+
+    ``where`` is forwarded to the auto-resolution sizing so --auto picks the grid
+    from the *filtered* row count, not the raw file size (#568).
+    """
+    from geoparquet_io.core.partition import auto_resolution as _auto_resolution
 
     if auto and resolution is not None:
         raise InvalidParameterError("resolution", "Pass either --resolution or --auto, not both")
@@ -187,12 +204,13 @@ def _resolve_resolution(
             "resolution", f"{scheme.name.upper()} aggregation requires --resolution or --auto"
         )
     if auto:
-        resolution = calculate_auto_resolution(
+        resolution = _auto_resolution.calculate_auto_resolution(
             input_parquet,
             scheme.name,
             target_rows_per_partition=target_per_cell,
             max_partitions=max_cells,
             verbose=verbose,
+            where=where,
         )
         if verbose:
             debug(f"Auto-selected {scheme.name} resolution {resolution}")
@@ -232,13 +250,16 @@ def aggregate_grid_file(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     show_sql: bool = False,
+    where: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into grid cells. Writes the output file."""
     configure_verbose(verbose)
     cell_column = cell_column or scheme.default_column
     _validate_out_geometry(out_geometry)
+    if where:
+        validate_where_clause(where)
     resolution = _resolve_resolution(
-        scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose
+        scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=where
     )
 
     input_url = safe_file_url(input_parquet, verbose)
@@ -251,7 +272,7 @@ def aggregate_grid_file(
         con.execute(f"LOAD {scheme.extension}")
         con.execute("SET geometry_always_xy = true")
 
-        source_sql = read_grid_source_sql(con, input_url, geom_col, source_crs)
+        source_sql = read_grid_source_sql(con, input_url, geom_col, source_crs, where=where)
         final_sql = build_grid_query(
             con,
             scheme,
@@ -312,10 +333,13 @@ def aggregate_grid_table(
     out_geometry: str = "polygon",
     cell_column: str | None = None,
     geometry_column: str | None = None,
+    where: str | None = None,
 ):
     """Aggregate an in-memory Arrow table into grid cells. Returns a new Arrow table."""
     cell_column = cell_column or scheme.default_column
     _validate_out_geometry(out_geometry)
+    if where:
+        validate_where_clause(where)
     if not scheme.min_resolution <= resolution <= scheme.max_resolution:
         raise InvalidParameterError(
             "resolution",
@@ -334,9 +358,10 @@ def aggregate_grid_table(
         geom_expr = crs_transform_sql_expr(
             geometry_to_geom_expr(con, "__agg_input", geom_col), source_crs
         )
+        where_sql = f" WHERE ({where})" if where else ""
         source_sql = (
             f"SELECT *{_exclude_reserved(con, '__agg_input', (geom_col,))}, "
-            f"{geom_expr} AS __geom FROM __agg_input"
+            f"{geom_expr} AS __geom FROM __agg_input{where_sql}"
         )
         final_sql = build_grid_query(
             con,

@@ -9,7 +9,11 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -52,6 +56,7 @@ def _build_joined_sql(
     name_col: str,
     admin_geom_col: str,
     admin_bbox_col: str | None = None,
+    where: str | None = None,
 ) -> str:
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
@@ -65,6 +70,10 @@ def _build_joined_sql(
     When admin_bbox_col is provided, a cheap bbox prefilter is added to the ON
     clause so ST_Intersects is only evaluated for admin polygons whose bounding
     box contains the feature centroid point.
+
+    ``where`` is applied to the inner input scan, so the spatial join, metrics,
+    and breakdowns all see only the filtered rows (#568). The caller validates
+    the clause.
     """
     if admin_bbox_col:
         bbox_filter = (
@@ -75,6 +84,7 @@ def _build_joined_sql(
         )
     else:
         bbox_filter = ""
+    where_sql = f" WHERE ({where})" if where else ""
     return f"""
         SELECT s.*,
                b.{quote_identifier(code_col)} AS __admin_code,
@@ -83,6 +93,7 @@ def _build_joined_sql(
         FROM (
             SELECT *, ST_Centroid({input_geom_expr}) AS __cen
             FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
+            {where_sql}
         ) s
         LEFT JOIN {admin_ref} b
           ON {bbox_filter}ST_Intersects(b.{quote_identifier(admin_geom_col)}, s.__cen)
@@ -138,6 +149,7 @@ def aggregate_by_admin(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     show_sql: bool = False,
+    where: str | None = None,
 ) -> None:
     """Aggregate input features by administrative region.
 
@@ -160,6 +172,7 @@ def aggregate_by_admin(
         geoparquet_version: GeoParquet spec version to write.
         verbose: Enable verbose debug logging.
         show_sql: Log the final SQL query.
+        where: DuckDB WHERE clause filtering input rows before aggregation.
     """
     configure_verbose(verbose)
     if out_geometry not in VALID_OUT_GEOMETRY:
@@ -167,6 +180,8 @@ def aggregate_by_admin(
             "out_geometry",
             f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
         )
+    if where:
+        validate_where_clause(where)
     metrics = parse_metrics(metric)
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
@@ -205,6 +220,7 @@ def aggregate_by_admin(
             name_col,
             admin_geom_col,
             admin_bbox_col,
+            where=where,
         )
 
         # When a breakdown is requested, materialize the spatial join once so that

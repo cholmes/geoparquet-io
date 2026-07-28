@@ -5,6 +5,7 @@ This module provides functions for creating and managing DuckDB connections
 with appropriate extensions loaded for GeoParquet operations.
 """
 
+import re
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -104,6 +105,62 @@ def quote_identifier(name: str) -> str:
     """
     escaped = name.replace('"', '""')
     return f'"{escaped}"'
+
+
+# SQL keywords that could be dangerous in a user-supplied WHERE clause.
+# These could modify data or database structure.
+DANGEROUS_SQL_KEYWORDS = [
+    "DROP",
+    "DELETE",
+    "INSERT",
+    "UPDATE",
+    "CREATE",
+    "ALTER",
+    "TRUNCATE",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "REPLACE",
+    "GRANT",
+    "REVOKE",
+]
+
+
+def validate_where_clause(where_clause: str) -> None:
+    """
+    Validate WHERE clause for potentially dangerous SQL keywords.
+
+    This is a basic safety check to prevent accidental or intentional
+    SQL injection attacks. It checks for keywords that could modify
+    data or database structure.
+
+    Note: This feature is intended for trusted users. For untrusted input,
+    additional validation or parameterized queries would be required.
+
+    Args:
+        where_clause: The WHERE clause string to validate
+
+    Raises:
+        ValidationError: If dangerous SQL keywords are found
+    """
+    from geoparquet_io.core.exceptions import ValidationError
+
+    # Match dangerous keywords as whole words (case-insensitive); word boundaries
+    # avoid false positives (e.g. "UPDATED_AT" must not match).
+    upper_clause = where_clause.upper()
+    found_keywords = []
+
+    for keyword in DANGEROUS_SQL_KEYWORDS:
+        pattern = rf"\b{keyword}\b"
+        if re.search(pattern, upper_clause):
+            found_keywords.append(keyword)
+
+    if found_keywords:
+        raise ValidationError(
+            f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
+            "Only SELECT-style filtering expressions are allowed in --where. "
+            "If you need to perform data modifications, use DuckDB directly."
+        )
 
 
 def build_spatial_join_condition(

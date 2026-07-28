@@ -146,6 +146,37 @@ Use `--breakdown` to pivot a categorical column into per-category count columns 
     result.write('cells.parquet')
     ```
 
+### Row Filtering
+
+Use `--where` to aggregate only a subset of rows — a year, a category, a confidence threshold — without a separate pre-filter/rewrite pass. The clause is standard DuckDB SQL and applies to the source scan, so counts, metrics, breakdowns, and `--auto` resolution sizing all reflect only the filtered rows. All three subcommands (`a5`, `h3`, `admin`) support it, with the same semantics as [`gpio extract --where`](extract.md).
+
+=== "CLI"
+
+    ```bash
+    # Only 2025 rows (column names with special characters need
+    # double quotes in SQL; shell escaping varies)
+    gpio process aggregate a5 fields.parquet cells.parquet --resolution 6 \
+        --where "year(\"determination:datetime\") = 2025"
+
+    # Category / attribute filters
+    gpio process aggregate h3 fields.parquet cells.parquet --resolution 8 \
+        --where "\"crop:name\" = 'wheat'"
+    gpio process aggregate admin fields.parquet by_country.parquet --level country \
+        --where "confidence >= 50"
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('fields.parquet').aggregate_a5(
+        resolution=6,
+        where="year(\"determination:datetime\") = 2025",
+    )
+    result.write('cells.parquet')
+    ```
+
 ### Output Geometry
 
 Control what geometry each output row carries with `--out-geometry`:
@@ -393,6 +424,7 @@ Regardless of the chosen bucket scheme, every output file contains:
 Both commands support the standard output options:
 
 ```bash
+--where "confidence >= 50"  # DuckDB WHERE clause filtering input rows
 --compression SNAPPY      # Output compression (default: ZSTD)
 --geoparquet-version 1.1  # GeoParquet spec version
 --show-sql                # Print the generated DuckDB SQL

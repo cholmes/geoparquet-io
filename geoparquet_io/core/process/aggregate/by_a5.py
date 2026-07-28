@@ -49,6 +49,7 @@ def aggregate_by_a5(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     show_sql: bool = False,
+    where: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into A5 cells. Writes the output file."""
     aggregate_grid_file(
@@ -69,6 +70,7 @@ def aggregate_by_a5(
         geoparquet_version=geoparquet_version,
         verbose=verbose,
         show_sql=show_sql,
+        where=where,
     )
 
 
@@ -81,6 +83,7 @@ def aggregate_a5_table(
     out_geometry: str = "polygon",
     a5_column_name: str = DEFAULT_A5_COLUMN_NAME,
     geometry_column: str | None = None,
+    where: str | None = None,
 ):
     """Aggregate an in-memory Arrow table by a5 cell. Returns a new Arrow table."""
     return aggregate_grid_table(
@@ -93,4 +96,5 @@ def aggregate_a5_table(
         out_geometry=out_geometry,
         cell_column=a5_column_name,
         geometry_column=geometry_column,
+        where=where,
     )

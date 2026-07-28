@@ -30,6 +30,7 @@ from geoparquet_io.cli.decorators import (
     row_group_options,
     show_sql_option,
     verbose_option,
+    where_option,
     write_strategy_option,
 )
 from geoparquet_io.cli.fix_helpers import handle_fix_common
@@ -44,7 +45,7 @@ from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.check_parquet_structure import check_all as check_structure_impl
 from geoparquet_io.core.check_spatial_order import check_spatial_order as check_spatial_impl
 from geoparquet_io.core.convert import convert_to_geoparquet
-from geoparquet_io.core.exceptions import InvalidParameterError
+from geoparquet_io.core.exceptions import InvalidParameterError, ValidationError
 from geoparquet_io.core.extract import extract as extract_impl
 from geoparquet_io.core.file_utils import validate_parquet_extension
 from geoparquet_io.core.hilbert_order import hilbert_order as hilbert_impl
@@ -7044,6 +7045,7 @@ def process_aggregate_a5(
     breakdown,
     breakdown_limit,
     out_geometry,
+    where,
     compression,
     compression_level,
     verbose,
@@ -7057,6 +7059,8 @@ def process_aggregate_a5(
         gpio process aggregate a5 fields.parquet cells.parquet --resolution 8
         gpio process aggregate a5 fields.parquet cells.parquet --auto \\
             --metric "sum:area_ha" --breakdown crop_type
+        gpio process aggregate a5 fields.parquet cells.parquet --resolution 8 \\
+            --where "\\"crop:name\\" = 'wheat'"
         gpio process aggregate a5 fields.parquet cells.csv-like.parquet \\
             --resolution 8 --out-geometry none
     """
@@ -7078,8 +7082,9 @@ def process_aggregate_a5(
                 geoparquet_version=geoparquet_version,
                 verbose=verbose,
                 show_sql=show_sql,
+                where=where,
             )
-        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
+        except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
 
 
@@ -7110,6 +7115,7 @@ def process_aggregate_h3(
     breakdown,
     breakdown_limit,
     out_geometry,
+    where,
     compression,
     compression_level,
     verbose,
@@ -7123,6 +7129,8 @@ def process_aggregate_h3(
         gpio process aggregate h3 fields.parquet cells.parquet --resolution 8
         gpio process aggregate h3 fields.parquet cells.parquet --auto \\
             --metric "sum:area_ha" --breakdown crop_type
+        gpio process aggregate h3 fields.parquet cells.parquet --resolution 8 \\
+            --where "confidence >= 50"
         gpio process aggregate h3 fields.parquet cells.parquet \\
             --resolution 8 --out-geometry none
     """
@@ -7144,8 +7152,9 @@ def process_aggregate_h3(
                 geoparquet_version=geoparquet_version,
                 verbose=verbose,
                 show_sql=show_sql,
+                where=where,
             )
-        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
+        except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
 
 
@@ -7180,6 +7189,7 @@ def process_aggregate_h3(
     default="polygon",
     help="Output geometry per region (default: polygon).",
 )
+@where_option
 @compression_options
 @verbose_option
 @geoparquet_version_option
@@ -7194,6 +7204,7 @@ def process_aggregate_admin(
     breakdown,
     breakdown_limit,
     out_geometry,
+    where,
     compression,
     compression_level,
     verbose,
@@ -7207,6 +7218,8 @@ def process_aggregate_admin(
         gpio process aggregate admin fields.parquet by_country.parquet --level country
         gpio process aggregate admin fields.parquet by_region.parquet \\
             --level region --metric "sum:area_ha" --breakdown crop_type
+        gpio process aggregate admin fields.parquet by_country.parquet \\
+            --level country --where "confidence >= 50"
     """
     with _activate_s3(ctx):
         try:
@@ -7223,8 +7236,9 @@ def process_aggregate_admin(
                 geoparquet_version=geoparquet_version,
                 verbose=verbose,
                 show_sql=show_sql,
+                where=where,
             )
-        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
+        except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise click.ClickException(str(exc)) from exc
 
 

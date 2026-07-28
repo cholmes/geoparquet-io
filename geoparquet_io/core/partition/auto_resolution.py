@@ -36,7 +36,10 @@ _INDEX_EXTENSIONS = {
 
 
 def _get_total_row_count(
-    input_parquet: str, verbose: bool = False, profile: str | None = None
+    input_parquet: str,
+    verbose: bool = False,
+    profile: str | None = None,
+    where: str | None = None,
 ) -> int:
     """
     Get total row count from parquet file.
@@ -45,6 +48,8 @@ def _get_total_row_count(
         input_parquet: Input file path
         verbose: Print debug messages
         profile: AWS profile name for S3 authentication (optional)
+        where: Optional WHERE clause; the count then reflects only matching rows
+            so auto-resolution sizes the grid on the filtered data (#568)
 
     Returns:
         Total number of rows
@@ -62,7 +67,8 @@ def _get_total_row_count(
         if profile:
             setup_aws_profile_if_needed(profile, input_parquet)
 
-        query = f"SELECT COUNT(*) FROM '{input_url}'"
+        where_sql = f" WHERE ({where})" if where else ""
+        query = f"SELECT COUNT(*) FROM '{input_url}'{where_sql}"
         result = con.execute(query).fetchone()
         return result[0] if result else 0
     finally:
@@ -347,7 +353,13 @@ def _geom_sql(con, url: str, geom_col: str) -> str:
 
 
 def _probe_distinct_cell_counts(
-    con, url: str, index_type: str, geom_sql: str, sample_clause: str, resolutions: list[int]
+    con,
+    url: str,
+    index_type: str,
+    geom_sql: str,
+    sample_clause: str,
+    resolutions: list[int],
+    where: str | None = None,
 ) -> list[int]:
     """Count distinct non-empty cells per resolution over a bounded sample.
 
@@ -361,11 +373,15 @@ def _probe_distinct_cell_counts(
     The centroid mirrors the cell assignment in the ``add/`` modules
     (``ST_X/ST_Y(ST_Centroid(geom))``), so probe counts track real partitioning.
     It is computed once per sampled row and reused for lon and lat.
+
+    ``where`` filters rows before sampling (DuckDB applies USING SAMPLE after
+    the WHERE clause), so the probe sees the same rows the aggregation will.
     """
     centroid = f"ST_Centroid({geom_sql})"
+    where_sql = f" WHERE ({where})" if where else ""
     sample_cte = (
         f"SELECT ST_X(c) AS lon, ST_Y(c) AS lat "
-        f"FROM (SELECT {centroid} AS c FROM '{url}'{sample_clause})"
+        f"FROM (SELECT {centroid} AS c FROM '{url}'{where_sql}{sample_clause})"
     )
     if index_type == "quadkey":
         # A level-r quadkey is the length-r prefix of a finer one, so compute the
@@ -420,6 +436,7 @@ def _probe_extent_resolution(
     total_rows: int,
     verbose: bool = False,
     profile: str | None = None,
+    where: str | None = None,
 ) -> int | None:
     """Pick the resolution whose non-empty cell count best matches the target.
 
@@ -462,7 +479,7 @@ def _probe_extent_resolution(
         # budget; otherwise draw a uniform sample of sample_size rows.
         sample_clause = "" if sample_size >= total_rows else f" USING SAMPLE {sample_size} ROWS"
         counts = _probe_distinct_cell_counts(
-            con, url, spatial_index_type, geom_sql, sample_clause, resolutions
+            con, url, spatial_index_type, geom_sql, sample_clause, resolutions, where=where
         )
     except Exception as e:
         if verbose:
@@ -499,6 +516,7 @@ def calculate_auto_resolution(
     max_resolution: int | None = None,
     verbose: bool = False,
     profile: str | None = None,
+    where: str | None = None,
 ) -> int:
     """
     Calculate optimal spatial index resolution for target partition size.
@@ -515,6 +533,7 @@ def calculate_auto_resolution(
         max_resolution: Maximum resolution (None = use index default)
         verbose: Print debug messages
         profile: AWS profile name for S3 authentication (optional)
+        where: Optional WHERE clause; sizing then reflects only matching rows (#568)
 
     Returns:
         Optimal resolution for the specified spatial index
@@ -553,7 +572,7 @@ def calculate_auto_resolution(
         debug(f"Calculating auto-resolution for {spatial_index_type}...")
 
     # Get total row count
-    total_rows = _get_total_row_count(input_parquet, verbose, profile)
+    total_rows = _get_total_row_count(input_parquet, verbose, profile, where=where)
 
     if verbose:
         debug(f"Total rows: {total_rows:,}")
@@ -614,6 +633,7 @@ def calculate_auto_resolution(
         total_rows=total_rows,
         verbose=verbose,
         profile=profile,
+        where=where,
     )
     if probed is not None:
         return probed
