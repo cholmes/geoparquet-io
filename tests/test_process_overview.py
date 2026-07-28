@@ -634,7 +634,7 @@ class TestRollupSqlBuilders:
         sql = build_admin_rollup_sql(
             _admin_info(), "SELECT * FROM s", "read_parquet('c.parquet')", '"country"', "geometry"
         )
-        assert "split_part(admin_code, '-', 1)" in sql
+        assert "split_part(\"admin_code\", '-', 1)" in sql
         assert "'unassigned'" in sql  # unassigned passes through
         assert "ST_Union_Agg" in sql  # multi-row countries are unioned
         assert "LEFT JOIN" in sql
@@ -651,6 +651,52 @@ class TestRollupSqlBuilders:
             _admin_info("both"), "SELECT * FROM s", "read_parquet('c')", '"country"', "g"
         )
         assert "AS centroid" in both
+
+    def test_admin_rollup_sql_respects_cell_column(self):
+        from geoparquet_io.core.process.overview.detect import AggregateInfo
+        from geoparquet_io.core.process.overview.rollup import build_admin_rollup_sql
+
+        info = AggregateInfo(
+            scheme="admin",
+            cell_column="region_code",
+            base_level="region",
+            rollup_columns=(),
+            out_geometry="polygon",
+        )
+        sql = build_admin_rollup_sql(
+            info, "SELECT * FROM s", "read_parquet('c.parquet')", '"country"', "geometry"
+        )
+        assert "split_part(\"region_code\", '-', 1)" in sql
+        assert '__parent AS "region_code"' in sql
+        assert 'r."region_code" = c.__country_code' in sql
+        assert "admin_code" not in sql
+
+    def test_admin_probe_sql_respects_cell_column(self, tmp_path):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview.detect import detect_aggregate_info
+        from geoparquet_io.core.process.overview.run import _admin_cells_probe_sql
+
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        renamed = tmp_path / "renamed.parquet"
+        table = pq.read_table(src)
+        table = table.rename_columns(
+            ["region_code" if n == "admin_code" else n for n in table.column_names]
+        )
+        pq.write_table(table, renamed)
+
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            relation = f"read_parquet('{renamed}')"
+            info = detect_aggregate_info(con, relation, cell_column="region_code")
+            source_sql = f"SELECT * FROM {relation}"
+            for level in ("region", "country"):
+                sql = _admin_cells_probe_sql(con, info, source_sql, level)
+                assert "admin_code" not in sql
+                rows = con.execute(sql).fetchall()
+                assert rows  # executes cleanly against the renamed column
+        finally:
+            con.close()
 
     def test_admin_rollup_sql_none_geometry_skips_join(self):
         from geoparquet_io.core.process.overview.rollup import (
@@ -818,6 +864,28 @@ class TestAdminRollup:
         # Assigned countries got a (unioned) polygon.
         assert col("geometry", "US") is not None
         assert col("geometry", "FR") is not None
+
+    def test_custom_cell_column_rollup(self, tmp_path):
+        """--cell-column region_code must drive the whole rollup, not just
+        detection (the parent expr, output column, and country join)."""
+        src = tmp_path / "orig.parquet"
+        renamed = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        table = pq.read_table(src)
+        table = table.rename_columns(
+            ["region_code" if n == "admin_code" else n for n in table.column_names]
+        )
+        pq.write_table(table, renamed)
+
+        results = create_overviews(str(renamed), levels="country", cell_column="region_code")
+        out = pq.read_table(results[0][1])
+        assert "region_code" in out.column_names
+        assert "admin_code" not in out.column_names
+        rows = {code: i for i, code in enumerate(out.column("region_code").to_pylist())}
+        assert set(rows) == {"US", "FR", "unassigned"}
+        assert out.column("count")[rows["US"]].as_py() == 5
+        # The country join keyed on the custom column still attaches geometry.
+        assert out.column("geometry")[rows["US"]].as_py() is not None
 
     def test_explicit_levels_country(self, tmp_path):
         src = tmp_path / "by_region.parquet"

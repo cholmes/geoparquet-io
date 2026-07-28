@@ -35,9 +35,9 @@ from geoparquet_io.core.process.overview.levels import (
     select_bands,
 )
 from geoparquet_io.core.process.overview.rollup import (
-    ADMIN_PARENT_EXPR,
     GRID_PARENT_TEMPLATES,
     GRID_SCHEMES,
+    admin_parent_expr,
     build_level_sql,
     validate_level,
 )
@@ -105,16 +105,18 @@ def _admin_cells_probe_sql(con, info: AggregateInfo, source_sql: str, level: str
             "cannot auto-select admin overview zoom bands for an aggregate "
             "without geometry; pass explicit levels",
         )
+    qcol = quote_identifier(info.cell_column)
     geom_expr = geometry_to_geom_expr(con, f"({source_sql})", "geometry")
     centroids = (
-        f"SELECT admin_code, ST_X(__c) AS lon, ST_Y(__c) AS lat FROM ("
-        f"SELECT admin_code, ST_Centroid({geom_expr}) AS __c FROM ({source_sql}) "
-        "WHERE geometry IS NOT NULL AND admin_code != 'unassigned')"
+        f"SELECT {qcol}, ST_X(__c) AS lon, ST_Y(__c) AS lat FROM ("
+        f"SELECT {qcol}, ST_Centroid({geom_expr}) AS __c FROM ({source_sql}) "
+        f"WHERE geometry IS NOT NULL AND {qcol} != 'unassigned')"
     )
     if level == "region":
         return f"SELECT lon, lat FROM ({centroids})"
     return (
-        f"SELECT AVG(lon) AS lon, AVG(lat) AS lat FROM ({centroids}) GROUP BY {ADMIN_PARENT_EXPR}"
+        f"SELECT AVG(lon) AS lon, AVG(lat) AS lat FROM ({centroids}) "
+        f"GROUP BY {admin_parent_expr(info.cell_column)}"
     )
 
 

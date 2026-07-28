@@ -35,11 +35,12 @@ GRID_PARENT_TEMPLATES = {
     "h3": "h3_cell_to_parent({cell}, {level})",
 }
 
-# Rolled-up admin_code for a region row: 'US-CA' -> 'US'; the NULL-cell
-# 'unassigned' bucket flows through unchanged.
-ADMIN_PARENT_EXPR = (
-    "CASE WHEN admin_code = 'unassigned' THEN 'unassigned' ELSE split_part(admin_code, '-', 1) END"
-)
+
+def admin_parent_expr(cell_column: str) -> str:
+    """Rolled-up admin code for a region row: 'US-CA' -> 'US'; the NULL-cell
+    'unassigned' bucket flows through unchanged."""
+    qcol = quote_identifier(cell_column)
+    return f"CASE WHEN {qcol} = 'unassigned' THEN 'unassigned' ELSE split_part({qcol}, '-', 1) END"
 
 
 def build_rollup_agg_parts(info: AggregateInfo) -> list[str]:
@@ -93,12 +94,13 @@ def build_admin_rollup_sql(
     multiple cache rows are unioned (``ST_Union_Agg``); the 'unassigned' bucket
     keeps a NULL geometry via the LEFT JOIN.
     """
+    qcol = quote_identifier(info.cell_column)
     agg_parts = [
-        "__parent AS admin_code",
+        f"__parent AS {qcol}",
         "__parent AS admin_name",
         *build_rollup_agg_parts(info),
     ]
-    keyed = f"SELECT *, {ADMIN_PARENT_EXPR} AS __parent FROM ({source_sql})"
+    keyed = f"SELECT *, {admin_parent_expr(info.cell_column)} AS __parent FROM ({source_sql})"
     agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({keyed}) GROUP BY __parent"
     if info.out_geometry == "none":
         return agg_sql
@@ -118,7 +120,7 @@ def build_admin_rollup_sql(
         geom_cols = f"{polygon} AS geometry, {centroid} AS centroid"
     return (
         f"SELECT r.*, {geom_cols} FROM ({agg_sql}) r "
-        f"LEFT JOIN ({countries}) c ON r.admin_code = c.__country_code"
+        f"LEFT JOIN ({countries}) c ON r.{qcol} = c.__country_code"
     )
 
 
