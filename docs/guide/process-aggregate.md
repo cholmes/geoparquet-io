@@ -229,9 +229,10 @@ entirely**, cutting the scan to a small fraction:
 | `bbox` | Center of the bbox covering column | **no** |
 | `<column>` | An existing point column | **no** |
 
-The bbox column is auto-detected from naming conventions (`bbox`, `*_bbox`,
+The bbox column is auto-detected from the file's GeoParquet `covering.bbox`
+metadata when present, falling back to naming conventions (`bbox`, `*_bbox`,
 `bounds`, `extent` structs with `xmin`/`ymin`/`xmax`/`ymax`); pass
-`--bbox-column NAME` for nonstandard names. Bbox center differs from the true
+`--bbox-column NAME` for uncovered, nonconventional names. Bbox center differs from the true
 centroid only for L-shaped/very elongated features — negligible at aggregation
 resolutions, where keying by centroid is already an approximation.
 
@@ -242,9 +243,10 @@ resolutions, where keying by centroid is already an approximation.
     gpio process aggregate a5 buildings.parquet cells.parquet --auto \
         --bucket-point bbox --metric "avg:height"
 
-    # Nonstandard bbox column name
+    # Nonstandard bbox column name (not referenced by covering metadata and
+    # not matching the naming conventions, so it can't be auto-detected)
     gpio process aggregate a5 buildings.parquet cells.parquet --resolution 8 \
-        --bucket-point bbox --bbox-column geometry_bbox
+        --bucket-point bbox --bbox-column my_box
 
     # Key from an existing point column
     gpio process aggregate h3 parcels.parquet cells.parquet --resolution 8 \
