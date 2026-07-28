@@ -170,6 +170,61 @@ def test_bbox_column_requires_bbox_mode(tmp_path):
         aggregate_by_a5(str(src), str(tmp_path / "o.parquet"), resolution=5, bbox_column="bbox")
 
 
+def test_h3_bbox_mode_errors_when_no_bbox_column(tmp_path):
+    src = tmp_path / "f.parquet"
+    _write_plain_points(src, POINTS)
+    with pytest.raises(InvalidParameterError, match="bbox"):
+        aggregate_by_h3(str(src), str(tmp_path / "o.parquet"), resolution=5, bucket_point="bbox")
+
+
+def test_admin_bbox_mode_errors_when_no_bbox_column(tmp_path):
+    """Admin path resolves the bbox column before any dataset setup or download."""
+    from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
+
+    src = tmp_path / "f.parquet"
+    _write_plain_points(src, POINTS)
+    with pytest.raises(InvalidParameterError, match="bbox"):
+        aggregate_by_admin(
+            str(src), str(tmp_path / "o.parquet"), level="country", bucket_point="bbox"
+        )
+
+
+def test_table_bbox_mode_errors_when_no_bbox_column():
+    from geoparquet_io.core.process.aggregate.by_a5 import aggregate_a5_table
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    tbl = (
+        con.execute("SELECT ST_AsWKB(ST_Point(10.0, 50.0)) AS geometry, 1.0 AS height")
+        .arrow()
+        .read_all()
+    )
+    con.close()
+    with pytest.raises(InvalidParameterError, match="bbox"):
+        aggregate_a5_table(tbl, resolution=5, bucket_point="bbox")
+
+
+def test_table_bbox_mode_autodetects_from_schema():
+    """Table-path detection finds a conventional bbox struct in the Arrow schema."""
+    from geoparquet_io.core.process.aggregate.grid_common import (
+        _resolve_bbox_column_for_table,
+    )
+
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    tbl = (
+        con.execute(
+            "SELECT ST_AsWKB(ST_Point(10.0, 50.0)) AS geometry, "
+            "{'xmin': 9.9, 'ymin': 49.9, 'xmax': 10.1, 'ymax': 50.1} AS bbox"
+        )
+        .arrow()
+        .read_all()
+    )
+    con.close()
+    assert _resolve_bbox_column_for_table(tbl, None) == "bbox"
+    assert _resolve_bbox_column_for_table(tbl, "custom") == "custom"
+
+
 def test_cli_help_has_bucket_point_options():
     runner = CliRunner()
     for sub in ("a5", "h3", "admin"):
