@@ -39,6 +39,18 @@ FOUR_POINTS = [
 ]
 
 
+def _points_arrow_table():
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial; SET geometry_always_xy = true")
+    tbl = (
+        con.execute("SELECT ST_AsWKB(ST_Point(10.0, 50.0)) AS geometry, 'wheat' AS crop")
+        .arrow()
+        .read_all()
+    )
+    con.close()
+    return tbl
+
+
 # ---------------------------------------------------------------------------
 # SQL construction units (no grid extension, no network)
 # ---------------------------------------------------------------------------
@@ -92,22 +104,47 @@ def test_cli_where_dangerous_keywords_fail_cleanly(tmp_path):
     src = tmp_path / "f.parquet"
     _write_points_geoparquet(src, FOUR_POINTS[:1])
     runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        [
-            "process",
-            "aggregate",
-            "a5",
-            str(src),
-            str(tmp_path / "o.parquet"),
-            "--resolution",
-            "5",
-            "--where",
-            "DROP TABLE x",
-        ],
-    )
-    assert result.exit_code != 0
-    assert "dangerous" in result.output.lower()
+    for sub, extra in (
+        ("a5", ["--resolution", "5"]),
+        ("h3", ["--resolution", "5"]),
+        ("admin", ["--level", "country"]),
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "process",
+                "aggregate",
+                sub,
+                str(src),
+                str(tmp_path / f"o_{sub}.parquet"),
+                *extra,
+                "--where",
+                "DROP TABLE x",
+            ],
+        )
+        assert result.exit_code != 0, f"{sub} accepted a dangerous clause"
+        assert "dangerous" in result.output.lower(), f"{sub}: {result.output}"
+
+
+def test_admin_where_validation_rejects_dangerous_keywords(tmp_path):
+    """Core admin path validates the clause before any dataset setup."""
+    from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
+
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, FOUR_POINTS[:1])
+    with pytest.raises(ValidationError, match="dangerous"):
+        aggregate_by_admin(
+            str(src), str(tmp_path / "o.parquet"), level="country", where="DELETE FROM x"
+        )
+
+
+def test_table_where_validation_rejects_dangerous_keywords():
+    """In-memory table path validates the clause before touching DuckDB."""
+    from geoparquet_io.core.process.aggregate.by_a5 import aggregate_a5_table
+
+    tbl = _points_arrow_table()
+    with pytest.raises(ValidationError, match="dangerous"):
+        aggregate_a5_table(tbl, resolution=5, where="TRUNCATE x")
 
 
 # ---------------------------------------------------------------------------
