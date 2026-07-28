@@ -116,6 +116,49 @@ def test_metric_nodata_requires_metric(tmp_path):
         aggregate_by_a5(str(src), str(tmp_path / "o.parquet"), resolution=5, metric_nodata="-999")
 
 
+def test_admin_metric_nodata_requires_metric(tmp_path):
+    """Admin path validates before any dataset setup or download."""
+    from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
+
+    src = tmp_path / "f.parquet"
+    _write_points_geoparquet(src, [(10.0, 50.0, 5.0)])
+    with pytest.raises(InvalidParameterError, match="metric"):
+        aggregate_by_admin(
+            str(src), str(tmp_path / "o.parquet"), level="country", metric_nodata="-999"
+        )
+
+
+def test_admin_agg_sql_wraps_metrics_with_nodata():
+    """_build_agg_sql applies the sentinel wrap in the admin GROUP BY select."""
+    from geoparquet_io.core.process.aggregate.by_admin import _build_agg_sql
+
+    metrics = parse_metrics("avg:height")
+    sql = _build_agg_sql("SELECT 1", metrics, "", ["-999"])
+    assert 'AVG(NULLIF("height", -999)) AS "avg_height"' in sql
+
+
+def test_build_grid_query_wraps_metrics_with_nodata():
+    """The grid SQL builder threads metric_nodata into the metric select."""
+    from geoparquet_io.core.process.aggregate.by_a5 import A5_SCHEME
+    from geoparquet_io.core.process.aggregate.grid_common import build_grid_query
+
+    con = duckdb.connect()
+    sql = build_grid_query(
+        con,
+        A5_SCHEME,
+        "SELECT 1 AS height, NULL AS __geom",
+        5,
+        "a5_cell",
+        "avg:height",
+        None,
+        20,
+        "none",
+        metric_nodata="-999",
+    )
+    con.close()
+    assert 'AVG(NULLIF("height", -999)) AS "avg_height"' in sql
+
+
 def test_cli_metric_nodata_requires_metric(tmp_path):
     src = tmp_path / "f.parquet"
     _write_points_geoparquet(src, [(10.0, 50.0, 5.0)])
