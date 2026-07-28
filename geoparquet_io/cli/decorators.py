@@ -362,13 +362,23 @@ def where_option(func):
     )(func)
 
 
+def metric_nodata_option(func):
+    """Add the ``--metric-nodata`` NoData sentinel option for aggregate commands."""
+    return click.option(
+        "--metric-nodata",
+        default=None,
+        help='NoData sentinel value(s) in --metric columns, e.g. "-999" or "-999,-9999". '
+        "Mapped to NULL before sum/avg/min/max; count is unaffected.",
+    )(func)
+
+
 def grid_aggregate_options(func):
     """Add the options shared by `gpio process aggregate <grid>` commands.
 
     Adds (the per-scheme ``--resolution`` is declared on each command, since its
     valid range differs between grids):
     - --auto, --target-per-cell, --max-cells
-    - --metric, --breakdown, --breakdown-limit
+    - --metric, --metric-nodata, --breakdown, --breakdown-limit
     - --out-geometry, --where
     """
     func = where_option(func)
@@ -389,6 +399,7 @@ def grid_aggregate_options(func):
         default=None,
         help="Categorical column to pivot count by (one count_<value> column each).",
     )(func)
+    func = metric_nodata_option(func)
     func = click.option(
         "--metric",
         default=None,

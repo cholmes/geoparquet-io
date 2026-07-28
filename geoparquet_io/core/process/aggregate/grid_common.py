@@ -38,6 +38,7 @@ from geoparquet_io.core.process.aggregate.common import (
     build_breakdown_select,
     build_metric_select,
     geometry_to_geom_expr,
+    parse_metric_nodata,
     parse_metrics,
     resolve_breakdown_values,
 )
@@ -121,9 +122,15 @@ def build_grid_query(
     breakdown: str | None,
     breakdown_limit: int,
     out_geometry: str,
+    metric_nodata: str | None = None,
 ) -> str:
     """Build the full grid aggregation SQL from a source relation exposing ``__geom``."""
     metrics = parse_metrics(metric)
+    nodata_values = parse_metric_nodata(metric_nodata)
+    if nodata_values and not metrics:
+        raise InvalidParameterError(
+            "metric-nodata", "--metric-nodata requires --metric (it only affects metric columns)"
+        )
 
     key_expr = scheme.key_template.format(geom="__geom", res=resolution)
     keyed_sql = f"SELECT *, {key_expr} AS __key FROM ({source_sql})"
@@ -142,7 +149,7 @@ def build_grid_query(
         keyed_ref = keyed_sql
 
     agg_parts = [f"__key AS {quote_identifier(cell_column)}", "COUNT(*) AS count"]
-    metric_select = build_metric_select(metrics)
+    metric_select = build_metric_select(metrics, nodata_values=nodata_values)
     if metric_select:
         agg_parts.append(metric_select)
     if breakdown_select:
@@ -261,6 +268,7 @@ def aggregate_grid_file(
     verbose: bool = False,
     show_sql: bool = False,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into grid cells. Writes the output file."""
     configure_verbose(verbose)
@@ -293,6 +301,7 @@ def aggregate_grid_file(
             breakdown,
             breakdown_limit,
             out_geometry,
+            metric_nodata=metric_nodata,
         )
         if show_sql or verbose:
             debug(final_sql)
@@ -344,6 +353,7 @@ def aggregate_grid_table(
     cell_column: str | None = None,
     geometry_column: str | None = None,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ):
     """Aggregate an in-memory Arrow table into grid cells. Returns a new Arrow table."""
     cell_column = cell_column or scheme.default_column
@@ -382,6 +392,7 @@ def aggregate_grid_table(
             breakdown,
             breakdown_limit,
             out_geometry,
+            metric_nodata=metric_nodata,
         )
         return con.execute(final_sql).arrow().read_all()
     finally:

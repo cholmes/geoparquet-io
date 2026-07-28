@@ -93,12 +93,63 @@ def parse_metrics(metric_str: str | None) -> list[MetricSpec]:
     return specs
 
 
-def build_metric_select(metrics: list[MetricSpec]) -> str:
-    """Build the comma-joined aggregate expressions for the SELECT (no leading comma)."""
-    return ", ".join(
-        f"{m.func.upper()}({quote_identifier(m.column)}) AS {quote_identifier(m.output_name)}"
-        for m in metrics
-    )
+def parse_metric_nodata(nodata_str: str | None) -> list[str]:
+    """Parse a --metric-nodata string into validated numeric literals.
+
+    Accepts comma-separated numbers (e.g. ``"-999"`` or ``"-999,-9999"``). Each
+    token must parse as a number; the original token is preserved verbatim in the
+    generated SQL so integer sentinels stay integer literals (no float coercion
+    of the compared column).
+    """
+    if nodata_str is None:
+        return []
+    values: list[str] = []
+    for raw in nodata_str.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        try:
+            float(token)
+        except ValueError:
+            raise InvalidParameterError(
+                "metric-nodata",
+                f"NoData sentinel '{token}' is not a number. "
+                'Pass comma-separated numeric values, e.g. "-999" or "-999,-9999".',
+            ) from None
+        values.append(token)
+    if not values:
+        raise InvalidParameterError(
+            "metric-nodata",
+            "No NoData sentinel values given. "
+            'Pass comma-separated numeric values, e.g. "-999" or "-999,-9999".',
+        )
+    return values
+
+
+def _nodata_wrapped_column(column: str, nodata_values: list[str]) -> str:
+    """SQL expression mapping sentinel values of ``column`` to NULL."""
+    qcol = quote_identifier(column)
+    if len(nodata_values) == 1:
+        return f"NULLIF({qcol}, {nodata_values[0]})"
+    in_list = ", ".join(nodata_values)
+    return f"CASE WHEN {qcol} IN ({in_list}) THEN NULL ELSE {qcol} END"
+
+
+def build_metric_select(metrics: list[MetricSpec], nodata_values: list[str] | None = None) -> str:
+    """Build the comma-joined aggregate expressions for the SELECT (no leading comma).
+
+    When ``nodata_values`` is given, each metric column is wrapped so sentinel
+    values become NULL before aggregation (#566) -- sum/avg/min/max then ignore
+    them, while the separate ``COUNT(*)`` still counts every feature.
+    """
+    parts = []
+    for m in metrics:
+        if nodata_values:
+            col_expr = _nodata_wrapped_column(m.column, nodata_values)
+        else:
+            col_expr = quote_identifier(m.column)
+        parts.append(f"{m.func.upper()}({col_expr}) AS {quote_identifier(m.output_name)}")
+    return ", ".join(parts)
 
 
 _UNSAFE_CHARS = re.compile(r"[^0-9a-zA-Z]+")

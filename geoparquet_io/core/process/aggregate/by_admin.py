@@ -30,6 +30,7 @@ from geoparquet_io.core.process.aggregate.common import (
     build_breakdown_select,
     build_metric_select,
     geometry_to_geom_expr,
+    parse_metric_nodata,
     parse_metrics,
     resolve_breakdown_values,
 )
@@ -102,7 +103,9 @@ def _build_joined_sql(
     """
 
 
-def _build_agg_sql(joined_sql: str, metrics, breakdown_select: str) -> str:
+def _build_agg_sql(
+    joined_sql: str, metrics, breakdown_select: str, nodata_values: list[str] | None = None
+) -> str:
     """Build the GROUP BY aggregation on top of the spatial join."""
     agg_parts = [
         "COALESCE(__admin_code, 'unassigned') AS admin_code",
@@ -110,7 +113,7 @@ def _build_agg_sql(joined_sql: str, metrics, breakdown_select: str) -> str:
         "ANY_VALUE(__admin_geom) AS __admin_geom",
         "COUNT(*) AS count",
     ]
-    metric_select = build_metric_select(metrics)
+    metric_select = build_metric_select(metrics, nodata_values=nodata_values)
     if metric_select:
         agg_parts.append(metric_select)
     if breakdown_select:
@@ -152,6 +155,7 @@ def aggregate_by_admin(
     verbose: bool = False,
     show_sql: bool = False,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ) -> None:
     """Aggregate input features by administrative region.
 
@@ -175,6 +179,7 @@ def aggregate_by_admin(
         verbose: Enable verbose debug logging.
         show_sql: Log the final SQL query.
         where: DuckDB WHERE clause filtering input rows before aggregation.
+        metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns.
     """
     configure_verbose(verbose)
     if out_geometry not in VALID_OUT_GEOMETRY:
@@ -185,6 +190,11 @@ def aggregate_by_admin(
     if where:
         validate_where_clause(where)
     metrics = parse_metrics(metric)
+    nodata_values = parse_metric_nodata(metric_nodata)
+    if nodata_values and not metrics:
+        raise InvalidParameterError(
+            "metric-nodata", "--metric-nodata requires --metric (it only affects metric columns)"
+        )
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
     mapping = admin_dataset.get_level_column_mapping()
@@ -237,9 +247,9 @@ def aggregate_by_admin(
             )
             colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
             breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
-            agg_sql = _build_agg_sql(joined_ref, metrics, breakdown_select)
+            agg_sql = _build_agg_sql(joined_ref, metrics, breakdown_select, nodata_values)
         else:
-            agg_sql = _build_agg_sql(joined_sql, metrics, "")
+            agg_sql = _build_agg_sql(joined_sql, metrics, "", nodata_values)
         final_sql = _wrap_admin_geometry(agg_sql, out_geometry)
 
         if show_sql or verbose:

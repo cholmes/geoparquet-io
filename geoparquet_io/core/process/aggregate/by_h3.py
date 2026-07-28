@@ -50,6 +50,7 @@ def aggregate_by_h3(
     verbose: bool = False,
     show_sql: bool = False,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into H3 cells. Writes the output file."""
     aggregate_grid_file(
@@ -71,6 +72,7 @@ def aggregate_by_h3(
         verbose=verbose,
         show_sql=show_sql,
         where=where,
+        metric_nodata=metric_nodata,
     )
 
 
@@ -84,6 +86,7 @@ def aggregate_h3_table(
     h3_column_name: str = DEFAULT_H3_COLUMN_NAME,
     geometry_column: str | None = None,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ):
     """Aggregate an in-memory Arrow table by h3 cell. Returns a new Arrow table."""
     return aggregate_grid_table(
@@ -97,4 +100,5 @@ def aggregate_h3_table(
         cell_column=h3_column_name,
         geometry_column=geometry_column,
         where=where,
+        metric_nodata=metric_nodata,
     )
