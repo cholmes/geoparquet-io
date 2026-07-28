@@ -537,7 +537,8 @@ def _write_real_points(path, rows):
     con.close()
 
 
-def test_admin_real_column_sentinel_end_to_end(tmp_path, fake_admin_dataset):
+@pytest.mark.usefixtures("fake_admin_dataset")
+def test_admin_real_column_sentinel_end_to_end(tmp_path):
     """Admin path resolves REAL column types so the float32 sentinel matches."""
     from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
 
@@ -561,7 +562,8 @@ def test_admin_real_column_sentinel_end_to_end(tmp_path, fake_admin_dataset):
     assert float(row["avg_height"]) == 5.0  # avg of 4.0, 6.0
 
 
-def test_admin_breakdown_with_nodata_end_to_end(tmp_path, fake_admin_dataset):
+@pytest.mark.usefixtures("fake_admin_dataset")
+def test_admin_breakdown_with_nodata_end_to_end(tmp_path):
     """Breakdown counting and nodata-wrapped metrics coexist on the admin path."""
     from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
 
