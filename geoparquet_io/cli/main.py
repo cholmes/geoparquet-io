@@ -7196,6 +7196,12 @@ def process(ctx):
     default=None,
     help="Directory for overview files (default: alongside the input).",
 )
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing overview output files.",
+)
 @compression_options
 @verbose_option
 @geoparquet_version_option
@@ -7210,6 +7216,7 @@ def process_overview(
     cell_column,
     scheme,
     output_dir,
+    force,
     compression,
     compression_level,
     verbose,
@@ -7247,6 +7254,7 @@ def process_overview(
                 compression=compression.upper(),
                 compression_level=compression_level,
                 geoparquet_version=geoparquet_version,
+                force=force,
                 verbose=verbose,
                 show_sql=show_sql,
             )

@@ -222,6 +222,7 @@ def create_overviews(
     compression: str = "ZSTD",
     compression_level: int | None = None,
     geoparquet_version: str | None = None,
+    force: bool = False,
     verbose: bool = False,
     show_sql: bool = False,
 ) -> list[tuple[int | str, str]]:
@@ -241,6 +242,7 @@ def create_overviews(
         compression: Parquet compression codec (default ZSTD).
         compression_level: Optional compression level.
         geoparquet_version: GeoParquet spec version to write.
+        force: Overwrite existing overview output files.
         verbose: Enable verbose debug logging.
         show_sql: Log the rollup SQL.
 
@@ -262,6 +264,22 @@ def create_overviews(
         if not target_levels:
             log_info("Base level fits the tile budget at every zoom; no overview levels needed")
             return []
+
+        # Refuse to silently overwrite derived sibling files the user never
+        # named (mirrors the --force gate on gpio pmtiles pyramid).
+        existing = [
+            path
+            for path in (
+                overview_output_path(input_parquet, info.scheme, level, output_dir)
+                for level in target_levels
+            )
+            if Path(path).exists()
+        ]
+        if existing and not force:
+            raise InvalidParameterError(
+                "output",
+                f"overview output already exists: {', '.join(existing)}. Use --force to overwrite.",
+            )
 
         results: list[tuple[int | str, str]] = []
         for level in target_levels:

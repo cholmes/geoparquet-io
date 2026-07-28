@@ -434,6 +434,7 @@ def create_overviews(
     compression: str = "ZSTD",
     compression_level: int | None = None,
     geoparquet_version: str | None = None,
+    force: bool = False,
     verbose: bool = False,
     show_sql: bool = False,
 ) -> list[tuple[int | str, str]]:
@@ -460,6 +461,7 @@ def create_overviews(
         compression: Parquet compression codec (default: ZSTD)
         compression_level: Optional compression level
         geoparquet_version: GeoParquet version to write
+        force: Overwrite existing overview output files
         verbose: Enable verbose output
         show_sql: Log the rollup SQL
 
@@ -484,6 +486,7 @@ def create_overviews(
         compression=compression,
         compression_level=compression_level,
         geoparquet_version=geoparquet_version,
+        force=force,
         verbose=verbose,
         show_sql=show_sql,
     )

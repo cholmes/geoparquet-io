@@ -899,6 +899,21 @@ class TestAdminRollup:
         with pytest.raises(InvalidParameterError, match="country"):
             create_overviews(str(src), levels="province")
 
+    def test_existing_output_errors_without_force(self, tmp_path):
+        """Like pmtiles pyramid, refuse to silently overwrite derived sibling
+        files the user never named unless --force is given."""
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        (result,) = create_overviews(str(src), levels="country")
+        first_bytes = Path(result[1]).read_bytes()
+
+        with pytest.raises(InvalidParameterError, match="force"):
+            create_overviews(str(src), levels="country")
+        assert Path(result[1]).read_bytes() == first_bytes  # untouched
+
+        forced = create_overviews(str(src), levels="country", force=True)
+        assert forced == [result]
+
 
 # ---------------------------------------------------------------------------
 # CLI

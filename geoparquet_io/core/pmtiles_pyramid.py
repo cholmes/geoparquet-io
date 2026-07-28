@@ -14,8 +14,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pyarrow.parquet as pq
+
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.logging_config import configure_verbose, debug, success
+from geoparquet_io.core.logging_config import configure_verbose, debug, success, warn
 from geoparquet_io.core.pmtiles import (
     TippecanoeNotFoundError,
     _check_tippecanoe,
@@ -193,6 +195,36 @@ def _merge_pyramid_metadata(pmtiles_path: str, pyramid: dict) -> None:
         raise
 
 
+def _sibling_is_current(sibling: str, input_path: str, dropped_columns: tuple[str, ...]) -> bool:
+    """Whether an existing overview sibling can be reused for this input.
+
+    A sibling older than the input aggregate, or one whose columns do not
+    match the input's rollup schema (e.g. built with a different --metric),
+    would bake stale or mismatched data into the coarse zoom bands.
+    """
+    try:
+        if os.path.getmtime(sibling) < os.path.getmtime(input_path):
+            warn(
+                f"Ignoring overview sibling {sibling}: it is older than the input "
+                "aggregate. Rebuilding this level; re-run gpio process overview "
+                "--force to refresh the sibling."
+            )
+            return False
+        expected = set(pq.read_schema(input_path).names) - set(dropped_columns)
+        if set(pq.read_schema(sibling).names) != expected:
+            warn(
+                f"Ignoring overview sibling {sibling}: its columns do not match "
+                "the input aggregate. Rebuilding this level; re-run "
+                "gpio process overview --force to refresh the sibling."
+            )
+            return False
+    except OSError:
+        # Remote input or unreadable sibling: freshness cannot be verified,
+        # so rebuild rather than risk stale data.
+        return False
+    return True
+
+
 def _resolve_band_sources(
     input_path: str,
     info: AggregateInfo,
@@ -202,9 +234,9 @@ def _resolve_band_sources(
 ) -> dict[int | str, str]:
     """Map each band level to a GeoParquet source.
 
-    The base band uses the input itself. Overview levels use existing sibling
-    files from `gpio process overview` when present; missing ones are built
-    into ``tmpdir``.
+    The base band uses the input itself. Overview levels reuse existing,
+    still-current sibling files from `gpio process overview`; missing or
+    stale ones are built into ``tmpdir``.
     """
     sources: dict[int | str, str] = {info.base_level: input_path}
     missing: list[int | str] = []
@@ -212,7 +244,9 @@ def _resolve_band_sources(
         if band.level == info.base_level:
             continue
         sibling = overview_output_path(input_path, info.scheme, band.level)
-        if Path(sibling).exists():
+        if Path(sibling).exists() and _sibling_is_current(
+            sibling, input_path, info.dropped_columns
+        ):
             debug(f"Using existing overview for level {band.level}: {sibling}")
             sources[band.level] = sibling
         else:
@@ -353,6 +387,13 @@ def create_pmtiles_pyramid(
         )
     if features_source:
         _validate_path(features_source)
+    # Fail fast before any tiling work: tile-join would only reject an
+    # existing output after every per-band tippecanoe run had completed.
+    if os.path.exists(output_path) and not force:
+        raise InvalidParameterError(
+            "output_path",
+            f"output file already exists: {output_path}. Use --force to overwrite.",
+        )
     base_max, feat_min = _resolve_feature_zooms(max_zoom, features_min_zoom, include_features)
     if not _check_tippecanoe():
         raise TippecanoeNotFoundError()

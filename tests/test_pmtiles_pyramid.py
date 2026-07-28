@@ -319,12 +319,50 @@ class TestOrchestration:
         out = tmp_path / "pyramid.pmtiles"
         _write_admin_region_aggregate(src)
         # Pre-build the sibling like `gpio process overview` would.
-        (sibling,) = [path for _, path in create_overviews(str(src))]
+        (sibling,) = [path for _, path in create_overviews(str(src), levels="country")]
         assert sibling == str(tmp_path / "by_region_country.parquet")
 
         create_pmtiles_pyramid(str(src), str(out), **_BAND_FORCING)
 
         assert fake_tools["tiles"][0]["input"] == sibling
+
+    def test_stale_overview_sibling_is_rebuilt(self, tmp_path, fake_tools):
+        """A sibling older than the input aggregate would bake stale data into
+        the coarse bands; it must be ignored and the level rebuilt."""
+        import os as _os
+
+        from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid
+        from geoparquet_io.core.process.overview import create_overviews
+
+        src = tmp_path / "by_region.parquet"
+        out = tmp_path / "pyramid.pmtiles"
+        _write_admin_region_aggregate(src)
+        (sibling,) = [path for _, path in create_overviews(str(src), levels="country")]
+        stale = src.stat().st_mtime - 100
+        _os.utime(sibling, (stale, stale))
+
+        create_pmtiles_pyramid(str(src), str(out), **_BAND_FORCING)
+
+        rebuilt = fake_tools["tiles"][0]["input"]
+        assert rebuilt != sibling
+        assert rebuilt.endswith("by_region_country.parquet")
+
+    def test_schema_mismatched_sibling_is_rebuilt(self, tmp_path, fake_tools):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid
+
+        src = tmp_path / "by_region.parquet"
+        out = tmp_path / "pyramid.pmtiles"
+        _write_admin_region_aggregate(src)
+        # A sibling from an older aggregate run with different attributes.
+        sibling = tmp_path / "by_region_country.parquet"
+        pq.write_table(pa.table({"admin_code": ["US"], "count": [1]}), sibling)
+
+        create_pmtiles_pyramid(str(src), str(out), **_BAND_FORCING)
+
+        assert fake_tools["tiles"][0]["input"] != str(sibling)
 
     def test_band_planning_capped_by_derived_base_max(self, tmp_path, fake_tools):
         """--include-features --features-min-zoom N without --max-zoom must plan
@@ -396,6 +434,17 @@ class TestOrchestration:
 
 
 class TestPreflightAndErrors:
+    def test_existing_output_errors_without_force(self, tmp_path):
+        """Fail fast on an existing output instead of tiling every band first
+        and only then having tile-join reject it."""
+        from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid
+
+        out = tmp_path / "pyramid.pmtiles"
+        out.write_bytes(b"existing archive")
+        with pytest.raises(InvalidParameterError, match="force"):
+            create_pmtiles_pyramid("in.parquet", str(out))
+        assert out.read_bytes() == b"existing archive"
+
     def test_missing_tippecanoe(self, monkeypatch):
         import geoparquet_io.core.pmtiles_pyramid as pp
 
