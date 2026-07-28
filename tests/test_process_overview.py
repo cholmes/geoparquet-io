@@ -133,6 +133,16 @@ class TestDetection:
         with pytest.raises(InvalidParameterError, match="country level"):
             detect_aggregate_file(str(path))
 
+    def test_admin_empty_input_distinct_error(self, tmp_path):
+        """0 usable rows is not 'already at country level' -- say so."""
+        path = tmp_path / "empty.parquet"
+        pq.write_table(
+            pa.table({"admin_code": pa.array(["unassigned", None]), "count": [1, 2]}),
+            path,
+        )
+        with pytest.raises(InvalidParameterError, match="no admin codes"):
+            detect_aggregate_file(str(path))
+
     def test_unclassifiable_columns_are_dropped(self, tmp_path):
         path = tmp_path / "by_region.parquet"
         _write_admin_region_aggregate(path, extra_column=True)
@@ -609,7 +619,10 @@ class TestRollupSqlBuilders:
         assert 'CASE WHEN "a5_cell" IS NULL THEN NULL' in sql  # unassigned guard
         assert "GROUP BY __parent" in sql
         assert "CAST(SUM(count) AS BIGINT) AS count" in sql
-        assert 'SUM("avg_height" * count) / NULLIF(SUM(count), 0)' in sql
+        assert (
+            'SUM("avg_height" * count) / '
+            'NULLIF(SUM(count) FILTER (WHERE "avg_height" IS NOT NULL), 0)' in sql
+        )
         assert 'CAST(SUM("count_barn") AS BIGINT)' in sql
         assert "a5_cell_to_boundary" in sql  # polygon regenerated from cell id
 
@@ -723,6 +736,66 @@ class TestRollupSqlBuilders:
             validate_level(_grid_info(), 7)  # equal to base
         with pytest.raises(InvalidParameterError, match="coarser"):
             validate_level(_grid_info(), 9)  # finer than base
+
+    def test_avg_rollup_ignores_null_children(self, monkeypatch):
+        """Children avg=10/count=5 and avg=NULL/count=3 must roll up to 10.0,
+        not 6.25: NULL-avg cells cannot count in the denominator."""
+        import duckdb as _duckdb
+
+        from geoparquet_io.core.process.overview.rollup import build_grid_rollup_sql
+
+        _no_extension(monkeypatch)
+        con = _duckdb.connect()
+        _register_a5_stubs(con)
+        con.register(
+            "agg",
+            pa.table(
+                {
+                    "a5_cell": pa.array([7000, 7001], type=pa.uint64()),
+                    "count": pa.array([5, 3], type=pa.int64()),
+                    "avg_v": pa.array([10.0, None], type=pa.float64()),
+                }
+            ),
+        )
+        info = detect_aggregate_info(con, "agg")
+        sql = build_grid_rollup_sql(info, "SELECT * FROM agg", 5)
+        ((cell, count, avg),) = con.execute(sql).fetchall()
+        assert (cell, count) == (5000, 8)
+        assert avg == pytest.approx(10.0)
+        con.close()
+
+    def test_admin_country_probe_handles_antimeridian(self):
+        """Countries spanning the antimeridian must probe near +/-180, not at
+        the AVG(lon) of their region centroids (which lands near lon 0)."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.process.overview.detect import AggregateInfo
+        from geoparquet_io.core.process.overview.run import _admin_cells_probe_sql
+
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        try:
+            con.execute("SET geometry_always_xy = true")
+            con.execute(
+                """
+                CREATE TEMP TABLE agg AS
+                SELECT * FROM (VALUES
+                    ('US-AK', 1, ST_Buffer(ST_Point(-179.5, 60.0), 0.1)),
+                    ('US-XX', 1, ST_Buffer(ST_Point(179.5, 55.0), 0.1))
+                ) t(admin_code, count, geometry)
+                """
+            )
+            info = AggregateInfo(
+                scheme="admin",
+                cell_column="admin_code",
+                base_level="region",
+                rollup_columns=(),
+                out_geometry="polygon",
+            )
+            sql = _admin_cells_probe_sql(con, info, "SELECT * FROM agg", "country")
+            ((lon, lat),) = con.execute(sql).fetchall()
+            assert abs(lon) > 170
+            assert 55.0 <= lat <= 61.0
+        finally:
+            con.close()
 
     def test_grid_probe_sql_variants(self):
         from geoparquet_io.core.process.overview.run import _grid_cells_probe_sql
@@ -898,6 +971,28 @@ class TestAdminRollup:
         _write_admin_region_aggregate(src)
         with pytest.raises(InvalidParameterError, match="country"):
             create_overviews(str(src), levels="province")
+
+    def test_country_cache_path_with_single_quote(self, tmp_path, monkeypatch):
+        """The country cache path must be SQL-escaped like every other path
+        (home dirs can contain apostrophes)."""
+        import shutil
+
+        quoted_dir = tmp_path / "o'brien"
+        quoted_dir.mkdir()
+        plain_cache = tmp_path / "country_cache.parquet"
+        quoted_cache = quoted_dir / "country_cache.parquet"
+        shutil.copy(plain_cache, quoted_cache)
+        monkeypatch.setattr(
+            OvertureAdminDataset,
+            "get_source_for_level",
+            lambda self, level, no_cache=False: str(quoted_cache),
+        )
+
+        src = tmp_path / "by_region.parquet"
+        _write_admin_region_aggregate(src)
+        results = create_overviews(str(src), levels="country")
+        out = pq.read_table(results[0][1])
+        assert set(out.column("admin_code").to_pylist()) == {"US", "FR", "unassigned"}
 
     def test_existing_output_errors_without_force(self, tmp_path):
         """Like pmtiles pyramid, refuse to silently overwrite derived sibling

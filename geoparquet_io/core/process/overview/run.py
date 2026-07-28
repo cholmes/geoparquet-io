@@ -114,8 +114,11 @@ def _admin_cells_probe_sql(con, info: AggregateInfo, source_sql: str, level: str
     )
     if level == "region":
         return f"SELECT lon, lat FROM ({centroids})"
+    # Circular mean of longitudes: antimeridian-spanning countries (US, RU,
+    # FJ, NZ) must probe near +/-180, not at the naive AVG(lon) near lon 0.
+    lon_expr = "degrees(atan2(AVG(sin(radians(lon))), AVG(cos(radians(lon)))))"
     return (
-        f"SELECT AVG(lon) AS lon, AVG(lat) AS lat FROM ({centroids}) "
+        f"SELECT {lon_expr} AS lon, AVG(lat) AS lat FROM ({centroids}) "
         f"GROUP BY {admin_parent_expr(info.cell_column)}"
     )
 

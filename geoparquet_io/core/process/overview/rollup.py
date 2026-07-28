@@ -8,9 +8,10 @@ region codes to their ISO country prefix and attach cached Overture country
 polygons.
 
 Rollup exactness: ``count``, ``sum_*``, ``min_*``, ``max_*`` and breakdown
-``count_*`` columns roll up exactly. ``avg_*`` is count-weighted
-(``SUM(avg * count) / SUM(count)``), which is exact when the underlying metric
-had no NULLs -- documented caveat.
+``count_*`` columns roll up exactly. ``avg_*`` is count-weighted over the
+children that carry a value (``SUM(avg * count) / SUM(count) FILTER (avg IS
+NOT NULL)``), which is exact when the underlying metric had no NULLs --
+documented caveat.
 """
 
 from __future__ import annotations
@@ -54,8 +55,10 @@ def build_rollup_agg_parts(info: AggregateInfo) -> list[str]:
             if col.cast_to_bigint:
                 expr = f"CAST({expr} AS BIGINT)"
         elif col.func == "avg":
-            # Count-weighted mean: exact when the metric had no NULLs.
-            expr = f"SUM({qcol} * count) / NULLIF(SUM(count), 0)"
+            # Count-weighted mean. Children with a NULL avg contribute nothing
+            # to the numerator, so they must not count in the denominator
+            # either -- otherwise they dilute the parent mean.
+            expr = f"SUM({qcol} * count) / NULLIF(SUM(count) FILTER (WHERE {qcol} IS NOT NULL), 0)"
         elif col.func == "min":
             expr = f"MIN({qcol})"
         else:  # max
@@ -126,11 +129,12 @@ def build_admin_rollup_sql(
 
 def get_admin_country_context(con, verbose: bool = False) -> tuple[str, str, str]:
     """Return (country_ref, code_col, geom_expr) for the Overture country cache."""
+    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.partition.admin_hierarchical import _setup_admin_dataset
 
     dataset, _boundary_columns = _setup_admin_dataset("overture", verbose, ["country"])
     path = dataset.get_source_for_level("country")
-    country_ref = f"read_parquet('{path}')"
+    country_ref = f"read_parquet('{safe_file_url(path, verbose)}')"
     code_col = quote_identifier(dataset.get_level_column_mapping()["country"])
     geom_expr = geometry_to_geom_expr(con, country_ref, dataset.get_geometry_column())
     return country_ref, code_col, geom_expr

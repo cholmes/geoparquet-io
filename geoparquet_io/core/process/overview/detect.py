@@ -203,14 +203,21 @@ def _detect_grid_base_level(con, relation: str, scheme: str, cell_column: str) -
 def _detect_admin_base_level(con, relation: str, cell_column: str) -> str:
     qcol = quote_identifier(cell_column)
     row = con.execute(
-        f"SELECT COUNT(*) FILTER (WHERE {qcol} LIKE '%-%') FROM {relation} "
+        f"SELECT COUNT(*), COUNT(*) FILTER (WHERE {qcol} LIKE '%-%') FROM {relation} "
         f"WHERE {qcol} IS NOT NULL AND {qcol} != 'unassigned'"
     ).fetchone()
-    if not row or row[0] == 0:
+    total, regions = row if row else (0, 0)
+    if total == 0:
+        raise InvalidParameterError(
+            "input",
+            f"no admin codes to roll up: {cell_column} has no rows besides NULL/'unassigned'.",
+        )
+    if regions == 0:
         raise InvalidParameterError(
             "input",
             "admin aggregate is already at country level (no region codes like "
-            "'US-CA' found); there is no coarser admin level to roll up to.",
+            "'US-CA' found); there is no coarser admin level to roll up to. "
+            "If this column does not hold admin codes, pass --scheme/--cell-column.",
         )
     return "region"
 
