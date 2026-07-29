@@ -579,7 +579,7 @@ class TestMergePyramidMetadata:
         self._write_minimal_archive(archive)
         original = archive.read_bytes()
 
-        def boom(self, tileid, data):
+        def boom(*args, **kwargs):
             raise OSError("No space left on device")
 
         monkeypatch.setattr(Writer, "write_tile", boom)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -201,7 +202,7 @@ def _write_overview(
     verbose: bool,
 ) -> None:
     if info.out_geometry == "none":
-        kwargs = {"compression": compression}
+        kwargs: dict[str, Any] = {"compression": compression}
         if compression_level is not None:
             kwargs["compression_level"] = compression_level
         pq.write_table(table, out_path, **kwargs)
