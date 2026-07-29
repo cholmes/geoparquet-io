@@ -44,6 +44,7 @@ from geoparquet_io.core.process.aggregate.common import (
     geometry_to_geom_expr,
     resolve_breakdown_values,
     resolve_metric_column_types,
+    validate_agg_columns,
     validate_metric_nodata,
 )
 from geoparquet_io.core.remote import needs_httpfs
@@ -281,6 +282,14 @@ def build_grid_query(
 ) -> str:
     """Build the full grid aggregation SQL from a source relation exposing ``__pt``."""
     metrics, nodata_values = validate_metric_nodata(metric, metric_nodata)
+    if metrics or breakdown:
+        # Fail with a clear message (not a DuckDB binder error) when a requested
+        # metric/breakdown column doesn't exist -- especially `--metric count`,
+        # which is a no-op request since count is always emitted. Runs before the
+        # type resolution below so a missing column reports as missing, not as a
+        # non-numeric metric.
+        cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM ({source_sql})").fetchall()}
+        validate_agg_columns(cols, metrics, breakdown)
     # Resolve metric column types so sentinel literals match the column's actual
     # precision (REAL vs DOUBLE, #613) and non-numeric columns fail up-front.
     column_types = resolve_metric_column_types(con, source_sql, metrics) if nodata_values else None

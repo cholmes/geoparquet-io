@@ -259,6 +259,41 @@ def build_metric_select(
     return ", ".join(parts)
 
 
+def validate_agg_columns(
+    available: set[str], metrics: list[MetricSpec], breakdown: str | None
+) -> None:
+    """Check that requested metric/breakdown columns exist in the input.
+
+    Raises a clear InvalidParameterError instead of letting the generated SQL
+    fail with a DuckDB binder error. The common trap is ``--metric count``:
+    ``count`` is emitted automatically for every bucket, so a missing literal
+    ``count`` column gets a dedicated explanation. A file that really has a
+    ``count`` column (e.g. re-aggregating an aggregate) is still accepted.
+    """
+    for m in metrics:
+        if m.column in available:
+            continue
+        if m.column.lower() == "count":
+            raise InvalidParameterError(
+                "metric",
+                "'count' does not need to be requested: every output row "
+                "automatically includes a count column (COUNT(*) of features per "
+                "bucket). Use --metric for numeric rollups of existing columns "
+                '(e.g. "sum:area"), or --breakdown <column> for per-category counts.',
+            )
+        raise InvalidParameterError(
+            "metric",
+            f"Metric column '{m.column}' not found in input. "
+            f"Available columns: {', '.join(sorted(available))}",
+        )
+    if breakdown and breakdown not in available:
+        raise InvalidParameterError(
+            "breakdown",
+            f"Breakdown column '{breakdown}' not found in input. "
+            f"Available columns: {', '.join(sorted(available))}",
+        )
+
+
 _UNSAFE_CHARS = re.compile(r"[^0-9a-zA-Z]+")
 
 
