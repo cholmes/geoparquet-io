@@ -209,6 +209,7 @@ def write_output(
     custom_metadata: dict | None = None,
     geoparquet_version: str | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """
     Execute query and write result to file or stream.
@@ -232,6 +233,8 @@ def write_output(
         profile: AWS profile for S3 output
         custom_metadata: Optional dict with custom metadata
         geoparquet_version: GeoParquet version to write
+        memory_limit: DuckDB memory limit for file writes (e.g., '2GB', '512MB');
+            ignored for stream output
 
     Returns:
         Table if streaming output, None if file output
@@ -258,6 +261,7 @@ def write_output(
             custom_metadata,
             geoparquet_version,
             extra_kv_metadata,
+            memory_limit,
         )
         return None
 
@@ -331,6 +335,7 @@ def _write_file_output(
     custom_metadata: dict | None,
     geoparquet_version: str | None,
     extra_kv_metadata: dict[str, str] | None = None,
+    memory_limit: str | None = None,
 ) -> None:
     """Write output to Parquet file."""
     # Auto-detect version from input metadata if not explicitly provided
@@ -351,6 +356,7 @@ def _write_file_output(
         profile=profile,
         geoparquet_version=geoparquet_version,
         extra_kv_metadata=extra_kv_metadata,
+        memory_limit=memory_limit,
     )
 
 

@@ -3683,6 +3683,7 @@ def hilbert_order(
             None,
             geoparquet_version,
             overwrite,
+            memory_limit=write_memory,
         )
 
 
