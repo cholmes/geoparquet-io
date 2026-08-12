@@ -442,6 +442,53 @@ class TestTimeout:
 
         assert mock_client.get.call_args.kwargs["timeout"] == 300.0
 
+    def test_non_json_without_batch_size_is_remote_access_error(self):
+        """A non-paged request that gets HTML must not report a batch problem.
+
+        Regression test for #485: the count and layer-info queries carry no
+        batch size, so a WAF/proxy block page was reported as
+        "Batch size 0 too large", hiding the real cause.
+        """
+        from geoparquet_io.core.exceptions import BatchTooLargeError, RemoteAccessError
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.side_effect = json.JSONDecodeError("x", "<html>", 0)
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/html"}
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            with pytest.raises(RemoteAccessError) as exc_info:
+                make_request_with_retry("GET", "https://example.com/count")
+
+        assert not isinstance(exc_info.value, BatchTooLargeError)
+        assert "Batch size" not in str(exc_info.value)
+        assert "text/html" in str(exc_info.value)
+
+    def test_non_json_with_batch_size_keeps_batch_error(self):
+        """A paged request that gets HTML still raises BatchTooLargeError."""
+        from geoparquet_io.core.exceptions import BatchTooLargeError
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.side_effect = json.JSONDecodeError("x", "<html>", 0)
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/html"}
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            with pytest.raises(BatchTooLargeError) as exc_info:
+                make_request_with_retry("GET", "https://example.com/query", batch_size=1000)
+
+        assert exc_info.value.batch_size == 1000
+
 
 class TestCrsParsing:
     """Tests for output-crs parsing helpers."""
