@@ -380,7 +380,7 @@ def test_grid_aggregation_output_has_no_hive_partition_column(tmp_path):
         min_resolution=0,
         max_resolution=10,
         default_column="test_cell",
-        key_template="CAST(floor(ST_X({geom}) * {res}) AS VARCHAR)",
+        key_template="CAST(floor(ST_X({pt}) * {res}) AS VARCHAR)",
         boundary_template="{cell}",
         latlng_template="{cell}",
         poly_wkb_template="ST_AsWKB(ST_Point(0, 0))",
