@@ -372,6 +372,23 @@ def metric_nodata_option(func):
     )(func)
 
 
+def bucket_point_options(func):
+    """Add the ``--bucket-point`` / ``--bbox-column`` keying options (#567)."""
+    func = click.option(
+        "--bbox-column",
+        default=None,
+        help="Bbox covering column for --bucket-point bbox (auto-detected if omitted).",
+    )(func)
+    func = click.option(
+        "--bucket-point",
+        default="geometry",
+        help="Where the bucketing point comes from: 'geometry' (centroid, default), "
+        "'bbox' (center of a bbox covering column -- skips reading the geometry "
+        "column), or the name of an existing point column.",
+    )(func)
+    return func
+
+
 def grid_aggregate_options(func):
     """Add the options shared by `gpio process aggregate <grid>` commands.
 
@@ -379,8 +396,9 @@ def grid_aggregate_options(func):
     valid range differs between grids):
     - --auto, --target-per-cell, --max-cells
     - --metric, --metric-nodata, --breakdown, --breakdown-limit
-    - --out-geometry, --where
+    - --out-geometry, --where, --bucket-point, --bbox-column
     """
+    func = bucket_point_options(func)
     func = where_option(func)
     func = click.option(
         "--out-geometry",

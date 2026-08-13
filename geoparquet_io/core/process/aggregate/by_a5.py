@@ -21,7 +21,7 @@ A5_SCHEME = GridScheme(
     min_resolution=0,
     max_resolution=30,
     default_column=DEFAULT_A5_COLUMN_NAME,
-    key_template="a5_lonlat_to_cell(ST_X(ST_Centroid({geom})), ST_Y(ST_Centroid({geom})), {res})",
+    key_template="a5_lonlat_to_cell(ST_X({pt}), ST_Y({pt}), {res})",
     boundary_template="a5_cell_to_boundary({cell})",
     latlng_template="a5_cell_to_lonlat({cell})",
     # a5_cell_to_boundary returns DOUBLE[2][]; close the ring and build a polygon.
@@ -53,6 +53,8 @@ def aggregate_by_a5(
     show_sql: bool = False,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into A5 cells. Writes the output file."""
     aggregate_grid_file(
@@ -75,6 +77,8 @@ def aggregate_by_a5(
         show_sql=show_sql,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -89,6 +93,8 @@ def aggregate_a5_table(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """Aggregate an in-memory Arrow table by a5 cell. Returns a new Arrow table."""
     return aggregate_grid_table(
@@ -103,4 +109,6 @@ def aggregate_a5_table(
         geometry_column=geometry_column,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )

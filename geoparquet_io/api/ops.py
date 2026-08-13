@@ -273,6 +273,8 @@ def aggregate_a5(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into A5 grid cells with per-cell statistics.
@@ -288,6 +290,10 @@ def aggregate_a5(
         where: DuckDB WHERE clause filtering input rows before aggregation
         metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
             e.g. "-999" or "-999,-9999"
+        bucket_point: Keying point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per A5 cell
@@ -304,6 +310,8 @@ def aggregate_a5(
         geometry_column=geometry_column,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -317,6 +325,8 @@ def aggregate_h3(
     geometry_column: str | None = None,
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into H3 grid cells with per-cell statistics.
@@ -332,6 +342,10 @@ def aggregate_h3(
         where: DuckDB WHERE clause filtering input rows before aggregation
         metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
             e.g. "-999" or "-999,-9999"
+        bucket_point: Keying point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per H3 cell
@@ -348,6 +362,8 @@ def aggregate_h3(
         geometry_column=geometry_column,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -360,6 +376,8 @@ def aggregate_admin(
     out_geometry: str = "polygon",
     where: str | None = None,
     metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into administrative regions with per-region statistics.
@@ -374,6 +392,10 @@ def aggregate_admin(
         where: DuckDB WHERE clause filtering input rows before aggregation
         metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
             e.g. "-999" or "-999,-9999"
+        bucket_point: Join-point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per admin region
@@ -395,6 +417,8 @@ def aggregate_admin(
         out_geometry=out_geometry,
         where=where,
         metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
