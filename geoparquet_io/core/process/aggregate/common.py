@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import re
+import string
 from dataclasses import dataclass
 
 from geoparquet_io.core.duckdb_utils import quote_identifier
@@ -257,6 +258,71 @@ def build_metric_select(
             col_expr = quote_identifier(m.column)
         parts.append(f"{m.func.upper()}({col_expr}) AS {quote_identifier(m.output_name)}")
     return ", ".join(parts)
+
+
+# DuckDB folds identifiers case-insensitively, but only over ASCII: "HEIGHT"
+# binds to a `Height` column while "STRASSE" does not bind to `straße`. Column
+# lookups here follow the same rule so validation accepts exactly what the
+# generated SQL would bind -- no more, no less.
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _fold(name: str) -> str:
+    return name.translate(_ASCII_LOWER)
+
+
+def _has_column(available: set[str], name: str) -> bool:
+    """Whether ``name`` resolves to a column of the input, as DuckDB would resolve it."""
+    return name in available or any(_fold(c) == _fold(name) for c in available)
+
+
+def _format_available(available: set[str]) -> str:
+    """Render the column list for an error message.
+
+    The internal ``__``-prefixed aliases the aggregation adds to its source
+    relation (``__geom`` and friends) are not columns a user can request, so
+    they are left out.
+    """
+    names = sorted(c for c in available if not c.startswith("__"))
+    return ", ".join(names) if names else "(none)"
+
+
+def validate_agg_columns(
+    available: set[str], metrics: list[MetricSpec], breakdown: str | None
+) -> None:
+    """Check that requested metric/breakdown columns exist in the input.
+
+    Raises a clear InvalidParameterError instead of letting the generated SQL
+    fail with a DuckDB binder error. The common trap is ``--metric count``:
+    ``count`` is emitted automatically for every bucket, so a missing literal
+    ``count`` column gets a dedicated explanation. A file that really has a
+    ``count`` column (e.g. re-aggregating an aggregate) is still accepted.
+
+    Names are matched the way DuckDB matches them, so ``sum:HEIGHT`` is a valid
+    request against a ``Height`` column.
+    """
+    for m in metrics:
+        if _has_column(available, m.column):
+            continue
+        if _fold(m.column) == "count":
+            raise InvalidParameterError(
+                "metric",
+                "'count' does not need to be requested: every output row "
+                "automatically includes a count column (COUNT(*) of features per "
+                "bucket). Use --metric for numeric rollups of existing columns "
+                '(e.g. "sum:area"), or --breakdown <column> for per-category counts.',
+            )
+        raise InvalidParameterError(
+            "metric",
+            f"Metric column '{m.column}' not found in input. "
+            f"Available columns: {_format_available(available)}",
+        )
+    if breakdown and not _has_column(available, breakdown):
+        raise InvalidParameterError(
+            "breakdown",
+            f"Breakdown column '{breakdown}' not found in input. "
+            f"Available columns: {_format_available(available)}",
+        )
 
 
 _UNSAFE_CHARS = re.compile(r"[^0-9a-zA-Z]+")

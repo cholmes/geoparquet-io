@@ -32,6 +32,7 @@ from geoparquet_io.core.process.aggregate.common import (
     build_metric_select,
     resolve_breakdown_values,
     resolve_metric_column_types,
+    validate_agg_columns,
     validate_metric_nodata,
 )
 from geoparquet_io.core.process.aggregate.grid_common import (
@@ -242,9 +243,18 @@ def aggregate_by_admin(
         con.execute("SET geometry_always_xy = true")
         admin_dataset.configure_s3(con)
 
+        read_rel = aggregate_source_relation(input_url)
+        if metrics or breakdown:
+            # Clear error (not a DuckDB binder error) for missing metric/breakdown
+            # columns -- especially `--metric count`, a no-op request since count
+            # is always emitted. Checked before _get_admin_ref so a typo fails now
+            # rather than after downloading the admin boundary cache, and before
+            # the type resolution below so a missing column reports as missing.
+            cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {read_rel}").fetchall()}
+            validate_agg_columns(cols, metrics, breakdown)
+
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
-        read_rel = aggregate_source_relation(input_url)
         # Resolve metric column types from the input so sentinel literals match the
         # column's actual precision (REAL vs DOUBLE, #613) and non-numeric metric
         # columns fail up-front instead of mid-query.

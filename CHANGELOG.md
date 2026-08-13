@@ -180,6 +180,14 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Clear errors for missing `--metric`/`--breakdown` columns in
+  `gpio process aggregate`.** Requesting a column that doesn't exist now
+  reports the column name and the available columns instead of a raw DuckDB
+  binder error — and `--metric count` specifically explains that `count` is
+  emitted automatically for every bucket (use `--breakdown` for per-category
+  counts). A literal `count` column in the input (e.g. re-aggregating an
+  aggregate) still works.
+
 - **Non-planar edges metadata survives rewrites (#588).** `"edges":
   "spherical"` (e.g. from BigQuery GEOGRAPHY extracts) is now preserved across
   `convert`, `extract`, `sort`, `convert reproject`, and `partition`
