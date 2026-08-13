@@ -353,6 +353,15 @@ def partition_options_base(func):
     return func
 
 
+def where_option(func):
+    """Add the ``--where`` row-filter option (same wording as `gpio extract`)."""
+    return click.option(
+        "--where",
+        help="DuckDB WHERE clause for filtering rows. Column names with special "
+        'characters need double quotes in SQL (e.g., "crop:name"). Shell escaping varies.',
+    )(func)
+
+
 def grid_aggregate_options(func):
     """Add the options shared by `gpio process aggregate <grid>` commands.
 
@@ -360,8 +369,9 @@ def grid_aggregate_options(func):
     valid range differs between grids):
     - --auto, --target-per-cell, --max-cells
     - --metric, --breakdown, --breakdown-limit
-    - --out-geometry
+    - --out-geometry, --where
     """
+    func = where_option(func)
     func = click.option(
         "--out-geometry",
         type=click.Choice(["polygon", "centroid", "both", "none"]),

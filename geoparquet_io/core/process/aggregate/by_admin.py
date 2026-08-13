@@ -9,7 +9,12 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+    where_sql_fragment,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -20,6 +25,7 @@ from geoparquet_io.core.partition.admin_hierarchical import (
 )
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
+    aggregate_source_relation,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
@@ -52,6 +58,7 @@ def _build_joined_sql(
     name_col: str,
     admin_geom_col: str,
     admin_bbox_col: str | None = None,
+    where: str | None = None,
 ) -> str:
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
@@ -65,6 +72,11 @@ def _build_joined_sql(
     When admin_bbox_col is provided, a cheap bbox prefilter is added to the ON
     clause so ST_Intersects is only evaluated for admin polygons whose bounding
     box contains the feature centroid point.
+
+    ``where`` is applied to the inner input scan, so the spatial join, metrics,
+    and breakdowns all see only the filtered rows (#568). The caller validates
+    the clause. Hive partition columns are visible to it (#612); see
+    :func:`aggregate_source_relation`.
     """
     if admin_bbox_col:
         bbox_filter = (
@@ -82,7 +94,8 @@ def _build_joined_sql(
                ST_AsWKB(b.{quote_identifier(admin_geom_col)}) AS __admin_geom
         FROM (
             SELECT *, ST_Centroid({input_geom_expr}) AS __cen
-            FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
+            FROM {aggregate_source_relation(input_url)}
+            {where_sql_fragment(where)}
         ) s
         LEFT JOIN {admin_ref} b
           ON {bbox_filter}ST_Intersects(b.{quote_identifier(admin_geom_col)}, s.__cen)
@@ -138,6 +151,7 @@ def aggregate_by_admin(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     show_sql: bool = False,
+    where: str | None = None,
 ) -> None:
     """Aggregate input features by administrative region.
 
@@ -160,6 +174,7 @@ def aggregate_by_admin(
         geoparquet_version: GeoParquet spec version to write.
         verbose: Enable verbose debug logging.
         show_sql: Log the final SQL query.
+        where: DuckDB WHERE clause filtering input rows before aggregation.
     """
     configure_verbose(verbose)
     if out_geometry not in VALID_OUT_GEOMETRY:
@@ -167,6 +182,8 @@ def aggregate_by_admin(
             "out_geometry",
             f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
         )
+    if where:
+        validate_where_clause(where)
     metrics = parse_metrics(metric)
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
@@ -190,7 +207,7 @@ def aggregate_by_admin(
 
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
-        read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+        read_rel = aggregate_source_relation(input_url)
         # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input so ST_Intersects
         # does not fail on a CRS mismatch and the centroid lands correctly (#525).
         source_crs = extract_crs_from_parquet(input_parquet, verbose)
@@ -205,6 +222,7 @@ def aggregate_by_admin(
             name_col,
             admin_geom_col,
             admin_bbox_col,
+            where=where,
         )
 
         # When a breakdown is requested, materialize the spatial join once so that

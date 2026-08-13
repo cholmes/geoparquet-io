@@ -884,7 +884,7 @@ stats = table.partition_by_admin('output/', vecorel=True)
 
 ### Aggregation Methods {#aggregation}
 
-#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
 
 Aggregate features into A5 grid cells with per-cell statistics for low-zoom visualization.
 
@@ -904,6 +904,13 @@ result = gpio.read('fields.parquet').aggregate_a5(
 )
 result.write('cells.parquet')
 
+# Aggregate only a subset of rows
+result = gpio.read('fields.parquet').aggregate_a5(
+    resolution=8,
+    where="\"crop:name\" = 'wheat'",
+)
+result.write('wheat_cells.parquet')
+
 # No geometry — plain Parquet (re-join a5_cell to geometry later)
 result = gpio.read('fields.parquet').aggregate_a5(
     resolution=8,
@@ -922,10 +929,11 @@ result.write('cells_stats.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
 
-#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
 
 Aggregate features into H3 hexagonal grid cells. Same options as `aggregate_a5`,
 but the resolution range is **0–15** and the bucket id column is `h3_cell` (a
@@ -944,7 +952,7 @@ result.write('cells.parquet')
 
 Every output row carries `h3_cell` (string) as the bucket identifier.
 
-#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
 
 Aggregate features into administrative regions (Overture Maps) with per-region statistics.
 
@@ -973,6 +981,7 @@ result.write('by_region.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per region: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
 
 Every output row carries `admin_code` and `admin_name` bucket identifiers. Features outside all regions go into an `unassigned` bucket.
 

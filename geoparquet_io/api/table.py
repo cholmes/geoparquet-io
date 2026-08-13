@@ -1380,6 +1380,7 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
     ) -> Table:
         """
         Aggregate features into A5 grid cells with per-cell statistics.
@@ -1390,6 +1391,7 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
 
         Returns:
             New Table with one row per A5 cell
@@ -1404,6 +1406,7 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1414,6 +1417,7 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
     ) -> Table:
         """
         Aggregate features into H3 grid cells with per-cell statistics.
@@ -1424,6 +1428,7 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
 
         Returns:
             New Table with one row per H3 cell
@@ -1438,6 +1443,7 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1448,6 +1454,7 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
     ) -> Table:
         """
         Aggregate features into administrative regions with per-region statistics.
@@ -1458,6 +1465,7 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
 
         Returns:
             New Table with one row per admin region
@@ -1471,6 +1479,7 @@ class Table:
             breakdown=breakdown,
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
+            where=where,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 

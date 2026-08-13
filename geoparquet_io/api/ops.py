@@ -271,6 +271,7 @@ def aggregate_a5(
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
     geometry_column: str | None = None,
+    where: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into A5 grid cells with per-cell statistics.
@@ -283,6 +284,7 @@ def aggregate_a5(
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
         geometry_column: Geometry column name (defaults to "geometry")
+        where: DuckDB WHERE clause filtering input rows before aggregation
 
     Returns:
         New PyArrow Table with one row per A5 cell
@@ -297,6 +299,7 @@ def aggregate_a5(
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
         geometry_column=geometry_column,
+        where=where,
     )
 
 
@@ -308,6 +311,7 @@ def aggregate_h3(
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
     geometry_column: str | None = None,
+    where: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into H3 grid cells with per-cell statistics.
@@ -320,6 +324,7 @@ def aggregate_h3(
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
         geometry_column: Geometry column name (defaults to "geometry")
+        where: DuckDB WHERE clause filtering input rows before aggregation
 
     Returns:
         New PyArrow Table with one row per H3 cell
@@ -334,6 +339,7 @@ def aggregate_h3(
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
         geometry_column=geometry_column,
+        where=where,
     )
 
 
@@ -344,6 +350,7 @@ def aggregate_admin(
     breakdown: str | None = None,
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
+    where: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into administrative regions with per-region statistics.
@@ -355,6 +362,7 @@ def aggregate_admin(
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+        where: DuckDB WHERE clause filtering input rows before aggregation
 
     Returns:
         New PyArrow Table with one row per admin region
@@ -374,6 +382,7 @@ def aggregate_admin(
         breakdown=breakdown,
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
+        where=where,
     )
 
 

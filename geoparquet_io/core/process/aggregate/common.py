@@ -13,6 +13,23 @@ VALID_METRIC_FUNCS = {"sum", "avg", "min", "max"}
 VALID_OUT_GEOMETRY = {"polygon", "centroid", "both", "none"}
 
 
+def aggregate_source_relation(input_url: str) -> str:
+    """``read_parquet`` expression for the input scan of an aggregation.
+
+    Hive partitioning is left to DuckDB's auto-detection (the default) rather
+    than forced off, so ``--where "year = 2025"`` can filter on a partition
+    column of a hive-style glob/directory -- the documented use case, which the
+    forced ``hive_partitioning=false`` broke with a Binder error while the
+    ``--auto`` row-count path (a bare ``FROM 'url'``, auto-detecting) accepted
+    it (gpio #612).
+
+    Partition columns cannot leak into the output: every aggregation projects a
+    fixed column list (bucket id, count, metrics, breakdown pivots, geometry),
+    so a passthrough column added by the scan is dropped by the GROUP BY.
+    """
+    return f"read_parquet('{input_url}', union_by_name=true)"
+
+
 def geometry_to_geom_expr(con, relation: str, geom_col: str) -> str:
     """Return a SQL expression yielding a GEOMETRY for ``geom_col`` in ``relation``.
 

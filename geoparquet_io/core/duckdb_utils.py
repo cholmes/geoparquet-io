@@ -5,6 +5,7 @@ This module provides functions for creating and managing DuckDB connections
 with appropriate extensions loaded for GeoParquet operations.
 """
 
+import re
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -104,6 +105,106 @@ def quote_identifier(name: str) -> str:
     """
     escaped = name.replace('"', '""')
     return f'"{escaped}"'
+
+
+# SQL keywords that could be dangerous in a user-supplied WHERE clause.
+# These could modify data or database structure.
+DANGEROUS_SQL_KEYWORDS = [
+    "DROP",
+    "DELETE",
+    "INSERT",
+    "UPDATE",
+    "CREATE",
+    "ALTER",
+    "TRUNCATE",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "REPLACE",
+    "GRANT",
+    "REVOKE",
+]
+
+
+def _has_unquoted_semicolon(where_clause: str) -> bool:
+    """True if ``where_clause`` contains a ``;`` outside a quoted string/identifier.
+
+    Quote state is tracked so legitimate data (``name = 'a;b'``) and identifiers
+    (``"weird;col"``) are not flagged. A doubled quote inside a literal toggles
+    the state twice, which leaves the tracking correct.
+    """
+    in_single = False
+    in_double = False
+    for ch in where_clause:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == ";" and not in_single and not in_double:
+            return True
+    return False
+
+
+def where_sql_fragment(where_clause: str | None) -> str:
+    """Return a `` WHERE (...)`` fragment for ``where_clause`` (empty if None).
+
+    A newline is placed before the closing paren so a trailing ``--`` comment in
+    the clause cannot swallow the paren -- or whatever the caller appends next
+    (``USING SAMPLE``, a JOIN, ...). Callers are responsible for validating the
+    clause with :func:`validate_where_clause` first.
+    """
+    if not where_clause:
+        return ""
+    return f" WHERE ({where_clause}\n)"
+
+
+def validate_where_clause(where_clause: str) -> None:
+    """
+    Validate WHERE clause for potentially dangerous SQL keywords.
+
+    This is a basic safety check to prevent accidental or intentional
+    SQL injection attacks. It checks for keywords that could modify
+    data or database structure, and for statement separators: DuckDB's
+    ``execute()`` runs multi-statement strings, so a ``;`` in an interpolated
+    clause could append an entirely new statement (gpio #612).
+
+    Note: This feature is intended for trusted users. For untrusted input,
+    additional validation or parameterized queries would be required.
+
+    Args:
+        where_clause: The WHERE clause string to validate
+
+    Raises:
+        ValidationError: If dangerous SQL keywords or a statement separator are found
+    """
+    from geoparquet_io.core.exceptions import ValidationError
+
+    # Match dangerous keywords as whole words (case-insensitive); word boundaries
+    # avoid false positives (e.g. "UPDATED_AT" must not match).
+    upper_clause = where_clause.upper()
+    found_keywords = []
+
+    for keyword in DANGEROUS_SQL_KEYWORDS:
+        pattern = rf"\b{keyword}\b"
+        if re.search(pattern, upper_clause):
+            found_keywords.append(keyword)
+
+    if found_keywords:
+        raise ValidationError(
+            f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
+            "Only SELECT-style filtering expressions are allowed in --where. "
+            "If you need to perform data modifications, use DuckDB directly."
+        )
+
+    # The keyword blocklist cannot see every harmful statement (COPY, ATTACH,
+    # PRAGMA, ...), so reject the separator itself: without a ';' the clause
+    # cannot start a second statement whatever it contains (gpio #612).
+    if _has_unquoted_semicolon(where_clause):
+        raise ValidationError(
+            "WHERE clause contains a ';' statement separator outside a quoted string. "
+            "Only a single filtering expression is allowed in --where. "
+            "If you need to run multiple statements, use DuckDB directly."
+        )
 
 
 def build_spatial_join_condition(
