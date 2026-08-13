@@ -1381,6 +1381,7 @@ class Table:
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
         where: str | None = None,
+        metric_nodata: str | None = None,
     ) -> Table:
         """
         Aggregate features into A5 grid cells with per-cell statistics.
@@ -1392,6 +1393,7 @@ class Table:
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
             where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
 
         Returns:
             New Table with one row per A5 cell
@@ -1407,6 +1409,7 @@ class Table:
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
             where=where,
+            metric_nodata=metric_nodata,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1418,6 +1421,7 @@ class Table:
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
         where: str | None = None,
+        metric_nodata: str | None = None,
     ) -> Table:
         """
         Aggregate features into H3 grid cells with per-cell statistics.
@@ -1429,6 +1433,7 @@ class Table:
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
             where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
 
         Returns:
             New Table with one row per H3 cell
@@ -1444,6 +1449,7 @@ class Table:
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
             where=where,
+            metric_nodata=metric_nodata,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1455,6 +1461,7 @@ class Table:
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
         where: str | None = None,
+        metric_nodata: str | None = None,
     ) -> Table:
         """
         Aggregate features into administrative regions with per-region statistics.
@@ -1466,6 +1473,7 @@ class Table:
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
             where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
 
         Returns:
             New Table with one row per admin region
@@ -1480,6 +1488,7 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             where=where,
+            metric_nodata=metric_nodata,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 

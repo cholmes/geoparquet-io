@@ -20,6 +20,7 @@ from geoparquet_io.cli.decorators import (
     grid_aggregate_options,
     handle_directory_sub_partition,
     handle_geoparquet_errors,
+    metric_nodata_option,
     output_format_options,
     overwrite_option,
     parse_row_group_options,
@@ -7061,6 +7062,7 @@ def process_aggregate_a5(
     target_per_cell,
     max_cells,
     metric,
+    metric_nodata,
     breakdown,
     breakdown_limit,
     out_geometry,
@@ -7080,6 +7082,8 @@ def process_aggregate_a5(
             --metric "sum:area_ha" --breakdown crop_type
         gpio process aggregate a5 fields.parquet cells.parquet --resolution 8 \\
             --where "\\"crop:name\\" = 'wheat'"
+        gpio process aggregate a5 buildings.parquet cells.parquet --auto \\
+            --metric "avg:height,max:height" --metric-nodata "-999"
         gpio process aggregate a5 fields.parquet cells.csv-like.parquet \\
             --resolution 8 --out-geometry none
     """
@@ -7102,6 +7106,7 @@ def process_aggregate_a5(
                 verbose=verbose,
                 show_sql=show_sql,
                 where=where,
+                metric_nodata=metric_nodata,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise _aggregate_error(exc, where) from exc
@@ -7131,6 +7136,7 @@ def process_aggregate_h3(
     target_per_cell,
     max_cells,
     metric,
+    metric_nodata,
     breakdown,
     breakdown_limit,
     out_geometry,
@@ -7150,6 +7156,8 @@ def process_aggregate_h3(
             --metric "sum:area_ha" --breakdown crop_type
         gpio process aggregate h3 fields.parquet cells.parquet --resolution 8 \\
             --where "confidence >= 50"
+        gpio process aggregate h3 buildings.parquet cells.parquet --auto \\
+            --metric "avg:height" --metric-nodata "-999"
         gpio process aggregate h3 fields.parquet cells.parquet \\
             --resolution 8 --out-geometry none
     """
@@ -7172,6 +7180,7 @@ def process_aggregate_h3(
                 verbose=verbose,
                 show_sql=show_sql,
                 where=where,
+                metric_nodata=metric_nodata,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise _aggregate_error(exc, where) from exc
@@ -7191,6 +7200,7 @@ def process_aggregate_h3(
     default=None,
     help='Numeric rollups, e.g. "sum:area_ha,avg:yield". Bare column = sum.',
 )
+@metric_nodata_option
 @click.option(
     "--breakdown",
     default=None,
@@ -7220,6 +7230,7 @@ def process_aggregate_admin(
     output_parquet,
     level,
     metric,
+    metric_nodata,
     breakdown,
     breakdown_limit,
     out_geometry,
@@ -7239,6 +7250,8 @@ def process_aggregate_admin(
             --level region --metric "sum:area_ha" --breakdown crop_type
         gpio process aggregate admin fields.parquet by_country.parquet \\
             --level country --where "confidence >= 50"
+        gpio process aggregate admin buildings.parquet by_country.parquet \\
+            --level country --metric "avg:height" --metric-nodata "-999"
     """
     with _activate_s3(ctx):
         try:
@@ -7256,6 +7269,7 @@ def process_aggregate_admin(
                 verbose=verbose,
                 show_sql=show_sql,
                 where=where,
+                metric_nodata=metric_nodata,
             )
         except (InvalidParameterError, ValidationError, ValueError, duckdb.Error) as exc:
             raise _aggregate_error(exc, where) from exc

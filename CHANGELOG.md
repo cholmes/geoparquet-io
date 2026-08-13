@@ -23,6 +23,18 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   is now rejected in every `--where` clause (`extract` included), since DuckDB
   executes multi-statement strings.
 
+- **`--metric-nodata` NoData sentinel handling in `gpio process aggregate` (#566).**
+  Real-world numeric columns often encode "no value" as a sentinel like `-999`
+  instead of SQL `NULL`, which silently poisons `--metric` rollups (an average
+  of building heights comes back at `-313 m`). All three subcommands (`a5`,
+  `h3`, `admin`) now accept `--metric-nodata "-999"` (comma-separate multiple
+  sentinels) to map those values to `NULL` before aggregation: `sum`/`avg`/
+  `min`/`max` ignore them while `count` still counts every feature. `nan` is
+  accepted for NaN-encoded nodata, and sentinels are compared at the metric
+  column's own precision so the classic float32 nodata `-3.4028235e+38`
+  matches `REAL` columns. Also on the Python API as
+  `aggregate_a5/h3/admin(..., metric_nodata=...)`.
+
 - **New spec-validation checks in `gpio check spec` (#586).** Validation now
   fails on unknown `geo` metadata versions (e.g. `99.0.0`) even in auto mode;
   on version/feature mismatches (1.0 metadata using GeoParquet 2.0 native geo

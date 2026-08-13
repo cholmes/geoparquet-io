@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 from dataclasses import dataclass
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
@@ -38,8 +39,9 @@ from geoparquet_io.core.process.aggregate.common import (
     build_breakdown_select,
     build_metric_select,
     geometry_to_geom_expr,
-    parse_metrics,
     resolve_breakdown_values,
+    resolve_metric_column_types,
+    validate_metric_nodata,
 )
 
 
@@ -121,9 +123,13 @@ def build_grid_query(
     breakdown: str | None,
     breakdown_limit: int,
     out_geometry: str,
+    metric_nodata: str | None = None,
 ) -> str:
     """Build the full grid aggregation SQL from a source relation exposing ``__geom``."""
-    metrics = parse_metrics(metric)
+    metrics, nodata_values = validate_metric_nodata(metric, metric_nodata)
+    # Resolve metric column types so sentinel literals match the column's actual
+    # precision (REAL vs DOUBLE, #613) and non-numeric columns fail up-front.
+    column_types = resolve_metric_column_types(con, source_sql, metrics) if nodata_values else None
 
     key_expr = scheme.key_template.format(geom="__geom", res=resolution)
     keyed_sql = f"SELECT *, {key_expr} AS __key FROM ({source_sql})"
@@ -142,7 +148,9 @@ def build_grid_query(
         keyed_ref = keyed_sql
 
     agg_parts = [f"__key AS {quote_identifier(cell_column)}", "COUNT(*) AS count"]
-    metric_select = build_metric_select(metrics)
+    metric_select = build_metric_select(
+        metrics, nodata_values=nodata_values, column_types=column_types
+    )
     if metric_select:
         agg_parts.append(metric_select)
     if breakdown_select:
@@ -261,6 +269,7 @@ def aggregate_grid_file(
     verbose: bool = False,
     show_sql: bool = False,
     where: str | None = None,
+    metric_nodata: str | None = None,
 ) -> None:
     """Aggregate a GeoParquet file into grid cells. Writes the output file."""
     configure_verbose(verbose)
@@ -268,6 +277,9 @@ def aggregate_grid_file(
     _validate_out_geometry(out_geometry)
     if where:
         validate_where_clause(where)
+    # Validate metric/nodata pairing before any expensive setup (--auto scanning,
+    # CRS reads, connection + community-extension install).
+    validate_metric_nodata(metric, metric_nodata)
     resolution = _resolve_resolution(
         scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=where
     )
@@ -293,6 +305,7 @@ def aggregate_grid_file(
             breakdown,
             breakdown_limit,
             out_geometry,
+            metric_nodata=metric_nodata,
         )
         if show_sql or verbose:
             debug(final_sql)
@@ -344,12 +357,15 @@ def aggregate_grid_table(
     cell_column: str | None = None,
     geometry_column: str | None = None,
     where: str | None = None,
-):
+    metric_nodata: str | None = None,
+) -> pa.Table:
     """Aggregate an in-memory Arrow table into grid cells. Returns a new Arrow table."""
     cell_column = cell_column or scheme.default_column
     _validate_out_geometry(out_geometry)
     if where:
         validate_where_clause(where)
+    # Validate metric/nodata pairing before connection setup and extension install.
+    validate_metric_nodata(metric, metric_nodata)
     if not scheme.min_resolution <= resolution <= scheme.max_resolution:
         raise InvalidParameterError(
             "resolution",
@@ -382,6 +398,7 @@ def aggregate_grid_table(
             breakdown,
             breakdown_limit,
             out_geometry,
+            metric_nodata=metric_nodata,
         )
         return con.execute(final_sql).arrow().read_all()
     finally:

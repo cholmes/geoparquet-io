@@ -42,6 +42,36 @@ Rules of thumb:
 - **`avg` does *not* scale with count** — it isolates size/intensity, so a cell with 5 large fields is comparable to one with 5 000 small fields. Best for "typical value" maps.
 - **`min`/`max`** surface outliers; pair `min:year` with `max:year` to show the span of values in a cell.
 - The column must already exist and be numeric. To aggregate a **geometry-derived** value like area, compute it first with `gpio add geometry-metrics` (writes `metrics:area` in m²), then `--metric "sum:metrics:area"`.
+- **NoData sentinels skew every metric.** Real-world numeric columns frequently
+  encode "no value" as a sentinel like `-999` or `-9999` rather than SQL `NULL`
+  (e.g. GlobalBuildingAtlas heights use `-999`). Fed to `--metric` directly, the
+  sentinel drags `avg`/`sum` toward garbage and `min` reports the sentinel
+  itself. Pass `--metric-nodata "-999"` (comma-separate multiple sentinels) to
+  map them to `NULL` before aggregation — `sum`/`avg`/`min`/`max` then ignore
+  those values while `count` still counts every feature. `nan` is accepted for
+  NaN-encoded nodata, and sentinels are compared at the metric column's own
+  precision, so the classic float32 nodata `-3.4028235e+38` matches `REAL`
+  (float32) columns correctly. Sentinels apply only to numeric metric columns.
+
+=== "CLI"
+
+    ```bash
+    gpio process aggregate a5 buildings.parquet cells.parquet --auto \
+        --metric "avg:height,max:height" --metric-nodata "-999"
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('buildings.parquet').aggregate_a5(
+        resolution=10,
+        metric="avg:height,max:height",
+        metric_nodata="-999",
+    )
+    result.write('cells.parquet')
+    ```
 
 ### Which breakdown to use
 
@@ -433,6 +463,7 @@ Both commands support the standard output options:
 
 ```bash
 --where "confidence >= 50"  # DuckDB WHERE clause filtering input rows
+--metric-nodata "-999"    # NoData sentinel(s) mapped to NULL in --metric columns
 --compression SNAPPY      # Output compression (default: ZSTD)
 --geoparquet-version 1.1  # GeoParquet spec version
 --show-sql                # Print the generated DuckDB SQL

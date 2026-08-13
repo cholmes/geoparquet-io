@@ -884,7 +884,7 @@ stats = table.partition_by_admin('output/', vecorel=True)
 
 ### Aggregation Methods {#aggregation}
 
-#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
+#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None)`
 
 Aggregate features into A5 grid cells with per-cell statistics for low-zoom visualization.
 
@@ -930,10 +930,11 @@ result.write('cells_stats.parquet')
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
 | `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
+| `metric_nodata` | str | None | NoData sentinel value(s) mapped to NULL in metric columns, e.g. `"-999"` or `"-999,-9999"` (`"nan"` matches NaN) |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
 
-#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
+#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None)`
 
 Aggregate features into H3 hexagonal grid cells. Same options as `aggregate_a5`,
 but the resolution range is **0–15** and the bucket id column is `h3_cell` (a
@@ -952,7 +953,7 @@ result.write('cells.parquet')
 
 Every output row carries `h3_cell` (string) as the bucket identifier.
 
-#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None)`
+#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None)`
 
 Aggregate features into administrative regions (Overture Maps) with per-region statistics.
 
