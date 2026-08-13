@@ -53,11 +53,43 @@ def test_valid_columns_pass():
 
 
 # ---------------------------------------------------------------------------
+# Name matching follows DuckDB: ASCII case-insensitive, nothing more
+# ---------------------------------------------------------------------------
+
+
+def test_mixed_case_metric_column_resolves():
+    # DuckDB binds SUM("HEIGHT") against a `Height` column, so validation must too.
+    validate_agg_columns({"geometry", "Height"}, parse_metrics("sum:HEIGHT"), None)
+
+
+def test_mixed_case_breakdown_column_resolves():
+    validate_agg_columns({"geometry", "CropType"}, [], "croptype")
+
+
+def test_count_metric_allowed_when_column_exists_in_other_case():
+    # A real `COUNT` column must not be mistaken for the reserved automatic count.
+    validate_agg_columns({"geometry", "COUNT"}, parse_metrics("sum:count"), None)
+
+
+def test_non_ascii_case_is_not_folded():
+    # DuckDB does not fold non-ASCII: "héight" does not bind to `HÉIGHT`.
+    with pytest.raises(InvalidParameterError, match="not found"):
+        validate_agg_columns({"geometry", "HÉIGHT"}, parse_metrics("sum:héight"), None)
+
+
+def test_internal_aliases_are_not_listed_as_available():
+    with pytest.raises(InvalidParameterError, match="not found") as exc:
+        validate_agg_columns({"__pt", "__key", "height"}, parse_metrics("sum:area"), None)
+    assert "__pt" not in str(exc.value)
+    assert "height" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # Grid query builder applies the validation (no grid extension execution)
 # ---------------------------------------------------------------------------
 
 
-def _build(metric=None, breakdown=None):
+def _build(metric=None, breakdown=None, source="SELECT 1 AS height, 'x' AS crop, NULL AS __pt"):
     from geoparquet_io.core.process.aggregate.by_a5 import A5_SCHEME
     from geoparquet_io.core.process.aggregate.grid_common import build_grid_query
 
@@ -66,7 +98,7 @@ def _build(metric=None, breakdown=None):
         return build_grid_query(
             con,
             A5_SCHEME,
-            "SELECT 1 AS height, 'x' AS crop, NULL AS __geom",
+            source,
             5,
             "a5_cell",
             metric,
@@ -98,19 +130,34 @@ def test_grid_query_valid_columns_build():
     assert 'AVG("height") AS "avg_height"' in sql
 
 
+def test_grid_query_mixed_case_metric_builds():
+    sql = _build(metric="avg:HEIGHT", source="SELECT 1 AS Height, NULL AS __pt")
+    assert 'AVG("HEIGHT")' in sql
+
+
+def test_grid_query_missing_metric_omits_internal_alias():
+    with pytest.raises(InvalidParameterError, match="'area' not found") as exc:
+        _build(metric="sum:area")
+    assert "__pt" not in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Admin path applies the validation (fake dataset, no network)
 # ---------------------------------------------------------------------------
 
 
 class _FakeAdminDataset:
-    def __init__(self, path):
+    def __init__(self, path, fail_on_source=False):
         self._path = path
+        self._fail_on_source = fail_on_source
 
     def supports_per_level_sources(self):
         return True
 
     def get_source_for_level(self, level):
+        if self._fail_on_source:
+            # Stands in for the multi-GB boundary-cache download.
+            raise AssertionError("admin boundaries resolved before validating columns")
         return str(self._path)
 
     def get_level_column_mapping(self):
@@ -167,6 +214,22 @@ def test_admin_count_metric_hint(tmp_path):
     _write_points(src)
     with pytest.raises(InvalidParameterError, match="automatically"):
         aggregate_by_admin(str(src), str(tmp_path / "o.parquet"), level="country", metric="count")
+
+
+def test_admin_validates_before_resolving_boundaries(tmp_path, monkeypatch):
+    """A typo'd column must fail before the admin boundary cache is fetched."""
+    from geoparquet_io.core.process.aggregate.by_admin import aggregate_by_admin
+
+    monkeypatch.setattr(
+        "geoparquet_io.core.process.aggregate.by_admin._setup_admin_dataset",
+        lambda dataset, verbose, levels: (_FakeAdminDataset(None, fail_on_source=True), None),
+    )
+    src = tmp_path / "pts.parquet"
+    _write_points(src)
+    with pytest.raises(InvalidParameterError, match="'altitude' not found"):
+        aggregate_by_admin(
+            str(src), str(tmp_path / "o.parquet"), level="country", metric="sum:altitude"
+        )
 
 
 # ---------------------------------------------------------------------------

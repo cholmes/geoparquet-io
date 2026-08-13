@@ -42,8 +42,8 @@ Rules of thumb:
 - **`avg` does *not* scale with count** — it isolates size/intensity, so a cell with 5 large fields is comparable to one with 5 000 small fields. Best for "typical value" maps.
 - **`min`/`max`** surface outliers; pair `min:year` with `max:year` to show the span of values in a cell.
 - **Don't request `count` via `--metric`** — every output row already includes a
-  `count` column automatically (`COUNT(*)` per bucket). Use `--breakdown <column>`
-  for per-category counts.
+  `count` column automatically (`COUNT(*)` per bucket). For per-category counts see
+  [Which breakdown to use](#which-breakdown-to-use).
 - The column must already exist and be numeric. To aggregate a **geometry-derived** value like area, compute it first with `gpio add geometry-metrics` (writes `metrics:area` in m²), then `--metric "sum:metrics:area"`.
 - **NoData sentinels skew every metric.** Real-world numeric columns frequently
   encode "no value" as a sentinel like `-999` or `-9999` rather than SQL `NULL`
