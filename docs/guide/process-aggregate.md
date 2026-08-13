@@ -529,6 +529,8 @@ Both commands support the standard output options:
 
 ## See Also
 
+- [Overview Levels](process-overview.md) — derive coarser levels from an aggregate output
+- [PMTiles Pyramids](geojson.md#pmtiles-pyramids) — bake all levels into one zoom-banded archive
 - [Adding Spatial Indices](add.md) — add A5/H3 columns before aggregating
 - [Partitioning Files](partition.md) — split large files by spatial index or admin region
 - [Python API Reference](../api/python-api.md#aggregation) — full API documentation

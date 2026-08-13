@@ -85,6 +85,7 @@ from geoparquet_io.core.process.aggregate.by_admin import (
     aggregate_by_admin as aggregate_by_admin_impl,
 )
 from geoparquet_io.core.process.aggregate.by_h3 import aggregate_by_h3 as aggregate_by_h3_impl
+from geoparquet_io.core.process.overview import create_overviews as create_overviews_impl
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
@@ -6996,6 +6997,131 @@ def pmtiles_create(
         raise click.ClickException(str(e)) from e
 
 
+@pmtiles.command(name="pyramid")
+@click.argument("input_parquet", type=click.Path())
+@click.argument("output_pmtiles", type=click.Path())
+@click.option(
+    "--levels",
+    default=None,
+    help=(
+        "Comma-separated overview levels (grid resolutions like '5'; admin: "
+        "'country'). Default: auto-select against --max-tile-kb."
+    ),
+)
+@click.option(
+    "--max-tile-kb",
+    type=int,
+    default=500,
+    show_default=True,
+    help="Tile-size budget in KB driving zoom-band selection.",
+)
+@click.option(
+    "--bytes-per-cell",
+    type=float,
+    default=None,
+    help="Override the estimated compressed bytes per cell used in band selection.",
+)
+@click.option(
+    "--layer-mode",
+    type=click.Choice(["single", "grouped", "per-level"]),
+    default="grouped",
+    show_default=True,
+    help=(
+        "Layer naming: 'single' puts everything in one layer, 'grouped' uses "
+        "'aggregate' + 'features', 'per-level' uses r5/r10 (or country/region)."
+    ),
+)
+@click.option(
+    "--include-features",
+    is_flag=True,
+    help="Append the original features as the final zoom band.",
+)
+@click.option(
+    "--features-source",
+    type=click.Path(),
+    default=None,
+    help="GeoParquet source for the features band (required with --include-features).",
+)
+@click.option(
+    "--features-min-zoom",
+    type=int,
+    default=None,
+    help="First zoom of the features band (default: base band max zoom + 1).",
+)
+@click.option(
+    "--max-zoom",
+    type=int,
+    default=None,
+    help="Max zoom of the base aggregate band (auto-detected if not set).",
+)
+@click.option("--attribution", help="Custom attribution HTML for tiles")
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite the output archive if it already exists",
+)
+@verbose_option
+def pmtiles_pyramid(
+    input_parquet,
+    output_pmtiles,
+    levels,
+    max_tile_kb,
+    bytes_per_cell,
+    layer_mode,
+    include_features,
+    features_source,
+    features_min_zoom,
+    max_zoom,
+    attribution,
+    force,
+    verbose,
+):
+    """Create a multi-level PMTiles pyramid from an aggregate file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, assigns each
+    level a zoom band that fits the tile budget, runs tippecanoe once per band,
+    and merges everything into one archive with tile-join. Existing overview
+    siblings (from `gpio process overview`) are reused; missing levels are
+    built automatically. Bands are recorded in the PMTiles metadata under
+    `gpio:pyramid`.
+
+    Requires tippecanoe and tile-join (ships with tippecanoe) in PATH.
+
+    Examples:
+
+        gpio pmtiles pyramid cells.parquet cells.pmtiles
+
+        gpio pmtiles pyramid cells.parquet out.pmtiles --levels 5 --max-zoom 10
+
+        gpio pmtiles pyramid cells.parquet out.pmtiles \\
+            --include-features --features-source buildings.parquet --max-zoom 8
+
+        gpio pmtiles pyramid by_region.parquet out.pmtiles --layer-mode per-level
+    """
+    from geoparquet_io.core.pmtiles_pyramid import create_pmtiles_pyramid
+
+    try:
+        create_pmtiles_pyramid(
+            input_parquet,
+            output_pmtiles,
+            levels=levels,
+            max_tile_kb=max_tile_kb,
+            bytes_per_cell=bytes_per_cell,
+            layer_mode=layer_mode,
+            include_features=include_features,
+            features_source=features_source,
+            features_min_zoom=features_min_zoom,
+            max_zoom=max_zoom,
+            attribution=attribution,
+            force=force,
+            verbose=verbose,
+        )
+        click.echo(click.style(f"✓ Created {output_pmtiles}", fg="green"))
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+
 # =============================================================================
 # Process Commands (aggregate, ...)
 # =============================================================================
@@ -7023,8 +7149,117 @@ def _aggregate_error(exc: Exception, where: str | None) -> click.ClickException:
 @cli.group()
 @click.pass_context
 def process(ctx):
-    """Transform or reduce GeoParquet data (aggregate, ...)."""
+    """Transform or reduce GeoParquet data (aggregate, overview, ...)."""
     pass
+
+
+@process.command(name="overview")
+@click.argument("input_parquet")
+@click.option(
+    "--levels",
+    default=None,
+    help=(
+        "Comma-separated coarser levels to build (grid resolutions like '4,7'; "
+        "admin: 'country'). Default: auto-select against --max-tile-kb."
+    ),
+)
+@click.option(
+    "--max-tile-kb",
+    type=int,
+    default=500,
+    show_default=True,
+    help="Tile-size budget in KB driving auto level selection.",
+)
+@click.option(
+    "--bytes-per-cell",
+    type=float,
+    default=None,
+    help="Override the estimated compressed bytes per cell used in auto selection.",
+)
+@click.option(
+    "--cell-column",
+    default=None,
+    help="Cell id column when auto-detection fails (default: a5_cell/h3_cell/admin_code).",
+)
+@click.option(
+    "--scheme",
+    type=click.Choice(["a5", "h3", "admin"]),
+    default=None,
+    help=(
+        "Bucketing scheme of the cell column when inference is ambiguous "
+        "(e.g. H3 ids stored as integers)."
+    ),
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory for overview files (default: alongside the input).",
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Overwrite existing overview output files.",
+)
+@compression_options
+@verbose_option
+@geoparquet_version_option
+@show_sql_option
+@click.pass_context
+def process_overview(
+    ctx,
+    input_parquet,
+    levels,
+    max_tile_kb,
+    bytes_per_cell,
+    cell_column,
+    scheme,
+    output_dir,
+    force,
+    compression,
+    compression_level,
+    verbose,
+    geoparquet_version,
+    show_sql,
+):
+    """Build coarser overview levels from an aggregate output.
+
+    Reads a `gpio process aggregate` output, detects its scheme (a5/h3/admin)
+    and base level, and writes one GeoParquet sibling per coarser level
+    (`cells.parquet` -> `cells_r4.parquet`; admin -> `by_region_country.parquet`).
+    Counts, sums, mins, maxes, and breakdown counts roll up exactly; averages
+    are count-weighted.
+
+    Examples:
+
+        gpio process overview cells.parquet
+
+        gpio process overview cells.parquet --levels 4,7
+
+        gpio process overview by_region.parquet --levels country
+
+        gpio process overview cells.parquet --max-tile-kb 300
+    """
+    with _activate_s3(ctx):
+        try:
+            create_overviews_impl(
+                input_parquet,
+                levels=levels,
+                max_tile_kb=max_tile_kb,
+                bytes_per_cell=bytes_per_cell,
+                cell_column=cell_column,
+                scheme=scheme,
+                output_dir=output_dir,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                geoparquet_version=geoparquet_version,
+                force=force,
+                verbose=verbose,
+                show_sql=show_sql,
+            )
+        except (InvalidParameterError, ValueError, duckdb.Error) as exc:
+            raise click.ClickException(str(exc)) from exc
 
 
 @process.group(name="aggregate")

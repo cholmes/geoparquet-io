@@ -422,6 +422,76 @@ def aggregate_admin(
     )
 
 
+def create_overviews(
+    input_parquet: str,
+    *,
+    levels: str | list[int | str] | None = None,
+    max_tile_kb: int = 500,
+    bytes_per_cell: float | None = None,
+    cell_column: str | None = None,
+    scheme: str | None = None,
+    output_dir: str | None = None,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geoparquet_version: str | None = None,
+    force: bool = False,
+    verbose: bool = False,
+    show_sql: bool = False,
+) -> list[tuple[int | str, str]]:
+    """
+    Build coarser overview levels from an aggregate GeoParquet file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, rolls up by
+    true cell hierarchy, and writes one GeoParquet sibling per coarser level
+    (``cells.parquet`` -> ``cells_r4.parquet``; admin ->
+    ``by_region_country.parquet``). Counts, sums, mins, maxes, and breakdown
+    counts roll up exactly; averages are count-weighted (exact when the
+    metric had no NULLs).
+
+    Args:
+        input_parquet: Path to a `gpio process aggregate` output
+        levels: Explicit levels (comma string or list; admin: "country").
+            Default: auto-select against max_tile_kb
+        max_tile_kb: Tile-size budget in KB for auto level selection (default: 500)
+        bytes_per_cell: Override the estimated compressed bytes per cell
+        cell_column: Cell id column when auto-detection fails
+        scheme: Bucketing scheme (a5/h3/admin) when inference is ambiguous,
+            e.g. H3 ids stored as integers
+        output_dir: Directory for overview files (default: beside the input)
+        compression: Parquet compression codec (default: ZSTD)
+        compression_level: Optional compression level
+        geoparquet_version: GeoParquet version to write
+        force: Overwrite existing overview output files
+        verbose: Enable verbose output
+        show_sql: Log the rollup SQL
+
+    Returns:
+        List of (level, output_path) tuples, coarse to fine
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_overviews('cells.parquet', levels=[4, 7])
+        [(4, 'cells_r4.parquet'), (7, 'cells_r7.parquet')]
+    """
+    from geoparquet_io.core.process.overview import create_overviews as _create_overviews
+
+    return _create_overviews(
+        input_parquet,
+        levels=levels,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        cell_column=cell_column,
+        scheme=scheme,
+        output_dir=output_dir,
+        compression=compression,
+        compression_level=compression_level,
+        geoparquet_version=geoparquet_version,
+        force=force,
+        verbose=verbose,
+        show_sql=show_sql,
+    )
+
+
 def add_kdtree(
     table: pa.Table,
     column_name: str = "kdtree_cell",
@@ -1481,4 +1551,86 @@ def create_pmtiles(
         maximum_tile_bytes=maximum_tile_bytes,
         force=force,
         repair_geometry=repair_geometry,
+    )
+
+
+def create_pmtiles_pyramid(
+    input_path: str,
+    output_path: str,
+    *,
+    levels: str | list[int | str] | None = None,
+    max_tile_kb: int = 500,
+    bytes_per_cell: float | None = None,
+    layer_mode: str = "grouped",
+    include_features: bool = False,
+    features_source: str | None = None,
+    features_min_zoom: int | None = None,
+    max_zoom: int | None = None,
+    attribution: str | None = None,
+    force: bool = False,
+    verbose: bool = False,
+) -> None:
+    """
+    Create a banded multi-level PMTiles pyramid from an aggregate file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, assigns each
+    level a zoom band that fits the tile budget, runs tippecanoe once per band,
+    and merges everything into one archive with tile-join. Existing overview
+    siblings (from `gpio process overview` / `ops.create_overviews`) are
+    reused; missing levels are built automatically. Bands are recorded in the
+    PMTiles metadata under ``gpio:pyramid``.
+
+    Requires tippecanoe and tile-join (ships with tippecanoe) in PATH.
+
+    Args:
+        input_path: Path to a `gpio process aggregate` output (GeoParquet)
+        output_path: Path for the output PMTiles archive
+        levels: Explicit overview levels (comma string or list; admin:
+            "country"). Default: auto-select against max_tile_kb
+        max_tile_kb: Tile-size budget in KB for band selection (default: 500)
+        bytes_per_cell: Override the estimated compressed bytes per cell
+        layer_mode: "single", "grouped" (default), or "per-level"
+        include_features: Append the original features as the final zoom band
+        features_source: GeoParquet source for the features band
+        features_min_zoom: First zoom of the features band (default: base
+            band max zoom + 1)
+        max_zoom: Max zoom of the base aggregate band
+        attribution: Attribution HTML for the tiles
+        force: Overwrite the output archive if it exists
+        verbose: Enable verbose output
+
+    Raises:
+        TippecanoeNotFoundError: If tippecanoe is not in PATH
+        TileJoinNotFoundError: If tile-join is not in PATH
+        RuntimeError: If a tippecanoe or tile-join run fails
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_pmtiles_pyramid('cells.parquet', 'cells.pmtiles')
+        >>> ops.create_pmtiles_pyramid(
+        ...     'cells.parquet',
+        ...     'pyramid.pmtiles',
+        ...     include_features=True,
+        ...     features_source='buildings.parquet',
+        ...     max_zoom=8,
+        ... )
+    """
+    from geoparquet_io.core.pmtiles_pyramid import (
+        create_pmtiles_pyramid as _create_pmtiles_pyramid,
+    )
+
+    _create_pmtiles_pyramid(
+        input_path,
+        output_path,
+        levels=levels,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        layer_mode=layer_mode,
+        include_features=include_features,
+        features_source=features_source,
+        features_min_zoom=features_min_zoom,
+        max_zoom=max_zoom,
+        attribution=attribution,
+        force=force,
+        verbose=verbose,
     )
