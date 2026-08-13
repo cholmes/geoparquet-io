@@ -85,7 +85,7 @@ apply_ruleset() {
   local existing_id
 
   existing_id="$(
-    gh api "repos/${REPO}/rulesets" \
+    gh api --paginate "repos/${REPO}/rulesets" \
       --jq ".[] | select(.name == \"${name}\") | .id" 2>/dev/null || true
   )"
 
@@ -113,7 +113,7 @@ delete_ruleset() {
   local existing_id
 
   existing_id="$(
-    gh api "repos/${REPO}/rulesets" \
+    gh api --paginate "repos/${REPO}/rulesets" \
       --jq ".[] | select(.name == \"${name}\") | .id" 2>/dev/null || true
   )"
 
