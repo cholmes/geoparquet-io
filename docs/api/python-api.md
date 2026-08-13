@@ -884,7 +884,7 @@ stats = table.partition_by_admin('output/', vecorel=True)
 
 ### Aggregation Methods {#aggregation}
 
-#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into A5 grid cells with per-cell statistics for low-zoom visualization.
 
@@ -904,6 +904,13 @@ result = gpio.read('fields.parquet').aggregate_a5(
 )
 result.write('cells.parquet')
 
+# Aggregate only a subset of rows
+result = gpio.read('fields.parquet').aggregate_a5(
+    resolution=8,
+    where="\"crop:name\" = 'wheat'",
+)
+result.write('wheat_cells.parquet')
+
 # No geometry — plain Parquet (re-join a5_cell to geometry later)
 result = gpio.read('fields.parquet').aggregate_a5(
     resolution=8,
@@ -922,10 +929,14 @@ result.write('cells_stats.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
+| `metric_nodata` | str | None | NoData sentinel value(s) mapped to NULL in metric columns, e.g. `"-999"` or `"-999,-9999"` (`"nan"` matches NaN) |
+| `bucket_point` | str | `"geometry"` | Keying point source: `"geometry"` (centroid), `"bbox"` (bbox covering column center, skips reading geometry), or a point column name |
+| `bbox_column` | str | None | Bbox covering column for `bucket_point="bbox"` (auto-detected when omitted) |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
 
-#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into H3 hexagonal grid cells. Same options as `aggregate_a5`,
 but the resolution range is **0–15** and the bucket id column is `h3_cell` (a
@@ -944,7 +955,7 @@ result.write('cells.parquet')
 
 Every output row carries `h3_cell` (string) as the bucket identifier.
 
-#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into administrative regions (Overture Maps) with per-region statistics.
 
@@ -973,11 +984,43 @@ result.write('by_region.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per region: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
 
 Every output row carries `admin_code` and `admin_name` bucket identifiers. Features outside all regions go into an `unassigned` bucket.
 
 !!! note "Known limitation"
     `admin_name` currently equals the ISO code (same as `admin_code`).
+
+#### `overview(level, cell_column=None)`
+
+Roll an aggregate table up to a coarser overview level by true cell hierarchy
+(`a5_cell_to_parent` / `h3_cell_to_parent`; admin region codes collapse to
+their ISO country prefix). The table must be a `process aggregate` output.
+
+```python
+import geoparquet_io as gpio
+
+# Grid aggregate: roll res-10 cells up to res 6
+coarse = gpio.read('cells.parquet').overview(6)
+coarse.write('cells_r6.parquet')
+
+# Region-level admin aggregate: roll up to country
+by_country = gpio.read('by_region.parquet').overview('country')
+by_country.write('by_region_country.parquet')
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `level` | int or str | required | Coarser grid resolution, or `"country"` for admin |
+| `cell_column` | str | None | Cell id column when auto-detection fails |
+| `scheme` | str | None | Bucketing scheme (`a5`/`h3`/`admin`) when inference is ambiguous, e.g. H3 ids stored as integers |
+
+`count`, `sum_*`, `min_*`, `max_*`, and breakdown `count_*` columns roll up
+exactly; `avg_*` is count-weighted (exact when the metric had no NULLs). For
+file-based batch building of several levels (with auto level selection), use
+`ops.create_overviews`.
 
 ### Sub-Partitioning Utilities
 
@@ -1413,6 +1456,8 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
 | `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
 | `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
+| `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, scheme=None, output_dir=None, force=False, ...)` | Build coarser overview levels from an aggregate file |
+| `ops.create_pmtiles_pyramid(input_path, output_path, levels=None, max_tile_kb=500, layer_mode='grouped', include_features=False, features_source=None, max_zoom=None, ...)` | Build a zoom-banded multi-level PMTiles archive from an aggregate file (requires tippecanoe + tile-join) |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

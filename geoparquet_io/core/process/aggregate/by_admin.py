@@ -8,8 +8,13 @@ import gc
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.crs_utils import crs_transform_sql_expr, extract_crs_from_parquet
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.crs_utils import extract_crs_from_parquet
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+    where_sql_fragment,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -20,12 +25,22 @@ from geoparquet_io.core.partition.admin_hierarchical import (
 )
 from geoparquet_io.core.process.aggregate.common import (
     VALID_OUT_GEOMETRY,
+    MetricSpec,
+    aggregate_source_relation,
     build_breakdown_column_names,
     build_breakdown_select,
     build_metric_select,
-    geometry_to_geom_expr,
-    parse_metrics,
     resolve_breakdown_values,
+    resolve_metric_column_types,
+    validate_agg_columns,
+    validate_metric_nodata,
+)
+from geoparquet_io.core.process.aggregate.grid_common import (
+    _resolve_bbox_column_for_file,
+    _validate_bucket_point_args,
+    _validate_keying_columns_for_file,
+    bucket_point_expr,
+    build_exclude_clause,
 )
 
 
@@ -46,25 +61,37 @@ def _get_admin_ref(dataset, con, level: str) -> str:
 
 def _build_joined_sql(
     input_url: str,
-    input_geom_expr: str,
+    input_pt_expr: str,
     admin_ref: str,
     code_col: str,
     name_col: str,
     admin_geom_col: str,
     admin_bbox_col: str | None = None,
+    where: str | None = None,
+    exclude_sql: str = "",
 ) -> str:
     """Build the spatial-join SQL tagging each input feature with its admin region.
 
     The admin geometry column is GEOMETRY type in all supported datasets, so it
-    is used directly in ST_Intersects.  ``input_geom_expr`` is a SQL expression
-    that yields a GEOMETRY for the input geometry column (the caller detects
-    whether the column is GEOMETRY or WKB BLOB).  The admin geometry is stored as
-    WKB (ST_AsWKB) so that _wrap_admin_geometry can treat __admin_geom uniformly
-    as WKB binary.
+    is used directly in ST_Intersects.  ``input_pt_expr`` is a SQL expression
+    yielding the per-feature POINT used for the join (geometry centroid by
+    default; bbox center or an existing point column for --bucket-point, #567).
+    The admin geometry is stored as WKB (ST_AsWKB) so that _wrap_admin_geometry
+    can treat __admin_geom uniformly as WKB binary.
 
     When admin_bbox_col is provided, a cheap bbox prefilter is added to the ON
     clause so ST_Intersects is only evaluated for admin polygons whose bounding
-    box contains the feature centroid point.
+    box contains the feature point.
+
+    ``where`` is applied to the inner input scan, so the spatial join, metrics,
+    and breakdowns all see only the filtered rows (#568). The caller validates
+    the clause. Hive partition columns are visible to it (#612); see
+    :func:`aggregate_source_relation`. ``exclude_sql`` is a prebuilt
+    `` EXCLUDE (...)`` clause (see ``build_exclude_clause``) dropping columns
+    (typically the geometry) from the passthrough SELECT so their Parquet pages
+    are never read; building it with ``build_exclude_clause`` keeps it
+    existence-checked, so a geometry-less bbox-only input never trips a binder
+    error on a nonexistent column.
     """
     if admin_bbox_col:
         bbox_filter = (
@@ -81,15 +108,22 @@ def _build_joined_sql(
                b.{quote_identifier(name_col)} AS __admin_name,
                ST_AsWKB(b.{quote_identifier(admin_geom_col)}) AS __admin_geom
         FROM (
-            SELECT *, ST_Centroid({input_geom_expr}) AS __cen
-            FROM read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)
+            SELECT *{exclude_sql}, {input_pt_expr} AS __cen
+            FROM {aggregate_source_relation(input_url)}
+            {where_sql_fragment(where)}
         ) s
         LEFT JOIN {admin_ref} b
           ON {bbox_filter}ST_Intersects(b.{quote_identifier(admin_geom_col)}, s.__cen)
     """
 
 
-def _build_agg_sql(joined_sql: str, metrics, breakdown_select: str) -> str:
+def _build_agg_sql(
+    joined_sql: str,
+    metrics: list[MetricSpec],
+    breakdown_select: str,
+    nodata_values: list[str] | None = None,
+    column_types: dict[str, str] | None = None,
+) -> str:
     """Build the GROUP BY aggregation on top of the spatial join."""
     agg_parts = [
         "COALESCE(__admin_code, 'unassigned') AS admin_code",
@@ -97,7 +131,9 @@ def _build_agg_sql(joined_sql: str, metrics, breakdown_select: str) -> str:
         "ANY_VALUE(__admin_geom) AS __admin_geom",
         "COUNT(*) AS count",
     ]
-    metric_select = build_metric_select(metrics)
+    metric_select = build_metric_select(
+        metrics, nodata_values=nodata_values, column_types=column_types
+    )
     if metric_select:
         agg_parts.append(metric_select)
     if breakdown_select:
@@ -138,6 +174,10 @@ def aggregate_by_admin(
     geoparquet_version: str | None = None,
     verbose: bool = False,
     show_sql: bool = False,
+    where: str | None = None,
+    metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> None:
     """Aggregate input features by administrative region.
 
@@ -160,6 +200,14 @@ def aggregate_by_admin(
         geoparquet_version: GeoParquet spec version to write.
         verbose: Enable verbose debug logging.
         show_sql: Log the final SQL query.
+        where: DuckDB WHERE clause filtering input rows before aggregation.
+        metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns.
+        bucket_point: Where the per-feature join point comes from: ``geometry``
+            (centroid, default), ``bbox`` (center of a bbox covering column,
+            skips reading the geometry column), or the name of an existing
+            point column.
+        bbox_column: Bbox covering column for ``bucket_point='bbox'``
+            (auto-detected when omitted).
     """
     configure_verbose(verbose)
     if out_geometry not in VALID_OUT_GEOMETRY:
@@ -167,7 +215,14 @@ def aggregate_by_admin(
             "out_geometry",
             f"Invalid value '{out_geometry}'. Valid: {', '.join(sorted(VALID_OUT_GEOMETRY))}",
         )
-    metrics = parse_metrics(metric)
+    if where:
+        validate_where_clause(where)
+    metrics, nodata_values = validate_metric_nodata(metric, metric_nodata)
+    _validate_bucket_point_args(bucket_point, bbox_column)
+    if bucket_point == "bbox":
+        bbox_column = _resolve_bbox_column_for_file(input_parquet, bbox_column, verbose)
+    # Fail on a bad keying column before the (possibly network-bound) dataset setup.
+    _validate_keying_columns_for_file(input_parquet, bucket_point, bbox_column, verbose)
 
     admin_dataset, _boundary_columns = _setup_admin_dataset(dataset, verbose, [level])
     mapping = admin_dataset.get_level_column_mapping()
@@ -188,23 +243,42 @@ def aggregate_by_admin(
         con.execute("SET geometry_always_xy = true")
         admin_dataset.configure_s3(con)
 
+        read_rel = aggregate_source_relation(input_url)
+        if metrics or breakdown:
+            # Clear error (not a DuckDB binder error) for missing metric/breakdown
+            # columns -- especially `--metric count`, a no-op request since count
+            # is always emitted. Checked before _get_admin_ref so a typo fails now
+            # rather than after downloading the admin boundary cache, and before
+            # the type resolution below so a missing column reports as missing.
+            cols = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {read_rel}").fetchall()}
+            validate_agg_columns(cols, metrics, breakdown)
+
         admin_ref = _get_admin_ref(admin_dataset, con, level)
 
-        read_rel = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+        # Resolve metric column types from the input so sentinel literals match the
+        # column's actual precision (REAL vs DOUBLE, #613) and non-numeric metric
+        # columns fail up-front instead of mid-query.
+        column_types = (
+            resolve_metric_column_types(con, f"SELECT * FROM {read_rel}", metrics)
+            if nodata_values
+            else None
+        )
         # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input so ST_Intersects
-        # does not fail on a CRS mismatch and the centroid lands correctly (#525).
+        # does not fail on a CRS mismatch and the join point lands correctly (#525).
         source_crs = extract_crs_from_parquet(input_parquet, verbose)
-        input_geom_expr = crs_transform_sql_expr(
-            geometry_to_geom_expr(con, read_rel, geom_col), source_crs
+        input_pt_expr, exclude_cols = bucket_point_expr(
+            con, read_rel, geom_col, source_crs, bucket_point, bbox_column
         )
         joined_sql = _build_joined_sql(
             input_url,
-            input_geom_expr,
+            input_pt_expr,
             admin_ref,
             code_col,
             name_col,
             admin_geom_col,
             admin_bbox_col,
+            where=where,
+            exclude_sql=build_exclude_clause(con, read_rel, exclude_cols),
         )
 
         # When a breakdown is requested, materialize the spatial join once so that
@@ -219,9 +293,11 @@ def aggregate_by_admin(
             )
             colmap = build_breakdown_column_names(top_values, reserved={"count_other"})
             breakdown_select = build_breakdown_select(breakdown, colmap, has_other)
-            agg_sql = _build_agg_sql(joined_ref, metrics, breakdown_select)
+            agg_sql = _build_agg_sql(
+                joined_ref, metrics, breakdown_select, nodata_values, column_types
+            )
         else:
-            agg_sql = _build_agg_sql(joined_sql, metrics, "")
+            agg_sql = _build_agg_sql(joined_sql, metrics, "", nodata_values, column_types)
         final_sql = _wrap_admin_geometry(agg_sql, out_geometry)
 
         if show_sql or verbose:

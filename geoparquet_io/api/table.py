@@ -1380,6 +1380,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into A5 grid cells with per-cell statistics.
@@ -1390,6 +1394,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Keying point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per A5 cell
@@ -1404,6 +1413,10 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1414,6 +1427,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into H3 grid cells with per-cell statistics.
@@ -1424,6 +1441,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Keying point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per H3 cell
@@ -1438,6 +1460,10 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
 
@@ -1448,6 +1474,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into administrative regions with per-region statistics.
@@ -1458,6 +1488,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Join-point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per admin region
@@ -1471,8 +1506,42 @@ class Table:
             breakdown=breakdown,
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
         return Table(result, "geometry" if out_geometry != "none" else None)
+
+    def overview(
+        self,
+        level: int | str,
+        cell_column: str | None = None,
+        scheme: str | None = None,
+    ) -> Table:
+        """
+        Roll an aggregate table up to a coarser overview level.
+
+        The table must be a `process aggregate` output (carrying an
+        ``a5_cell``/``h3_cell``/``admin_code`` column plus ``count``). Counts,
+        sums, mins, maxes, and breakdown counts roll up exactly; averages are
+        count-weighted (exact when the metric had no NULLs).
+
+        Args:
+            level: Target level -- a coarser grid resolution, or ``"country"``
+                for a region-level admin aggregate
+            cell_column: Cell id column when auto-detection fails
+            scheme: Bucketing scheme (``a5``/``h3``/``admin``) when inference
+                is ambiguous, e.g. H3 ids stored as integers
+
+        Returns:
+            New Table with one row per parent cell
+        """
+        from geoparquet_io.core.process.overview import rollup_table
+
+        result = rollup_table(self._table, level, cell_column=cell_column, scheme=scheme)
+        has_geometry = "geometry" in result.column_names
+        return Table(result, "geometry" if has_geometry else None)
 
     def add_s2(
         self,

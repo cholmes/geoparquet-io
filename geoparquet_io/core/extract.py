@@ -11,7 +11,6 @@ Also supports Arrow IPC streaming for Unix-style piping:
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -24,15 +23,16 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import get_crs_display_name
 from geoparquet_io.core.duckdb_utils import (
+    DANGEROUS_SQL_KEYWORDS,  # noqa: F401 - re-exported for backwards compatibility
     _escape_sql_string,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
+    validate_where_clause,
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     GeoParquetError,
     InvalidParameterError,
-    ValidationError,
 )
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import (
@@ -60,61 +60,6 @@ def get_parquet_row_count(parquet_file: str) -> int:
     from geoparquet_io.core.duckdb_metadata import get_row_count
 
     return get_row_count(parquet_file)
-
-
-# SQL keywords that could be dangerous in a WHERE clause
-# These could modify data or database structure
-DANGEROUS_SQL_KEYWORDS = [
-    "DROP",
-    "DELETE",
-    "INSERT",
-    "UPDATE",
-    "CREATE",
-    "ALTER",
-    "TRUNCATE",
-    "EXEC",
-    "EXECUTE",
-    "MERGE",
-    "REPLACE",
-    "GRANT",
-    "REVOKE",
-]
-
-
-def validate_where_clause(where_clause: str) -> None:
-    """
-    Validate WHERE clause for potentially dangerous SQL keywords.
-
-    This is a basic safety check to prevent accidental or intentional
-    SQL injection attacks. It checks for keywords that could modify
-    data or database structure.
-
-    Note: This feature is intended for trusted users. For untrusted input,
-    additional validation or parameterized queries would be required.
-
-    Args:
-        where_clause: The WHERE clause string to validate
-
-    Raises:
-        ValidationError: If dangerous SQL keywords are found
-    """
-    # Build pattern to match dangerous keywords as whole words (case-insensitive)
-    # Use word boundaries to avoid false positives (e.g., "UPDATED_AT" shouldn't match)
-    upper_clause = where_clause.upper()
-    found_keywords = []
-
-    for keyword in DANGEROUS_SQL_KEYWORDS:
-        # Match keyword as a whole word
-        pattern = rf"\b{keyword}\b"
-        if re.search(pattern, upper_clause):
-            found_keywords.append(keyword)
-
-    if found_keywords:
-        raise ValidationError(
-            f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
-            "Only SELECT-style filtering expressions are allowed in --where. "
-            "If you need to perform data modifications, use DuckDB directly."
-        )
 
 
 def looks_like_latlong_bbox(bbox: tuple[float, float, float, float]) -> bool:

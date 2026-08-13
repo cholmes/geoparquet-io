@@ -1789,6 +1789,15 @@ gpio extract data.parquet output.parquet --where "population > 1000; DROP TABLE 
 # Error: WHERE clause contains potentially dangerous SQL keywords: DROP
 ```
 
+A `;` statement separator is rejected on its own, even when no blocked keyword follows it, because DuckDB executes multi-statement strings:
+
+```bash
+gpio extract data.parquet output.parquet --where "1=1; COPY (SELECT 42) TO 'x.csv'"
+# Error: WHERE clause contains a ';' statement separator outside a quoted string
+```
+
+Semicolons inside string literals or quoted identifiers are fine (`--where "name = 'a;b'"`).
+
 ## Large File Handling
 
 gpio efficiently handles larger-than-memory files using streaming write strategies. The default strategy uses constant memory regardless of file size.
