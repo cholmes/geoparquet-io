@@ -34,7 +34,7 @@ dependencies = [
     # (INSTALL ... FROM community returns HTTP 404). Cap below 1.5.2 so S2 keeps
     # working; raise the cap once 'geography' is republished for a newer DuckDB.
     # (gpio still errors clearly via ExtensionUnavailableError if it is missing.)
-    "duckdb>=1.5.0,<1.5.2",
+    "duckdb>=1.5.0,<1.5.6",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
     "rich>=13.0.0",
