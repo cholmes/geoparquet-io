@@ -486,14 +486,24 @@ class Table:
         self._auto_version_hint: str | None = None
         self._crs_hint: dict | str | None = crs
 
-    def _wrap(self, table: pa.Table, geometry_column: str | None) -> Table:
+    _KEEP_CRS_HINT = object()
+
+    def _wrap(
+        self,
+        table: pa.Table,
+        geometry_column: str | None,
+        crs: dict | str | None | object = _KEEP_CRS_HINT,
+    ) -> Table:
         """Build a derived Table, carrying the read-time hints forward.
 
         Chained operations (add_bbox, sort_hilbert, ...) produce new Arrow
         tables that still contain no embedded CRS, so the CRS hint (and the
-        auto-version hint) must survive the chain to reach write().
+        auto-version hint) must survive the chain to reach write(). An
+        operation that changes the CRS (reproject) passes ``crs=`` explicitly
+        so the hint never mislabels transformed coordinates.
         """
-        derived = Table(table, geometry_column=geometry_column, crs=self._crs_hint)
+        hint = self._crs_hint if crs is Table._KEEP_CRS_HINT else crs
+        derived = Table(table, geometry_column=geometry_column, crs=hint)
         derived._auto_version_hint = self._auto_version_hint
         return derived
 
@@ -1737,7 +1747,9 @@ class Table:
             geometry_column=self._geometry_column,
             assume_crs84=assume_crs84,
         )
-        return self._wrap(result, self._geometry_column)
+        # The source-CRS hint would mislabel transformed coordinates; the
+        # reprojected table's CRS is target_crs by construction.
+        return self._wrap(result, self._geometry_column, crs=target_crs)
 
     def partition_by_quadkey(
         self,
@@ -2029,7 +2041,7 @@ class Table:
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         n = min(n, self.num_rows)
-        return Table(self._table.slice(0, n), self._geometry_column)
+        return self._wrap(self._table.slice(0, n), self._geometry_column)
 
     def tail(self, n: int = 10) -> Table:
         """
@@ -2053,7 +2065,7 @@ class Table:
             raise ValueError(f"n must be non-negative, got {n}")
         n = min(n, self.num_rows)
         offset = max(0, self.num_rows - n)
-        return Table(self._table.slice(offset, n), self._geometry_column)
+        return self._wrap(self._table.slice(offset, n), self._geometry_column)
 
     def stats(self) -> dict:
         """
@@ -2771,7 +2783,7 @@ class Table:
         schema_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
         new_table = self._table.replace_schema_metadata(schema_metadata)
 
-        return Table(new_table, self._geometry_column)
+        return self._wrap(new_table, self._geometry_column)
 
     def partition_by_string(
         self,

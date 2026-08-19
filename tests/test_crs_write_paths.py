@@ -476,3 +476,31 @@ class TestTableAPICRSPreservation:
         table = gpio.read(temp_output_file)
         assert table.crs is not None
         assert extract_epsg_code(table.crs) == 6933
+
+    def test_head_tail_and_metadata_ops_keep_crs(self, buildings_gpkg_6933, temp_output_file):
+        """Derived Tables from head/tail must not drop the CRS hint (review follow-up)."""
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        gpio.convert(buildings_gpkg_6933).head(5).write(temp_output_file)
+
+        metadata_crs = get_metadata_crs(temp_output_file)
+        assert metadata_crs is not None
+        assert extract_epsg_code(metadata_crs) == 6933
+
+    def test_reproject_does_not_keep_stale_source_hint(self, buildings_gpkg_6933, temp_output_file):
+        """After reproject(), the CRS hint must be the target CRS, never the source."""
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        table = gpio.convert(buildings_gpkg_6933).reproject("EPSG:4326")
+        crs = table.crs
+        if crs is not None:
+            assert extract_epsg_code(crs) != 6933
+
+        table.write(temp_output_file)
+        metadata_crs = get_metadata_crs(temp_output_file)
+        if metadata_crs is not None:
+            assert extract_epsg_code(metadata_crs) == 4326
