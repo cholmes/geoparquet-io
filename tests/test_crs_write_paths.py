@@ -527,7 +527,7 @@ class TestTableAPICRSPreservation:
         monkeypatch.setattr(agg_a5_mod, "aggregate_a5_table", passthrough)
         monkeypatch.setattr(agg_h3_mod, "aggregate_h3_table", passthrough)
         monkeypatch.setattr(ops_mod, "aggregate_admin", passthrough)
-        monkeypatch.setattr(Table, "_with_temp_io_files", lambda self, fn, **kw: source._table)
+        monkeypatch.setattr(Table, "_with_temp_io_files", lambda self, fn, **_kw: source._table)
 
         derived = {
             "add_a5": source.add_a5(),
