@@ -1327,7 +1327,78 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
         FROM {table_expr}
     """
 
-    result = con.execute(query)
+    try:
+        result = con.execute(query)
+        return result.arrow().read_all()
+    except duckdb.Error as e:
+        # Curved geometries (CIRCULARSTRING..MULTISURFACE) cannot pass through
+        # DuckDB's GEOMETRY type; linearize them at the WKB boundary instead
+        # (issue #643). Only the spatial-file path can take this road: parquet
+        # inputs have no keep_wkb escape hatch.
+        if is_parquet or "Unsupported geometry type in WKB" not in str(e):
+            raise
+        if verbose:
+            debug("Curved geometries detected; linearizing via keep_wkb read")
+        return _read_spatial_linearized(con, input_url, layer, geom_column)
+
+
+def _read_spatial_linearized(con, input_url, layer, geom_column):
+    """Read a spatial file whose WKB contains curved types, stroking them.
+
+    ``ST_Read(keep_wkb := true)`` hands back the raw WKB blobs untouched (the
+    escape hatch DuckDB documents for geometry subtypes it cannot represent);
+    each curved blob is stroked into its linear equivalent in Python and the
+    result is validated by round-tripping through ``ST_GeomFromWKB`` so the
+    returned table is indistinguishable from the normal read path.
+    """
+    from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+    from geoparquet_io.core.linearize import LinearizeError, linearize_wkb
+
+    opts = f", layer := '{layer}'" if layer else ""
+    raw = (
+        con.execute(f"SELECT * FROM ST_Read('{input_url}', keep_wkb := true{opts})")
+        .arrow()
+        .read_all()
+    )
+
+    wkb_col = geom_column if geom_column in raw.column_names else "wkb_geometry"
+    if wkb_col not in raw.column_names:
+        raise GeoParquetError(f"keep_wkb read of {input_url} exposes no '{geom_column}' column")
+
+    import pyarrow as pa
+
+    changed = 0
+    values = []
+    for value in raw.column(wkb_col).to_pylist():
+        if value is None:
+            values.append(None)
+            continue
+        try:
+            linear, did_change = linearize_wkb(value)
+        except LinearizeError as e:
+            # e.g. the surface family (POLYHEDRALSURFACE/TIN/TRIANGLE) or
+            # malformed blobs: fall back to the actionable error (#643).
+            raise GeoParquetError(unsupported_wkb_error_message(input_url, layer, str(e))) from e
+        changed += did_change
+        values.append(linear)
+    idx = raw.column_names.index(wkb_col)
+    raw = raw.set_column(idx, wkb_col, pa.array(values, type=pa.binary()))
+    if changed:
+        warn(
+            f"Linearized {changed} curved geometr{'y' if changed == 1 else 'ies'} "
+            f"(arcs stroked at <= {4.0} degrees per segment); GeoParquet cannot "
+            "represent curves."
+        )
+
+    # Round-trip through DuckDB: validates the stroked WKB and yields the same
+    # WKB-encoded `geometry` column shape as the normal read path.
+    con.register("_gpio_linearized_src", raw)
+    quoted_wkb = quote_identifier(wkb_col)
+    result = con.execute(
+        f"SELECT * EXCLUDE ({quoted_wkb}), "
+        f"ST_AsWKB(ST_GeomFromWKB({quoted_wkb})) AS geometry "
+        f"FROM _gpio_linearized_src"
+    )
     return result.arrow().read_all()
 
 

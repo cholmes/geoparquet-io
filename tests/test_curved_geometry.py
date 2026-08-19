@@ -69,8 +69,18 @@ class TestScanBounds:
 
 
 class TestUnsupportedWkbError:
-    def test_convert_raises_actionable_error(self):
+    def test_unlinearizable_input_raises_actionable_error(self, monkeypatch):
+        """When linearization cannot handle the WKB (e.g. the surface family),
+        the error still names the offending types and the remedy."""
         import geoparquet_io as gpio
+        from geoparquet_io.core.linearize import LinearizeError
+
+        def _fail(wkb, max_angle_deg=4.0):
+            raise LinearizeError("WKB type 16 cannot be linearized")
+
+        import geoparquet_io.core.linearize as linearize_mod
+
+        monkeypatch.setattr(linearize_mod, "linearize_wkb", _fail)
 
         with pytest.raises(GeoParquetError) as exc:
             gpio.convert(str(CURVED_GPKG))
