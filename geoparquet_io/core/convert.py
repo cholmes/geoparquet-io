@@ -1228,9 +1228,7 @@ def read_spatial_to_arrow(
         if "Unsupported geometry type in WKB" in str(e):
             from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
 
-            raise GeoParquetError(
-                unsupported_wkb_error_message(input_file, layer, str(e))
-            ) from e
+            raise GeoParquetError(unsupported_wkb_error_message(input_file, layer, str(e))) from e
         raise GeoParquetError(f"Reading failed: {str(e)}") from e
 
     finally:
