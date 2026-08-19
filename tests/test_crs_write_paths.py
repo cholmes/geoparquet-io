@@ -424,3 +424,55 @@ class TestCRSPROJJSONFormat:
         # Should be dict (PROJJSON format)
         assert isinstance(schema_crs, dict), "schema CRS should be PROJJSON dict"
         assert "id" in schema_crs, "schema CRS missing 'id' key"
+
+
+class TestTableAPICRSPreservation:
+    """The fluent Table API must not drop the source CRS (issue #625).
+
+    gpio.convert() detected the CRS but discarded it, so written GeoParquet
+    silently claimed OGC:CRS84 for projected data — while the function API
+    (convert_to_geoparquet) preserved it.
+    """
+
+    def test_convert_write_preserves_crs(self, buildings_gpkg_6933, temp_output_file):
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        gpio.convert(buildings_gpkg_6933).write(temp_output_file)
+
+        metadata_crs = get_metadata_crs(temp_output_file)
+        assert metadata_crs is not None
+        assert extract_epsg_code(metadata_crs) == 6933
+
+    def test_chained_ops_preserve_crs(self, buildings_gpkg_6933, temp_output_file):
+        """The hint must survive derived Tables (the portolan-cli path)."""
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        gpio.convert(buildings_gpkg_6933).add_bbox().sort_hilbert().write(temp_output_file)
+
+        metadata_crs = get_metadata_crs(temp_output_file)
+        assert metadata_crs is not None
+        assert extract_epsg_code(metadata_crs) == 6933
+
+    def test_crs_property_reports_detected_crs(self, buildings_gpkg_6933):
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        table = gpio.convert(buildings_gpkg_6933)
+        assert table.crs is not None
+        assert table.add_bbox().crs is not None
+
+    def test_embedded_crs_wins_over_hint(self, buildings_gpkg_6933, temp_output_file):
+        """A Table read back from parquet uses the embedded CRS, not a hint."""
+        if not os.path.exists(buildings_gpkg_6933):
+            pytest.skip("buildings_test_6933.gpkg not available")
+        import geoparquet_io as gpio
+
+        gpio.convert(buildings_gpkg_6933).write(temp_output_file)
+        table = gpio.read(temp_output_file)
+        assert table.crs is not None
+        assert extract_epsg_code(table.crs) == 6933

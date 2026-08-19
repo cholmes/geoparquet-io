@@ -333,7 +333,7 @@ def convert(
         repair_geometry=repair_geometry,
     )
 
-    return Table(arrow_table, geometry_column=geom_col)
+    return Table(arrow_table, geometry_column=geom_col, crs=detected_crs)
 
 
 def extract_arcgis(
@@ -459,13 +459,23 @@ class Table:
         >>> result.write('output.parquet')
     """
 
-    def __init__(self, table: pa.Table, geometry_column: str | None = None):
+    def __init__(
+        self,
+        table: pa.Table,
+        geometry_column: str | None = None,
+        crs: dict | str | None = None,
+    ):
         """
         Create a Table wrapper.
 
         Args:
             table: PyArrow Table containing GeoParquet data
             geometry_column: Name of geometry column (auto-detected if None)
+            crs: CRS detected at read time (PROJJSON dict or string), used as a
+                fallback when the Arrow table itself carries no CRS. Spatial
+                sources read through DuckDB arrive as bare WKB with no embedded
+                CRS, so without this hint the written GeoParquet silently
+                claimed OGC:CRS84 for projected data (issue #625).
         """
         self._table = table
         self._geometry_column = geometry_column or self._detect_geometry_column()
@@ -474,6 +484,18 @@ class Table:
         # registered, so the table alone can't always tell a native-geo-only
         # source from generic WKB. None when the table wasn't read from a file.
         self._auto_version_hint: str | None = None
+        self._crs_hint: dict | str | None = crs
+
+    def _wrap(self, table: pa.Table, geometry_column: str | None) -> Table:
+        """Build a derived Table, carrying the read-time hints forward.
+
+        Chained operations (add_bbox, sort_hilbert, ...) produce new Arrow
+        tables that still contain no embedded CRS, so the CRS hint (and the
+        auto-version hint) must survive the chain to reach write().
+        """
+        derived = Table(table, geometry_column=geometry_column, crs=self._crs_hint)
+        derived._auto_version_hint = self._auto_version_hint
+        return derived
 
     def _detect_geometry_column(self) -> str | None:
         """Detect geometry column from metadata or common names."""
@@ -710,7 +732,10 @@ class Table:
         """
         from geoparquet_io.core.streaming import extract_crs_from_table
 
-        return extract_crs_from_table(self._table, self._geometry_column)
+        embedded = extract_crs_from_table(self._table, self._geometry_column)
+        if embedded is not None:
+            return embedded
+        return self._crs_hint
 
     @property
     def bounds(self) -> tuple[float, float, float, float] | None:
@@ -1243,7 +1268,7 @@ class Table:
             bbox_column_name=column_name,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_quadkey(
         self,
@@ -1271,7 +1296,7 @@ class Table:
             use_centroid=use_centroid,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_hilbert(self) -> Table:
         """
@@ -1286,7 +1311,7 @@ class Table:
             self._table,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def extract(
         self,
@@ -1323,7 +1348,7 @@ class Table:
             geometry_column=self._geometry_column,
             repair_geometry=repair_geometry,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_h3(
         self,
@@ -1347,7 +1372,7 @@ class Table:
             h3_column_name=column_name,
             resolution=resolution,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_a5(
         self,
@@ -1371,7 +1396,7 @@ class Table:
             a5_column_name=column_name,
             resolution=resolution,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def aggregate_a5(
         self,
@@ -1418,7 +1443,7 @@ class Table:
             bucket_point=bucket_point,
             bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
 
     def aggregate_h3(
         self,
@@ -1465,7 +1490,7 @@ class Table:
             bucket_point=bucket_point,
             bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
 
     def aggregate_admin(
         self,
@@ -1511,7 +1536,7 @@ class Table:
             bucket_point=bucket_point,
             bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
 
     def overview(
         self,
@@ -1541,7 +1566,7 @@ class Table:
 
         result = rollup_table(self._table, level, cell_column=cell_column, scheme=scheme)
         has_geometry = "geometry" in result.column_names
-        return Table(result, "geometry" if has_geometry else None)
+        return self._wrap(result, "geometry" if has_geometry else None)
 
     def add_s2(
         self,
@@ -1572,7 +1597,7 @@ class Table:
             s2_column_name=column_name,
             level=level,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_geometry_metrics(
         self,
@@ -1600,7 +1625,7 @@ class Table:
             add_geometry_metrics,
             vecorel=vecorel,
         )
-        return Table(result_table, self._geometry_column)
+        return self._wrap(result_table, self._geometry_column)
 
     def add_kdtree(
         self,
@@ -1627,7 +1652,7 @@ class Table:
             iterations=iterations,
             sample_size=sample_size,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_column(
         self,
@@ -1651,7 +1676,7 @@ class Table:
             columns=column_name,
             descending=descending,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_quadkey(
         self,
@@ -1683,7 +1708,7 @@ class Table:
             use_centroid=use_centroid,
             remove_quadkey_column=remove_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def reproject(
         self,
@@ -1712,7 +1737,7 @@ class Table:
             geometry_column=self._geometry_column,
             assume_crs84=assume_crs84,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def partition_by_quadkey(
         self,
@@ -2670,7 +2695,7 @@ class Table:
             vecorel=vecorel,
             verbose=False,
         )
-        return Table(result_table, self._geometry_column)
+        return self._wrap(result_table, self._geometry_column)
 
     def add_bbox_metadata(self, bbox_column: str = "bbox") -> Table:
         """
