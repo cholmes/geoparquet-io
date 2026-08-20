@@ -437,9 +437,15 @@ full circle). Earlier gpio versions failed on curved input — opt out with
     gpio.convert("curved.gpkg", linearize_curves=False)
     ```
 
-Linear geometries pass through untouched, and NULL is preserved. The surface
-family (PolyhedralSurface, TIN, Triangle) is not linearized and still raises
-an error.
+Linear geometries pass through untouched, NULL is preserved, and empty curves
+become their empty linear counterpart. The surface family (PolyhedralSurface,
+TIN, Triangle) is not linearized and still raises an error.
+
+Curved input is spotted either by a header scan of local GeoPackages or on the
+first pass that parses geometry. `--skip-hilbert` removes that pass, so a
+curved source which is not a local `.gpkg` (FileGDB, a GeoPackage on S3) still
+errors under `--skip-hilbert` — drop the flag, or linearize with `ogr2ogr`
+first.
 
 ### Skip Hilbert Ordering
 

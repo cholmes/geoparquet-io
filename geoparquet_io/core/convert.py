@@ -1015,6 +1015,55 @@ def _convert_csv_path(
     return query
 
 
+def _bounds_with_curve_fallback(
+    con,
+    input_file,
+    geom_column,
+    verbose,
+    *,
+    is_parquet,
+    encoding,
+    table_expr,
+    layer,
+    linearize_curves,
+    max_angle_deg,
+):
+    """Dataset bounds, linearizing curved sources the pre-scan cannot see.
+
+    The GPKG pre-scan only covers local ``*.gpkg`` files, so other curved
+    sources (FileGDB, a GeoPackage on S3) first reveal themselves here — the
+    bounds pass is what parses every geometry. Falling back to the linearized
+    view keeps ``gpio convert`` in step with the Python API instead of
+    surfacing DuckDB's bare "Unsupported geometry type in WKB" (issue #643).
+
+    Returns:
+        tuple: (bounds, table_expr) — table_expr is the linearized view when
+        the fallback fired, otherwise the caller's value unchanged.
+    """
+    kwargs = {"is_parquet": is_parquet, "encoding": encoding}
+    try:
+        bounds = _calculate_bounds(
+            con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
+        )
+        return bounds, table_expr
+    except duckdb.Error as e:
+        already_linearized = table_expr is not None
+        if (
+            is_parquet
+            or already_linearized
+            or not linearize_curves
+            or "Unsupported geometry type in WKB" not in str(e)
+        ):
+            raise
+        if verbose:
+            debug("Curved geometries detected while measuring bounds; linearizing")
+        table_expr = _register_linearized_view(con, input_file, layer, geom_column, max_angle_deg)
+        bounds = _calculate_bounds(
+            con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
+        )
+        return bounds, table_expr
+
+
 def _convert_spatial_path(
     con,
     input_file,
@@ -1095,10 +1144,9 @@ def _convert_spatial_path(
                     debug(f"Preserving existing bbox column: {existing_bbox_col}")
 
     geom_encoding = geom_info["metadata"].get(geom_column, {}).get("encoding", "WKB")
-    bounds = (
-        None
-        if skip_hilbert
-        else _calculate_bounds(
+    bounds = None
+    if not skip_hilbert:
+        bounds, table_expr = _bounds_with_curve_fallback(
             con,
             input_file,
             geom_column,
@@ -1106,8 +1154,10 @@ def _convert_spatial_path(
             is_parquet=is_parquet,
             encoding=geom_encoding,
             table_expr=table_expr,
+            layer=layer,
+            linearize_curves=linearize_curves,
+            max_angle_deg=max_angle_deg,
         )
-    )
 
     if verbose:
         if secondary_columns:
@@ -1857,6 +1907,13 @@ def convert_to_geoparquet(
 
     except Exception as e:
         con.close()
+        if "Unsupported geometry type in WKB" in str(e):
+            # Reached when nothing parsed the geometry early enough to linearize
+            # it (e.g. --skip-hilbert skips the bounds pass): at least name the
+            # offending types and the remedy instead of DuckDB's raw error.
+            from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+
+            raise GeoParquetError(unsupported_wkb_error_message(input_file, layer, str(e))) from e
         raise GeoParquetError(f"Conversion failed: {str(e)}") from e
 
     finally:

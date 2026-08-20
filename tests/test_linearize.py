@@ -504,3 +504,117 @@ class TestProjectedCurvedGpkg:
         assert table.num_rows == 1
         assert detected_crs is not None
         assert "25830" in json.dumps(detected_crs)
+
+
+class TestEmptyCurves:
+    """Empty curved geometries must linearize, not abort the file (#647 review).
+
+    A single CIRCULARSTRING EMPTY used to raise LinearizeError, which surfaced
+    as #646's "linearize the source first" error and failed the whole
+    conversion — while `ogr2ogr -nlt CONVERT_TO_LINEAR`, the remedy that error
+    recommends, converts the same file without complaint.
+    """
+
+    def test_empty_circularstring_becomes_empty_linestring(self):
+        out, changed = linearize_wkb(_wkb(8, struct.pack("<I", 0)))
+
+        assert changed
+        code, pts = _parse_linestring(out)
+        assert code == 2 and pts == []
+
+    def test_empty_ring_dropped_from_curvepolygon(self):
+        ring = _wkb(8, struct.pack("<I", 0))
+        out, changed = linearize_wkb(_wkb(10, struct.pack("<I", 1) + ring))
+
+        assert changed
+        code, rings = _parse_polygon(out)
+        assert code == 3 and rings == []
+
+    def test_empty_curve_inside_multicurve(self):
+        empty = _wkb(8, struct.pack("<I", 0))
+        out, changed = linearize_wkb(_wkb(11, struct.pack("<I", 1) + empty))
+
+        assert changed
+        (code,) = struct.unpack_from("<I", out, 1)
+        assert code == 5  # MULTILINESTRING
+        (child_code,) = struct.unpack_from("<I", out, 10)
+        assert child_code == 2  # LINESTRING (empty)
+
+    def test_gpkg_with_empty_curve_row_converts(self, tmp_path):
+        """End-to-end: the empty row no longer takes the whole file down."""
+        import shutil
+        import sqlite3
+
+        import geoparquet_io as gpio
+
+        gpkg = tmp_path / "empty_curve.gpkg"
+        shutil.copy(CURVED_GPKG, gpkg)
+        con = sqlite3.connect(gpkg)
+        # The fixture's rtree triggers call GDAL-only SQL functions, so they
+        # must go before plain sqlite3 can insert a row.
+        for (name,) in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall():
+            con.execute(f'DROP TRIGGER "{name}"')
+        header = b"GP\x00\x01" + struct.pack("<i", 0)
+        con.execute(
+            "INSERT INTO curve (geom, wkt, id) VALUES (?, ?, ?)",
+            (header + _wkb(8, struct.pack("<I", 0)), "CIRCULARSTRING EMPTY", "empty"),
+        )
+        con.commit()
+        con.close()
+
+        table = gpio.convert(str(gpkg))
+
+        assert table.num_rows == 2
+
+
+class TestCliCurveParityWithoutPrescan:
+    """`gpio convert` must not fall back to DuckDB's bare error (#647 review).
+
+    The GPKG pre-scan only fires for local files named *.gpkg, so sources it
+    cannot scan (FileGDB, remote GeoPackages) used to surface
+    "Invalid Input Error: Unsupported geometry type in WKB" from the CLI even
+    though the API path linearized them.
+    """
+
+    def _unscannable_copy(self, tmp_path):
+        import shutil
+
+        target = tmp_path / "curved.db"  # not *.gpkg: no pre-scan
+        shutil.copy(CURVED_GPKG, target)
+        return target
+
+    def test_cli_linearizes_source_the_prescan_cannot_see(self, tmp_path):
+        import duckdb
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = tmp_path / "out.parquet"
+        result = CliRunner().invoke(
+            cli, ["convert", str(self._unscannable_copy(tmp_path)), str(out)]
+        )
+
+        assert result.exit_code == 0, result.output
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        area = con.execute(f"SELECT ST_Area(geom) FROM '{out}'").fetchone()[0]
+        assert area == pytest.approx(math.pi, rel=0.005)
+
+    def test_cli_error_names_the_remedy_when_it_cannot_linearize(self, tmp_path):
+        """--skip-hilbert skips the pass that linearizes, so the conversion still
+        fails — but with the actionable message, not DuckDB's raw one."""
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = tmp_path / "out.parquet"
+        result = CliRunner().invoke(
+            cli,
+            ["convert", str(self._unscannable_copy(tmp_path)), str(out), "--skip-hilbert"],
+        )
+
+        assert result.exit_code != 0
+        assert "CONVERT_TO_LINEAR" in result.output
+        assert "Unsupported geometry type in WKB" not in result.output.split("Original error")[0]

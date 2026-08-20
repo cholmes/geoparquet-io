@@ -95,3 +95,17 @@ class TestUnsupportedWkbError:
         assert "non-linear geometries" in message
         assert "CONVERT_TO_LINEAR" in message
         assert "Unsupported geometry type in WKB" in message
+
+    def test_envelope_and_large_payload_still_classified(self, tmp_path):
+        """The header slice must cover the largest GPKG envelope (XYZM, 64 B).
+
+        The scan reads only the leading header bytes rather than whole blobs, so
+        a geometry carrying a full envelope and a megabyte of coordinates must
+        still be classified from the slice alone.
+        """
+        flags = 4 << 1  # envelope indicator 4 -> 64-byte XYZM envelope
+        header = b"GP\x00" + bytes([flags]) + struct.pack("<i", 0) + b"\x00" * 64
+        blob = header + b"\x01" + struct.pack("<I", 10) + b"\x00" * 1_000_000
+        gpkg = tmp_path / "enveloped.gpkg"
+        _make_fake_gpkg(gpkg, "t", [blob])
+        assert find_non_linear_gpkg_types(gpkg) == ["CURVEPOLYGON"]

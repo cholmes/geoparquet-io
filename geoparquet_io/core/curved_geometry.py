@@ -41,6 +41,12 @@ LINEARIZE_HINT = (
 # whose size depends on bits 1-3 of the flags byte, then ISO WKB.
 _ENVELOPE_SIZES = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}
 
+#: Bytes of each geometry blob the scan needs: GPKG header, the largest
+#: possible envelope, and the leading WKB byte-order + type code. Slicing in
+#: SQL keeps the scan off the coordinate payload, which is the bulk of a
+#: geometry (a 100k-row scan reads ~8 MB instead of the whole column).
+_HEADER_BYTES = 8 + 64 + 5
+
 #: Rows scanned per feature table. Bounds the wait on multi-million-feature
 #: GeoPackages; a curve beyond the cap only means a less specific message.
 _SCAN_CAP = 100_000
@@ -50,7 +56,8 @@ def find_non_linear_gpkg_types(path: str | Path, layer: str | None = None) -> li
     """Names of non-linear geometry types present in a GeoPackage.
 
     Scans the geometry blob headers of every feature table (or just ``layer``)
-    with the standard library only, capped at ``_SCAN_CAP`` rows per table.
+    with the standard library only, reading just ``_HEADER_BYTES`` per row and
+    capped at ``_SCAN_CAP`` rows per table.
     Returns a sorted list of type names, empty when all scanned geometries are
     linear, and empty on any read problem — this is a diagnostic helper, never
     a gate.
@@ -70,7 +77,8 @@ def find_non_linear_gpkg_types(path: str | Path, layer: str | None = None) -> li
                 qtable = table.replace('"', '""')
                 qcol = col.replace('"', '""')
                 for (blob,) in con.execute(
-                    f'SELECT "{qcol}" FROM "{qtable}" WHERE "{qcol}" IS NOT NULL LIMIT {_SCAN_CAP}'
+                    f'SELECT substr("{qcol}", 1, {_HEADER_BYTES}) FROM "{qtable}" '
+                    f'WHERE "{qcol}" IS NOT NULL LIMIT {_SCAN_CAP}'
                 ):
                     if not blob or blob[:2] != b"GP" or len(blob) < 8:
                         continue

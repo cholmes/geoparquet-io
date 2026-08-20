@@ -13,7 +13,8 @@ equivalent with the standard library only:
 - MULTICURVE (11)     -> MULTILINESTRING (5)
 - MULTISURFACE (12)   -> MULTIPOLYGON (6)
 
-Linear geometries pass through byte-identical (except inside a
+Empty curved geometries yield their empty linear counterpart rather than an
+error. Linear geometries pass through byte-identical (except inside a
 GEOMETRYCOLLECTION whose children changed, which is reserialized). Arcs are
 sampled at a maximum angular step (default 4 degrees, matching GDAL's
 ``OGR_ARC_STEPSIZE`` default); arc endpoints are emitted exactly, and Z/M
@@ -220,6 +221,8 @@ class _Linearizer:
         raise LinearizeError(f"Unexpected curve component type {base}")
 
     def _stroke_circularstring(self, pts: list[tuple[float, ...]]) -> list[tuple[float, ...]]:
+        if not pts:
+            return []  # CIRCULARSTRING EMPTY -> LINESTRING EMPTY, as OGR does
         if len(pts) < 3 or len(pts) % 2 == 0:
             raise LinearizeError(f"CIRCULARSTRING needs an odd point count >= 3, got {len(pts)}")
         out = [pts[0]]
@@ -286,6 +289,7 @@ class _Linearizer:
             self.changed = True
             n_rings = r.uint32(le)
             rings = [self._curve_to_points(r, has_z, has_m) for _ in range(n_rings)]
+            rings = [ring for ring in rings if ring]  # an empty ring means POLYGON EMPTY
             header(_POLYGON)
             out.extend(struct.pack("<I", len(rings)))
             for ring in rings:
