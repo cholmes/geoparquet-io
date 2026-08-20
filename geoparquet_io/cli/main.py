@@ -21,6 +21,7 @@ from geoparquet_io.cli.decorators import (
     grid_aggregate_options,
     handle_directory_sub_partition,
     handle_geoparquet_errors,
+    linearize_curves_options,
     metric_nodata_option,
     output_format_options,
     overwrite_option,
@@ -1264,6 +1265,7 @@ def convert(ctx):
     help="Allow conversion to plain Parquet when no geometry column is detected (default: error)",
 )
 @repair_geometry_option
+@linearize_curves_options
 @geoparquet_version_option
 @verbose_option
 @output_format_options
@@ -1286,6 +1288,8 @@ def convert_to_geoparquet_cmd(
     csv_max_line_size,
     allow_no_geometry,
     repair_geometry,
+    linearize_curves,
+    max_angle_deg,
     geoparquet_version,
     verbose,
     compression,
@@ -1359,6 +1363,8 @@ def convert_to_geoparquet_cmd(
                 row_group_rows=row_group_size,
                 row_group_size_mb=row_group_mb,
                 repair_geometry=repair_geometry,
+                linearize_curves=linearize_curves,
+                max_angle_deg=max_angle_deg,
             )
         else:
             convert_to_geoparquet(
@@ -1381,6 +1387,8 @@ def convert_to_geoparquet_cmd(
                 profile=aws_profile,
                 geoparquet_version=geoparquet_version,
                 repair_geometry=repair_geometry,
+                linearize_curves=linearize_curves,
+                max_angle_deg=max_angle_deg,
             )
 
 
@@ -1402,6 +1410,8 @@ def _convert_streaming(
     row_group_rows=None,
     row_group_size_mb=None,
     repair_geometry=True,
+    linearize_curves=True,
+    max_angle_deg=None,
 ):
     """Handle streaming output for convert command."""
     import tempfile
@@ -1435,6 +1445,8 @@ def _convert_streaming(
             profile=profile,
             geoparquet_version=geoparquet_version,
             repair_geometry=repair_geometry,
+            linearize_curves=linearize_curves,
+            max_angle_deg=max_angle_deg,
         )
 
         # Read and stream to stdout

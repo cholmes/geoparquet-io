@@ -395,6 +395,58 @@ Only invalid geometry is touched: valid geometry is byte-identical, NULL is
 preserved, and bounding boxes stay correct (`ST_MakeValid` never expands an
 envelope).
 
+### Curved Geometries
+
+GeoParquet cannot represent curved geometry types (CircularString,
+CompoundCurve, CurvePolygon, MultiCurve, MultiSurface — common in GeoPackage
+and FileGDB exports from CAD or ArcGIS), so by default gpio strokes arcs into
+line segments on read, the same operation as `ogr2ogr -nlt CONVERT_TO_LINEAR`
+or PostGIS `ST_CurveToLine`. A warning reports how many features were
+linearized.
+
+Note this **alters the geometry**: arcs become chains of straight segments,
+sampled every 4° of arc by default (GDAL's default; ~0.08% area error on a
+full circle). Earlier gpio versions failed on curved input — opt out with
+`--no-linearize-curves` to keep that strict behavior.
+
+=== "CLI"
+
+    ```bash
+    # Default: linearizes and warns ("Linearized 66 curved geometries ...")
+    gpio convert curved.gpkg output.parquet
+
+    # Denser sampling: 1 degree per segment
+    gpio convert curved.gpkg output.parquet --max-angle-deg 1
+
+    # Opt out: curved input fails with an actionable error
+    gpio convert curved.gpkg output.parquet --no-linearize-curves
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Default: linearizes curved geometries
+    gpio.convert("curved.gpkg").write("output.parquet")
+
+    # Denser sampling: 1 degree per segment
+    gpio.convert("curved.gpkg", max_angle_deg=1.0).write("output.parquet")
+
+    # Opt out: raise on curved input instead
+    gpio.convert("curved.gpkg", linearize_curves=False)
+    ```
+
+Linear geometries pass through untouched, NULL is preserved, and empty curves
+become their empty linear counterpart. The surface family (PolyhedralSurface,
+TIN, Triangle) is not linearized and still raises an error.
+
+Curved input is spotted either by a header scan of local GeoPackages or on the
+first pass that parses geometry. `--skip-hilbert` removes that pass, so a
+curved source which is not a local `.gpkg` (FileGDB, a GeoPackage on S3) still
+errors under `--skip-hilbert` — drop the flag, or linearize with `ogr2ogr`
+first.
+
 ### Skip Hilbert Ordering
 
 For faster conversion when spatial ordering isn't critical:

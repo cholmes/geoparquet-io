@@ -3,6 +3,7 @@
 import gc
 import os
 import time
+from pathlib import Path
 
 import duckdb
 
@@ -74,12 +75,14 @@ def _validate_layer_name(layer: str) -> str:
     return _escape_sql_string(layer)
 
 
-def _build_st_read_expr(input_url: str, layer: str | None = None) -> str:
-    """Build ST_Read expression with optional layer parameter.
+def _build_st_read_expr(input_url: str, layer: str | None = None, keep_wkb: bool = False) -> str:
+    """Build ST_Read expression with optional layer/keep_wkb parameters.
 
     Args:
         input_url: Path or URL to the spatial file
         layer: Optional layer name for multi-layer formats (GeoPackage, FileGDB)
+        keep_wkb: Return raw WKB blobs instead of parsed GEOMETRY (DuckDB's
+            escape hatch for geometry subtypes it cannot represent)
 
     Returns:
         SQL expression for ST_Read
@@ -93,11 +96,37 @@ def _build_st_read_expr(input_url: str, layer: str | None = None) -> str:
         bug. Consider validating layer names against the file's available layers
         before calling this function if user input is involved.
     """
+    # DuckDB uses := for named parameters
+    params = ""
+    if keep_wkb:
+        params += ", keep_wkb := true"
     if layer:
-        safe_layer = _validate_layer_name(layer)
-        # DuckDB uses := for named parameters
-        return f"ST_Read('{input_url}', layer := '{safe_layer}')"
-    return f"ST_Read('{input_url}')"
+        params += f", layer := '{_validate_layer_name(layer)}'"
+    return f"ST_Read('{input_url}'{params})"
+
+
+def _choose_read_strategy(input_url, layer=None, linearize_curves=True):
+    """Pick how to read a spatial file: 'normal', 'linearized', or 'error'.
+
+    Local GeoPackages are pre-scanned for curved geometry types with the
+    stdlib (issue #643) so the strategy is known without provoking a DuckDB
+    error. Formats without a cheap scan return 'normal' and rely on the
+    error-triggered fallback in the caller.
+    """
+    from geoparquet_io.core.curved_geometry import find_non_linear_gpkg_types
+
+    path = Path(input_url)
+    if path.suffix.lower() != ".gpkg" or not path.exists():
+        return "normal"
+    if not find_non_linear_gpkg_types(path, layer):
+        return "normal"
+    return "linearized" if linearize_curves else "error"
+
+
+def _validate_max_angle(max_angle_deg):
+    """Reject non-positive linearization tolerances before they corrupt output."""
+    if max_angle_deg is not None and not max_angle_deg > 0:
+        raise InvalidParameterError("max_angle_deg", "must be a positive number of degrees")
 
 
 def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=None):
@@ -203,16 +232,19 @@ def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
     return result
 
 
-def _calculate_bounds(con, input_file, geom_column, verbose, is_parquet=False, encoding="WKB"):
-    """Calculate dataset bounds from input file."""
+def _calculate_bounds(
+    con, input_file, geom_column, verbose, is_parquet=False, encoding="WKB", table_expr=None
+):
+    """Calculate dataset bounds from input file (or an explicit table_expr)."""
     if verbose:
         debug("Calculating dataset bounds...")
 
     # For parquet files, read directly; for other formats use ST_Read
-    if is_parquet:
-        table_expr = f"read_parquet('{input_file}')"
-    else:
-        table_expr = f"ST_Read('{input_file}')"
+    if table_expr is None:
+        if is_parquet:
+            table_expr = f"read_parquet('{input_file}')"
+        else:
+            table_expr = f"ST_Read('{input_file}')"
 
     # Quote column name to handle special characters, spaces, and reserved words
     quoted_geom = quote_identifier(geom_column)
@@ -793,6 +825,7 @@ def _build_conversion_query(
     existing_bbox_col=None,
     preserve_existing_bbox=False,
     encoding="WKB",
+    table_expr=None,
 ):
     """Build SQL query for conversion with optional Hilbert ordering.
 
@@ -807,12 +840,15 @@ def _build_conversion_query(
         existing_bbox_col: Name of existing bbox column to remove (for parquet input)
         preserve_existing_bbox: If True, keep existing bbox column instead of adding new one
         encoding: GeoParquet geometry encoding (e.g. "WKB", "multipolygon")
+        table_expr: Explicit source expression overriding the input_file read
+            (used for the linearized-curves view)
     """
     # For parquet files, read directly; for other formats use ST_Read
-    if is_parquet:
-        table_expr = f"read_parquet('{input_file}')"
-    else:
-        table_expr = _build_st_read_expr(input_file, layer)
+    if table_expr is None:
+        if is_parquet:
+            table_expr = f"read_parquet('{input_file}')"
+        else:
+            table_expr = _build_st_read_expr(input_file, layer)
 
     # Build exclusion list - only exclude existing bbox if needed
     # NOTE: We preserve the original geometry column name (no renaming to "geometry")
@@ -979,8 +1015,65 @@ def _convert_csv_path(
     return query
 
 
+def _bounds_with_curve_fallback(
+    con,
+    input_file,
+    geom_column,
+    verbose,
+    *,
+    is_parquet,
+    encoding,
+    table_expr,
+    layer,
+    linearize_curves,
+    max_angle_deg,
+):
+    """Dataset bounds, linearizing curved sources the pre-scan cannot see.
+
+    The GPKG pre-scan only covers local ``*.gpkg`` files, so other curved
+    sources (FileGDB, a GeoPackage on S3) first reveal themselves here — the
+    bounds pass is what parses every geometry. Falling back to the linearized
+    view keeps ``gpio convert`` in step with the Python API instead of
+    surfacing DuckDB's bare "Unsupported geometry type in WKB" (issue #643).
+
+    Returns:
+        tuple: (bounds, table_expr) — table_expr is the linearized view when
+        the fallback fired, otherwise the caller's value unchanged.
+    """
+    kwargs = {"is_parquet": is_parquet, "encoding": encoding}
+    try:
+        bounds = _calculate_bounds(
+            con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
+        )
+        return bounds, table_expr
+    except duckdb.Error as e:
+        already_linearized = table_expr is not None
+        if (
+            is_parquet
+            or already_linearized
+            or not linearize_curves
+            or "Unsupported geometry type in WKB" not in str(e)
+        ):
+            raise
+        if verbose:
+            debug("Curved geometries detected while measuring bounds; linearizing")
+        table_expr = _register_linearized_view(con, input_file, layer, geom_column, max_angle_deg)
+        bounds = _calculate_bounds(
+            con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
+        )
+        return bounds, table_expr
+
+
 def _convert_spatial_path(
-    con, input_file, skip_hilbert, verbose, is_parquet=False, layer=None, geoparquet_version=None
+    con,
+    input_file,
+    skip_hilbert,
+    verbose,
+    is_parquet=False,
+    layer=None,
+    geoparquet_version=None,
+    linearize_curves=True,
+    max_angle_deg=None,
 ):
     """Handle standard spatial format conversion path.
 
@@ -1010,6 +1103,25 @@ def _convert_spatial_path(
     if geom_column is None:
         return None, None
 
+    # Curved geometries cannot pass through the ST_Read-based query below;
+    # detected up front (GPKG pre-scan, issue #643) they are read once via
+    # the linearize path and exposed as a view the query can use instead.
+    table_expr = None
+    if not is_parquet:
+        strategy = _choose_read_strategy(input_file, layer, linearize_curves)
+        if strategy == "error":
+            from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+
+            raise GeoParquetError(
+                unsupported_wkb_error_message(input_file, layer, "curved types found in pre-scan")
+            )
+        if strategy == "linearized":
+            if verbose:
+                debug("Curved geometries detected; linearizing via keep_wkb read")
+            table_expr = _register_linearized_view(
+                con, input_file, layer, geom_column, max_angle_deg
+            )
+
     # Determine if bbox should be skipped for this version
     skip_bbox = should_skip_bbox(geoparquet_version)
 
@@ -1032,13 +1144,20 @@ def _convert_spatial_path(
                     debug(f"Preserving existing bbox column: {existing_bbox_col}")
 
     geom_encoding = geom_info["metadata"].get(geom_column, {}).get("encoding", "WKB")
-    bounds = (
-        None
-        if skip_hilbert
-        else _calculate_bounds(
-            con, input_file, geom_column, verbose, is_parquet=is_parquet, encoding=geom_encoding
+    bounds = None
+    if not skip_hilbert:
+        bounds, table_expr = _bounds_with_curve_fallback(
+            con,
+            input_file,
+            geom_column,
+            verbose,
+            is_parquet=is_parquet,
+            encoding=geom_encoding,
+            table_expr=table_expr,
+            layer=layer,
+            linearize_curves=linearize_curves,
+            max_angle_deg=max_angle_deg,
         )
-    )
 
     if verbose:
         if secondary_columns:
@@ -1068,6 +1187,7 @@ def _convert_spatial_path(
         existing_bbox_col=existing_bbox_col,
         preserve_existing_bbox=preserve_existing_bbox,
         encoding=geom_encoding,
+        table_expr=table_expr,
     )
 
     return query, geom_info
@@ -1087,6 +1207,8 @@ def read_spatial_to_arrow(
     geometry_column="geometry",
     layer=None,
     repair_geometry=True,
+    linearize_curves=True,
+    max_angle_deg=None,
 ):
     """
     Read a geospatial file and return an Arrow table with geometry.
@@ -1107,6 +1229,13 @@ def read_spatial_to_arrow(
         geometry_column: Name for output geometry column (default: 'geometry')
         layer: Layer name for multi-layer formats (GeoPackage, FileGDB). If not specified,
                reads the first/default layer.
+        repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+        linearize_curves: Stroke curved geometries (CircularString..MultiSurface)
+            into their linear equivalents when DuckDB cannot parse them
+            (default: True). False raises the actionable unsupported-geometry
+            error instead.
+        max_angle_deg: Maximum angular step per stroked arc segment in degrees
+            (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
 
     Returns:
         tuple: (arrow_table, detected_crs_projjson, geometry_column_name)
@@ -1114,7 +1243,7 @@ def read_spatial_to_arrow(
     Raises:
         GeoParquetError: If input file not found or reading fails
     """
-
+    _validate_max_angle(max_angle_deg)
     configure_verbose(verbose)
 
     # Validate profile is only used with S3
@@ -1188,7 +1317,13 @@ def read_spatial_to_arrow(
             )
         else:
             arrow_table = _read_spatial_to_arrow(
-                con, input_url, verbose, is_parquet=is_parquet, layer=layer
+                con,
+                input_url,
+                verbose,
+                is_parquet=is_parquet,
+                layer=layer,
+                linearize_curves=linearize_curves,
+                max_angle_deg=max_angle_deg,
             )
 
         # No geometry found — read as plain table
@@ -1223,6 +1358,11 @@ def read_spatial_to_arrow(
 
     except duckdb.BinderException as e:
         raise GeometryError(f"Invalid geometry data: {str(e)}") from e
+
+    except GeoParquetError:
+        # Already actionable (e.g. the curved-geometry message from the
+        # linearize path) — don't wrap it a second time.
+        raise
 
     except Exception as e:
         if "Unsupported geometry type in WKB" in str(e):
@@ -1305,7 +1445,15 @@ def _read_csv_to_arrow(
     return result.arrow().read_all()
 
 
-def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None):
+def _read_spatial_to_arrow(
+    con,
+    input_url,
+    verbose,
+    is_parquet=False,
+    layer=None,
+    linearize_curves=True,
+    max_angle_deg=None,
+):
     """Read spatial file to Arrow table with geometry as WKB. Returns None if no geometry."""
     geom_column = _detect_geometry_column(
         con, input_url, verbose, is_parquet=is_parquet, layer=layer
@@ -1318,6 +1466,17 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
     if is_parquet:
         table_expr = f"read_parquet('{input_url}')"
     else:
+        strategy = _choose_read_strategy(input_url, layer, linearize_curves)
+        if strategy == "error":
+            from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+
+            raise GeoParquetError(
+                unsupported_wkb_error_message(input_url, layer, "curved types found in pre-scan")
+            )
+        if strategy == "linearized":
+            if verbose:
+                debug("Curved geometries detected; linearizing via keep_wkb read")
+            return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
         table_expr = _build_st_read_expr(input_url, layer)
 
     # Convert geometry to WKB for geoarrow compatibility
@@ -1327,8 +1486,115 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
         FROM {table_expr}
     """
 
-    result = con.execute(query)
+    try:
+        result = con.execute(query)
+        return result.arrow().read_all()
+    except duckdb.Error as e:
+        # Curved geometries (CIRCULARSTRING..MULTISURFACE) cannot pass through
+        # DuckDB's GEOMETRY type; linearize them at the WKB boundary instead
+        # (issue #643). The pre-scan above already caught local GeoPackages —
+        # this fallback covers formats without a cheap scan (e.g. FileGDB).
+        # Parquet inputs have no keep_wkb escape hatch.
+        if is_parquet or not linearize_curves or "Unsupported geometry type in WKB" not in str(e):
+            raise
+        if verbose:
+            debug("Curved geometries detected; linearizing via keep_wkb read")
+        return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
+
+
+def _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg=None):
+    """Read a spatial file whose WKB contains curved types, stroking them.
+
+    ``ST_Read(keep_wkb := true)`` hands back the raw WKB blobs untouched (the
+    escape hatch DuckDB documents for geometry subtypes it cannot represent);
+    each curved blob is stroked into its linear equivalent in Python. Returns
+    ``(raw_table, wkb_col)`` with the geometry column holding linear WKB
+    under its original name.
+    """
+    from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+    from geoparquet_io.core.linearize import (
+        DEFAULT_MAX_ANGLE_DEG,
+        LinearizeError,
+        contains_curved_wkb,
+        linearize_wkb,
+    )
+
+    if max_angle_deg is None:
+        max_angle_deg = DEFAULT_MAX_ANGLE_DEG
+
+    raw = (
+        con.execute(f"SELECT * FROM {_build_st_read_expr(input_url, layer, keep_wkb=True)}")
+        .arrow()
+        .read_all()
+    )
+
+    wkb_col = geom_column if geom_column in raw.column_names else "wkb_geometry"
+    if wkb_col not in raw.column_names:
+        raise GeoParquetError(f"keep_wkb read of {input_url} exposes no '{geom_column}' column")
+
+    import pyarrow as pa
+
+    changed = 0
+    values = []
+    for value in raw.column(wkb_col).to_pylist():
+        if value is None:
+            values.append(None)
+            continue
+        if not contains_curved_wkb(value):
+            values.append(value)  # linear at the top level: keep the bytes as-is
+            continue
+        try:
+            linear, did_change = linearize_wkb(value, max_angle_deg)
+        except LinearizeError as e:
+            # e.g. the surface family (POLYHEDRALSURFACE/TIN/TRIANGLE) or
+            # malformed blobs: fall back to the actionable error (#643).
+            raise GeoParquetError(unsupported_wkb_error_message(input_url, layer, str(e))) from e
+        changed += did_change
+        values.append(linear)
+    idx = raw.column_names.index(wkb_col)
+    raw = raw.set_column(idx, wkb_col, pa.array(values, type=pa.binary()))
+    if changed:
+        warn(
+            f"Linearized {changed} curved geometr{'y' if changed == 1 else 'ies'} "
+            f"(arcs stroked at <= {max_angle_deg} degrees per segment); GeoParquet "
+            "cannot represent curves."
+        )
+    return raw, wkb_col
+
+
+def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=None):
+    """Linearized read shaped like the normal read path (WKB `geometry` column)."""
+    raw, wkb_col = _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg)
+
+    # Round-trip through DuckDB: validates the stroked WKB and yields the same
+    # WKB-encoded `geometry` column shape as the normal read path.
+    con.register("_gpio_linearized_src", raw)
+    quoted_wkb = quote_identifier(wkb_col)
+    result = con.execute(
+        f"SELECT * EXCLUDE ({quoted_wkb}), "
+        f"ST_AsWKB(ST_GeomFromWKB({quoted_wkb})) AS geometry "
+        f"FROM _gpio_linearized_src"
+    )
     return result.arrow().read_all()
+
+
+def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=None):
+    """Register a linearized read as a view mimicking ST_Read's shape.
+
+    The view exposes a GEOMETRY-typed column under its original name and
+    position, so the query-based conversion path (bounds, bbox, Hilbert) can
+    use it as a drop-in replacement for the ST_Read expression. Returns the
+    view name.
+    """
+    raw, wkb_col = _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg)
+    con.register("_gpio_linearized_src", raw)
+    quoted_wkb = quote_identifier(wkb_col)
+    con.execute(
+        "CREATE OR REPLACE TEMP VIEW _gpio_linearized AS "
+        f"SELECT * REPLACE (ST_GeomFromWKB({quoted_wkb}) AS {quoted_wkb}) "
+        "FROM _gpio_linearized_src"
+    )
+    return "_gpio_linearized"
 
 
 def _determine_effective_crs(
@@ -1449,6 +1715,8 @@ def convert_to_geoparquet(
     profile=None,
     geoparquet_version=None,
     repair_geometry=True,
+    linearize_curves=True,
+    max_angle_deg=None,
 ):
     """
     Convert vector format to optimized GeoParquet.
@@ -1483,10 +1751,18 @@ def convert_to_geoparquet(
             encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
+        linearize_curves: Stroke curved geometries (CircularString..MultiSurface)
+            into their linear equivalents when DuckDB cannot parse them
+            (default: True, mirroring repair_geometry). Note this alters the
+            geometry: arcs become line segments and a warning reports the count.
+            False raises the actionable unsupported-geometry error instead.
+        max_angle_deg: Maximum angular step per stroked arc segment in degrees
+            (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
     """
+    _validate_max_angle(max_angle_deg)
     configure_verbose(verbose)
     start_time = time.time()
 
@@ -1546,6 +1822,8 @@ def convert_to_geoparquet(
                 is_parquet=is_parquet,
                 layer=layer,
                 geoparquet_version=geoparquet_version,
+                linearize_curves=linearize_curves,
+                max_angle_deg=max_angle_deg,
             )
 
         # No geometry detected — error unless explicitly allowed
@@ -1629,6 +1907,13 @@ def convert_to_geoparquet(
 
     except Exception as e:
         con.close()
+        if "Unsupported geometry type in WKB" in str(e):
+            # Reached when nothing parsed the geometry early enough to linearize
+            # it (e.g. --skip-hilbert skips the bounds pass): at least name the
+            # offending types and the remedy instead of DuckDB's raw error.
+            from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+
+            raise GeoParquetError(unsupported_wkb_error_message(input_file, layer, str(e))) from e
         raise GeoParquetError(f"Conversion failed: {str(e)}") from e
 
     finally:
