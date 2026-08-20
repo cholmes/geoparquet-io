@@ -233,9 +233,21 @@ def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
 
 
 def _calculate_bounds(
-    con, input_file, geom_column, verbose, is_parquet=False, encoding="WKB", table_expr=None
+    con,
+    input_file,
+    geom_column,
+    verbose,
+    is_parquet=False,
+    encoding="WKB",
+    table_expr=None,
+    required=True,
 ):
-    """Calculate dataset bounds from input file (or an explicit table_expr)."""
+    """Calculate dataset bounds from input file (or an explicit table_expr).
+
+    With ``required=False`` an unmeasurable dataset — no rows, or every
+    geometry empty or NULL — returns None instead of raising, letting the
+    caller convert without spatial ordering (issue #649).
+    """
     if verbose:
         debug("Calculating dataset bounds...")
 
@@ -277,6 +289,8 @@ def _calculate_bounds(
     bounds_result = con.execute(bounds_query).fetchone()
 
     if not bounds_result or any(v is None for v in bounds_result):
+        if not required:
+            return None
         raise GeoParquetError("Could not calculate dataset bounds")
 
     if verbose:
@@ -721,16 +735,17 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
 
     # With Hilbert ordering - use subquery
     xmin, ymin, xmax, ymax = bounds
+    bounds_box = f"ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
+    # A WKT column can hold empty geometry, which ST_Hilbert rejects (#649).
+    unorderable = f"{geom_expr} IS NULL OR ST_IsEmpty({geom_expr})"
     return f"""
         SELECT
             * EXCLUDE ({exclude_cols}),
             {geom_expr} AS geometry{bbox_expr(geom_expr)}
         FROM {csv_read}
         {where_clause}
-        ORDER BY ST_Hilbert(
-            {geom_expr},
-            ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))
-        )
+        ORDER BY ({unorderable}),
+            ST_Hilbert({_orderable_geom(geom_expr, xmin, ymin)}, {bounds_box})
     """
 
 
@@ -812,6 +827,43 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
         return f"SELECT * FROM {csv_read}"
     # Spatial formats (GeoJSON, Shapefile, GeoPackage, etc.) - use ST_Read
     return f"SELECT * FROM ST_Read('{input_file}')"
+
+
+def _bounds_with_curve_fallback_checked(con, *args, **kwargs):
+    """``_bounds_with_curve_fallback`` plus the unmeasurable-dataset case.
+
+    Every geometry empty or NULL (or no rows at all) leaves nothing to build a
+    Hilbert envelope from, so the conversion proceeds unordered with a warning
+    instead of failing on bounds (issue #649).
+    """
+    bounds, table_expr = _bounds_with_curve_fallback(con, *args, **kwargs)
+    if bounds is None:
+        warn(
+            "No measurable geometry bounds (every geometry is empty or NULL); "
+            "writing without Hilbert ordering."
+        )
+    return bounds, table_expr
+
+
+def _orderable_geom(geom_expr, xmin, ymin):
+    """``geom_expr`` with empty/NULL geometry swapped for a keyable point.
+
+    ``ST_Hilbert`` raises on empty geometries (issue #649), so a single
+    ``POLYGON EMPTY`` used to fail an entire conversion — while ``gpio sort
+    hilbert`` has always ordered the non-empty rows and appended the rest. The
+    substitute is a corner of the dataset envelope, so it is always in range,
+    and its key never matters: callers sort on an "unorderable" flag first,
+    which pins those rows last exactly where NULL geometry already landed
+    under DuckDB's NULLS LAST default.
+
+    Only the substitution is conditional — ``ST_Hilbert`` itself is evaluated
+    for every row, keeping spatial functions out of conditional execution
+    (the shape behind the segfaults in #642).
+    """
+    return (
+        f"CASE WHEN {geom_expr} IS NULL OR ST_IsEmpty({geom_expr}) "
+        f"THEN ST_Point({xmin}, {ymin}) ELSE {geom_expr} END"
+    )
 
 
 def _build_conversion_query(
@@ -923,11 +975,16 @@ def _build_conversion_query(
     xmin, ymin, xmax, ymax = bounds
     bounds_box = f"ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
     if geoarrow_native:
+        # Native encodings key on centroid coordinates, which are NULL for a
+        # geometry with no coordinates — ST_Hilbert returns NULL rather than
+        # failing, so those rows only need the flag to pin them last.
+        unorderable = f"{cx_e} IS NULL OR {cy_e} IS NULL"
         hilbert_expr = f"ST_Hilbert({cx_e}, {cy_e}, {bounds_box})"
     else:
-        hilbert_expr = f"ST_Hilbert({quoted_geom}, {bounds_box})"
+        unorderable = f"{quoted_geom} IS NULL OR ST_IsEmpty({quoted_geom})"
+        hilbert_expr = f"ST_Hilbert({_orderable_geom(quoted_geom, xmin, ymin)}, {bounds_box})"
     return f"""{base_select}
-        ORDER BY {hilbert_expr}
+        ORDER BY ({unorderable}), {hilbert_expr}
     """
 
 
@@ -1040,7 +1097,9 @@ def _bounds_with_curve_fallback(
         tuple: (bounds, table_expr) — table_expr is the linearized view when
         the fallback fired, otherwise the caller's value unchanged.
     """
-    kwargs = {"is_parquet": is_parquet, "encoding": encoding}
+    # required=False: an all-empty or empty dataset has no envelope to order
+    # by, which the caller turns into an unordered write rather than an error.
+    kwargs = {"is_parquet": is_parquet, "encoding": encoding, "required": False}
     try:
         bounds = _calculate_bounds(
             con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
@@ -1146,7 +1205,7 @@ def _convert_spatial_path(
     geom_encoding = geom_info["metadata"].get(geom_column, {}).get("encoding", "WKB")
     bounds = None
     if not skip_hilbert:
-        bounds, table_expr = _bounds_with_curve_fallback(
+        bounds, table_expr = _bounds_with_curve_fallback_checked(
             con,
             input_file,
             geom_column,
@@ -1158,6 +1217,7 @@ def _convert_spatial_path(
             linearize_curves=linearize_curves,
             max_angle_deg=max_angle_deg,
         )
+        skip_hilbert = bounds is None
 
     if verbose:
         if secondary_columns:
