@@ -682,24 +682,30 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         geom_expr = f"ST_GeomFromText({wkt_col})"
         exclude_cols = wkt_col
 
-        # For skip_invalid, use TRY() to silently return NULL for invalid WKT
+        # For skip_invalid, use TRY() to silently return NULL for invalid WKT.
+        # A row whose WKT is absent is not invalid — it is a row without
+        # geometry, and dropping it loses its attributes (issue #655), so only
+        # rows that failed to parse are filtered out.
         if skip_invalid:
             query_base = f"""
                 WITH parsed_geoms AS (
                     SELECT
                         * EXCLUDE ({exclude_cols}),
-                        TRY(ST_GeomFromText({wkt_col})) AS geometry
+                        TRY(ST_GeomFromText({wkt_col})) AS geometry,
+                        {wkt_col} IS NULL AS __gpio_wkt_missing
                     FROM {csv_read}
                 )
                 SELECT
-                    * EXCLUDE (geometry),
+                    * EXCLUDE (geometry, __gpio_wkt_missing),
                     geometry{bbox_expr("geometry")}
                 FROM parsed_geoms
-                WHERE geometry IS NOT NULL
+                WHERE __gpio_wkt_missing OR geometry IS NOT NULL
             """
             return query_base
         else:
-            where_clause = f"WHERE {wkt_col} IS NOT NULL"
+            # NULL WKT yields NULL geometry (ST_GeomFromText propagates it), so
+            # the row survives with its attributes instead of being filtered.
+            where_clause = ""
 
     elif geom_info["type"] == "latlon":
         lat_col = geom_info["lat_column"]
@@ -708,8 +714,9 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         geom_expr = f"ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))"
         exclude_cols = f"{lat_col}, {lon_col}"
 
-        # Skip rows with NULL lat/lon
-        where_clause = f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL"
+        # A missing coordinate means no geometry, not no row: ST_Point yields
+        # NULL and the row keeps its attributes (issue #655).
+        where_clause = ""
 
     else:
         raise GeoParquetError("Unknown geometry type in CSV detection")
@@ -741,7 +748,12 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
 
 
 def _get_geom_expr_and_where(geom_info, skip_invalid):
-    """Get geometry expression and WHERE clause for CSV bounds/query."""
+    """Geometry expression and WHERE clause for the CSV *bounds* pass.
+
+    The filters here exclude rows the envelope must not be measured from
+    (missing or unparsable geometry). The conversion query deliberately keeps
+    those rows — see :func:`_build_csv_conversion_query` and issue #655.
+    """
     if geom_info["type"] == "wkt":
         wkt_col = geom_info["wkt_column"]
         if skip_invalid:

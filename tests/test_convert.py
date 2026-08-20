@@ -770,10 +770,14 @@ class TestConvertCSVValidation:
         )
 
         assert os.path.exists(temp_output_file)
-        # Should only have valid rows
         con = duckdb.connect()
-        count = con.execute(f"SELECT COUNT(*) FROM '{temp_output_file}'").fetchone()[0]
-        assert count == 2  # Only 2 valid POINTs out of 4 rows
+        # The fixture's 4 rows are: 2 valid POINTs, 1 unparsable, 1 empty WKT.
+        # --skip-invalid drops what cannot be parsed; the row with no WKT at all
+        # is kept, with NULL geometry, so its attributes are not lost (#655).
+        count, nulls = con.execute(
+            f"SELECT COUNT(*), COUNT(*) FILTER (WHERE geometry IS NULL) FROM '{temp_output_file}'"
+        ).fetchone()
+        assert (count, nulls) == (3, 1)
         con.close()
 
     def test_convert_csv_skip_invalid_metadata_computed(
@@ -816,8 +820,10 @@ class TestConvertCSVValidation:
         con.install_extension("spatial")
         con.load_extension("spatial")
         result = con.execute(f"SELECT ST_AsText(geometry) FROM '{temp_output_file}'").fetchall()
-        assert len(result) == 2
-        assert all("POINT" in r[0] for r in result)
+        # 2 parseable POINTs plus the retained no-WKT row (#655).
+        assert len(result) == 3
+        assert sum("POINT" in (r[0] or "") for r in result) == 2
+        assert sum(r[0] is None for r in result) == 1
         con.close()
 
     def test_convert_csv_invalid_latlon_fails(self, csv_invalid_latlon_input, temp_output_file):
