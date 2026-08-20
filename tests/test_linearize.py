@@ -141,3 +141,29 @@ class TestConvertIntegration:
         # The fixture's CURVEPOLYGON is the full unit circle centred at (1, 0).
         assert area == pytest.approx(math.pi, rel=0.005)
         assert n >= 80
+
+
+class TestConvertParameters:
+    def test_opt_out_raises_actionable_error(self):
+        """linearize_curves=False keeps the strict behavior (#646's error)."""
+        import geoparquet_io as gpio
+        from geoparquet_io.core.duckdb_metadata import GeoParquetError
+
+        with pytest.raises(GeoParquetError, match="CONVERT_TO_LINEAR"):
+            gpio.convert(str(CURVED_GPKG), linearize_curves=False)
+
+    def test_max_angle_controls_density(self, tmp_path):
+        """A coarser tolerance yields fewer stroked vertices."""
+        import duckdb
+
+        import geoparquet_io as gpio
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+
+        counts = {}
+        for deg in (2.0, 30.0):
+            out = tmp_path / f"deg{int(deg)}.parquet"
+            gpio.convert(str(CURVED_GPKG), max_angle_deg=deg).write(str(out))
+            counts[deg] = con.execute(f"SELECT ST_NPoints(geometry) FROM '{out}'").fetchone()[0]
+        assert counts[2.0] > counts[30.0] >= 13

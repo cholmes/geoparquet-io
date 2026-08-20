@@ -147,7 +147,7 @@ def _stroke_arc(
             out.append(p2)  # exact endpoint
             continue
         angle = a0 + sweep * t
-        extras = tuple(e0 + (e2 - e0) * t for e0, e2 in zip(extras0, extras2))
+        extras = tuple(e0 + (e2 - e0) * t for e0, e2 in zip(extras0, extras2, strict=True))
         out.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle), *extras))
     return out
 

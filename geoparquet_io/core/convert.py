@@ -1087,6 +1087,8 @@ def read_spatial_to_arrow(
     geometry_column="geometry",
     layer=None,
     repair_geometry=True,
+    linearize_curves=True,
+    max_angle_deg=None,
 ):
     """
     Read a geospatial file and return an Arrow table with geometry.
@@ -1188,7 +1190,13 @@ def read_spatial_to_arrow(
             )
         else:
             arrow_table = _read_spatial_to_arrow(
-                con, input_url, verbose, is_parquet=is_parquet, layer=layer
+                con,
+                input_url,
+                verbose,
+                is_parquet=is_parquet,
+                layer=layer,
+                linearize_curves=linearize_curves,
+                max_angle_deg=max_angle_deg,
             )
 
         # No geometry found — read as plain table
@@ -1305,7 +1313,15 @@ def _read_csv_to_arrow(
     return result.arrow().read_all()
 
 
-def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None):
+def _read_spatial_to_arrow(
+    con,
+    input_url,
+    verbose,
+    is_parquet=False,
+    layer=None,
+    linearize_curves=True,
+    max_angle_deg=None,
+):
     """Read spatial file to Arrow table with geometry as WKB. Returns None if no geometry."""
     geom_column = _detect_geometry_column(
         con, input_url, verbose, is_parquet=is_parquet, layer=layer
@@ -1335,14 +1351,14 @@ def _read_spatial_to_arrow(con, input_url, verbose, is_parquet=False, layer=None
         # DuckDB's GEOMETRY type; linearize them at the WKB boundary instead
         # (issue #643). Only the spatial-file path can take this road: parquet
         # inputs have no keep_wkb escape hatch.
-        if is_parquet or "Unsupported geometry type in WKB" not in str(e):
+        if is_parquet or not linearize_curves or "Unsupported geometry type in WKB" not in str(e):
             raise
         if verbose:
             debug("Curved geometries detected; linearizing via keep_wkb read")
-        return _read_spatial_linearized(con, input_url, layer, geom_column)
+        return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
 
 
-def _read_spatial_linearized(con, input_url, layer, geom_column):
+def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=None):
     """Read a spatial file whose WKB contains curved types, stroking them.
 
     ``ST_Read(keep_wkb := true)`` hands back the raw WKB blobs untouched (the
@@ -1352,7 +1368,14 @@ def _read_spatial_linearized(con, input_url, layer, geom_column):
     returned table is indistinguishable from the normal read path.
     """
     from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
-    from geoparquet_io.core.linearize import LinearizeError, linearize_wkb
+    from geoparquet_io.core.linearize import (
+        DEFAULT_MAX_ANGLE_DEG,
+        LinearizeError,
+        linearize_wkb,
+    )
+
+    if max_angle_deg is None:
+        max_angle_deg = DEFAULT_MAX_ANGLE_DEG
 
     opts = f", layer := '{layer}'" if layer else ""
     raw = (
@@ -1374,7 +1397,7 @@ def _read_spatial_linearized(con, input_url, layer, geom_column):
             values.append(None)
             continue
         try:
-            linear, did_change = linearize_wkb(value)
+            linear, did_change = linearize_wkb(value, max_angle_deg)
         except LinearizeError as e:
             # e.g. the surface family (POLYHEDRALSURFACE/TIN/TRIANGLE) or
             # malformed blobs: fall back to the actionable error (#643).
@@ -1386,8 +1409,8 @@ def _read_spatial_linearized(con, input_url, layer, geom_column):
     if changed:
         warn(
             f"Linearized {changed} curved geometr{'y' if changed == 1 else 'ies'} "
-            f"(arcs stroked at <= {4.0} degrees per segment); GeoParquet cannot "
-            "represent curves."
+            f"(arcs stroked at <= {max_angle_deg} degrees per segment); GeoParquet "
+            "cannot represent curves."
         )
 
     # Round-trip through DuckDB: validates the stroked WKB and yields the same
@@ -1553,6 +1576,12 @@ def convert_to_geoparquet(
             1.1-geoarrow converts geometry from any input to native GeoArrow nested-coordinate
             encoding and omits the bbox column; columns with incompatible mixed types fall back to WKB.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
+        linearize_curves: Stroke curved geometries (CircularString..MultiSurface)
+            into their linear equivalents when DuckDB cannot parse them
+            (default: True, mirroring repair_geometry). False raises the
+            actionable unsupported-geometry error instead.
+        max_angle_deg: Maximum angular step per stroked arc segment in degrees
+            (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
             When False, invalid geometry is preserved and a warning reports the count.
 
     Raises:

@@ -287,6 +287,8 @@ def convert(
     profile: str | None = None,
     layer: str | None = None,
     repair_geometry: bool = True,
+    linearize_curves: bool = True,
+    max_angle_deg: float | None = None,
 ) -> Table:
     """
     Convert a geospatial file to a Table.
@@ -306,6 +308,11 @@ def convert(
         profile: AWS profile name for S3 authentication (default: None)
         layer: Layer name for multi-layer formats (GeoPackage, FileGDB). If not specified,
                reads the first/default layer.
+        linearize_curves: Stroke curved geometries (CircularString..MultiSurface) into
+               their linear equivalents when DuckDB cannot parse them (default: True,
+               mirroring repair_geometry). False raises an actionable error instead.
+        max_angle_deg: Maximum angular step per stroked arc segment in degrees
+               (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
 
     Returns:
         Table for chaining operations
@@ -331,6 +338,8 @@ def convert(
         geometry_column=geometry_column,
         layer=layer,
         repair_geometry=repair_geometry,
+        linearize_curves=linearize_curves,
+        max_angle_deg=max_angle_deg,
     )
 
     return Table(arrow_table, geometry_column=geom_col)
