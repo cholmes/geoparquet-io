@@ -189,6 +189,10 @@ class _Linearizer:
     def __init__(self, max_angle_deg: float) -> None:
         self.max_angle_rad = math.radians(max_angle_deg)
         self.changed = False
+        #: Arcs actually sampled. A curved *type* with no arcs in it (an empty
+        #: CIRCULARSTRING, a MULTISURFACE of plain polygons) still sets
+        #: ``changed`` — it is rewritten to a linear type — but strokes nothing.
+        self.arcs = 0
 
     # ---- parsing helpers -------------------------------------------------
     def _points(self, r: _Reader, le: bool, dims: int) -> list[tuple[float, ...]]:
@@ -228,6 +232,7 @@ class _Linearizer:
         out = [pts[0]]
         for i in range(0, len(pts) - 2, 2):
             out.extend(_stroke_arc(pts[i], pts[i + 1], pts[i + 2], self.max_angle_rad))
+            self.arcs += 1
         return out
 
     # ---- serialization ---------------------------------------------------
@@ -307,17 +312,20 @@ class _Linearizer:
             raise LinearizeError(f"WKB type {base} cannot be linearized")
 
 
-def linearize_wkb(
+def linearize_wkb_stats(
     wkb: bytes | bytearray | memoryview,
     max_angle_deg: float = DEFAULT_MAX_ANGLE_DEG,
-) -> tuple[bytes, bool]:
-    """Return ``(linear_wkb, changed)`` for one ISO WKB geometry.
+) -> tuple[bytes, bool, int]:
+    """Return ``(linear_wkb, changed, arcs)`` for one ISO WKB geometry.
 
-    ``changed`` is False when the input contained no curved types (the output
-    is then a little-endian re-emission of the same geometry). Raises
-    :class:`LinearizeError` for WKB that cannot be linearized (EWKB flags,
-    the surface family POLYHEDRALSURFACE/TIN/TRIANGLE, malformed input) and
-    :class:`ValueError` for a non-positive ``max_angle_deg``.
+    ``changed`` says the geometry was rewritten from a curved type; ``arcs``
+    counts the arcs actually sampled, which is zero for curved types that
+    contain no arc (an empty CIRCULARSTRING, a MULTISURFACE of plain
+    polygons). Reporting both keeps the linearization warning honest.
+
+    Raises :class:`LinearizeError` for WKB that cannot be linearized (EWKB
+    flags, the surface family POLYHEDRALSURFACE/TIN/TRIANGLE, malformed input)
+    and :class:`ValueError` for a non-positive ``max_angle_deg``.
     """
     if max_angle_deg is None or math.isnan(max_angle_deg) or max_angle_deg <= 0:
         raise ValueError(f"max_angle_deg must be a positive number, got {max_angle_deg!r}")
@@ -327,7 +335,21 @@ def linearize_wkb(
         lin._write_geometry(_Reader(bytes(wkb)), out)
     except (struct.error, IndexError) as e:
         raise LinearizeError(f"Malformed WKB: {e}") from e
-    return bytes(out), lin.changed
+    return bytes(out), lin.changed, lin.arcs
+
+
+def linearize_wkb(
+    wkb: bytes | bytearray | memoryview,
+    max_angle_deg: float = DEFAULT_MAX_ANGLE_DEG,
+) -> tuple[bytes, bool]:
+    """Return ``(linear_wkb, changed)`` for one ISO WKB geometry.
+
+    ``changed`` is False when the input contained no curved types (the output
+    is then a little-endian re-emission of the same geometry). See
+    :func:`linearize_wkb_stats` when the arc count matters too.
+    """
+    linear, changed, _arcs = linearize_wkb_stats(wkb, max_angle_deg)
+    return linear, changed
 
 
 def contains_curved_wkb(wkb: bytes | bytearray | memoryview) -> bool:

@@ -4,6 +4,7 @@ import math
 import struct
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from geoparquet_io.core.linearize import (
@@ -459,18 +460,10 @@ class TestCliConvert:
 
 
 class TestProjectedCurvedGpkg:
-    def test_crs_survives_linearized_read(self, tmp_path):
-        """Curved + projected: CRS detection must still work on the fallback path.
-
-        (Whether the detected CRS then reaches the written file is #625/#644's
-        territory; this pins the property that the linearized read does not
-        bypass detection.)
-        """
-        import json
+    def _projected_curved_gpkg(self, tmp_path):
+        """The curved fixture declared as EPSG:25830 (ETRS89 / UTM 30N)."""
         import shutil
         import sqlite3
-
-        from geoparquet_io.core.convert import read_spatial_to_arrow
 
         wkt_25830 = (
             'PROJCS["ETRS89 / UTM zone 30N",GEOGCS["ETRS89",'
@@ -497,6 +490,15 @@ class TestProjectedCurvedGpkg:
         con.execute("UPDATE gpkg_geometry_columns SET srs_id = 25830")
         con.commit()
         con.close()
+        return gpkg
+
+    def test_crs_survives_linearized_read(self, tmp_path):
+        """Curved + projected: CRS detection must still work on the fallback path."""
+        import json
+
+        from geoparquet_io.core.convert import read_spatial_to_arrow
+
+        gpkg = self._projected_curved_gpkg(tmp_path)
 
         table, detected_crs, geom_col = read_spatial_to_arrow(str(gpkg), verbose=True)
 
@@ -504,6 +506,25 @@ class TestProjectedCurvedGpkg:
         assert table.num_rows == 1
         assert detected_crs is not None
         assert "25830" in json.dumps(detected_crs)
+
+    def test_written_geoparquet_keeps_the_projected_crs(self, tmp_path):
+        """The whole chain: curved + projected in, EPSG:25830 in the output.
+
+        The read-level half is pinned above; this pins the property review asked
+        for on #644 — that a source taking the linearize path still writes its
+        real CRS rather than defaulting to OGC:CRS84.
+        """
+        import geoparquet_io as gpio
+        from tests.test_crs_write_paths import extract_epsg_code, get_metadata_crs
+
+        gpkg = self._projected_curved_gpkg(tmp_path)
+        out = tmp_path / "curved_25830.parquet"
+
+        gpio.convert(str(gpkg)).write(str(out))
+
+        metadata_crs = get_metadata_crs(str(out))
+        assert metadata_crs is not None
+        assert extract_epsg_code(metadata_crs) == 25830
 
 
 class TestEmptyCurves:
@@ -618,3 +639,133 @@ class TestCliCurveParityWithoutPrescan:
         assert result.exit_code != 0
         assert "CONVERT_TO_LINEAR" in result.output
         assert "Unsupported geometry type in WKB" not in result.output.split("Original error")[0]
+
+
+class TestArcCounting:
+    """The warning must not claim arcs were stroked when none were (#647 review).
+
+    A curved *type* with no arcs in it — an empty CIRCULARSTRING, a MULTISURFACE
+    of plain polygons — is still rewritten to a linear type, but nothing is
+    sampled, so the two numbers are reported separately.
+    """
+
+    def test_stats_report_arcs_stroked(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        _, changed, arcs = linearize_wkb_stats(_wkb(8, _points((0, 0), (1, 1), (2, 0))))
+        assert changed and arcs == 1
+
+    def test_stats_count_every_arc_in_a_chain(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        src = _wkb(8, _points((0, 0), (1, 1), (2, 0), (3, -1), (4, 0)))
+        _, changed, arcs = linearize_wkb_stats(src)
+        assert changed and arcs == 2
+
+    def test_curved_type_without_arcs_reports_zero(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        empty = _wkb(8, struct.pack("<I", 0))
+        _, changed, arcs = linearize_wkb_stats(empty)
+        assert changed and arcs == 0
+
+        ring = _points((0, 0), (1, 0), (1, 1), (0, 0))
+        polygon = _wkb(3, struct.pack("<I", 1) + ring)
+        multisurface = _wkb(12, struct.pack("<I", 1) + polygon)
+        _, changed, arcs = linearize_wkb_stats(multisurface)
+        assert changed and arcs == 0
+
+    def test_warning_reports_both_numbers(self, caplog, tmp_path):
+        import logging
+
+        import geoparquet_io as gpio
+
+        with caplog.at_level(logging.WARNING):
+            gpio.convert(str(CURVED_GPKG))
+
+        message = "\n".join(r.message for r in caplog.records)
+        assert "Linearized 1 curved geometry" in message
+        assert "arc" in message and "stroked" in message
+
+
+class TestStreamingLinearizedRead:
+    """The linearized read must not hold the whole file in Python (#647 review).
+
+    It used to materialize the entire keep_wkb read, then a Python list of every
+    blob, then a rebuilt Arrow column — so curved input was the one path that
+    could not convert a file larger than memory, and ``pa.binary()`` also
+    capped the geometry column at 2 GB of blobs.
+    """
+
+    def _curved_batch(self, wkb_type=pa.large_binary(), rows=2):
+        ring = _wkb(8, _points((0, 0), (2, 0), (0, 0)))  # full-circle CIRCULARSTRING
+        curved = _wkb(10, struct.pack("<I", 1) + ring)  # CURVEPOLYGON
+        return pa.RecordBatch.from_arrays(
+            [pa.array(list(range(rows))), pa.array([curved] * rows, type=wkb_type)],
+            names=["id", "geom"],
+        )
+
+    def _read(self, con, batches):
+        from geoparquet_io.core.convert import _LinearizedRead
+
+        read = _LinearizedRead.__new__(_LinearizedRead)
+        read.con = con
+        read.input_url = "fake.gdb"
+        read.layer = None
+        read.max_angle_deg = 4.0
+        read.wkb_col = "geom"
+        read.schema = batches[0].schema if batches else pa.schema([("id", pa.int64())])
+        read.linearized = 0
+        read.arcs = 0
+        read._reader = iter(batches)
+        return read
+
+    def test_batches_are_generated_not_materialized(self):
+        import inspect
+
+        import duckdb
+
+        con = duckdb.connect()
+        read = self._read(con, [self._curved_batch()])
+        assert inspect.isgenerator(read.batches())
+
+    def test_geometry_column_keeps_its_source_arrow_type(self):
+        import duckdb
+
+        con = duckdb.connect()
+        for wkb_type in (pa.binary(), pa.large_binary()):
+            read = self._read(con, [self._curved_batch(wkb_type=wkb_type)])
+            out = next(read.batches())
+            assert out.schema.field("geom").type == wkb_type
+
+    def test_multi_batch_source_lands_in_one_relation(self):
+        """Every batch must reach the registered relation, not just the first."""
+        import duckdb
+
+        from geoparquet_io.core.convert import _register_linearized_view
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        batches = [self._curved_batch(rows=2) for _ in range(3)]
+        name = _register_linearized_view(
+            con, "fake.gdb", None, "geom", read=self._read(con, batches)
+        )
+
+        rows, kinds = con.execute(
+            f"SELECT count(*), list_distinct(list(ST_GeometryType(geom))) FROM {name}"
+        ).fetchone()
+        assert rows == 6
+        assert kinds == ["POLYGON"]
+
+    def test_empty_source_still_registers_a_relation(self):
+        import duckdb
+
+        from geoparquet_io.core.convert import _register_linearized_view
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        empty = self._curved_batch(rows=0)
+        name = _register_linearized_view(
+            con, "fake.gdb", None, "geom", read=self._read(con, [empty])
+        )
+        assert con.execute(f"SELECT count(*) FROM {name}").fetchone()[0] == 0
