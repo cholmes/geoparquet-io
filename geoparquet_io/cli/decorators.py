@@ -193,6 +193,30 @@ def repair_geometry_option(func):
     )(func)
 
 
+def linearize_curves_options(func):
+    """
+    Add --linearize-curves/--no-linearize-curves and --max-angle-deg options.
+
+    Curved geometries (CircularString through MultiSurface) cannot be
+    represented in GeoParquet, so they are stroked into line segments by
+    default. Users who want curved input to fail instead can opt out.
+    """
+    func = click.option(
+        "--max-angle-deg",
+        type=click.FloatRange(min=0, min_open=True),
+        default=None,
+        help="Maximum degrees per stroked arc segment when linearizing curves (default: 4).",
+    )(func)
+    return click.option(
+        "--linearize-curves/--no-linearize-curves",
+        default=True,
+        help=(
+            "Stroke curved geometries (CircularString..MultiSurface) into line "
+            "segments (default: on). Use --no-linearize-curves to fail on curved input."
+        ),
+    )(func)
+
+
 def write_memory_option(func):
     """
     Add --write-memory option to a command.

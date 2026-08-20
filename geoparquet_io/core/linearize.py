@@ -97,6 +97,26 @@ def _type_code(base: int, has_z: bool, has_m: bool) -> int:
     return base + (1000 if has_z else 0) + (2000 if has_m else 0)
 
 
+def _degenerate_arc(
+    p0: tuple[float, ...],
+    p1: tuple[float, ...],
+    p2: tuple[float, ...],
+) -> list[tuple[float, ...]]:
+    """Straight-segment fallback for collinear/zero-radius "arcs".
+
+    Control points that duplicate the previously emitted vertex are skipped —
+    the caller has already emitted ``p0``, so returning it (or a repeat of
+    ``p1``) would produce consecutive duplicate vertices in the output.
+    """
+    out: list[tuple[float, ...]] = []
+    prev = p0
+    for q in (p1, p2):
+        if q != prev:
+            out.append(q)
+            prev = q
+    return out or [p2]
+
+
 def _stroke_arc(
     p0: tuple[float, ...],
     p1: tuple[float, ...],
@@ -107,36 +127,48 @@ def _stroke_arc(
 
     Extra ordinates (Z/M) are interpolated linearly along the sweep. A
     degenerate (collinear or zero-radius) arc falls back to straight segments
-    through the control points.
+    through the control points. ``p2 == p0`` is the standard compact encoding
+    of a full circle and sweeps one whole turn.
     """
     (x0, y0), (x1, y1), (x2, y2) = p0[:2], p1[:2], p2[:2]
 
-    # Circumcenter via perpendicular bisectors.
-    d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1))
-    if abs(d) < 1e-12:
-        return [p1, p2]  # collinear: straight lines through the control points
-    s0 = x0 * x0 + y0 * y0
-    s1 = x1 * x1 + y1 * y1
-    s2 = x2 * x2 + y2 * y2
-    cx = (s0 * (y1 - y2) + s1 * (y2 - y0) + s2 * (y0 - y1)) / d
-    cy = (s0 * (x2 - x1) + s1 * (x0 - x2) + s2 * (x1 - x0)) / d
-    radius = math.hypot(x0 - cx, y0 - cy)
-    if radius < 1e-12:
-        return [p1, p2]
-
-    a0 = math.atan2(y0 - cy, x0 - cx)
-    a1 = math.atan2(y1 - cy, x1 - cx)
-    a2 = math.atan2(y2 - cy, x2 - cx)
-
-    # Choose the sweep direction that passes through the middle control point.
-    ccw_mid = (a1 - a0) % (2.0 * math.pi)
-    ccw_end = (a2 - a0) % (2.0 * math.pi)
-    if ccw_end == 0.0:
-        ccw_end = 2.0 * math.pi  # closed circle described by three points
-    if ccw_mid <= ccw_end:
-        sweep = ccw_end
+    if (x2, y2) == (x0, y0):
+        # Closed circle: p1 is diametrically opposite p0, so the centre is
+        # their midpoint. This must be handled before the circumcenter
+        # determinant below, which is identically zero when p2 == p0 and
+        # would collapse the circle to a zero-area line.
+        cx = (x0 + x1) / 2.0
+        cy = (y0 + y1) / 2.0
+        radius = math.hypot(x0 - cx, y0 - cy)
+        if radius < 1e-12:
+            return _degenerate_arc(p0, p1, p2)
+        a0 = math.atan2(y0 - cy, x0 - cx)
+        sweep = 2.0 * math.pi
     else:
-        sweep = ccw_end - 2.0 * math.pi  # clockwise
+        # Circumcenter via perpendicular bisectors.
+        d = 2.0 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1))
+        if abs(d) < 1e-12:
+            return _degenerate_arc(p0, p1, p2)  # collinear
+        s0 = x0 * x0 + y0 * y0
+        s1 = x1 * x1 + y1 * y1
+        s2 = x2 * x2 + y2 * y2
+        cx = (s0 * (y1 - y2) + s1 * (y2 - y0) + s2 * (y0 - y1)) / d
+        cy = (s0 * (x2 - x1) + s1 * (x0 - x2) + s2 * (x1 - x0)) / d
+        radius = math.hypot(x0 - cx, y0 - cy)
+        if radius < 1e-12:
+            return _degenerate_arc(p0, p1, p2)
+
+        a0 = math.atan2(y0 - cy, x0 - cx)
+        a1 = math.atan2(y1 - cy, x1 - cx)
+        a2 = math.atan2(y2 - cy, x2 - cx)
+
+        # Choose the sweep direction that passes through the middle control point.
+        ccw_mid = (a1 - a0) % (2.0 * math.pi)
+        ccw_end = (a2 - a0) % (2.0 * math.pi)
+        if ccw_mid <= ccw_end:
+            sweep = ccw_end
+        else:
+            sweep = ccw_end - 2.0 * math.pi  # clockwise
 
     steps = max(2, math.ceil(abs(sweep) / max_angle_rad))
     extras0, extras2 = p0[2:], p2[2:]
@@ -280,8 +312,11 @@ def linearize_wkb(
     ``changed`` is False when the input contained no curved types (the output
     is then a little-endian re-emission of the same geometry). Raises
     :class:`LinearizeError` for WKB that cannot be linearized (EWKB flags,
-    the surface family POLYHEDRALSURFACE/TIN/TRIANGLE, malformed input).
+    the surface family POLYHEDRALSURFACE/TIN/TRIANGLE, malformed input) and
+    :class:`ValueError` for a non-positive ``max_angle_deg``.
     """
+    if max_angle_deg is None or math.isnan(max_angle_deg) or max_angle_deg <= 0:
+        raise ValueError(f"max_angle_deg must be a positive number, got {max_angle_deg!r}")
     lin = _Linearizer(max_angle_deg)
     out = bytearray()
     try:
