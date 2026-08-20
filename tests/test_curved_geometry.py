@@ -1,5 +1,7 @@
 """Tests for non-linear geometry detection and error reporting (issue #643)."""
 
+import sqlite3
+import struct
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,42 @@ class TestFindNonLinearGpkgTypes:
         bogus = tmp_path / "not_a.gpkg"
         bogus.write_text("plain text")
         assert find_non_linear_gpkg_types(bogus) == []
+
+
+def _gpkg_blob(wkb_type: int) -> bytes:
+    """Minimal GPKG geometry blob: header (no envelope) + a bare WKB header."""
+    header = b"GP\x00\x01" + b"\x00\x00\x00\x00"  # magic, version, flags, srs_id
+    return header + b"\x01" + struct.pack("<I", wkb_type) + b"\x00\x00\x00\x00"
+
+
+def _make_fake_gpkg(path: Path, table: str, blobs: list[bytes]) -> None:
+    quoted = table.replace('"', '""')
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT)")
+    con.execute("CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT)")
+    con.execute(f'CREATE TABLE "{quoted}" (geom BLOB)')
+    con.execute("INSERT INTO gpkg_contents VALUES (?, 'features')", (table,))
+    con.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom')", (table,))
+    con.executemany(f'INSERT INTO "{quoted}" VALUES (?)', [(b,) for b in blobs])
+    con.commit()
+    con.close()
+
+
+class TestScanBounds:
+    def test_table_name_with_quote_is_escaped(self, tmp_path):
+        gpkg = tmp_path / "weird.gpkg"
+        _make_fake_gpkg(gpkg, 'we"ird', [_gpkg_blob(10)])
+        assert find_non_linear_gpkg_types(gpkg) == ["CURVEPOLYGON"]
+
+    def test_scan_is_capped_per_table(self, tmp_path, monkeypatch):
+        """A curve beyond the cap is missed — safe, since callers fall back on
+        the DuckDB error anyway; the cap only bounds the diagnostic wait."""
+        import geoparquet_io.core.curved_geometry as cg
+
+        monkeypatch.setattr(cg, "_SCAN_CAP", 1)
+        gpkg = tmp_path / "capped.gpkg"
+        _make_fake_gpkg(gpkg, "t", [_gpkg_blob(3), _gpkg_blob(10)])  # linear first
+        assert cg.find_non_linear_gpkg_types(gpkg) == []
 
 
 class TestUnsupportedWkbError:
