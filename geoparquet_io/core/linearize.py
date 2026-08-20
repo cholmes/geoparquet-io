@@ -338,24 +338,10 @@ def linearize_wkb_stats(
     return bytes(out), lin.changed, lin.arcs
 
 
-def linearize_wkb(
-    wkb: bytes | bytearray | memoryview,
-    max_angle_deg: float = DEFAULT_MAX_ANGLE_DEG,
-) -> tuple[bytes, bool]:
-    """Return ``(linear_wkb, changed)`` for one ISO WKB geometry.
-
-    ``changed`` is False when the input contained no curved types (the output
-    is then a little-endian re-emission of the same geometry). See
-    :func:`linearize_wkb_stats` when the arc count matters too.
-    """
-    linear, changed, _arcs = linearize_wkb_stats(wkb, max_angle_deg)
-    return linear, changed
-
-
 def contains_curved_wkb(wkb: bytes | bytearray | memoryview) -> bool:
     """Cheap top-level check: does this WKB's outermost type belong to the
     curved family? (Curves nested inside a GEOMETRYCOLLECTION are found by
-    :func:`linearize_wkb` itself.)"""
+    :func:`linearize_wkb_stats` itself.)"""
     b = bytes(wkb[:5])
     if len(b) < 5:
         return False

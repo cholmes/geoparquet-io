@@ -1502,6 +1502,17 @@ def _read_spatial_to_arrow(
         return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
 
 
+#: Rows per batch for the linearized read. DuckDB's ``.arrow()`` defaults to
+#: 1,000,000, which hands back most files as a single batch and defeats the
+#: point of streaming. Stroking multiplies a geometry's size (an arc becomes
+#: ~90 vertices), so the batch has to be small: on a 50k-row curved GeoPackage,
+#: peak RSS was 503 MB at the default and 100k rows, 395 MB at 20k, 370 MB at
+#: 5k, with no measurable difference in wall time. The repo's generic
+#: ``DEFAULT_BATCH_SIZE`` (100k, write_strategies/arrow_streaming.py) is too
+#: coarse here for that reason.
+_LINEARIZE_BATCH_ROWS = 20_000
+
+
 class _LinearizedRead:
     """A ``keep_wkb`` read whose curved WKB is stroked batch by batch.
 
@@ -1535,12 +1546,16 @@ class _LinearizedRead:
         # connection, and the caller runs plenty (the batches are inserted into
         # a temp relation as they arrive), so the read gets its own cursor. The
         # cursor is kept alive on self: dropping it would close the reader.
-        # Only the raw keep_wkb read runs here, so the connection-level spatial
-        # settings a cursor does not inherit (axis order) cannot affect it.
+        #
+        # GLOBAL settings survive the cursor — including arrow_large_buffer_size,
+        # which is what makes DuckDB hand back large_binary blobs and lets this
+        # path exceed the 2 GB a pa.binary() column can address. Connection-level
+        # spatial settings (axis order) would not carry over, but the raw
+        # keep_wkb read does not consult them.
         self._cursor = self.con.cursor()
         return self._cursor.execute(
             f"SELECT * FROM {_build_st_read_expr(self.input_url, self.layer, keep_wkb=True)}"
-        ).arrow()
+        ).arrow(rows_per_batch=_LINEARIZE_BATCH_ROWS)
 
     def batches(self):
         """Yield the source's record batches with curved WKB stroked in place."""
