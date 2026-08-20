@@ -223,3 +223,41 @@ def test_repair_query_geometry_with_null_rows():
         f"FROM ({repaired_query}) WHERE geometry IS NOT NULL"
     ).fetchone()[0]
     assert valid is True
+
+
+def test_repair_arrow_table_geometry_null_rows_at_scale():
+    """The #642 segfault only reproduces at scale — keep one big case.
+
+    Review probing on #645 crashed the old single-WHERE count from ~8k rows
+    with this exact recipe (NULL every 997 rows, invalid every 13), while the
+    small fixtures above pass either form. Being memory corruption, the crash
+    is environment-dependent (it does not reproduce on every machine), so this
+    catches a regression where it manifests rather than everywhere — the best
+    a test can do for an upstream crash — and pins the counts at scale
+    regardless.
+    """
+    con = _con()
+    n = 10_000
+    table = (
+        con.execute(
+            f"""
+            SELECT i AS id, CASE
+                WHEN i % 997 = 0 THEN NULL
+                WHEN i % 13 = 0 THEN ST_AsWKB(ST_GeomFromText('{BOWTIE_WKT}'))
+                ELSE ST_AsWKB(ST_GeomFromText('{SQUARE_WKT}'))
+            END AS geometry
+            FROM range({n}) t(i)
+            """
+        )
+        .arrow()
+        .read_all()
+    )
+    expected_nulls = sum(1 for i in range(n) if i % 997 == 0)
+    expected_invalid = sum(1 for i in range(n) if i % 13 == 0 and i % 997 != 0)
+
+    repaired, count = repair_arrow_table_geometry(table, "geometry")
+
+    assert repaired.num_rows == n
+    assert count == expected_invalid
+    nulls = sum(1 for v in repaired.column("geometry").to_pylist() if v is None)
+    assert nulls == expected_nulls
