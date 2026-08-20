@@ -187,3 +187,24 @@ class TestLinearizedEmptyCurve:
 
         assert result.exit_code == 0, result.output
         assert len(_rows(output)) == 2
+
+    def test_all_empty_csv_converts_without_ordering(self, tmp_path):
+        """Same rescue as the spatial path: nothing to measure, so no ordering."""
+        source = tmp_path / "all_empty.csv"
+        source.write_text("id,geom\n1,POLYGON EMPTY\n2,LINESTRING EMPTY\n", encoding="utf-8")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--wkt-column", "geom")
+
+        assert result.exit_code == 0, result.output
+        assert _count(output) == 2
+
+    def test_header_only_csv_converts(self, tmp_path):
+        source = tmp_path / "empty.csv"
+        source.write_text("id,geom\n", encoding="utf-8")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--wkt-column", "geom")
+
+        assert result.exit_code == 0, result.output
+        assert _count(output) == 0

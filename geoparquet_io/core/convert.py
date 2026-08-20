@@ -233,20 +233,13 @@ def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
 
 
 def _calculate_bounds(
-    con,
-    input_file,
-    geom_column,
-    verbose,
-    is_parquet=False,
-    encoding="WKB",
-    table_expr=None,
-    required=True,
+    con, input_file, geom_column, verbose, is_parquet=False, encoding="WKB", table_expr=None
 ):
     """Calculate dataset bounds from input file (or an explicit table_expr).
 
-    With ``required=False`` an unmeasurable dataset — no rows, or every
-    geometry empty or NULL — returns None instead of raising, letting the
-    caller convert without spatial ordering (issue #649).
+    Returns None for a dataset with nothing to measure — no rows, or every
+    geometry empty or NULL — leaving the caller to convert without spatial
+    ordering rather than fail (issue #649).
     """
     if verbose:
         debug("Calculating dataset bounds...")
@@ -289,9 +282,7 @@ def _calculate_bounds(
     bounds_result = con.execute(bounds_query).fetchone()
 
     if not bounds_result or any(v is None for v in bounds_result):
-        if not required:
-            return None
-        raise GeoParquetError("Could not calculate dataset bounds")
+        return None
 
     if verbose:
         xmin, ymin, xmax, ymax = bounds_result
@@ -771,7 +762,12 @@ def _get_geom_expr_and_where(geom_info, skip_invalid):
 
 
 def _calculate_csv_bounds(con, geom_info, skip_invalid, verbose):
-    """Calculate dataset bounds from CSV geometry."""
+    """Calculate dataset bounds from CSV geometry.
+
+    Returns None when there is nothing to measure, mirroring
+    :func:`_calculate_bounds`: an all-empty or row-less CSV converts unordered
+    instead of failing (issue #649).
+    """
     if verbose:
         debug("Calculating dataset bounds from CSV...")
 
@@ -799,7 +795,7 @@ def _calculate_csv_bounds(con, geom_info, skip_invalid, verbose):
         raise GeoParquetError(msg) from e
 
     if not bounds_result or any(v is None for v in bounds_result):
-        raise GeoParquetError("Could not calculate dataset bounds from CSV")
+        return None  # nothing to measure: caller writes unordered (#649)
 
     if verbose:
         xmin, ymin, xmax, ymax = bounds_result
@@ -829,20 +825,13 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
     return f"SELECT * FROM ST_Read('{input_file}')"
 
 
-def _bounds_with_curve_fallback_checked(con, *args, **kwargs):
-    """``_bounds_with_curve_fallback`` plus the unmeasurable-dataset case.
-
-    Every geometry empty or NULL (or no rows at all) leaves nothing to build a
-    Hilbert envelope from, so the conversion proceeds unordered with a warning
-    instead of failing on bounds (issue #649).
-    """
-    bounds, table_expr = _bounds_with_curve_fallback(con, *args, **kwargs)
-    if bounds is None:
-        warn(
-            "No measurable geometry bounds (every geometry is empty or NULL); "
-            "writing without Hilbert ordering."
-        )
-    return bounds, table_expr
+#: Warned when Hilbert ordering is skipped for want of an envelope (#649). Both
+#: causes land here — a source with no rows at all, and one where every geometry
+#: is empty or NULL — so the wording has to cover both.
+_NO_BOUNDS_WARNING = (
+    "No geometry to measure (no rows, or every geometry empty or NULL); "
+    "writing without Hilbert ordering."
+)
 
 
 def _orderable_geom(geom_expr, xmin, ymin):
@@ -856,9 +845,12 @@ def _orderable_geom(geom_expr, xmin, ymin):
     which pins those rows last exactly where NULL geometry already landed
     under DuckDB's NULLS LAST default.
 
-    Only the substitution is conditional — ``ST_Hilbert`` itself is evaluated
-    for every row, keeping spatial functions out of conditional execution
-    (the shape behind the segfaults in #642).
+    ``ST_Hilbert`` itself is evaluated for every row rather than from inside a
+    branch. The substitution does put ``ST_Point`` in a THEN branch, but with
+    constant arguments and over an already-decoded GEOMETRY, not the raw-blob
+    ``IS NULL`` shape that misaligned the selection vector in #642 (see
+    ``core/geometry_repair.py``); a 200k-row source with NULL and empty rows
+    goes through both the ST_Read and parquet paths without incident.
     """
     return (
         f"CASE WHEN {geom_expr} IS NULL OR ST_IsEmpty({geom_expr}) "
@@ -1056,6 +1048,10 @@ def _convert_csv_path(
                 msg = "Reading CSV, creating geometries, and applying Hilbert ordering..."
         debug(msg)
 
+    if not effective_skip_hilbert and bounds is None:
+        warn(_NO_BOUNDS_WARNING)
+        effective_skip_hilbert = True
+
     query = _build_csv_conversion_query(
         geom_info, effective_skip_hilbert, bounds, skip_invalid, skip_bbox=skip_bbox
     )
@@ -1097,9 +1093,7 @@ def _bounds_with_curve_fallback(
         tuple: (bounds, table_expr) — table_expr is the linearized view when
         the fallback fired, otherwise the caller's value unchanged.
     """
-    # required=False: an all-empty or empty dataset has no envelope to order
-    # by, which the caller turns into an unordered write rather than an error.
-    kwargs = {"is_parquet": is_parquet, "encoding": encoding, "required": False}
+    kwargs = {"is_parquet": is_parquet, "encoding": encoding}
     try:
         bounds = _calculate_bounds(
             con, input_file, geom_column, verbose, table_expr=table_expr, **kwargs
@@ -1205,7 +1199,7 @@ def _convert_spatial_path(
     geom_encoding = geom_info["metadata"].get(geom_column, {}).get("encoding", "WKB")
     bounds = None
     if not skip_hilbert:
-        bounds, table_expr = _bounds_with_curve_fallback_checked(
+        bounds, table_expr = _bounds_with_curve_fallback(
             con,
             input_file,
             geom_column,
@@ -1218,6 +1212,8 @@ def _convert_spatial_path(
             max_angle_deg=max_angle_deg,
         )
         skip_hilbert = bounds is None
+        if skip_hilbert:
+            warn(_NO_BOUNDS_WARNING)
 
     if verbose:
         if secondary_columns:
