@@ -52,6 +52,25 @@ def repair_geometry_sql(geom_expr: str) -> str:
     )
 
 
+def _layered_invalid_count_sql(source_sql: str, parsed_expr: str) -> str:
+    """COUNT of invalid geometries, in a shape DuckDB executes without crashing.
+
+    Filtering ``IS NOT NULL`` and evaluating ``ST_IsValid`` over the raw rows in
+    one WHERE clause segfaults DuckDB 1.5.x's spatial extension when the column
+    contains NULLs (selection-vector misalignment under conditional execution;
+    the same bug family as the OR-form repair crash noted below). Verified on
+    issue #642's reproduction: projecting the parsed geometry first, filtering
+    NULLs in a middle layer, and running ``ST_IsValid`` outermost is logically
+    identical and crash-free.
+    """
+    return (
+        f"SELECT COUNT(*) FROM ("
+        f"SELECT __g FROM (SELECT {parsed_expr} AS __g FROM {source_sql}) "
+        f"WHERE __g IS NOT NULL"
+        f") WHERE NOT ST_IsValid(__g)"
+    )
+
+
 def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool = True) -> str:
     """Count and optionally repair invalid geometry in an arbitrary query.
 
@@ -87,13 +106,11 @@ def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool
     if "GEOMETRY" in col_type:
         # Native GEOMETRY: no decode needed; it cannot be a malformed-bytes case.
         parsed = col
-        count_pred = f"{col} IS NOT NULL AND NOT ST_IsValid({parsed})"
         repaired_expr = repair_geometry_sql(parsed)
     elif "BLOB" in col_type or "BINARY" in col_type:
         # WKB-encoded: decode defensively. TRY() yields NULL on malformed bytes so
         # we never crash the pipeline; such rows are passed through unchanged.
         parsed = f"TRY(ST_GeomFromWKB({col}))"
-        count_pred = f"{col} IS NOT NULL AND {parsed} IS NOT NULL AND NOT ST_IsValid({parsed})"
         # AND-form (repair in THEN, passthrough in ELSE). The equivalent OR-form
         # with ST_MakeValid in the ELSE branch segfaults DuckDB 1.5.1's spatial
         # extension on some real WKB inputs (see repair_arrow_table_geometry).
@@ -106,7 +123,7 @@ def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool
         return query
 
     try:
-        n = con.execute(f"SELECT COUNT(*) FROM ({query}) WHERE {count_pred}").fetchone()[0]
+        n = con.execute(_layered_invalid_count_sql(f"({query})", parsed)).fetchone()[0]
     except Exception:
         # Defensive: never let geometry repair break extraction.
         return query
@@ -155,10 +172,9 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         con.register("_gpio_repair_src", table)
-        n = con.execute(
-            f"SELECT COUNT(*) FROM _gpio_repair_src "
-            f"WHERE {col} IS NOT NULL AND {parsed} IS NOT NULL AND NOT ST_IsValid({parsed})"
-        ).fetchone()[0]
+        # Layered count: the single-WHERE form segfaults on tables containing
+        # NULL geometry rows (issue #642) — see _layered_invalid_count_sql.
+        n = con.execute(_layered_invalid_count_sql("_gpio_repair_src", parsed)).fetchone()[0]
         _warn_invalid(n, repaired=repair)
         if not repair or n == 0:
             return table, n
