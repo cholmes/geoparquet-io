@@ -562,6 +562,7 @@ def reproject_impl(
                     input_crs=target_crs_projjson,
                     memory_limit=memory_limit,
                     input_file=read_source,
+                    invalidate_bbox=True,
                 )
                 # Replace original with temp file
                 shutil.move(str(tmp_path), str(out_path))
@@ -590,6 +591,7 @@ def reproject_impl(
                     input_crs=target_crs_projjson,
                     memory_limit=memory_limit,
                     input_file=read_source,
+                    invalidate_bbox=True,
                 )
 
                 if is_remote:
@@ -734,6 +736,12 @@ def _reproject_streaming(
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                 except (json.JSONDecodeError, KeyError) as e:
                     debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")
+
+            # Reprojection moves coordinates, so the carried bbox is stale;
+            # drop it (bbox is regenerated from the reprojected data or omitted).
+            from geoparquet_io.core.write_strategies import strip_stale_bbox
+
+            metadata = strip_stale_bbox(metadata)
 
             # Write output using stream_io
             write_output(

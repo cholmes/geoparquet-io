@@ -2233,6 +2233,7 @@ def write_parquet_with_metadata(
     geometry_info: dict | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
     input_file: str | None = None,
+    invalidate_bbox: bool = False,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2276,6 +2277,11 @@ def write_parquet_with_metadata(
             existing file. Enables full-fidelity non-planar edges preservation
             (native GEOGRAPHY logical types are only visible in the file's
             schema); without it, edges still fall back to original_metadata.
+        invalidate_bbox: When True, strip the carried per-column ``bbox`` from
+            ``original_metadata`` before building output geo metadata. Set by
+            callers that transform geometry (reproject) or filter rows (extract):
+            the input's bbox no longer describes the output, so it must be
+            recomputed from the written data or omitted rather than carried.
 
     Returns:
         None
@@ -2284,9 +2290,17 @@ def write_parquet_with_metadata(
         WriteStrategy,
         WriteStrategyFactory,
         needs_metadata_rewrite,
+        strip_stale_bbox,
     )
 
     configure_verbose(verbose)
+
+    # Callers that transform geometry or filter rows invalidate the input bbox;
+    # drop it so the write strategies recompute (or omit) it instead of carrying
+    # a stale extent into the output geo metadata.
+    if invalidate_bbox:
+        original_metadata = strip_stale_bbox(original_metadata)
+
 
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)

@@ -123,6 +123,61 @@ def build_geo_metadata(
     return geo_meta
 
 
+def strip_stale_bbox(original_metadata: dict | None) -> dict | None:
+    """Return a copy of ``original_metadata`` with per-column ``bbox`` removed.
+
+    Callers that transform geometry (reproject) or filter rows (extract) must
+    not carry the input's collection-level ``bbox`` into the output: it would
+    describe an extent the output no longer has. Dropping ``bbox`` here lets the
+    write strategies' recompute machinery regenerate a fresh one — or omit it
+    (bbox is optional per spec) when a strategy does not recompute, e.g. a
+    zero-row result. The ``covering`` bbox column is regenerated separately and
+    is left untouched.
+
+    The input dict is not mutated. The ``geo`` value is re-serialized in the
+    same form (``str``/``bytes``) it arrived in so downstream parsing is
+    unaffected. Metadata without a ``geo`` key is returned unchanged.
+    """
+    if not original_metadata:
+        return original_metadata
+
+    geo_key = (
+        "geo" if "geo" in original_metadata else (b"geo" if b"geo" in original_metadata else None)
+    )
+    if geo_key is None:
+        return original_metadata
+
+    raw = original_metadata[geo_key]
+    if isinstance(raw, bytes):
+        geo_meta = json.loads(raw.decode("utf-8"))
+    elif isinstance(raw, str):
+        geo_meta = json.loads(raw)
+    else:
+        geo_meta = json.loads(json.dumps(raw))  # deep copy of the dict form
+
+    columns = geo_meta.get("columns")
+    if not isinstance(columns, dict):
+        return original_metadata
+
+    removed = False
+    for col_meta in columns.values():
+        if isinstance(col_meta, dict) and "bbox" in col_meta:
+            del col_meta["bbox"]
+            removed = True
+
+    if not removed:
+        return original_metadata
+
+    new_metadata = dict(original_metadata)
+    if isinstance(raw, bytes):
+        new_metadata[geo_key] = json.dumps(geo_meta).encode("utf-8")
+    elif isinstance(raw, str):
+        new_metadata[geo_key] = json.dumps(geo_meta)
+    else:
+        new_metadata[geo_key] = geo_meta
+    return new_metadata
+
+
 def _parse_existing_geo_metadata(original_metadata: dict | None) -> dict | None:
     """Parse existing geo metadata from file metadata."""
     if not original_metadata:

@@ -14,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import (
@@ -823,6 +824,13 @@ def _extract_streaming(
         if verbose:
             debug(f"Streaming extraction query: {query}")
 
+        # A row filter changes the surviving extent, so the carried bbox is
+        # stale — drop it (recomputed downstream or omitted) rather than lie.
+        if spatial_filter or where or limit is not None:
+            from geoparquet_io.core.write_strategies import strip_stale_bbox
+
+            metadata = strip_stale_bbox(metadata)
+
         # Write output
         write_output(
             con,
@@ -955,8 +963,15 @@ def _execute_extraction(
         metadata = None
         try:
             metadata, _ = get_parquet_metadata(input_parquet, verbose=False)
-        except Exception:
-            pass  # Metadata preservation is optional
+        except (OSError, ValueError, RuntimeError, duckdb.Error) as e:
+            # Preservation is best-effort, but don't silently drop all geo/kv
+            # metadata: warn so a corrupt/unreadable footer is visible.
+            warn(f"Could not read input metadata for preservation; skipping: {e}")
+
+        # A row filter (bbox/geometry/WHERE/LIMIT) changes the surviving extent,
+        # so the input's carried bbox is stale — invalidate it so the write
+        # recomputes (or omits) it. A pure column pass-through keeps its bbox.
+        invalidate_bbox = bool(spatial_filter or where or limit is not None)
 
         # Repair invalid geometry (issue #506). Auto-detects GEOMETRY vs WKB
         # encoding and rewrites the query to repair in place before the write.
@@ -980,6 +995,7 @@ def _execute_extraction(
             write_strategy=write_strategy,
             memory_limit=memory_limit,
             input_file=input_parquet,
+            invalidate_bbox=invalidate_bbox,
         )
 
         # Get extracted row count from output file metadata (fast - reads footer only)

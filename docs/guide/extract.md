@@ -157,6 +157,13 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
 
 **CRS Awareness**: The tool detects coordinate system mismatches. If your bbox looks like lat/long coordinates but the data uses a projected CRS, you'll get a helpful warning showing the data's actual bounds.
 
+!!! note "Metadata bbox reflects the filter"
+    When a row filter (`--bbox`, `--geometry`, `--where`, or `--limit`) is
+    applied, the output's GeoParquet metadata `bbox` is recomputed to describe
+    only the surviving rows rather than the full input extent. A filter that
+    keeps zero rows omits `bbox` entirely (it is optional per spec). An
+    unfiltered column-only extract preserves the input's bbox unchanged.
+
 ### Geometry Filter
 
 Filter features by intersection with any geometry, not just rectangles.

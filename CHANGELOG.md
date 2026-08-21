@@ -308,6 +308,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   strategy, and reports a clean parameter error only when the user explicitly
   chose an incompatible `--write-strategy`. Streaming Arrow IPC to stdout also
   warns rather than dropping the limit silently.
+- **Stale geo-metadata `bbox` after reproject and filtered extract.**
+  `gpio convert reproject` no longer carries the input's degree-space collection
+  `bbox` into output whose coordinates were reprojected to another CRS, and
+  `gpio extract` with a row filter (`--bbox`/`--geometry`/`--where`/`--limit`)
+  no longer advertises the full pre-filter extent. The stale bbox is dropped so
+  the write machinery recomputes it from the written data; a zero-row extract
+  omits `bbox` entirely (it is optional per spec) rather than claiming a
+  non-empty extent. An unfiltered, untransformed copy still preserves its
+  carried bbox. Both file-based and streaming paths are fixed. Additionally,
+  `extract` now warns instead of silently dropping all `geo`/KV metadata when
+  the input footer cannot be read for preservation.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now
