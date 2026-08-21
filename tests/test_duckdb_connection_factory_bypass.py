@@ -252,6 +252,33 @@ class TestDiskRewriteWriteFromTable:
         assert captured == [{"load_httpfs": False}]
 
 
+def _bash_can_run_scripts() -> bool:
+    """True when ``bash`` on PATH can actually execute a script.
+
+    ``shutil.which("bash")`` is not enough on Windows runners: there ``bash``
+    resolves to WSL's ``bash.exe``, which exits non-zero with an "install a
+    distribution" notice when no WSL distro is present. That makes every hook
+    invocation return 1 -- failing the tests that expect a clean tree, and
+    passing the rejection tests for entirely the wrong reason.
+    """
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "exit 0"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
+_NEEDS_BASH = pytest.mark.skipif(
+    not _bash_can_run_scripts(),
+    reason="pre-commit hook scripts are POSIX shell; no usable bash on this platform",
+)
+
+
+@_NEEDS_BASH
 class TestAntipatternHookBansBareConnect:
     """Self-test that the extended duckdb-antipatterns hook rejects a bare
     ``duckdb.connect(`` reintroduced outside core/duckdb_utils.py."""
