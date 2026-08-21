@@ -136,7 +136,9 @@ def _probe_default_subcommand(group: click.Group) -> str | None:
     ctx = click.Context(group)
     try:
         group.parse_args(ctx, [])
-    except Exception:
+    except click.UsageError:
+        # NoArgsIsHelpError (a UsageError) is how a plain click.Group answers an
+        # empty argv. Anything else is a genuine failure and is left to surface.
         return None
     for attr in ("_protected_args", "protected_args", "args"):
         found = getattr(ctx, attr, None)
