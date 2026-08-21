@@ -246,7 +246,7 @@ class TestDuckdbMetadataNativeStatsEscaping:
 
     @pytest.mark.parametrize("column_name", [SPACED_COL, SQUOTE_COL])
     def test_native_geo_stat_getters_return_correct_values(self, tmp_path, column_name):
-        path = _native_geo_fixture(tmp_path, column_name, f"native_geo_{hash(column_name)}.parquet")
+        path = _native_geo_fixture(tmp_path, column_name, "native_geo.parquet")
 
         single = get_native_geo_statistics(path, column_name)
         assert single is not None, "expected stats, got None (query silently failed)"
@@ -310,6 +310,99 @@ class TestDuckdbMetadataSiblingLiteralEscaping:
 
         assert result, "expected a non-empty compression map, got {} (query silently failed)"
         assert all(k == col for k in result)
+
+
+# --- Fix round 1: siblings in core/add/bbox.py's manual `"{col}"` quoting --
+#
+# _build_bbox_sql and add_bbox_table (backing Table.add_bbox() in
+# api/table.py) build `"{col}"`/`f'"{c}"'` by hand instead of calling
+# quote_identifier, so they already tolerate a space but not an embedded `"`
+# (which needs doubling to `""`). _make_add_bbox_query -- used by
+# _add_bbox_streaming, the `gpio add bbox -` stdin/stdout CLI path -- has the
+# identical bug; it wasn't the function named in the fix-round request, but
+# it is the one that actually builds the vulnerable SQL for the streaming
+# path (see the fix-round entry in task-C-report.md for detail).
+
+
+class TestApiTableAddBboxQuoting:
+    """geoparquet_io/core/add/bbox.py: add_bbox_table -- backs Table.add_bbox()."""
+
+    def test_table_add_bbox_succeeds_with_correct_values(self):
+        from geoparquet_io.api.table import Table
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        quoted = quote_identifier(DQUOTE_COL)
+        arrow_table = (
+            con.execute(
+                f"""
+                SELECT * FROM (VALUES
+                    (1, ST_AsWKB(ST_GeomFromText('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))'))),
+                    (2, ST_AsWKB(ST_GeomFromText('POLYGON ((2 2, 2 3, 3 3, 3 2, 2 2))')))
+                ) AS t(id, {quoted})
+                """
+            )
+            .arrow()
+            .read_all()
+        )
+        con.close()
+
+        table = Table(arrow_table, geometry_column=DQUOTE_COL)
+        result = table.add_bbox(column_name="bbox")
+
+        rows = result.table.column("bbox").combine_chunks().to_pylist()
+        assert rows[0] == {"xmin": 0.0, "ymin": 0.0, "xmax": 1.0, "ymax": 1.0}
+        assert rows[1] == {"xmin": 2.0, "ymin": 2.0, "xmax": 3.0, "ymax": 3.0}
+
+
+class TestAddBboxStreamingQuoting:
+    """geoparquet_io/core/add/bbox.py: _make_add_bbox_query, used by
+    _add_bbox_streaming (the `gpio add bbox -` stdin/stdout CLI path).
+
+    _add_bbox_streaming's own geometry-column auto-detection only checks
+    STANDARD_GEOMETRY_NAMES (a separate, pre-existing limitation, out of
+    scope for this fix), so the hostile name is added to that lookup via
+    monkeypatch to let the *real* _add_bbox_streaming run end-to-end rather
+    than testing the SQL-building helper in isolation.
+    """
+
+    def test_add_bbox_streaming_succeeds_with_correct_values(self, tmp_path, monkeypatch):
+        from geoparquet_io.core.add import bbox as bbox_module
+
+        monkeypatch.setattr(
+            bbox_module,
+            "STANDARD_GEOMETRY_NAMES",
+            [DQUOTE_COL, *bbox_module.STANDARD_GEOMETRY_NAMES],
+        )
+        input_path = _wkb_fixture(
+            tmp_path,
+            DQUOTE_COL,
+            "streaming_input.parquet",
+            wkts=[
+                "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))",
+                "POLYGON ((2 2, 2 3, 3 3, 3 2, 2 2))",
+            ],
+        )
+        output_path = str(tmp_path / "streaming_output.parquet")
+
+        bbox_module._add_bbox_streaming(
+            input_path=input_path,
+            output_path=output_path,
+            bbox_column_name="bbox",
+            verbose=False,
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            profile=None,
+            force=False,
+            geoparquet_version="2.0",
+        )
+
+        table = pq.read_table(output_path)
+        rows = table.column("bbox").combine_chunks().to_pylist()
+        assert rows[0] == {"xmin": 0.0, "ymin": 0.0, "xmax": 1.0, "ymax": 1.0}
+        assert rows[1] == {"xmin": 2.0, "ymin": 2.0, "xmax": 3.0, "ymax": 3.0}
 
 
 if __name__ == "__main__":
