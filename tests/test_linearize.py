@@ -4,17 +4,25 @@ import math
 import struct
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from geoparquet_io.core.linearize import (
+    DEFAULT_MAX_ANGLE_DEG,
     LinearizeError,
     contains_curved_wkb,
-    linearize_wkb,
+    linearize_wkb_stats,
 )
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 CURVED_GPKG = TEST_DATA_DIR / "curved_geometry_test.gpkg"
 LINEAR_GPKG = TEST_DATA_DIR / "buildings_test.gpkg"
+
+
+def _stroke(wkb, max_angle_deg=DEFAULT_MAX_ANGLE_DEG):
+    """``(linear_wkb, changed)`` — the arc count has its own assertions below."""
+    linear, changed, _arcs = linearize_wkb_stats(wkb, max_angle_deg)
+    return linear, changed
 
 
 def _wkb(type_code: int, body: bytes) -> bytes:
@@ -62,7 +70,7 @@ class TestStroking:
     def test_half_circle_arc(self):
         """CIRCULARSTRING(0 0, 1 1, 2 0): unit half-circle centred at (1, 0)."""
         src = _wkb(8, _points((0, 0), (1, 1), (2, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out)
@@ -74,7 +82,7 @@ class TestStroking:
 
     def test_z_values_interpolate(self):
         src = _wkb(1008, _points((0, 0, 0), (1, 1, 5), (2, 0, 10)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out, dims=3)
@@ -85,7 +93,7 @@ class TestStroking:
 
     def test_collinear_arc_degrades_to_segments(self):
         src = _wkb(8, _points((0, 0), (1, 0), (2, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, pts = _parse_linestring(out)
@@ -95,7 +103,7 @@ class TestStroking:
         line = _wkb(2, _points((0, 0), (1, 0)))
         arc = _wkb(8, _points((1, 0), (2, 1), (3, 0)))
         src = _wkb(9, struct.pack("<I", 2) + line + arc)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out)
@@ -107,7 +115,7 @@ class TestStroking:
         ring = _wkb(8, _points((0, 0), (1, 1), (2, 0), (1, -1), (0, 0)))
         curvepoly = _wkb(10, struct.pack("<I", 1) + ring)
         src = _wkb(12, struct.pack("<I", 1) + curvepoly)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         assert out[0] == 1
@@ -123,7 +131,7 @@ class TestClosedCircle:
         without the dedicated branch this collapsed to a zero-area line.
         """
         src = _wkb(8, _points((0, 0), (2, 0), (0, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out)
@@ -136,7 +144,7 @@ class TestClosedCircle:
     def test_curvepolygon_circle_has_area(self):
         ring = _wkb(8, _points((0, 0), (2, 0), (0, 0)))
         src = _wkb(10, struct.pack("<I", 1) + ring)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, rings = _parse_polygon(out)
@@ -147,7 +155,7 @@ class TestClosedCircle:
     def test_closed_subarc_mid_chain(self):
         """pts[i] == pts[i+2] inside a longer chain must not collapse either."""
         src = _wkb(8, _points((1, 0), (-1, 0), (1, 0), (0, -1), (-1, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, pts = _parse_linestring(out)
@@ -160,7 +168,7 @@ class TestSweepAndDims:
     def test_counterclockwise_arc(self):
         """CIRCULARSTRING(2 0, 1 1, 0 0): the same half-circle swept CCW."""
         src = _wkb(8, _points((2, 0), (1, 1), (0, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, pts = _parse_linestring(out)
@@ -171,7 +179,7 @@ class TestSweepAndDims:
 
     def test_m_values_interpolate(self):
         src = _wkb(2008, _points((0, 0, 0), (1, 1, 5), (2, 0, 10)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out, dims=3)
@@ -181,7 +189,7 @@ class TestSweepAndDims:
 
     def test_zm_values_interpolate(self):
         src = _wkb(3008, _points((0, 0, 0, 0), (1, 1, 5, 50), (2, 0, 10, 100)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, pts = _parse_linestring(out, dims=4)
@@ -191,20 +199,20 @@ class TestSweepAndDims:
     def test_unrecognized_band_rejected(self):
         src = _wkb(4008, _points((0, 0), (1, 1), (2, 0)))
         with pytest.raises(LinearizeError, match="Unrecognized"):
-            linearize_wkb(src)
+            _stroke(src)
 
     def test_mixed_zm_inside_curve_rejected(self):
         ring = _wkb(1008, _points((0, 0, 0), (1, 1, 5), (2, 0, 10)))  # Z ring
         src = _wkb(10, struct.pack("<I", 1) + ring)  # 2D CURVEPOLYGON
         with pytest.raises(LinearizeError, match="Mixed Z/M"):
-            linearize_wkb(src)
+            _stroke(src)
 
 
 class TestMoreShapes:
     def test_geometrycollection_children_linearized(self):
         arc = _wkb(8, _points((0, 0), (1, 1), (2, 0)))
         src = _wkb(7, struct.pack("<I", 1) + arc)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         (code,) = struct.unpack_from("<I", out, 1)
@@ -219,7 +227,7 @@ class TestMoreShapes:
         multipolygon = _wkb(6, struct.pack("<I", 1) + polygon)
 
         for src in (point, polygon, multipolygon):
-            out, changed = linearize_wkb(src)
+            out, changed = _stroke(src)
             assert not changed
             assert out == src
 
@@ -229,7 +237,7 @@ class TestMoreShapes:
         arc = _wkb(8, _points((2, 0), (1, 1), (0, 0)))
         compound = _wkb(9, struct.pack("<I", 2) + line + arc)
         src = _wkb(10, struct.pack("<I", 1) + compound)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         code, rings = _parse_polygon(out)
@@ -241,7 +249,7 @@ class TestMoreShapes:
         """A CURVEPOLYGON ring that ends away from its start is closed."""
         ring = _wkb(8, _points((0, 0), (1, 1), (2, 0)))
         src = _wkb(10, struct.pack("<I", 1) + ring)
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, rings = _parse_polygon(out)
@@ -254,7 +262,7 @@ class TestMoreShapes:
             + struct.pack(">I", 2)
             + struct.pack(">dddd", 0.0, 0.0, 5.0, 5.0)
         )
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert not changed
         assert out == _wkb(2, _points((0, 0), (5, 5)))  # little-endian re-emission
@@ -263,7 +271,7 @@ class TestMoreShapes:
 class TestDegenerateArcs:
     def test_duplicate_control_points_emit_no_duplicate_vertices(self):
         src = _wkb(8, _points((0, 0), (0, 0), (2, 0)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, pts = _parse_linestring(out)
@@ -271,7 +279,7 @@ class TestDegenerateArcs:
 
     def test_all_coincident_points(self):
         src = _wkb(8, _points((1, 1), (1, 1), (1, 1)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
 
         assert changed
         _, pts = _parse_linestring(out)
@@ -283,13 +291,13 @@ class TestMaxAngleValidation:
     def test_non_positive_tolerance_rejected(self, bad):
         src = _wkb(8, _points((0, 0), (1, 1), (2, 0)))
         with pytest.raises(ValueError, match="max_angle_deg"):
-            linearize_wkb(src, bad)
+            _stroke(src, bad)
 
 
 class TestPassthrough:
     def test_linear_geometry_unchanged(self):
         src = _wkb(2, _points((0, 0), (5, 5)))
-        out, changed = linearize_wkb(src)
+        out, changed = _stroke(src)
         assert not changed
         assert out == src  # already little-endian: byte-identical
 
@@ -298,23 +306,23 @@ class TestErrors:
     def test_surface_family_rejected(self):
         src = _wkb(16, struct.pack("<I", 0))  # TIN
         with pytest.raises(LinearizeError, match="cannot be linearized"):
-            linearize_wkb(src)
+            _stroke(src)
 
     def test_ewkb_flags_rejected(self):
         src = b"\x01" + struct.pack("<I", 0x20000008) + _points((0, 0), (1, 1), (2, 0))
         with pytest.raises(LinearizeError, match="EWKB"):
-            linearize_wkb(src)
+            _stroke(src)
 
     def test_even_point_count_rejected(self):
         src = _wkb(8, _points((0, 0), (1, 1)))
         with pytest.raises(LinearizeError, match="odd point count"):
-            linearize_wkb(src)
+            _stroke(src)
 
     def test_non_curve_ring_component_rejected(self):
         point = _wkb(1, struct.pack("<dd", 0.0, 0.0))
         src = _wkb(10, struct.pack("<I", 1) + point)  # POINT as a ring
         with pytest.raises(LinearizeError, match="curve component"):
-            linearize_wkb(src)
+            _stroke(src)
 
 
 class TestContainsCurved:
@@ -459,18 +467,10 @@ class TestCliConvert:
 
 
 class TestProjectedCurvedGpkg:
-    def test_crs_survives_linearized_read(self, tmp_path):
-        """Curved + projected: CRS detection must still work on the fallback path.
-
-        (Whether the detected CRS then reaches the written file is #625/#644's
-        territory; this pins the property that the linearized read does not
-        bypass detection.)
-        """
-        import json
+    def _projected_curved_gpkg(self, tmp_path):
+        """The curved fixture declared as EPSG:25830 (ETRS89 / UTM 30N)."""
         import shutil
         import sqlite3
-
-        from geoparquet_io.core.convert import read_spatial_to_arrow
 
         wkt_25830 = (
             'PROJCS["ETRS89 / UTM zone 30N",GEOGCS["ETRS89",'
@@ -497,6 +497,15 @@ class TestProjectedCurvedGpkg:
         con.execute("UPDATE gpkg_geometry_columns SET srs_id = 25830")
         con.commit()
         con.close()
+        return gpkg
+
+    def test_crs_survives_linearized_read(self, tmp_path):
+        """Curved + projected: CRS detection must still work on the fallback path."""
+        import json
+
+        from geoparquet_io.core.convert import read_spatial_to_arrow
+
+        gpkg = self._projected_curved_gpkg(tmp_path)
 
         table, detected_crs, geom_col = read_spatial_to_arrow(str(gpkg), verbose=True)
 
@@ -504,6 +513,25 @@ class TestProjectedCurvedGpkg:
         assert table.num_rows == 1
         assert detected_crs is not None
         assert "25830" in json.dumps(detected_crs)
+
+    def test_written_geoparquet_keeps_the_projected_crs(self, tmp_path):
+        """The whole chain: curved + projected in, EPSG:25830 in the output.
+
+        The read-level half is pinned above; this pins the property review asked
+        for on #644 — that a source taking the linearize path still writes its
+        real CRS rather than defaulting to OGC:CRS84.
+        """
+        import geoparquet_io as gpio
+        from tests.test_crs_write_paths import extract_epsg_code, get_metadata_crs
+
+        gpkg = self._projected_curved_gpkg(tmp_path)
+        out = tmp_path / "curved_25830.parquet"
+
+        gpio.convert(str(gpkg)).write(str(out))
+
+        metadata_crs = get_metadata_crs(str(out))
+        assert metadata_crs is not None
+        assert extract_epsg_code(metadata_crs) == 25830
 
 
 class TestEmptyCurves:
@@ -516,7 +544,7 @@ class TestEmptyCurves:
     """
 
     def test_empty_circularstring_becomes_empty_linestring(self):
-        out, changed = linearize_wkb(_wkb(8, struct.pack("<I", 0)))
+        out, changed = _stroke(_wkb(8, struct.pack("<I", 0)))
 
         assert changed
         code, pts = _parse_linestring(out)
@@ -524,7 +552,7 @@ class TestEmptyCurves:
 
     def test_empty_ring_dropped_from_curvepolygon(self):
         ring = _wkb(8, struct.pack("<I", 0))
-        out, changed = linearize_wkb(_wkb(10, struct.pack("<I", 1) + ring))
+        out, changed = _stroke(_wkb(10, struct.pack("<I", 1) + ring))
 
         assert changed
         code, rings = _parse_polygon(out)
@@ -532,7 +560,7 @@ class TestEmptyCurves:
 
     def test_empty_curve_inside_multicurve(self):
         empty = _wkb(8, struct.pack("<I", 0))
-        out, changed = linearize_wkb(_wkb(11, struct.pack("<I", 1) + empty))
+        out, changed = _stroke(_wkb(11, struct.pack("<I", 1) + empty))
 
         assert changed
         (code,) = struct.unpack_from("<I", out, 1)
@@ -618,3 +646,166 @@ class TestCliCurveParityWithoutPrescan:
         assert result.exit_code != 0
         assert "CONVERT_TO_LINEAR" in result.output
         assert "Unsupported geometry type in WKB" not in result.output.split("Original error")[0]
+
+
+class TestArcCounting:
+    """The warning must not claim arcs were stroked when none were (#647 review).
+
+    A curved *type* with no arcs in it — an empty CIRCULARSTRING, a MULTISURFACE
+    of plain polygons — is still rewritten to a linear type, but nothing is
+    sampled, so the two numbers are reported separately.
+    """
+
+    def test_stats_report_arcs_stroked(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        _, changed, arcs = linearize_wkb_stats(_wkb(8, _points((0, 0), (1, 1), (2, 0))))
+        assert changed and arcs == 1
+
+    def test_stats_count_every_arc_in_a_chain(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        src = _wkb(8, _points((0, 0), (1, 1), (2, 0), (3, -1), (4, 0)))
+        _, changed, arcs = linearize_wkb_stats(src)
+        assert changed and arcs == 2
+
+    def test_curved_type_without_arcs_reports_zero(self):
+        from geoparquet_io.core.linearize import linearize_wkb_stats
+
+        empty = _wkb(8, struct.pack("<I", 0))
+        _, changed, arcs = linearize_wkb_stats(empty)
+        assert changed and arcs == 0
+
+        ring = _points((0, 0), (1, 0), (1, 1), (0, 0))
+        polygon = _wkb(3, struct.pack("<I", 1) + ring)
+        multisurface = _wkb(12, struct.pack("<I", 1) + polygon)
+        _, changed, arcs = linearize_wkb_stats(multisurface)
+        assert changed and arcs == 0
+
+    def test_warning_reports_both_numbers(self, caplog, tmp_path):
+        import logging
+
+        import geoparquet_io as gpio
+
+        with caplog.at_level(logging.WARNING):
+            gpio.convert(str(CURVED_GPKG))
+
+        message = "\n".join(r.message for r in caplog.records)
+        assert "Linearized 1 curved geometry" in message
+        assert "arc" in message and "stroked" in message
+
+
+class TestStreamingLinearizedRead:
+    """The linearized read must not hold the whole file in Python (#647 review).
+
+    It used to materialize the entire keep_wkb read, then a Python list of every
+    blob, then a rebuilt Arrow column — so curved input was the one path that
+    could not convert a file larger than memory, and ``pa.binary()`` also
+    capped the geometry column at 2 GB of blobs.
+    """
+
+    def _curved_batch(self, wkb_type=pa.large_binary(), rows=2):
+        ring = _wkb(8, _points((0, 0), (2, 0), (0, 0)))  # full-circle CIRCULARSTRING
+        curved = _wkb(10, struct.pack("<I", 1) + ring)  # CURVEPOLYGON
+        return pa.RecordBatch.from_arrays(
+            [pa.array(list(range(rows))), pa.array([curved] * rows, type=wkb_type)],
+            names=["id", "geom"],
+        )
+
+    def _read(self, con, batches):
+        from geoparquet_io.core.convert import _LinearizedRead
+
+        read = _LinearizedRead.__new__(_LinearizedRead)
+        read.con = con
+        read.input_url = "fake.gdb"
+        read.layer = None
+        read.max_angle_deg = 4.0
+        read.wkb_col = "geom"
+        read.schema = batches[0].schema if batches else pa.schema([("id", pa.int64())])
+        read.linearized = 0
+        read.arcs = 0
+        read._reader = iter(batches)
+        return read
+
+    def test_real_read_is_split_into_batches(self, monkeypatch):
+        """The reader must be opened with a bounded batch size.
+
+        DuckDB's ``.arrow()`` defaults to 1,000,000 rows per batch, so an
+        unbounded reader hands back all but the largest files in one piece and
+        the generator streams nothing. Reading a real multi-row source with the
+        batch size lowered pins that the configured value is actually used.
+        """
+        import geoparquet_io.core.convert as convert_mod
+        from geoparquet_io.core.common import get_duckdb_connection
+        from geoparquet_io.core.convert import _LinearizedRead
+
+        if not LINEAR_GPKG.exists():
+            pytest.skip("buildings_test.gpkg not available")
+        monkeypatch.setattr(convert_mod, "_LINEARIZE_BATCH_ROWS", 10)
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+
+        read = _LinearizedRead(con, str(LINEAR_GPKG), None, "geometry")
+        sizes = [batch.num_rows for batch in read.batches()]
+
+        assert len(sizes) > 1, f"reader was not batched: {sizes}"
+        assert max(sizes) <= 10
+        assert sum(sizes) == 42  # every row still comes through
+
+    def test_geometry_column_keeps_its_source_arrow_type(self):
+        import duckdb
+
+        con = duckdb.connect()
+        for wkb_type in (pa.binary(), pa.large_binary()):
+            read = self._read(con, [self._curved_batch(wkb_type=wkb_type)])
+            out = next(read.batches())
+            assert out.schema.field("geom").type == wkb_type
+
+    def test_multi_batch_source_lands_in_one_relation(self):
+        """Every batch must reach the registered relation, not just the first."""
+        import duckdb
+
+        from geoparquet_io.core.convert import _register_linearized_view
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        batches = [self._curved_batch(rows=2) for _ in range(3)]
+        name = _register_linearized_view(
+            con, "fake.gdb", None, "geom", read=self._read(con, batches)
+        )
+
+        rows, kinds = con.execute(
+            f"SELECT count(*), list_distinct(list(ST_GeometryType(geom))) FROM {name}"
+        ).fetchone()
+        assert rows == 6
+        assert kinds == ["POLYGON"]
+
+    def test_source_yielding_no_batches_still_registers_a_relation(self):
+        """DuckDB yields zero batches for a 0-row result, so the loop never runs
+        and the relation has to be created from the schema alone."""
+        import duckdb
+
+        from geoparquet_io.core.convert import _register_linearized_view
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        read = self._read(con, [])  # no batches at all, not one empty batch
+        read.schema = self._curved_batch(rows=0).schema  # the shape ST_Read exposes
+
+        name = _register_linearized_view(con, "fake.gdb", None, "geom", read=read)
+
+        assert con.execute(f"SELECT count(*) FROM {name}").fetchall()[0][0] == 0
+        described = {row[0]: row[1] for row in con.execute(f"DESCRIBE {name}").fetchall()}
+        assert described["geom"] == "GEOMETRY"
+
+    def test_single_empty_batch_also_registers_a_relation(self):
+        import duckdb
+
+        from geoparquet_io.core.convert import _register_linearized_view
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        read = self._read(con, [self._curved_batch(rows=0)])
+
+        name = _register_linearized_view(con, "fake.gdb", None, "geom", read=read)
+
+        assert con.execute(f"SELECT count(*) FROM {name}").fetchall()[0][0] == 0

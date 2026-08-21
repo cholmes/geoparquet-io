@@ -1558,74 +1558,121 @@ def _read_spatial_to_arrow(
         return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
 
 
-def _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg=None):
-    """Read a spatial file whose WKB contains curved types, stroking them.
+#: Rows per batch for the linearized read. DuckDB's ``.arrow()`` defaults to
+#: 1,000,000, which hands back most files as a single batch and defeats the
+#: point of streaming. Stroking multiplies a geometry's size (an arc becomes
+#: ~90 vertices), so the batch has to be small: on a 50k-row curved GeoPackage,
+#: peak RSS was 503 MB at the default and 100k rows, 395 MB at 20k, 370 MB at
+#: 5k, with no measurable difference in wall time. The repo's generic
+#: ``DEFAULT_BATCH_SIZE`` (100k, write_strategies/arrow_streaming.py) is too
+#: coarse here for that reason.
+_LINEARIZE_BATCH_ROWS = 20_000
+
+
+class _LinearizedRead:
+    """A ``keep_wkb`` read whose curved WKB is stroked batch by batch.
 
     ``ST_Read(keep_wkb := true)`` hands back the raw WKB blobs untouched (the
-    escape hatch DuckDB documents for geometry subtypes it cannot represent);
-    each curved blob is stroked into its linear equivalent in Python. Returns
-    ``(raw_table, wkb_col)`` with the geometry column holding linear WKB
-    under its original name.
+    escape hatch DuckDB documents for geometry subtypes it cannot represent),
+    and each curved blob is stroked into its linear equivalent in Python.
+    Working per record batch keeps one chunk of geometry live at a time instead
+    of the whole file (previously the read was materialized, then copied into a
+    Python list of every blob, then rebuilt), and the geometry column keeps its
+    source Arrow type — ``pa.binary()`` caps a column at 2 GB of blobs, which a
+    large curved dataset can exceed.
     """
-    from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
-    from geoparquet_io.core.linearize import (
-        DEFAULT_MAX_ANGLE_DEG,
-        LinearizeError,
-        contains_curved_wkb,
-        linearize_wkb,
-    )
 
-    if max_angle_deg is None:
-        max_angle_deg = DEFAULT_MAX_ANGLE_DEG
+    def __init__(self, con, input_url, layer, geom_column, max_angle_deg=None):
+        from geoparquet_io.core.linearize import DEFAULT_MAX_ANGLE_DEG
 
-    raw = (
-        con.execute(f"SELECT * FROM {_build_st_read_expr(input_url, layer, keep_wkb=True)}")
-        .arrow()
-        .read_all()
-    )
+        self.con = con
+        self.input_url = input_url
+        self.layer = layer
+        self.max_angle_deg = DEFAULT_MAX_ANGLE_DEG if max_angle_deg is None else max_angle_deg
+        self._reader = self._open_reader()
+        self.schema = self._reader.schema
+        self.wkb_col = geom_column if geom_column in self.schema.names else "wkb_geometry"
+        if self.wkb_col not in self.schema.names:
+            raise GeoParquetError(f"keep_wkb read of {input_url} exposes no '{geom_column}' column")
+        self.linearized = 0
+        self.arcs = 0
 
-    wkb_col = geom_column if geom_column in raw.column_names else "wkb_geometry"
-    if wkb_col not in raw.column_names:
-        raise GeoParquetError(f"keep_wkb read of {input_url} exposes no '{geom_column}' column")
+    def _open_reader(self):
+        # A DuckDB streaming result is invalidated by the next statement on its
+        # connection, and the caller runs plenty (the batches are inserted into
+        # a temp relation as they arrive), so the read gets its own cursor. The
+        # cursor is kept alive on self: dropping it would close the reader.
+        #
+        # GLOBAL settings survive the cursor — including arrow_large_buffer_size,
+        # which is what makes DuckDB hand back large_binary blobs and lets this
+        # path exceed the 2 GB a pa.binary() column can address. Connection-level
+        # spatial settings (axis order) would not carry over, but the raw
+        # keep_wkb read does not consult them.
+        self._cursor = self.con.cursor()
+        return self._cursor.execute(
+            f"SELECT * FROM {_build_st_read_expr(self.input_url, self.layer, keep_wkb=True)}"
+        ).arrow(rows_per_batch=_LINEARIZE_BATCH_ROWS)
 
-    import pyarrow as pa
+    def batches(self):
+        """Yield the source's record batches with curved WKB stroked in place."""
+        import pyarrow as pa
 
-    changed = 0
-    values = []
-    for value in raw.column(wkb_col).to_pylist():
-        if value is None:
-            values.append(None)
-            continue
-        if not contains_curved_wkb(value):
-            values.append(value)  # linear at the top level: keep the bytes as-is
-            continue
+        idx = self.schema.get_field_index(self.wkb_col)
+        wkb_type = self.schema.field(idx).type
+        for batch in self._reader:
+            columns = list(batch.columns)
+            columns[idx] = pa.array(
+                [self._linearize(value) for value in batch.column(idx).to_pylist()],
+                type=wkb_type,
+            )
+            yield pa.RecordBatch.from_arrays(columns, schema=batch.schema)
+        self._report()
+
+    def _linearize(self, value):
+        from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
+        from geoparquet_io.core.linearize import (
+            LinearizeError,
+            contains_curved_wkb,
+            linearize_wkb_stats,
+        )
+
+        if value is None or not contains_curved_wkb(value):
+            return value  # NULL, or linear at the top level: keep the bytes as-is
         try:
-            linear, did_change = linearize_wkb(value, max_angle_deg)
+            linear, changed, arcs = linearize_wkb_stats(value, self.max_angle_deg)
         except LinearizeError as e:
             # e.g. the surface family (POLYHEDRALSURFACE/TIN/TRIANGLE) or
             # malformed blobs: fall back to the actionable error (#643).
-            raise GeoParquetError(unsupported_wkb_error_message(input_url, layer, str(e))) from e
-        changed += did_change
-        values.append(linear)
-    idx = raw.column_names.index(wkb_col)
-    raw = raw.set_column(idx, wkb_col, pa.array(values, type=pa.binary()))
-    if changed:
+            raise GeoParquetError(
+                unsupported_wkb_error_message(self.input_url, self.layer, str(e))
+            ) from e
+        self.linearized += changed
+        self.arcs += arcs
+        return linear
+
+    def _report(self):
+        if not self.linearized:
+            return
         warn(
-            f"Linearized {changed} curved geometr{'y' if changed == 1 else 'ies'} "
-            f"(arcs stroked at <= {max_angle_deg} degrees per segment); GeoParquet "
-            "cannot represent curves."
+            f"Linearized {self.linearized} curved "
+            f"geometr{'y' if self.linearized == 1 else 'ies'} "
+            f"({self.arcs} arc{'' if self.arcs == 1 else 's'} stroked at <= "
+            f"{self.max_angle_deg} degrees per segment); GeoParquet cannot "
+            "represent curves."
         )
-    return raw, wkb_col
 
 
-def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=None):
+def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=None, read=None):
     """Linearized read shaped like the normal read path (WKB `geometry` column)."""
-    raw, wkb_col = _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg)
+    import pyarrow as pa
+
+    read = read or _LinearizedRead(con, input_url, layer, geom_column, max_angle_deg)
+    table = pa.Table.from_batches(list(read.batches()), schema=read.schema)
 
     # Round-trip through DuckDB: validates the stroked WKB and yields the same
     # WKB-encoded `geometry` column shape as the normal read path.
-    con.register("_gpio_linearized_src", raw)
-    quoted_wkb = quote_identifier(wkb_col)
+    con.register("_gpio_linearized_src", table)
+    quoted_wkb = quote_identifier(read.wkb_col)
     result = con.execute(
         f"SELECT * EXCLUDE ({quoted_wkb}), "
         f"ST_AsWKB(ST_GeomFromWKB({quoted_wkb})) AS geometry "
@@ -1634,22 +1681,41 @@ def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=N
     return result.arrow().read_all()
 
 
-def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=None):
-    """Register a linearized read as a view mimicking ST_Read's shape.
+def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=None, read=None):
+    """Stream a linearized read into a temp relation shaped like ST_Read's output.
 
-    The view exposes a GEOMETRY-typed column under its original name and
-    position, so the query-based conversion path (bounds, bbox, Hilbert) can
-    use it as a drop-in replacement for the ST_Read expression. Returns the
-    view name.
+    The relation exposes a GEOMETRY-typed column under its original name and
+    position, so the query-based conversion path (bounds, bbox, Hilbert) can use
+    it as a drop-in replacement for the ST_Read expression. Batches are inserted
+    one at a time, so DuckDB owns the data — and can spill it to disk — instead
+    of Python holding the whole file. Returns the relation name.
     """
-    raw, wkb_col = _linearize_to_arrow(con, input_url, layer, geom_column, max_angle_deg)
-    con.register("_gpio_linearized_src", raw)
-    quoted_wkb = quote_identifier(wkb_col)
-    con.execute(
-        "CREATE OR REPLACE TEMP VIEW _gpio_linearized AS "
+    import pyarrow as pa
+
+    read = read or _LinearizedRead(con, input_url, layer, geom_column, max_angle_deg)
+    quoted_wkb = quote_identifier(read.wkb_col)
+    select = (
         f"SELECT * REPLACE (ST_GeomFromWKB({quoted_wkb}) AS {quoted_wkb}) "
-        "FROM _gpio_linearized_src"
+        "FROM _gpio_linearized_batch"
     )
+    con.execute("DROP TABLE IF EXISTS _gpio_linearized")
+
+    created = False
+    for batch in read.batches():
+        con.register("_gpio_linearized_batch", pa.Table.from_batches([batch], schema=read.schema))
+        if created:
+            con.execute(f"INSERT INTO _gpio_linearized {select}")
+        else:
+            con.execute(f"CREATE TEMP TABLE _gpio_linearized AS {select}")
+            created = True
+        con.unregister("_gpio_linearized_batch")
+
+    if not created:
+        # A source with no batches at all still needs a relation of the right
+        # shape for the conversion query to select from.
+        con.register("_gpio_linearized_batch", read.schema.empty_table())
+        con.execute(f"CREATE TEMP TABLE _gpio_linearized AS {select}")
+        con.unregister("_gpio_linearized_batch")
     return "_gpio_linearized"
 
 
