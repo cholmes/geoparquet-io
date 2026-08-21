@@ -147,6 +147,37 @@ def setup_aws_profile_if_needed(profile, *paths):
         os.environ["AWS_PROFILE"] = profile
 
 
+@contextmanager
+def aws_profile_scope(profile, *paths):
+    """Temporarily set AWS_PROFILE for S3 paths, restoring the prior value on exit.
+
+    Library-safe counterpart to :func:`setup_aws_profile_if_needed`. It sets the
+    ``AWS_PROFILE`` env var only when a profile is given and at least one path is
+    an S3 URL, and always restores the previous value when the scope exits —
+    including the was-unset case, where the var is removed again. This keeps a
+    Python-API ``.write(profile=...)`` from permanently mutating the host
+    process environment and bleeding into later, unrelated calls.
+
+    Args:
+        profile: AWS profile name or None.
+        *paths: File paths to check for S3 URLs.
+    """
+    should_set = bool(profile) and any(p and is_s3_url(p) for p in paths)
+    if not should_set:
+        yield
+        return
+
+    previous = os.environ.get("AWS_PROFILE")
+    os.environ["AWS_PROFILE"] = profile
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("AWS_PROFILE", None)
+        else:
+            os.environ["AWS_PROFILE"] = previous
+
+
 def resolve_s3_config(
     s3_endpoint: str | None = None,
     s3_region: str | None = None,

@@ -221,8 +221,10 @@ def configure_verbose(verbose: bool) -> None:
     # Ensure at least a basic handler exists for non-CLI usage (e.g., tests, library usage)
     if not logger.handlers:
         setup_cli_logging(verbose=verbose, show_timestamps=False, use_colors=False)
-    elif verbose:
-        logger.setLevel(logging.DEBUG)
+    else:
+        # Symmetric: verbose=False must lower the level again, not just raise it.
+        # A one-way ratchet left the whole process at DEBUG after any verbose call.
+        logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 # ============================================================================

@@ -248,6 +248,16 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   outside `core/duckdb_utils.py` — including via an aliased or
   `from duckdb import ...` import, which would otherwise slip past the check.
   A trailing `# allow-bare-connect` comment marks a deliberate exception.
+- **Library-safe writes: no global state leaks.** Three side effects that made
+  `gpio` unsafe to embed are fixed. (1) The write path no longer mutates a
+  caller-supplied `extra_kv_metadata` dict in place — a dict reused across
+  writes (e.g. partition loops) no longer accumulates preserved keys from prior
+  files. (2) A `.write(profile=...)` / `.upload(profile=...)` to S3 now restores
+  the previous `AWS_PROFILE` when it returns (including the was-unset case)
+  instead of permanently mutating the host process environment; the CLI's
+  existing save/restore behavior is unchanged. (3) `configure_verbose()` is now
+  symmetric — a `verbose=True` call followed by `verbose=False` lowers the
+  logger back to `INFO` instead of leaving the whole process at `DEBUG`.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

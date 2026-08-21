@@ -57,10 +57,10 @@ from geoparquet_io.core.logging_config import (
 from geoparquet_io.core.parquet_writer import ParquetWriteSettings
 from geoparquet_io.core.remote import (
     _sanitize_url_for_logging,
+    aws_profile_scope,
     is_remote_url,
     needs_httpfs,
     remote_write_context,
-    setup_aws_profile_if_needed,
     upload_if_remote,
 )
 from geoparquet_io.core.streaming import extract_version_from_metadata
@@ -1699,9 +1699,6 @@ def write_geoparquet_via_arrow(
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         input_crs: PROJJSON dict with CRS from input file
     """
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
-
     # Detect geometry column if not provided
     if geometry_column is None:
         geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
@@ -1714,9 +1711,14 @@ def write_geoparquet_via_arrow(
     query_columns = _get_query_columns(con, query)
     has_geometry = geometry_column in query_columns
 
-    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-        actual_output,
-        is_remote,
+    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
+    # never leaks into the host process env (restored on exit, incl. was-unset).
+    with (
+        aws_profile_scope(profile, output_file),
+        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+            actual_output,
+            is_remote,
+        ),
     ):
         # Validate compression settings
         compression, compression_level, compression_desc = validate_compression_settings(
@@ -2289,9 +2291,6 @@ def write_parquet_with_metadata(
 
     configure_verbose(verbose)
 
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
-
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)
     if geometry_info and geometry_info.get("primary"):
@@ -2314,7 +2313,10 @@ def write_parquet_with_metadata(
         if verbose:
             debug("Forcing metadata rewrite for covering metadata")
 
-    # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa)
+    # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa).
+    # Build a merged local dict rather than mutating the caller-supplied
+    # extra_kv_metadata: partition loops reuse one dict across writes, and
+    # writing into it in place leaked prior files' keys into later ones.
     if original_metadata:
         preserved_keys = {}
         for key, value in original_metadata.items():
@@ -2324,11 +2326,8 @@ def write_parquet_with_metadata(
             val_str = value.decode("utf-8") if isinstance(value, bytes) else value
             preserved_keys[key_str] = val_str
         if preserved_keys:
-            if extra_kv_metadata is None:
-                extra_kv_metadata = {}
-            for k, v in preserved_keys.items():
-                if k not in extra_kv_metadata:
-                    extra_kv_metadata[k] = v
+            # Caller-supplied entries win over preserved keys of the same name.
+            extra_kv_metadata = {**preserved_keys, **(extra_kv_metadata or {})}
 
     if extra_kv_metadata:
         rewrite_needed = True
@@ -2341,9 +2340,14 @@ def write_parquet_with_metadata(
         info("\n-- Query:")
         progress(query)
 
-    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-        actual_output,
-        is_remote,
+    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
+    # never leaks into the host process env (restored on exit, incl. was-unset).
+    with (
+        aws_profile_scope(profile, output_file),
+        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+            actual_output,
+            is_remote,
+        ),
     ):
         if not rewrite_needed:
             # Fast path: plain DuckDB COPY TO without geo metadata manipulation
@@ -2537,9 +2541,6 @@ def write_geoparquet_table(
         edges: Edge interpretation, "spherical" or "planar" (default None = planar).
                Use "spherical" for data from BigQuery or other S2-based sources.
     """
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
-
     # Auto-detect geometry column if not provided
     if geometry_column is None:
         # Try to detect from table metadata
@@ -2587,9 +2588,14 @@ def write_geoparquet_table(
     # Normalize large_string/large_binary back to string/binary for Parquet compatibility
     table = _normalize_arrow_large_types(table)
 
-    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-        actual_output,
-        is_remote,
+    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
+    # never leaks into the host process env (restored on exit, incl. was-unset).
+    with (
+        aws_profile_scope(profile, output_file),
+        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+            actual_output,
+            is_remote,
+        ),
     ):
         # Apply GeoParquet metadata only if geometry column exists
         if has_geometry:

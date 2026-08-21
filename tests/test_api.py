@@ -389,7 +389,7 @@ class TestTableUpload:
     def test_upload_writes_temp_and_calls_upload(self, sample_table):
         """Test that upload() writes to temp file and calls core upload."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
+            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
                 # Make upload a no-op
                 mock_upload.return_value = None
 
@@ -403,7 +403,7 @@ class TestTableUpload:
     def test_upload_with_s3_endpoint(self, sample_table):
         """Test upload() with custom S3 endpoint."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
+            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
                 mock_upload.return_value = None
 
                 sample_table.upload(
@@ -425,7 +425,7 @@ class TestTableUpload:
             raise Exception("Upload failed")
 
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
+            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
                 mock_upload.side_effect = capture_and_raise
 
                 with pytest.raises(Exception, match="Upload failed"):
