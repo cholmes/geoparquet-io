@@ -27,6 +27,13 @@ from geoparquet_io.cli.main import cli
 SNAPSHOT_PATH = Path(__file__).parent / "data" / "cli_surface.json"
 UPDATE_ENV_VAR = "GPIO_UPDATE_SNAPSHOT"
 
+# Click 8.2 introduced a sentinel distinguishing "no default declared" from an
+# explicitly declared ``None``. Its ``repr`` is a click implementation detail,
+# so it is recorded as a stable token instead; ``None`` still records as
+# ``'None'``, keeping the unset-vs-explicit-None distinction visible.
+_UNSET = getattr(click.core, "UNSET", object())
+UNSET_TOKEN = "<unset>"
+
 # Commands contributed by third-party plugins (loaded through the
 # ``gpio.plugins`` entry point group) are excluded from the snapshot so an
 # installed plugin cannot break this test.
@@ -53,7 +60,8 @@ def _type_repr(param_type: click.ParamType) -> str:
     described structurally instead of by their default repr.
     """
     if isinstance(param_type, click.Choice):
-        return "choice[" + "|".join(str(choice) for choice in param_type.choices) + "]"
+        choices = "|".join(str(choice) for choice in param_type.choices)
+        return f"choice[{choices},case_sensitive={param_type.case_sensitive}]"
     if isinstance(param_type, click.Path):
         return (
             "path["
@@ -81,8 +89,14 @@ def _type_repr(param_type: click.ParamType) -> str:
 
 
 def _default_repr(param: click.Parameter) -> str:
-    """Return ``repr`` of a parameter default, invoking callable defaults."""
+    """Return ``repr`` of a parameter default, invoking callable defaults.
+
+    Click's "no default declared" sentinel is normalized to ``<unset>`` so the
+    snapshot does not churn wholesale when click changes the sentinel's repr.
+    """
     default = param.default
+    if default is _UNSET:
+        return UNSET_TOKEN
     if callable(default):
         default = default()
     return repr(default)
@@ -99,8 +113,36 @@ def describe_param(param: click.Parameter) -> dict:
         "default": _default_repr(param),
         "is_flag": bool(getattr(param, "is_flag", False)),
         "multiple": bool(getattr(param, "multiple", False)),
+        "hidden": bool(getattr(param, "hidden", False)),
         "nargs": param.nargs,
     }
+
+
+def _probe_default_subcommand(group: click.Group) -> str | None:
+    """Return the subcommand a group dispatches to when given no arguments.
+
+    ``create_default_group`` in ``cli/main.py`` builds its groups from a
+    factory, so every generated class is named ``_DefaultGroup`` and the
+    configured subcommand lives only in a closure. Rather than reaching into
+    ``__closure__`` cells, this asks the group what it actually does with an
+    empty argv through the public ``parse_args`` API: a default-dispatch group
+    rewrites argv to its default subcommand, while a plain ``click.Group``
+    raises ``NoArgsIsHelpError`` and records ``None``.
+
+    Note this pins the *dispatch target* only. Full behavioral coverage of bare
+    default dispatch (``gpio check <file>`` running ``check all``) is deferred
+    to the test-consolidation issue, #666.
+    """
+    ctx = click.Context(group)
+    try:
+        group.parse_args(ctx, [])
+    except Exception:
+        return None
+    for attr in ("_protected_args", "protected_args", "args"):
+        found = getattr(ctx, attr, None)
+        if found:
+            return str(found[0])
+    return None
 
 
 def describe_command(command: click.Command) -> dict:
@@ -115,6 +157,7 @@ def describe_command(command: click.Command) -> dict:
         ),
     }
     if isinstance(command, click.Group):
+        described["default_subcommand"] = _probe_default_subcommand(command)
         described["commands"] = {
             name: describe_command(sub)
             for name, sub in sorted(command.commands.items())
@@ -136,6 +179,16 @@ def iter_leaf_paths(described: dict, prefix: tuple[str, ...] = ()) -> list[tuple
     for name, sub in described["commands"].items():
         leaves.extend(iter_leaf_paths(sub, prefix + (name,)))
     return leaves
+
+
+def iter_group_paths(described: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    """Yield the argv path of every group in a described tree, root included."""
+    if described["kind"] != "group":
+        return []
+    groups = [prefix]
+    for name, sub in described["commands"].items():
+        groups.extend(iter_group_paths(sub, prefix + (name,)))
+    return groups
 
 
 def _serialize(surface: dict) -> str:
@@ -175,6 +228,12 @@ def test_cli_surface_matches_snapshot():
     surface = build_surface()
 
     if os.environ.get(UPDATE_ENV_VAR):
+        # Never let a stray env var turn CI green by rewriting the baseline.
+        assert not os.environ.get("CI"), (
+            f"{UPDATE_ENV_VAR} must not be set in CI: it would rewrite the "
+            "baseline instead of checking against it. Re-record the snapshot "
+            "locally and commit the diff."
+        )
         SNAPSHOT_PATH.write_text(_serialize(surface), encoding="utf-8")
         pytest.skip(f"{UPDATE_ENV_VAR} set: refreshed {SNAPSHOT_PATH.name}")
 
@@ -212,6 +271,29 @@ def test_leaf_command_help_renders(argv):
     assert "Usage:" in result.output
 
 
-def test_leaf_command_inventory_is_non_trivial():
+GROUP_PATHS = iter_group_paths(build_surface())
+
+
+@pytest.mark.parametrize(
+    "argv",
+    GROUP_PATHS,
+    ids=["/".join(path) or "gpio" for path in GROUP_PATHS],
+)
+def test_group_help_renders(argv):
+    """``--help`` renders for every group, including default-dispatch groups.
+
+    The groups built by ``create_default_group`` intercept ``--help`` in their
+    own ``parse_args`` before falling through to the default subcommand, so
+    this covers a branch the leaf cases never reach.
+    """
+    result = CliRunner().invoke(cli, [*argv, "--help"])
+    assert result.exit_code == 0, (
+        f"gpio {' '.join(argv)} --help exited {result.exit_code}\n{result.output}"
+    )
+    assert "Usage:" in result.output
+
+
+def test_command_inventory_is_non_trivial():
     """Guard against the walker silently collecting nothing."""
     assert len(LEAF_PATHS) > 40
+    assert len(GROUP_PATHS) > 10

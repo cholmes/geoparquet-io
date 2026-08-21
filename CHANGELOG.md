@@ -70,8 +70,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   fails naming the exact field that drifted. Help prose is deliberately not
   pinned. Plugin-contributed commands are excluded, so an installed plugin
   cannot break the test. Intentional changes are accepted by re-recording with
-  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py`. A companion
-  parametrized test renders `--help` for every built-in leaf command.
+  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py` (refused
+  when `CI` is set, so a stray env var cannot rewrite the baseline green). The
+  snapshot also pins which subcommand each default-dispatch group falls back to
+  (`check` → `all`, `inspect` → `summary`), which lived only in a closure and
+  was previously unobservable. Companion parametrized tests render `--help` for
+  every built-in leaf command and every group.
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with

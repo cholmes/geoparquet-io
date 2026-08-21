@@ -11,6 +11,7 @@
      "params": [
       {
        "default": "'a5_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "a5_name",
@@ -24,6 +25,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -37,6 +39,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -46,10 +49,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -63,6 +67,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -76,6 +81,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -85,10 +91,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -102,6 +109,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -115,6 +123,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -128,6 +137,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -141,6 +151,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -153,7 +164,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -167,6 +179,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -180,6 +193,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -194,6 +208,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -214,6 +229,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "add_bbox",
@@ -227,6 +243,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -240,6 +257,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "clear_cache",
@@ -253,6 +271,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -262,10 +281,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -279,6 +299,7 @@
       },
       {
        "default": "'gaul'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "dataset",
@@ -288,10 +309,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[gaul|overture]"
+       "type": "choice[gaul|overture,case_sensitive=False]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -305,6 +327,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -314,10 +337,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -330,7 +354,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "levels",
@@ -344,6 +369,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_cache",
@@ -357,6 +383,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -370,6 +397,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -383,6 +411,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -396,6 +425,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -408,7 +438,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -422,6 +453,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -435,6 +467,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "vecorel",
@@ -448,6 +481,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -462,6 +496,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -482,6 +517,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -495,6 +531,7 @@
       },
       {
        "default": "'bbox'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox_name",
@@ -508,6 +545,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -517,10 +555,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -534,6 +573,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -547,6 +587,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -560,6 +601,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -569,10 +611,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -586,6 +629,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -599,6 +643,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -612,6 +657,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -624,7 +670,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -638,6 +685,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -651,6 +699,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -665,6 +714,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -684,7 +734,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -698,6 +749,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -719,6 +771,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -732,6 +785,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -741,10 +795,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -758,6 +813,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -771,6 +827,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -780,10 +837,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -797,6 +855,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_vecorel",
@@ -810,6 +869,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -823,6 +883,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -836,6 +897,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -848,7 +910,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -862,6 +925,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -875,6 +939,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -889,6 +954,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -909,6 +975,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -922,6 +989,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -931,10 +999,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -948,6 +1017,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -961,6 +1031,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -970,10 +1041,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "'h3_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "h3_name",
@@ -986,7 +1058,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -1000,6 +1073,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -1013,6 +1087,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -1026,6 +1101,7 @@
       },
       {
        "default": "9",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -1039,6 +1115,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -1051,7 +1128,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -1065,6 +1143,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -1078,6 +1157,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1092,6 +1172,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -1112,6 +1193,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -1125,6 +1207,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "approx",
@@ -1138,6 +1221,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "auto",
@@ -1151,6 +1235,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -1160,10 +1245,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -1177,6 +1263,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -1190,6 +1277,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "exact",
@@ -1203,6 +1291,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -1216,6 +1305,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -1225,10 +1315,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -1242,6 +1333,7 @@
       },
       {
        "default": "'kdtree_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "kdtree_name",
@@ -1254,7 +1346,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -1268,6 +1361,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -1281,6 +1375,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "partitions",
@@ -1294,6 +1389,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -1306,7 +1402,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -1320,6 +1417,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -1333,6 +1431,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1347,6 +1446,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -1367,6 +1467,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -1380,6 +1481,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -1389,10 +1491,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -1406,6 +1509,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -1419,6 +1523,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -1428,10 +1533,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -1445,6 +1551,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -1458,6 +1565,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -1471,6 +1579,7 @@
       },
       {
        "default": "'quadkey'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "quadkey_name",
@@ -1484,6 +1593,7 @@
       },
       {
        "default": "13",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -1497,6 +1607,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -1509,7 +1620,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -1523,6 +1635,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -1536,6 +1649,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "use_centroid",
@@ -1549,6 +1663,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1563,6 +1678,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -1583,6 +1699,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -1596,6 +1713,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -1605,10 +1723,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -1622,6 +1741,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -1635,6 +1755,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -1644,10 +1765,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -1661,6 +1783,7 @@
       },
       {
        "default": "13",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "level",
@@ -1674,6 +1797,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -1687,6 +1811,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -1700,6 +1825,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -1712,7 +1838,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -1726,6 +1853,7 @@
       },
       {
        "default": "'s2_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "s2_name",
@@ -1739,6 +1867,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -1752,6 +1881,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1766,6 +1896,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -1780,6 +1911,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -1793,7 +1925,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "converters",
@@ -1807,7 +1940,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -1821,6 +1955,7 @@
       },
       {
        "default": "3",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "iterations",
@@ -1834,7 +1969,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "keep_output",
@@ -1848,6 +1984,7 @@
       },
       {
        "default": "'table'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_format",
@@ -1857,10 +1994,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[table|json]"
+       "type": "choice[table|json,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_json",
@@ -1875,6 +2013,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "quiet",
@@ -1889,6 +2028,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1903,6 +2043,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "warmup",
@@ -1923,7 +2064,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -1937,6 +2079,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output",
@@ -1951,6 +2094,7 @@
       },
       {
        "default": "'table'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_format",
@@ -1960,10 +2104,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[table|json]"
+       "type": "choice[table|json,case_sensitive=True]"
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "query",
@@ -1978,6 +2123,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -1999,6 +2145,7 @@
      "params": [
       {
        "default": "'table'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_format",
@@ -2008,10 +2155,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[table|json]"
+       "type": "choice[table|json,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "result_files",
@@ -2025,6 +2173,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2045,7 +2194,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": true,
        "name": "files",
@@ -2059,6 +2209,7 @@
       },
       {
        "default": "3",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "iterations",
@@ -2073,6 +2224,7 @@
       },
       {
        "default": "'core'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "operations",
@@ -2082,10 +2234,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[core|full]"
+       "type": "choice[core|full,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output",
@@ -2100,6 +2253,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "profile",
@@ -2113,6 +2267,7 @@
       },
       {
        "default": "'./profiles'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "profile_dir",
@@ -2126,6 +2281,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2141,6 +2297,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -2155,6 +2312,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2168,6 +2326,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2181,6 +2340,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fix",
@@ -2193,7 +2353,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "fix_output",
@@ -2207,6 +2368,7 @@
       },
       {
        "default": "500000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit_rows",
@@ -2220,6 +2382,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_backup",
@@ -2233,6 +2396,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -2245,7 +2409,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2259,6 +2424,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "pmtiles",
@@ -2272,6 +2438,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "profile",
@@ -2281,10 +2448,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[web]"
+       "type": "choice[web,case_sensitive=False]"
       },
       {
        "default": "100",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "random_sample_size",
@@ -2298,6 +2466,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "spec_details",
@@ -2311,6 +2480,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2331,6 +2501,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2344,6 +2515,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2357,6 +2529,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fix",
@@ -2369,7 +2542,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "fix_output",
@@ -2383,6 +2557,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_backup",
@@ -2396,6 +2571,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -2408,7 +2584,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2422,6 +2599,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2442,6 +2620,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2455,6 +2634,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2468,6 +2648,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fix",
@@ -2480,7 +2661,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "fix_output",
@@ -2494,6 +2676,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_backup",
@@ -2507,6 +2690,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -2519,7 +2703,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2533,6 +2718,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2553,6 +2739,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2566,6 +2753,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2578,7 +2766,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2592,6 +2781,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2612,6 +2802,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2625,6 +2816,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2638,6 +2830,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fix",
@@ -2650,7 +2843,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "fix_output",
@@ -2664,6 +2858,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_backup",
@@ -2677,6 +2872,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -2689,7 +2885,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2703,6 +2900,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "profile",
@@ -2712,10 +2910,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[web]"
+       "type": "choice[web,case_sensitive=False]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2736,6 +2935,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -2749,6 +2949,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "check_sample",
@@ -2762,6 +2963,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fix",
@@ -2774,7 +2976,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "fix_output",
@@ -2788,6 +2991,7 @@
       },
       {
        "default": "500000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit_rows",
@@ -2801,6 +3005,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_backup",
@@ -2813,7 +3018,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2827,6 +3033,7 @@
       },
       {
        "default": "100",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "random_sample_size",
@@ -2840,6 +3047,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2860,6 +3068,7 @@
      "params": [
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -2869,10 +3078,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -2885,7 +3095,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -2899,6 +3110,7 @@
       },
       {
        "default": "1000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "sample_size",
@@ -2912,6 +3124,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_data_validation",
@@ -2925,6 +3138,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2945,7 +3159,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "stac_file",
@@ -2959,6 +3174,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -2974,6 +3190,7 @@
      ]
     }
    },
+   "default_subcommand": "all",
    "hidden": false,
    "kind": "group",
    "params": []
@@ -2987,7 +3204,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3000,7 +3218,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3014,6 +3233,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_bbox",
@@ -3027,6 +3247,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_wkt",
@@ -3040,6 +3261,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3053,6 +3275,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -3066,6 +3289,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3079,6 +3303,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -3099,7 +3324,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3112,7 +3338,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3126,6 +3353,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3139,6 +3367,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -3152,6 +3381,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3165,6 +3395,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -3185,7 +3416,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3199,6 +3431,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "description",
@@ -3212,6 +3445,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "id_field",
@@ -3224,7 +3458,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3238,6 +3473,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_crs",
@@ -3251,6 +3487,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_rs",
@@ -3264,6 +3501,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_seq",
@@ -3277,6 +3515,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3290,6 +3529,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -3303,6 +3543,7 @@
       },
       {
        "default": "7",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "precision",
@@ -3316,6 +3557,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "pretty",
@@ -3329,6 +3571,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -3343,6 +3586,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3356,6 +3600,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -3370,6 +3615,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "write_bbox",
@@ -3389,7 +3635,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3402,7 +3649,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3416,6 +3664,7 @@
       },
       {
        "default": "'features'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "layer_name",
@@ -3429,6 +3678,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3442,6 +3692,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -3455,6 +3706,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3468,6 +3720,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -3489,6 +3742,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "allow_no_geometry",
@@ -3502,6 +3756,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -3514,7 +3769,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3528,6 +3784,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -3537,10 +3794,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -3554,6 +3812,7 @@
       },
       {
        "default": "'EPSG:4326'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "crs",
@@ -3567,6 +3826,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "csv_max_line_size",
@@ -3579,7 +3839,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "delimiter",
@@ -3593,6 +3854,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -3602,10 +3864,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3618,7 +3881,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "lat_column",
@@ -3631,7 +3895,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "layer",
@@ -3645,6 +3910,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "linearize_curves",
@@ -3658,7 +3924,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "lon_column",
@@ -3672,6 +3939,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_angle_deg",
@@ -3685,6 +3953,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3698,6 +3967,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -3712,6 +3982,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -3724,7 +3995,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -3738,6 +4010,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3751,6 +4024,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_hilbert",
@@ -3764,6 +4038,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_invalid",
@@ -3777,6 +4052,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -3790,7 +4066,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "wkt_column",
@@ -3804,6 +4081,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -3824,6 +4102,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -3837,6 +4116,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "assume_crs84",
@@ -3849,7 +4129,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -3863,6 +4144,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -3872,10 +4154,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -3889,6 +4172,7 @@
       },
       {
        "default": "'EPSG:4326'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "dst_crs",
@@ -3903,6 +4187,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -3912,10 +4197,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -3929,6 +4215,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -3942,6 +4229,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -3955,6 +4243,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -3967,7 +4256,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -3981,6 +4271,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -3994,6 +4285,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "src_crs",
@@ -4008,6 +4300,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -4022,6 +4315,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -4041,7 +4335,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -4055,6 +4350,7 @@
       },
       {
        "default": "'UTF-8'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "encoding",
@@ -4067,7 +4363,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -4081,6 +4378,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -4094,6 +4392,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -4107,6 +4406,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -4120,6 +4420,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -4135,6 +4436,7 @@
      ]
     }
    },
+   "default_subcommand": "geoparquet",
    "hidden": false,
    "kind": "group",
    "params": []
@@ -4149,6 +4451,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -4161,7 +4464,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -4175,6 +4479,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "batch_size",
@@ -4187,7 +4492,8 @@
        "type": "integer range[min=1,max=5000,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -4201,6 +4507,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -4210,10 +4517,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -4226,7 +4534,8 @@
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "exclude_cols",
@@ -4240,6 +4549,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -4249,10 +4559,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "include_cols",
@@ -4265,7 +4576,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit",
@@ -4279,6 +4591,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_allowable_offset",
@@ -4291,7 +4604,8 @@
        "type": "float"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_crs",
@@ -4304,7 +4618,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -4318,6 +4633,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -4330,7 +4646,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "password",
@@ -4343,7 +4660,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "portal_url",
@@ -4357,6 +4675,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -4371,6 +4690,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -4383,7 +4703,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -4396,7 +4717,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "service_url",
@@ -4410,6 +4732,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -4423,6 +4746,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_bbox",
@@ -4436,6 +4760,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_hilbert",
@@ -4449,6 +4774,7 @@
       },
       {
        "default": "60.0",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "timeout",
@@ -4461,7 +4787,8 @@
        "type": "float range[min=0,max=None,min_open=True,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "token",
@@ -4474,7 +4801,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "token_file",
@@ -4487,7 +4815,8 @@
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "username",
@@ -4501,6 +4830,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -4515,6 +4845,7 @@
       },
       {
        "default": "'1=1'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "where",
@@ -4528,6 +4859,7 @@
       },
       {
        "default": "1",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "workers",
@@ -4548,6 +4880,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -4560,7 +4893,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -4574,6 +4908,7 @@
       },
       {
        "default": "'auto'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox_mode",
@@ -4583,10 +4918,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[auto|server|local]"
+       "type": "choice[auto|server|local,case_sensitive=True]"
       },
       {
        "default": "500000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox_threshold",
@@ -4600,6 +4936,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -4609,10 +4946,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -4625,7 +4963,8 @@
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "credentials_file",
@@ -4639,6 +4978,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -4652,6 +4992,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "edges",
@@ -4661,10 +5002,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[spherical|planar]"
+       "type": "choice[spherical|planar,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "exclude_cols",
@@ -4677,7 +5019,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geography_column",
@@ -4691,6 +5034,7 @@
       },
       {
        "default": "'wkt'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geometry_format",
@@ -4700,10 +5044,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[wkt|geojson]"
+       "type": "choice[wkt|geojson,case_sensitive=False]"
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -4713,10 +5058,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "include_cols",
@@ -4729,7 +5075,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit",
@@ -4743,6 +5090,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -4756,6 +5104,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -4768,7 +5117,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "project",
@@ -4782,6 +5132,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -4796,6 +5147,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -4808,7 +5160,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -4822,6 +5175,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -4834,7 +5188,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "table_id",
@@ -4848,6 +5203,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -4861,7 +5217,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "where",
@@ -4875,6 +5232,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -4895,6 +5253,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -4907,7 +5266,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -4920,7 +5280,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -4934,6 +5295,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -4943,10 +5305,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -4959,7 +5322,8 @@
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "exclude_cols",
@@ -4973,6 +5337,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "geometry",
@@ -4987,6 +5352,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -4996,10 +5362,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "include_cols",
@@ -5012,7 +5379,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit",
@@ -5025,7 +5393,8 @@
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -5039,6 +5408,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -5052,6 +5422,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -5066,6 +5437,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -5078,7 +5450,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -5092,6 +5465,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_bbox",
@@ -5105,6 +5479,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_hilbert",
@@ -5117,7 +5492,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "table_name",
@@ -5131,6 +5507,7 @@
       },
       {
        "default": "120",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "timeout",
@@ -5143,7 +5520,8 @@
        "type": "integer range[min=1,max=3600,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "url",
@@ -5157,6 +5535,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -5170,7 +5549,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "where",
@@ -5191,6 +5571,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "allow_schema_diff",
@@ -5204,6 +5585,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -5216,7 +5598,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -5229,7 +5612,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -5243,6 +5627,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -5252,10 +5637,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -5269,6 +5655,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -5281,7 +5668,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "exclude_cols",
@@ -5294,7 +5682,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geometry",
@@ -5308,6 +5697,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -5317,10 +5707,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive_input",
@@ -5333,7 +5724,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "include_cols",
@@ -5346,7 +5738,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -5359,7 +5752,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit",
@@ -5373,6 +5767,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -5386,6 +5781,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -5399,6 +5795,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -5413,6 +5810,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -5425,7 +5823,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -5439,6 +5838,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -5452,6 +5852,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_count",
@@ -5465,6 +5866,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "use_first_geometry",
@@ -5478,6 +5880,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -5491,7 +5894,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "where",
@@ -5505,6 +5909,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -5518,6 +5923,7 @@
       },
       {
        "default": "'duckdb-kv'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_strategy",
@@ -5527,7 +5933,7 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[duckdb-kv|in-memory|streaming|disk-rewrite]"
+       "type": "choice[duckdb-kv|in-memory|streaming|disk-rewrite,case_sensitive=True]"
       }
      ]
     },
@@ -5538,6 +5944,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -5551,6 +5958,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "auto_tile",
@@ -5565,6 +5973,7 @@
       },
       {
        "default": "'auto'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "axis_order",
@@ -5574,10 +5983,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[auto|xy|latlon]"
+       "type": "choice[auto|xy|latlon,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -5591,6 +6001,7 @@
       },
       {
        "default": "'auto'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox_mode",
@@ -5600,10 +6011,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[auto|server|local]"
+       "type": "choice[auto|server|local,case_sensitive=True]"
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -5613,10 +6025,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -5629,7 +6042,8 @@
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "deprecated_version",
@@ -5639,10 +6053,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[auto|2.0.0|1.1.0|1.0.0]"
+       "type": "choice[auto|2.0.0|1.1.0|1.0.0,case_sensitive=True]"
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -5652,10 +6067,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "limit",
@@ -5668,7 +6084,8 @@
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_crs",
@@ -5681,7 +6098,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -5695,6 +6113,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -5708,6 +6127,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "page_size",
@@ -5721,6 +6141,7 @@
       },
       {
        "default": "1",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parallel_layers",
@@ -5734,6 +6155,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -5748,6 +6170,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -5760,7 +6183,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -5773,7 +6197,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "service_url",
@@ -5787,6 +6212,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_bbox",
@@ -5800,6 +6226,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_hilbert",
@@ -5812,7 +6239,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "sort_by",
@@ -5826,6 +6254,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "strict_crs",
@@ -5838,7 +6267,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "typename",
@@ -5852,6 +6282,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -5866,6 +6297,7 @@
       },
       {
        "default": "'1.1.0'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "wfs_version",
@@ -5875,10 +6307,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[auto|2.0.0|1.1.0|1.0.0]"
+       "type": "choice[auto|2.0.0|1.1.0|1.0.0,case_sensitive=True]"
       },
       {
        "default": "1",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "workers",
@@ -5893,6 +6326,7 @@
      ]
     }
    },
+   "default_subcommand": "geoparquet",
    "hidden": false,
    "kind": "group",
    "params": []
@@ -5907,6 +6341,7 @@
      "params": [
       {
        "default": "10",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "count",
@@ -5920,6 +6355,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -5933,6 +6369,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "markdown_output",
@@ -5946,6 +6383,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_columns",
@@ -5959,6 +6397,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_truncate",
@@ -5971,7 +6410,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -5985,6 +6425,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6005,7 +6446,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -6019,6 +6461,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -6032,6 +6475,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6053,6 +6497,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -6066,6 +6511,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "meta_geo_stats",
@@ -6079,6 +6525,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "meta_geoparquet",
@@ -6092,6 +6539,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "meta_parquet",
@@ -6105,6 +6553,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "meta_parquet_geo",
@@ -6118,6 +6567,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "meta_row_groups",
@@ -6130,7 +6580,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -6144,6 +6595,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6165,6 +6617,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -6178,6 +6631,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "markdown_output",
@@ -6190,7 +6644,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -6204,6 +6659,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6225,6 +6681,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "check_all_files",
@@ -6238,6 +6695,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -6251,6 +6709,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "markdown_output",
@@ -6263,7 +6722,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -6277,6 +6737,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6298,6 +6759,7 @@
      "params": [
       {
        "default": "10",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "count",
@@ -6311,6 +6773,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "json_output",
@@ -6324,6 +6787,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "markdown_output",
@@ -6337,6 +6801,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_columns",
@@ -6350,6 +6815,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_truncate",
@@ -6362,7 +6828,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "parquet_file",
@@ -6376,6 +6843,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6391,6 +6859,7 @@
      ]
     }
    },
+   "default_subcommand": "summary",
    "hidden": false,
    "kind": "group",
    "params": []
@@ -6405,6 +6874,7 @@
      "params": [
       {
        "default": "'a5_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "a5_name",
@@ -6418,6 +6888,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "auto",
@@ -6431,6 +6902,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -6440,10 +6912,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -6457,6 +6930,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -6470,6 +6944,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -6479,10 +6954,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -6495,7 +6971,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -6509,6 +6986,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_a5_column",
@@ -6522,6 +7000,7 @@
       },
       {
        "default": "10000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_partitions",
@@ -6534,7 +7013,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -6548,6 +7028,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -6560,7 +7041,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -6574,6 +7056,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -6587,6 +7070,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -6600,6 +7084,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -6613,6 +7098,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -6625,7 +7111,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -6639,6 +7126,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -6652,6 +7140,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -6665,6 +7154,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "target_rows",
@@ -6678,6 +7168,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6692,6 +7183,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -6712,6 +7204,7 @@
      "params": [
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -6721,10 +7214,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -6738,6 +7232,7 @@
       },
       {
        "default": "'gaul'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "dataset",
@@ -6747,10 +7242,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[gaul|overture]"
+       "type": "choice[gaul|overture,case_sensitive=False]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -6764,6 +7260,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -6773,10 +7270,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -6789,7 +7287,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -6803,6 +7302,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "levels",
@@ -6815,7 +7315,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -6829,6 +7330,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -6841,7 +7343,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -6855,6 +7358,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -6868,6 +7372,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -6881,6 +7386,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -6893,7 +7399,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -6907,6 +7414,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -6920,6 +7428,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -6933,6 +7442,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "vecorel",
@@ -6946,6 +7456,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -6960,6 +7471,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -6980,6 +7492,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "auto",
@@ -6993,6 +7506,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -7002,10 +7516,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -7019,6 +7534,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -7032,6 +7548,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -7041,10 +7558,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "'h3_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "h3_name",
@@ -7058,6 +7576,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -7071,6 +7590,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "in_place",
@@ -7083,7 +7603,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -7097,6 +7618,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_h3_column",
@@ -7110,6 +7632,7 @@
       },
       {
        "default": "10000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_partitions",
@@ -7123,6 +7646,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "min_size",
@@ -7135,7 +7659,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -7149,6 +7674,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -7161,7 +7687,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -7175,6 +7702,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -7188,6 +7716,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -7201,6 +7730,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -7214,6 +7744,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -7226,7 +7757,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -7240,6 +7772,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -7253,6 +7786,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -7266,6 +7800,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "target_rows",
@@ -7279,6 +7814,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -7293,6 +7829,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -7313,6 +7850,7 @@
      "params": [
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "approx",
@@ -7326,6 +7864,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "auto",
@@ -7339,6 +7878,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -7348,10 +7888,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -7365,6 +7906,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "exact",
@@ -7378,6 +7920,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -7391,6 +7934,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -7400,10 +7944,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -7416,7 +7961,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -7430,6 +7976,7 @@
       },
       {
        "default": "'kdtree_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "kdtree_name",
@@ -7443,6 +7990,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_kdtree_column",
@@ -7455,7 +8003,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -7469,6 +8018,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -7482,6 +8032,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "partitions",
@@ -7494,7 +8045,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -7508,6 +8060,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -7521,6 +8074,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -7534,6 +8088,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -7546,7 +8101,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -7560,6 +8116,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -7573,6 +8130,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -7586,6 +8144,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -7600,6 +8159,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -7620,6 +8180,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "auto",
@@ -7633,6 +8194,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -7642,10 +8204,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -7659,6 +8222,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -7672,6 +8236,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -7681,10 +8246,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -7698,6 +8264,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "in_place",
@@ -7710,7 +8277,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -7724,6 +8292,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_quadkey_column",
@@ -7737,6 +8306,7 @@
       },
       {
        "default": "10000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_partitions",
@@ -7750,6 +8320,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "min_size",
@@ -7762,7 +8333,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -7776,6 +8348,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -7789,6 +8362,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "partition_resolution",
@@ -7801,7 +8375,8 @@
        "type": "integer range[min=0,max=23,min_open=False,max_open=False,clamp=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -7815,6 +8390,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -7828,6 +8404,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -7841,6 +8418,7 @@
       },
       {
        "default": "'quadkey'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "quadkey_column",
@@ -7854,6 +8432,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -7867,6 +8446,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -7879,7 +8459,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -7893,6 +8474,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -7906,6 +8488,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -7919,6 +8502,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "target_rows",
@@ -7932,6 +8516,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "use_centroid",
@@ -7945,6 +8530,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -7959,6 +8545,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -7979,6 +8566,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "auto",
@@ -7992,6 +8580,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -8001,10 +8590,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -8018,6 +8608,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -8031,6 +8622,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -8040,10 +8632,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -8057,6 +8650,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "in_place",
@@ -8069,7 +8663,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -8083,6 +8678,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "keep_s2_column",
@@ -8096,6 +8692,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "level",
@@ -8109,6 +8706,7 @@
       },
       {
        "default": "10000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_partitions",
@@ -8122,6 +8720,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "min_size",
@@ -8134,7 +8733,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -8148,6 +8748,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -8160,7 +8761,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -8174,6 +8776,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -8187,6 +8790,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -8200,6 +8804,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -8212,7 +8817,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -8226,6 +8832,7 @@
       },
       {
        "default": "'s2_cell'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "s2_name",
@@ -8239,6 +8846,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -8252,6 +8860,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -8265,6 +8874,7 @@
       },
       {
        "default": "100000",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "target_rows",
@@ -8278,6 +8888,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -8292,6 +8903,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -8311,7 +8923,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "chars",
@@ -8324,7 +8937,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "column",
@@ -8338,6 +8952,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -8347,10 +8962,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -8364,6 +8980,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -8377,6 +8994,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -8386,10 +9004,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "hive",
@@ -8402,7 +9021,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -8415,7 +9035,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_folder",
@@ -8429,6 +9050,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -8441,7 +9063,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "prefix",
@@ -8455,6 +9078,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "preview",
@@ -8468,6 +9092,7 @@
       },
       {
        "default": "15",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "preview_limit",
@@ -8481,6 +9106,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -8493,7 +9119,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -8507,6 +9134,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -8520,6 +9148,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "skip_analysis",
@@ -8533,6 +9162,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -8547,6 +9177,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -8561,6 +9192,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -8574,7 +9206,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "attribution",
@@ -8587,7 +9220,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -8600,7 +9234,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bbox",
@@ -8614,6 +9249,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "drop_densest_as_needed",
@@ -8628,6 +9264,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -8641,7 +9278,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "include_cols",
@@ -8654,7 +9292,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_file",
@@ -8667,7 +9306,8 @@
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "layer",
@@ -8682,6 +9322,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "layer_by_column",
@@ -8694,7 +9335,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_zoom",
@@ -8708,6 +9350,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "maximum_tile_bytes",
@@ -8720,7 +9363,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "min_zoom",
@@ -8734,6 +9378,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_simplification_of_shared_nodes",
@@ -8748,6 +9393,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "no_tile_size_limit",
@@ -8761,7 +9407,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_file",
@@ -8775,6 +9422,7 @@
       },
       {
        "default": "6",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "precision",
@@ -8788,6 +9436,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "repair_geometry",
@@ -8802,6 +9451,7 @@
       },
       {
        "default": "True",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "simplify_only_low_zooms",
@@ -8815,7 +9465,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "src_crs",
@@ -8829,6 +9480,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -8842,7 +9494,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "where",
@@ -8862,7 +9515,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "attribution",
@@ -8876,6 +9530,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bytes_per_cell",
@@ -8889,6 +9544,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "features_min_zoom",
@@ -8902,6 +9558,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "features_source",
@@ -8915,6 +9572,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -8929,6 +9587,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "include_features",
@@ -8941,7 +9600,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -8955,6 +9615,7 @@
       },
       {
        "default": "'grouped'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "layer_mode",
@@ -8964,10 +9625,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[single|grouped|per-level]"
+       "type": "choice[single|grouped|per-level,case_sensitive=True]"
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "levels",
@@ -8981,6 +9643,7 @@
       },
       {
        "default": "500",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_tile_kb",
@@ -8994,6 +9657,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_zoom",
@@ -9006,7 +9670,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_pmtiles",
@@ -9020,6 +9685,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -9035,6 +9701,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -9052,6 +9719,7 @@
        "params": [
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "auto",
@@ -9065,6 +9733,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bbox_column",
@@ -9078,6 +9747,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown",
@@ -9091,6 +9761,7 @@
         },
         {
          "default": "20",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown_limit",
@@ -9104,6 +9775,7 @@
         },
         {
          "default": "'geometry'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bucket_point",
@@ -9117,6 +9789,7 @@
         },
         {
          "default": "'ZSTD'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression",
@@ -9126,10 +9799,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression_level",
@@ -9143,6 +9817,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "geoparquet_version",
@@ -9152,10 +9827,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "input_parquet",
@@ -9169,6 +9845,7 @@
         },
         {
          "default": "500000",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "max_cells",
@@ -9182,6 +9859,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric",
@@ -9195,6 +9873,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric_nodata",
@@ -9208,6 +9887,7 @@
         },
         {
          "default": "'polygon'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "out_geometry",
@@ -9217,10 +9897,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[polygon|centroid|both|none]"
+         "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "output_parquet",
@@ -9234,6 +9915,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "resolution",
@@ -9247,6 +9929,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "show_sql",
@@ -9260,6 +9943,7 @@
         },
         {
          "default": "10000",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "target_per_cell",
@@ -9273,6 +9957,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "verbose",
@@ -9286,7 +9971,8 @@
          "type": "boolean"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "where",
@@ -9307,6 +9993,7 @@
        "params": [
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bbox_column",
@@ -9320,6 +10007,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown",
@@ -9333,6 +10021,7 @@
         },
         {
          "default": "20",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown_limit",
@@ -9346,6 +10035,7 @@
         },
         {
          "default": "'geometry'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bucket_point",
@@ -9359,6 +10049,7 @@
         },
         {
          "default": "'ZSTD'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression",
@@ -9368,10 +10059,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression_level",
@@ -9385,6 +10077,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "geoparquet_version",
@@ -9394,10 +10087,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "input_parquet",
@@ -9411,6 +10105,7 @@
         },
         {
          "default": "'country'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "level",
@@ -9420,10 +10115,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[country|region]"
+         "type": "choice[country|region,case_sensitive=True]"
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric",
@@ -9437,6 +10133,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric_nodata",
@@ -9450,6 +10147,7 @@
         },
         {
          "default": "'polygon'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "out_geometry",
@@ -9459,10 +10157,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[polygon|centroid|both|none]"
+         "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "output_parquet",
@@ -9476,6 +10175,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "show_sql",
@@ -9489,6 +10189,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "verbose",
@@ -9502,7 +10203,8 @@
          "type": "boolean"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "where",
@@ -9523,6 +10225,7 @@
        "params": [
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "auto",
@@ -9536,6 +10239,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bbox_column",
@@ -9549,6 +10253,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown",
@@ -9562,6 +10267,7 @@
         },
         {
          "default": "20",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "breakdown_limit",
@@ -9575,6 +10281,7 @@
         },
         {
          "default": "'geometry'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "bucket_point",
@@ -9588,6 +10295,7 @@
         },
         {
          "default": "'ZSTD'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression",
@@ -9597,10 +10305,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+         "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "compression_level",
@@ -9614,6 +10323,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "geoparquet_version",
@@ -9623,10 +10333,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+         "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "input_parquet",
@@ -9640,6 +10351,7 @@
         },
         {
          "default": "500000",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "max_cells",
@@ -9653,6 +10365,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric",
@@ -9666,6 +10379,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "metric_nodata",
@@ -9679,6 +10393,7 @@
         },
         {
          "default": "'polygon'",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "out_geometry",
@@ -9688,10 +10403,11 @@
          ],
          "param_type": "Option",
          "required": false,
-         "type": "choice[polygon|centroid|both|none]"
+         "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "output_parquet",
@@ -9705,6 +10421,7 @@
         },
         {
          "default": "None",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "resolution",
@@ -9718,6 +10435,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "show_sql",
@@ -9731,6 +10449,7 @@
         },
         {
          "default": "10000",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "target_per_cell",
@@ -9744,6 +10463,7 @@
         },
         {
          "default": "False",
+         "hidden": false,
          "is_flag": true,
          "multiple": false,
          "name": "verbose",
@@ -9757,7 +10477,8 @@
          "type": "boolean"
         },
         {
-         "default": "Sentinel.UNSET",
+         "default": "<unset>",
+         "hidden": false,
          "is_flag": false,
          "multiple": false,
          "name": "where",
@@ -9772,6 +10493,7 @@
        ]
       }
      },
+     "default_subcommand": null,
      "hidden": false,
      "kind": "group",
      "params": []
@@ -9783,6 +10505,7 @@
      "params": [
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bytes_per_cell",
@@ -9796,6 +10519,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "cell_column",
@@ -9809,6 +10533,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -9818,10 +10543,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -9835,6 +10561,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "force",
@@ -9849,6 +10576,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -9858,10 +10586,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -9875,6 +10604,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "levels",
@@ -9888,6 +10618,7 @@
       },
       {
        "default": "500",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_tile_kb",
@@ -9901,6 +10632,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_dir",
@@ -9914,6 +10646,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "scheme",
@@ -9923,10 +10656,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[a5|h3|admin]"
+       "type": "choice[a5|h3|admin,case_sensitive=True]"
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -9940,6 +10674,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -9955,6 +10690,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -9968,7 +10704,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "bucket",
@@ -9981,7 +10718,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "collection_id",
@@ -9994,7 +10732,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input",
@@ -10007,7 +10746,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "item_id",
@@ -10020,7 +10760,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output",
@@ -10034,6 +10775,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -10046,7 +10788,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "public_url",
@@ -10060,6 +10803,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -10080,7 +10824,8 @@
      "kind": "command",
      "params": [
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "aws_profile",
@@ -10094,6 +10839,7 @@
       },
       {
        "default": "12",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "chunk_concurrency",
@@ -10106,7 +10852,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "chunk_size",
@@ -10119,7 +10866,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "destination",
@@ -10133,6 +10881,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "dry_run",
@@ -10146,6 +10895,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "fail_fast",
@@ -10159,6 +10909,7 @@
       },
       {
        "default": "4",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "max_files",
@@ -10171,7 +10922,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "pattern",
@@ -10184,7 +10936,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "s3_endpoint",
@@ -10198,6 +10951,7 @@
       },
       {
        "default": "False",
+       "hidden": true,
        "is_flag": true,
        "multiple": false,
        "name": "s3_no_ssl",
@@ -10210,7 +10964,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": true,
        "is_flag": false,
        "multiple": false,
        "name": "s3_region",
@@ -10223,7 +10978,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "source",
@@ -10237,6 +10993,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -10252,6 +11009,7 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
@@ -10262,7 +11020,8 @@
    "kind": "command",
    "params": [
     {
-     "default": "Sentinel.UNSET",
+     "default": "<unset>",
+     "hidden": false,
      "is_flag": false,
      "multiple": false,
      "name": "copy_to",
@@ -10276,6 +11035,7 @@
     },
     {
      "default": "'geoparquet'",
+     "hidden": false,
      "is_flag": false,
      "multiple": false,
      "name": "name",
@@ -10289,6 +11049,7 @@
     },
     {
      "default": "False",
+     "hidden": false,
      "is_flag": true,
      "multiple": false,
      "name": "show",
@@ -10312,6 +11073,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -10324,7 +11086,8 @@
        "type": "boolean"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "columns",
@@ -10338,6 +11101,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -10347,10 +11111,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -10364,6 +11129,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "descending",
@@ -10377,6 +11143,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -10386,10 +11153,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -10402,7 +11170,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -10416,6 +11185,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -10429,6 +11199,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -10441,7 +11212,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -10455,6 +11227,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -10468,6 +11241,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -10482,6 +11256,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -10502,6 +11277,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "add_bbox",
@@ -10515,6 +11291,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -10528,6 +11305,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -10537,10 +11315,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -10554,6 +11333,7 @@
       },
       {
        "default": "'geometry'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geometry_column",
@@ -10568,6 +11348,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -10577,10 +11358,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -10594,6 +11376,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -10607,6 +11390,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -10620,6 +11404,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -10632,7 +11417,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -10646,6 +11432,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -10659,6 +11446,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -10673,6 +11461,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -10693,6 +11482,7 @@
      "params": [
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "any_extension",
@@ -10706,6 +11496,7 @@
       },
       {
        "default": "'ZSTD'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression",
@@ -10715,10 +11506,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED]"
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "compression_level",
@@ -10732,6 +11524,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "geoparquet_version",
@@ -10741,10 +11534,11 @@
        ],
        "param_type": "Option",
        "required": false,
-       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only]"
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "input_parquet",
@@ -10757,7 +11551,8 @@
        "type": "text"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "output_parquet",
@@ -10771,6 +11566,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "overwrite",
@@ -10784,6 +11580,7 @@
       },
       {
        "default": "'quadkey'",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "quadkey_name",
@@ -10797,6 +11594,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "remove_quadkey_column",
@@ -10810,6 +11608,7 @@
       },
       {
        "default": "13",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "resolution",
@@ -10823,6 +11622,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size",
@@ -10835,7 +11635,8 @@
        "type": "integer"
       },
       {
-       "default": "Sentinel.UNSET",
+       "default": "<unset>",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "row_group_size_mb",
@@ -10849,6 +11650,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "show_sql",
@@ -10862,6 +11664,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "use_centroid",
@@ -10875,6 +11678,7 @@
       },
       {
        "default": "False",
+       "hidden": false,
        "is_flag": true,
        "multiple": false,
        "name": "verbose",
@@ -10889,6 +11693,7 @@
       },
       {
        "default": "None",
+       "hidden": false,
        "is_flag": false,
        "multiple": false,
        "name": "write_memory",
@@ -10903,16 +11708,19 @@
      ]
     }
    },
+   "default_subcommand": null,
    "hidden": false,
    "kind": "group",
    "params": []
   }
  },
+ "default_subcommand": null,
  "hidden": false,
  "kind": "group",
  "params": [
   {
    "default": "None",
+   "hidden": false,
    "is_flag": false,
    "multiple": false,
    "name": "aws_profile",
@@ -10926,6 +11734,7 @@
   },
   {
    "default": "None",
+   "hidden": false,
    "is_flag": false,
    "multiple": false,
    "name": "s3_endpoint",
@@ -10939,6 +11748,7 @@
   },
   {
    "default": "False",
+   "hidden": false,
    "is_flag": true,
    "multiple": false,
    "name": "s3_no_ssl",
@@ -10952,6 +11762,7 @@
   },
   {
    "default": "None",
+   "hidden": false,
    "is_flag": false,
    "multiple": false,
    "name": "s3_region",
@@ -10965,6 +11776,7 @@
   },
   {
    "default": "False",
+   "hidden": false,
    "is_flag": true,
    "multiple": false,
    "name": "timestamps",
@@ -10978,6 +11790,7 @@
   },
   {
    "default": "False",
+   "hidden": false,
    "is_flag": true,
    "multiple": false,
    "name": "version",
