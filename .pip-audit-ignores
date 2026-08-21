@@ -8,4 +8,6 @@
 # demands a conscious decision (extend the date with a reason, or pin/replace
 # the dependency). Never leave an entry without an expiry rationale.
 
-PYSEC-2026-196  2026-08-15  pip 26.1.1 vulnerability; fixed in pip 26.1.2 — remove once uv-managed pip updates
+# No active entries. PYSEC-2026-196 (pip 26.1.1) is gone: its expiry passed and
+# the floor moved to a fixed pip, which is the outcome this file is designed to
+# push towards — raise the dependency rather than renew the ignore.
