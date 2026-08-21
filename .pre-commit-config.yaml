@@ -111,6 +111,26 @@ repos:
             # an alias or a direct symbol import would slip straight past it.
             if grep -rnE '^[[:space:]]*(import duckdb as |from duckdb import)' geoparquet_io/ --include="*.py" | awk -F: '$1 != "geoparquet_io/core/duckdb_utils.py"' | grep .; then
               echo "ERROR: Import duckdb as 'import duckdb' only - an alias or 'from duckdb import connect' evades the bare-connect check above."
+            # Hand-rolled identifier quoting. f'"{col}"' and col.replace('"', '""')
+            # tolerate a space but silently break on an embedded double quote, and a
+            # column name can come straight from a file's geo.primary_column or from
+            # --column/--bbox-name, so this is an injection vector, not a nit. This
+            # exact fix has been made by hand at least eight times (c3c1d43, f6bc56e,
+            # 009a2b7, 9f391a2, 0f850ad, 40f151b, 35a1f3f, 3f24514) without a guard.
+            # Use quote_identifier() for identifiers and _escape_sql_string() for SQL
+            # string literals; both live in core/duckdb_utils.py, which implements
+            # them and is therefore exempt. Justify a rare, deliberate exception with
+            # a trailing "# allow-manual-quote" comment.
+            if grep -rnE 'f'"'"'"\{|f"\\"\{|\.replace\('"'"'"'"'"', '"'"'""'"'"'\)' geoparquet_io/ --include="*.py" \
+                | grep -v '^geoparquet_io/core/duckdb_utils.py:' \
+                | grep -v 'allow-manual-quote' \
+                | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
+              echo "ERROR: Do not hand-roll SQL identifier quoting."
+              echo "       Use quote_identifier(name) from core/duckdb_utils.py for identifiers"
+              echo "       and _escape_sql_string(value) for SQL string literals."
+              echo "       f'\"{col}\"' does not double an embedded '\"' and breaks on a"
+              echo "       hostile geo.primary_column / --column value."
+              echo "       Justify a rare exception with a trailing '# allow-manual-quote'."
               errors=1
             fi
             exit $errors

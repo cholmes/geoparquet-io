@@ -25,18 +25,6 @@ from geoparquet_io.core.streaming import (
 )
 
 
-def _build_bbox_sql(geometry_column: str, bbox_column_name: str = "bbox") -> str:
-    """Build SQL expression for bbox struct column."""
-    quoted_geom = quote_identifier(geometry_column)
-    quoted_bbox = quote_identifier(bbox_column_name)
-    return f"""STRUCT_PACK(
-        xmin := ST_XMin({quoted_geom}),
-        ymin := ST_YMin({quoted_geom}),
-        xmax := ST_XMax({quoted_geom}),
-        ymax := ST_YMax({quoted_geom})
-    ) AS {quoted_bbox} """
-
-
 def add_bbox_table(
     table: pa.Table,
     bbox_column_name: str = "bbox",

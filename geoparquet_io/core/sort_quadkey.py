@@ -13,7 +13,7 @@ from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
@@ -64,12 +64,14 @@ def sort_by_quadkey_table(
         con.register("__input_table", working_table)
 
         if remove_quadkey_column:
-            select_cols = [f'"{c}"' for c in working_table.column_names if c != quadkey_column_name]
+            select_cols = [
+                quote_identifier(c) for c in working_table.column_names if c != quadkey_column_name
+            ]
             select_clause = ", ".join(select_cols)
         else:
             select_clause = "*"
 
-        query = f'SELECT {select_clause} FROM __input_table ORDER BY "{quadkey_column_name}"'
+        query = f"SELECT {select_clause} FROM __input_table ORDER BY {quote_identifier(quadkey_column_name)}"
         result = con.execute(query).arrow().read_all()
 
         # Preserve metadata
@@ -159,10 +161,8 @@ def sort_by_quadkey(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
 
-    safe_url = safe_file_url(input_parquet, verbose)
-
     # Check if quadkey column exists
-    column_names = get_column_names(safe_url)
+    column_names = get_column_names(input_parquet)
     column_exists = quadkey_column_name in column_names
     using_default_name = quadkey_column_name == DEFAULT_QUADKEY_COLUMN_NAME
 
@@ -223,7 +223,7 @@ def sort_by_quadkey(
     metadata, _ = get_parquet_metadata(actual_input, verbose)
 
     # Get usable columns for building SELECT clause
-    usable_cols = get_usable_columns(actual_safe_url)
+    usable_cols = get_usable_columns(actual_input)
     existing_columns = [c["name"] for c in usable_cols]
 
     try:
@@ -232,7 +232,9 @@ def sort_by_quadkey(
 
         # Build SELECT clause - exclude quadkey if requested
         if remove_quadkey_column:
-            select_cols = [f'"{col}"' for col in existing_columns if col != quadkey_column_name]
+            select_cols = [
+                quote_identifier(col) for col in existing_columns if col != quadkey_column_name
+            ]
             select_clause = ", ".join(select_cols)
             progress(f"Sorting by '{quadkey_column_name}' (will be removed from output)")
         else:
@@ -243,7 +245,7 @@ def sort_by_quadkey(
         query = f"""
             SELECT {select_clause}
             FROM '{actual_safe_url}'
-            ORDER BY "{quadkey_column_name}"
+            ORDER BY {quote_identifier(quadkey_column_name)}
         """
 
         if verbose:
@@ -317,8 +319,7 @@ def _sort_by_quadkey_streaming(
             working_file = input_path
 
         # Check if quadkey column exists
-        safe_url = safe_file_url(working_file, verbose=False)
-        column_names = get_column_names(safe_url)
+        column_names = get_column_names(working_file)
         column_exists = quadkey_column_name in column_names
         using_default_name = quadkey_column_name == DEFAULT_QUADKEY_COLUMN_NAME
 
@@ -359,11 +360,13 @@ def _sort_by_quadkey_streaming(
 
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(actual_input))
 
-        usable_cols = get_usable_columns(actual_safe_url)
+        usable_cols = get_usable_columns(actual_input)
         existing_columns = [c["name"] for c in usable_cols]
 
         if remove_quadkey_column:
-            select_cols = [f'"{col}"' for col in existing_columns if col != quadkey_column_name]
+            select_cols = [
+                quote_identifier(col) for col in existing_columns if col != quadkey_column_name
+            ]
             select_clause = ", ".join(select_cols)
         else:
             select_clause = "*"
@@ -371,7 +374,7 @@ def _sort_by_quadkey_streaming(
         query = f"""
             SELECT {select_clause}
             FROM '{actual_safe_url}'
-            ORDER BY "{quadkey_column_name}"
+            ORDER BY {quote_identifier(quadkey_column_name)}
         """
 
         if verbose:

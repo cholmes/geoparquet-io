@@ -50,7 +50,11 @@ from geoparquet_io.core.common import (
     write_geoparquet_table,
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
@@ -1254,7 +1258,7 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
 
             # Check type compatibility using TRY_CAST
             # Quote column name to handle reserved words/special chars
-            quoted_col = f'"{col_name}"'
+            quoted_col = quote_identifier(col_name)
 
             try:
                 stats = con.execute(f"""
@@ -1727,7 +1731,7 @@ def _deduplicate_tiles(table: pa.Table) -> pa.Table:
 
         if "_wfs_fid" in table.column_names:
             all_cols = [c for c in table.column_names if c != "_wfs_fid"]
-            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            col_list = ", ".join(quote_identifier(c) for c in all_cols)
             # Deduplicate by fid when present, fall back to geometry for NULL fids
             query = f"""
                 SELECT {col_list}
@@ -1746,7 +1750,7 @@ def _deduplicate_tiles(table: pa.Table) -> pa.Table:
             """
         else:
             all_cols = table.column_names
-            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            col_list = ", ".join(quote_identifier(c) for c in all_cols)
             query = f"""
                 SELECT {col_list}
                 FROM (

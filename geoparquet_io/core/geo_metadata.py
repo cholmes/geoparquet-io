@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING
 
 import duckdb
 
-from geoparquet_io.core.duckdb_utils import _geoarrow_coord_exprs, _get_query_column_type
+from geoparquet_io.core.duckdb_utils import (
+    _geoarrow_coord_exprs,
+    _get_query_column_type,
+    quote_identifier,
+)
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -471,9 +475,7 @@ def compute_bbox_via_sql(
         # If we can't determine schema, return None rather than failing
         return None
 
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    quoted_geom = f'"{escaped_col}"'
+    quoted_geom = quote_identifier(geometry_column)
 
     # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) cannot be passed to
     # ST_XMin directly. Detect at runtime and use UNNEST to extract coordinates.
@@ -497,10 +499,10 @@ def compute_bbox_via_sql(
     else:
         bbox_query = f"""
             SELECT
-                MIN(ST_XMin("{escaped_col}")) as xmin,
-                MIN(ST_YMin("{escaped_col}")) as ymin,
-                MAX(ST_XMax("{escaped_col}")) as xmax,
-                MAX(ST_YMax("{escaped_col}")) as ymax
+                MIN(ST_XMin({quoted_geom})) as xmin,
+                MIN(ST_YMin({quoted_geom})) as ymin,
+                MAX(ST_XMax({quoted_geom})) as xmax,
+                MAX(ST_YMax({quoted_geom})) as ymax
             FROM ({query})
         """
     result = con.execute(bbox_query).fetchone()

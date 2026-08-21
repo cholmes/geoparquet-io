@@ -7,7 +7,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
@@ -65,7 +65,7 @@ def sort_by_column_table(
 
         # Build ORDER BY clause
         direction = " DESC" if descending else ""
-        order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+        order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
         query = f"SELECT * FROM __input_table ORDER BY {order_clause}"
         result = con.execute(query).arrow().read_all()
@@ -168,7 +168,7 @@ def sort_by_column(
     metadata, schema = get_parquet_metadata(input_parquet, verbose)
 
     # Validate that specified columns exist - use get_usable_columns for actual DuckDB column names
-    usable_cols = get_usable_columns(safe_url)
+    usable_cols = get_usable_columns(input_parquet)
     existing_columns = [c["name"] for c in usable_cols]
     for col in column_list:
         if col not in existing_columns:
@@ -187,7 +187,7 @@ def sort_by_column(
 
     # Build ORDER BY clause
     direction = " DESC" if descending else ""
-    order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+    order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
     # Build SELECT query
     order_query = f"""
@@ -265,7 +265,7 @@ def _sort_by_column_streaming(
 
         # Build ORDER BY clause
         direction = " DESC" if descending else ""
-        order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+        order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
         if verbose:
             debug(f"Sorting by column(s): {', '.join(column_list)}")

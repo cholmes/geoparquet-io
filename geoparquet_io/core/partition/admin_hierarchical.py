@@ -73,7 +73,7 @@ def _build_enrichment_query(
         if "[" in col or "(" in col:
             subquery_cols.append(f"{col} as _col_{i}")
         else:
-            subquery_cols.append(f'"{col}"')
+            subquery_cols.append(quote_identifier(col))
     subquery_cols_str = ", ".join(subquery_cols)
 
     input_ref = input_url if input_is_table_ref else f"'{input_url}'"
@@ -92,7 +92,7 @@ def _build_enrichment_query(
         # join runs in one CRS and keeps the cheap bbox pre-filter — instead of
         # transforming the (large) input per row and degrading to a nested-loop
         # ST_Intersects (#525, preserving the #460 pre-filter).
-        radmin = reproject_to_source_sql(f'"{admin_geom_col}"', source_crs)
+        radmin = reproject_to_source_sql(quote_identifier(admin_geom_col), source_crs)
         bbox_struct = (
             f"struct_pack(xmin := ST_XMin({radmin}), xmax := ST_XMax({radmin}), "
             f"ymin := ST_YMin({radmin}), ymax := ST_YMax({radmin})) AS {admin_bbox_col}"
@@ -307,9 +307,9 @@ def _build_admin_select_for_partitioning(levels, boundary_columns, dataset=None,
         elif "[" in col or "(" in col:
             expr = f"b._col_{i}"
         else:
-            expr = f'b."{col}"'
+            expr = f"b.{quote_identifier(col)}"
 
-        admin_select_parts.append(f'{expr} as "{output_col}"')
+        admin_select_parts.append(f"{expr} as {quote_identifier(output_col)}")
 
     return ", ".join(admin_select_parts), output_column_names
 
@@ -444,8 +444,12 @@ def _verify_enrichment_results(con, enriched_table, output_column_names):
     partition by the all-levels-NOT-NULL filter, so they would otherwise vanish
     silently (#480).
     """
-    any_clause = " OR ".join([f'"{col}" IS NOT NULL' for col in output_column_names])
-    all_clause = " AND ".join([f'"{col}" IS NOT NULL' for col in output_column_names])
+    any_clause = " OR ".join(
+        [f"{quote_identifier(col)} IS NOT NULL" for col in output_column_names]
+    )
+    all_clause = " AND ".join(
+        [f"{quote_identifier(col)} IS NOT NULL" for col in output_column_names]
+    )
     stats_query = f"""
         SELECT
             COUNT(*) as total,
@@ -844,9 +848,12 @@ def partition_by_admin_hierarchical(
 
 def _get_preview_partitions(con, table_name, partition_columns, level_names):
     """Query partition statistics for preview."""
-    group_by_cols = ", ".join([f'"{col}"' for col in partition_columns])
+    group_by_cols = ", ".join([quote_identifier(col) for col in partition_columns])
     select_cols = ", ".join(
-        [f'"{col}" as {name}' for col, name in zip(partition_columns, level_names, strict=True)]
+        [
+            f"{quote_identifier(col)} as {name}"
+            for col, name in zip(partition_columns, level_names, strict=True)
+        ]
     )
 
     query = f"""
@@ -854,7 +861,7 @@ def _get_preview_partitions(con, table_name, partition_columns, level_names):
             {select_cols},
             COUNT(*) as record_count
         FROM {table_name}
-        WHERE {" AND ".join([f'"{col}" IS NOT NULL' for col in partition_columns])}
+        WHERE {" AND ".join([f"{quote_identifier(col)} IS NOT NULL" for col in partition_columns])}
         GROUP BY {group_by_cols}
         ORDER BY record_count DESC
     """

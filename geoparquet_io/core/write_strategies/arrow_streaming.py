@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
 
@@ -66,8 +67,9 @@ def _check_geometry_type(
     """Check if geometry column needs WKB conversion. Returns (needs_conversion, final_sql)."""
     from geoparquet_io.core.duckdb_utils import _wrap_query_with_wkb_conversion
 
-    quoted_geom = geometry_column.replace('"', '""')
-    type_result = con.execute(f'SELECT TYPEOF("{quoted_geom}") FROM ({query}) LIMIT 1').fetchone()
+    type_result = con.execute(
+        f"SELECT TYPEOF({quote_identifier(geometry_column)}) FROM ({query}) LIMIT 1"
+    ).fetchone()
     duckdb_type = type_result[0] if type_result else None
     needs_wkb = duckdb_type == "GEOMETRY"
 

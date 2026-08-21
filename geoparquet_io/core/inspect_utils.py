@@ -17,7 +17,7 @@ from rich.text import Text
 
 from geoparquet_io.core.common import format_size
 from geoparquet_io.core.crs_utils import _extract_crs_identifier, is_default_crs
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
@@ -646,13 +646,12 @@ def get_preview_data(
         # Build column list, converting serialized geometry columns to WKT in SQL
         column_expressions = []
         for col in all_columns:
-            # Escape double quotes in column names for SQL identifiers
-            escaped_col = col.replace('"', '""')
+            quoted_col = quote_identifier(col)
             if col in geo_columns and col not in native_geo_columns:
                 # Convert serialized geometry to WKT for display
-                column_expressions.append(f'ST_AsText("{escaped_col}") AS "{escaped_col}"')
+                column_expressions.append(f"ST_AsText({quoted_col}) AS {quoted_col}")
             else:
-                column_expressions.append(f'"{escaped_col}"')
+                column_expressions.append(quoted_col)
 
         select_clause = ", ".join(column_expressions)
 
@@ -759,7 +758,7 @@ def get_column_statistics(
                 # For geometry columns, only count nulls
                 query = f"""
                     SELECT
-                        COUNT(*) FILTER (WHERE "{col_name}" IS NULL) as null_count
+                        COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL) as null_count
                     FROM '{safe_url}'
                 """
                 result = con.execute(query).fetchone()
@@ -773,10 +772,10 @@ def get_column_statistics(
                 # For non-geometry columns, get full stats
                 query = f"""
                     SELECT
-                        COUNT(*) FILTER (WHERE "{col_name}" IS NULL) as null_count,
-                        MIN("{col_name}") as min_val,
-                        MAX("{col_name}") as max_val,
-                        APPROX_COUNT_DISTINCT("{col_name}") as unique_count
+                        COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL) as null_count,
+                        MIN({quote_identifier(col_name)}) as min_val,
+                        MAX({quote_identifier(col_name)}) as max_val,
+                        APPROX_COUNT_DISTINCT({quote_identifier(col_name)}) as unique_count
                     FROM '{safe_url}'
                 """
                 try:

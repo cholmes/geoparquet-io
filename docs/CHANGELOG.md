@@ -374,6 +374,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   Fixed with `_escape_sql_string`. Since a hostile filename can carry such a
   name via `geo.primary_column`, this was also a latent SQL-injection vector,
   not just a crash bug.
+- **Commands no longer break on unusual column names or paths with an
+  apostrophe.** A geometry column named `geom col`, `Geometry` or `geo"m` — a
+  name read verbatim from the file's own `geo.primary_column` — used to crash
+  `add bbox/h3/s2/a5/quadkey/geometry-metrics/kdtree`, `inspect stats`,
+  `sort hilbert`, `sort column`, `extract geoparquet` and `convert
+  geojson/csv` with a DuckDB parser error, and made `check spec` report a
+  valid file as failing. Column names are now quoted wherever they are
+  interpolated into SQL, so a crafted file can no longer inject SQL through
+  its own metadata, and `--column`/`--bbox-name` accept any name the format
+  allows. Separately, a file under a directory containing `'` (e.g.
+  `o'brien/data.parquet`) was escaped twice and reported as not found by
+  `check`, `inspect`, `add bbox` and `convert`; paths are now escaped exactly
+  once.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

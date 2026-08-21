@@ -73,7 +73,7 @@ def _build_admin_subquery(
         if "[" in col or "(" in col:
             subquery_cols.append(f"{col} as _col_{i}")
         else:
-            subquery_cols.append(f'"{col}"')
+            subquery_cols.append(quote_identifier(col))
     subquery_cols_str = ", ".join(subquery_cols)
 
     geom_select = quote_identifier(admin_geom_col)
@@ -115,12 +115,12 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
         elif "[" in col or "(" in col:
             expr = f"b._col_{i}"
         else:
-            expr = f'b."{col}"'
+            expr = f"b.{quote_identifier(col)}"
 
         if use_coalesce:
             expr = f"COALESCE({expr}, 'ZZ')"
 
-        admin_select_parts.append(f'{expr} as "{output_col_name}"')
+        admin_select_parts.append(f"{expr} as {quote_identifier(output_col_name)}")
 
     return ", ".join(admin_select_parts)
 
@@ -310,7 +310,9 @@ def _print_dry_run_header(
 def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None):
     """Get statistics about the results."""
     output_col_names = [dataset.get_output_column_name(level, prefix=prefix) for level in levels]
-    admin_cols_check = " OR ".join([f'"{col}" IS NOT NULL' for col in output_col_names])
+    admin_cols_check = " OR ".join(
+        [f"{quote_identifier(col)} IS NOT NULL" for col in output_col_names]
+    )
 
     stats_query = f"""
     SELECT
@@ -326,9 +328,9 @@ def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None
     unique_counts = []
     for level, output_col in zip(levels, output_col_names, strict=True):
         count_query = f"""
-        SELECT COUNT(DISTINCT "{output_col}") as unique_count
+        SELECT COUNT(DISTINCT {quote_identifier(output_col)}) as unique_count
         FROM '{output_parquet}'
-        WHERE "{output_col}" IS NOT NULL;
+        WHERE {quote_identifier(output_col)} IS NOT NULL;
         """
         result = con.execute(count_query).fetchone()
         unique_counts.append((level, result[0]))

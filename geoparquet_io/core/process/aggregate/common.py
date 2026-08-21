@@ -394,7 +394,7 @@ def build_breakdown_select(
             cond = f"{qcol} IS NULL"
         else:
             cond = f"{qcol} = {sql_literal(value)}"
-        parts.append(f'COUNT(*) FILTER (WHERE {cond}) AS "{colname}"')
+        parts.append(f"COUNT(*) FILTER (WHERE {cond}) AS {quote_identifier(colname)}")
 
     if has_other:
         kept_non_null = [v for v, _ in value_colmap if v is not None]

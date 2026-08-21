@@ -468,7 +468,7 @@ def _hilbert_order_file_based(
     # Count empty/null geometries
     empty_count_result = con.execute(f"""
         SELECT COUNT(*) FROM '{safe_url}'
-        WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
+        WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
     """).fetchone()
     empty_count = empty_count_result[0] if empty_count_result else 0
 
@@ -516,13 +516,13 @@ def _hilbert_order_file_based(
     order_query = f"""
         WITH non_empty AS (
             SELECT * FROM '{safe_url}'
-            WHERE "{geometry_column}" IS NOT NULL AND NOT ST_IsEmpty("{geometry_column}")
-            ORDER BY ST_Hilbert("{geometry_column}",
+            WHERE {quote_identifier(geometry_column)} IS NOT NULL AND NOT ST_IsEmpty({quote_identifier(geometry_column)})
+            ORDER BY ST_Hilbert({quote_identifier(geometry_column)},
                 ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
         ),
         empty_or_null AS (
             SELECT * FROM '{safe_url}'
-            WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
+            WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
         )
         SELECT * FROM non_empty
         UNION ALL

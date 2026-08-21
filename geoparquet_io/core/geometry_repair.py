@@ -19,6 +19,7 @@ This module provides three injection styles:
   memory (WFS, ArcGIS, BigQuery, Carto).
 """
 
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.logging_config import warn
 
 
@@ -95,8 +96,7 @@ def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool
     Returns:
         The original query, or a query that repairs the geometry column in place.
     """
-    g = geometry_column.replace('"', '""')
-    col = f'"{g}"'
+    col = quote_identifier(geometry_column)
     try:
         desc = con.execute(f"DESCRIBE ({query})").fetchall()
     except Exception:
@@ -166,8 +166,7 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
 
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
-    g = geometry_column.replace('"', '""')
-    col = f'"{g}"'
+    col = quote_identifier(geometry_column)
     # Decode WKB defensively: TRY() yields NULL on malformed bytes so a bad row
     # never crashes extraction — such rows pass through unchanged.
     parsed = f"TRY(ST_GeomFromWKB({col}))"

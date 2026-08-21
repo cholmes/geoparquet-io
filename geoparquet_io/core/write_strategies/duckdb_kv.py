@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 
@@ -623,9 +623,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             if getattr(geom_type, "extension_name", None) == "geoarrow.wkb":
                 query = "SELECT * FROM input_table"
             else:
-                escaped_geom = geometry_column.replace('"', '""')
                 query = f"""
-                    SELECT * REPLACE (ST_GeomFromWKB("{escaped_geom}") AS "{escaped_geom}")
+                    SELECT * REPLACE (ST_GeomFromWKB({quote_identifier(geometry_column)}) AS {quote_identifier(geometry_column)})
                     FROM input_table
                 """
 

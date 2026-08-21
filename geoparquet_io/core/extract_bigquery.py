@@ -14,7 +14,7 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
@@ -503,12 +503,12 @@ def _build_geometry_select_expr(
         SQL expression string for the SELECT clause
     """
     if "GEOMETRY" in column_type:
-        return f'ST_AsWKB("{column_name}") AS "{column_name}"'
+        return f"ST_AsWKB({quote_identifier(column_name)}) AS {quote_identifier(column_name)}"
     elif geometry_format == "geojson":
-        return f'ST_AsWKB(ST_GeomFromGeoJSON("{column_name}")) AS "{column_name}"'
+        return f"ST_AsWKB(ST_GeomFromGeoJSON({quote_identifier(column_name)})) AS {quote_identifier(column_name)}"
     else:
         # Default: WKT
-        return f'ST_AsWKB(ST_GeomFromText("{column_name}")) AS "{column_name}"'
+        return f"ST_AsWKB(ST_GeomFromText({quote_identifier(column_name)})) AS {quote_identifier(column_name)}"
 
 
 def _build_select_with_wkb(
@@ -554,7 +554,7 @@ def _build_select_with_wkb(
         if geometry_column and col.lower() == geometry_column.lower():
             select_parts.append(_build_geometry_select_expr(col, geom_col_type, geometry_format))
         else:
-            select_parts.append(f'"{col}"')
+            select_parts.append(quote_identifier(col))
 
     return ", ".join(select_parts), columns
 
@@ -570,7 +570,7 @@ def _handle_dry_run(
 ) -> None:
     """Handle dry_run mode by printing the SQL query without executing."""
     if include_list:
-        select_cols = ", ".join(f'"{c}"' for c in include_list)
+        select_cols = ", ".join(quote_identifier(c) for c in include_list)
     else:
         select_cols = "*"
 

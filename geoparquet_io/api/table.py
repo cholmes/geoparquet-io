@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
+from geoparquet_io.core.duckdb_utils import quote_identifier
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -144,12 +145,12 @@ def _calculate_bounds_from_table(
         # Use ST_Extent to get the bounding box of all geometries
         query = f"""
             SELECT
-                ST_XMin(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_YMin(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_XMax(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_YMax(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}")))
+                ST_XMin(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_YMin(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_XMax(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_YMax(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)})))
             FROM input_table
-            WHERE "{geometry_column}" IS NOT NULL
+            WHERE {quote_identifier(geometry_column)} IS NOT NULL
         """
         result = con.execute(query).fetchone()
 
@@ -2150,13 +2151,13 @@ class Table:
             if regular_cols:
                 select_parts = []
                 for col_name in regular_cols:
-                    escaped_col = col_name.replace('"', '""')
+                    quoted_col = quote_identifier(col_name)
                     select_parts.extend(
                         [
-                            f'COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL)',
-                            f'MIN("{escaped_col}")',
-                            f'MAX("{escaped_col}")',
-                            f'APPROX_COUNT_DISTINCT("{escaped_col}")',
+                            f"COUNT(*) FILTER (WHERE {quoted_col} IS NULL)",
+                            f"MIN({quoted_col})",
+                            f"MAX({quoted_col})",
+                            f"APPROX_COUNT_DISTINCT({quoted_col})",
                         ]
                     )
 
@@ -2190,14 +2191,14 @@ class Table:
                         exc_info=True,
                     )
                     for col_name in regular_cols:
-                        escaped_col = col_name.replace('"', '""')
+                        quoted_col = quote_identifier(col_name)
                         try:
                             query = f"""
                                 SELECT
-                                    COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL),
-                                    MIN("{escaped_col}"),
-                                    MAX("{escaped_col}"),
-                                    APPROX_COUNT_DISTINCT("{escaped_col}")
+                                    COUNT(*) FILTER (WHERE {quoted_col} IS NULL),
+                                    MIN({quoted_col}),
+                                    MAX({quoted_col}),
+                                    APPROX_COUNT_DISTINCT({quoted_col})
                                 FROM input_table
                             """
                             result = con.execute(query).fetchone()
@@ -2231,9 +2232,9 @@ class Table:
 
             # Handle geometry columns separately (only null count)
             for col_name in geometry_cols:
-                escaped_col = col_name.replace('"', '""')
+                quoted_col = quote_identifier(col_name)
                 query = f"""
-                    SELECT COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL)
+                    SELECT COUNT(*) FILTER (WHERE {quoted_col} IS NULL)
                     FROM input_table
                 """
                 result = con.execute(query).fetchone()
