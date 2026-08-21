@@ -63,6 +63,16 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
+  whole Click command tree into a structural snapshot at
+  `tests/data/cli_surface.json` — every group, command, option and argument
+  with its opts, type, default, `required`, `is_flag` and `multiple` — and
+  fails naming the exact field that drifted. Help prose is deliberately not
+  pinned. Plugin-contributed commands are excluded, so an installed plugin
+  cannot break the test. Intentional changes are accepted by re-recording with
+  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py`. A companion
+  parametrized test renders `--help` for every built-in leaf command.
+
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
   tippecanoe, pinned to the zoom band where its worst tile fits the
