@@ -34,7 +34,12 @@ from geoparquet_io.core.exceptions import (
     GeoParquetError,
     InvalidParameterError,
 )
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import (
+    handle_output_overwrite,
+    is_partition_path,
+    safe_file_url,
+)
+from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -759,6 +764,29 @@ def extract_table(
         con.close()
 
 
+def _output_stats_are_stale(
+    input_path: str,
+    spatial_filter: str | None,
+    where: str | None,
+    limit: int | None,
+) -> bool:
+    """True when the input's carried bbox/geometry_types cannot describe the output.
+
+    Two independent reasons:
+
+    * A row filter (``--bbox``/``--geometry``/``--where``/``--limit``) keeps only
+      part of the input, so the carried stats over-cover the result.
+    * A glob/directory input merges several files, but ``get_parquet_metadata``
+      reads the footer of the FIRST file only — carrying its stats would
+      UNDER-cover the merged output, which makes conformant readers skip data.
+
+    A single-file, unfiltered column projection keeps its stats.
+    """
+    if spatial_filter or where or limit is not None:
+        return True
+    return is_partition_path(input_path)
+
+
 def _extract_streaming(
     input_path: str,
     output_path: str | None,
@@ -822,6 +850,9 @@ def _extract_streaming(
 
         if verbose:
             debug(f"Streaming extraction query: {query}")
+
+        if _output_stats_are_stale(input_path, spatial_filter, where, limit):
+            metadata = strip_derived_stats(metadata)
 
         # Write output
         write_output(
@@ -955,8 +986,15 @@ def _execute_extraction(
         metadata = None
         try:
             metadata, _ = get_parquet_metadata(input_parquet, verbose=False)
-        except Exception:
-            pass  # Metadata preservation is optional
+        except Exception as e:
+            # Preservation is best-effort (a corrupt footer surfaces as anything
+            # from OSError to GeoParquetError to an Arrow exception), but don't
+            # silently drop all geo/kv metadata: warn so it is visible.
+            warn(f"Could not read input metadata for preservation; skipping: {e}")
+
+        invalidate_derived_stats = _output_stats_are_stale(
+            input_parquet, spatial_filter, where, limit
+        )
 
         # Repair invalid geometry (issue #506). Auto-detects GEOMETRY vs WKB
         # encoding and rewrites the query to repair in place before the write.
@@ -980,6 +1018,7 @@ def _execute_extraction(
             write_strategy=write_strategy,
             memory_limit=memory_limit,
             input_file=input_parquet,
+            invalidate_derived_stats=invalidate_derived_stats,
         )
 
         # Get extracted row count from output file metadata (fast - reads footer only)

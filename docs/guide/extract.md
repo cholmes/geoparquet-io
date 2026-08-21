@@ -157,6 +157,31 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
 
 **CRS Awareness**: The tool detects coordinate system mismatches. If your bbox looks like lat/long coordinates but the data uses a projected CRS, you'll get a helpful warning showing the data's actual bounds.
 
+!!! note "Metadata `bbox` and `geometry_types` describe the output"
+    The GeoParquet metadata `bbox` and `geometry_types` are derived from the
+    data, so `extract` recomputes them whenever the output is not a faithful
+    copy of a single input file:
+
+    - **A row filter** (`--bbox`, `--geometry`, `--where`, `--limit`) — both are
+      recomputed over only the surviving rows rather than the full input extent.
+      A filter that keeps zero rows omits `bbox` entirely (it is optional per
+      spec).
+    - **A glob or directory input** — the merged output describes *all* the
+      inputs, not just the first file whose footer was read. (Carrying the first
+      file's `bbox` would under-cover the merge, and conformant readers skip
+      data outside a declared bbox.)
+    - **`--exclude-cols`** — metadata that references a dropped column is
+      pruned: excluding the `bbox` column drops the `covering` entry, and
+      excluding the geometry column writes plain Parquet with no `geo` metadata
+      at all.
+
+    An unfiltered, single-file column-only extract preserves the input's
+    `bbox`/`geometry_types` unchanged.
+
+    Recomputing costs one extra aggregate pass over the (already filtered)
+    query — on the order of 30% of a plain copy for a few million rows. Use
+    `--verbose` to see when it runs.
+
 ### Geometry Filter
 
 Filter features by intersection with any geometry, not just rectangles.

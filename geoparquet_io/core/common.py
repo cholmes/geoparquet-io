@@ -39,6 +39,8 @@ from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
     create_geo_metadata,
+    prune_geo_metadata_to_columns,
+    strip_derived_stats,
 )
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -2213,6 +2215,38 @@ def _plain_copy_to(
         success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
 
 
+def _prune_metadata_to_output_columns(
+    con,
+    query: str,
+    original_metadata: dict | None,
+    geometry_column: str | None,
+    verbose: bool,
+) -> dict | None:
+    """Drop geo metadata that references columns the output query does not emit.
+
+    Best-effort: a schema probe that fails leaves the metadata untouched rather
+    than aborting the write.
+    """
+    if not original_metadata:
+        return original_metadata
+
+    try:
+        output_columns = _get_query_columns(con, query)
+    except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
+        if verbose:
+            debug(f"Could not read output schema to prune geo metadata: {e}")
+        return original_metadata
+
+    pruned = prune_geo_metadata_to_columns(original_metadata, output_columns)
+    had_geo = "geo" in original_metadata or b"geo" in original_metadata
+    if had_geo and geometry_column is None:
+        warn(
+            "Output has no geometry column - writing plain Parquet without geo metadata "
+            f"(columns: {', '.join(output_columns)})"
+        )
+    return pruned
+
+
 def write_parquet_with_metadata(
     con,
     query,
@@ -2233,6 +2267,7 @@ def write_parquet_with_metadata(
     geometry_info: dict | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
     input_file: str | None = None,
+    invalidate_derived_stats: bool = False,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2276,6 +2311,13 @@ def write_parquet_with_metadata(
             existing file. Enables full-fidelity non-planar edges preservation
             (native GEOGRAPHY logical types are only visible in the file's
             schema); without it, edges still fall back to original_metadata.
+        invalidate_derived_stats: When True, strip the carried per-column
+            ``bbox`` and ``geometry_types`` from ``original_metadata`` before
+            building output geo metadata. Set by callers that transform geometry
+            (reproject), filter rows (extract), or merge several inputs whose
+            carried metadata came from only the first file: the input's stats no
+            longer describe the output, so they must be recomputed from the
+            written data or omitted rather than carried.
 
     Returns:
         None
@@ -2288,12 +2330,26 @@ def write_parquet_with_metadata(
 
     configure_verbose(verbose)
 
+    # Callers that transform geometry, filter rows, or merge multiple inputs
+    # invalidate the carried bbox/geometry_types; drop them so the write
+    # strategies recompute (or omit) them instead of describing the input.
+    if invalidate_derived_stats:
+        original_metadata = strip_derived_stats(original_metadata)
+
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)
     if geometry_info and geometry_info.get("primary"):
         geometry_column = geometry_info["primary"]
     else:
         geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
+
+    # A column projection (e.g. ``extract --exclude-cols``) can drop the bbox
+    # column a ``covering`` points at, a secondary geometry column, or the
+    # geometry column itself. Carrying those references produces metadata that
+    # names schema roots the output does not have.
+    original_metadata = _prune_metadata_to_output_columns(
+        con, query, original_metadata, geometry_column, verbose
+    )
 
     if geoparquet_version is None:
         geoparquet_version = extract_version_from_metadata(original_metadata)
@@ -2417,7 +2473,10 @@ def write_parquet_with_metadata(
                 "con": con,
                 "query": query,
                 "output_path": actual_output,
-                "geometry_column": geometry_column or "geometry",
+                # None (no geometry in the output) is meaningful: every strategy
+                # falls back to a plain-Parquet write rather than advertising a
+                # geometry column that is not there.
+                "geometry_column": geometry_column,
                 "original_metadata": original_metadata,
                 "geoparquet_version": effective_version,
                 "compression": compression,
