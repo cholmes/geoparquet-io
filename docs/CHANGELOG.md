@@ -97,6 +97,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   fails a test that names the index and the point. a5 cases carry `network`
   (community extension download); the rest run offline.
 
+- **CLI↔API parity harness (#664)**: `tests/test_cli_api_parity.py` invokes
+  `gpio <cmd>`, `ops.<fn>` and `Table.<method>` with nothing but defaults for
+  the 13 commands the planned refactors touch (`add bbox/h3/s2/a5/quadkey/
+  kdtree`, `sort hilbert/column/quadkey`, `convert geoparquet`, `extract
+  geoparquet`, `partition h3/quadkey`), records the values each front end hands
+  to core, and diffs them through a documented per-command normalization map.
+  Six existing divergences are recorded as justified entries in
+  `KNOWN_PARITY_GAPS` — including `gpio add kdtree` auto-sizing the tree from
+  the row count while `ops.add_kdtree`/`Table.add_kdtree` pin `iterations=9` —
+  each re-asserted by its own test so a fix cannot leave a stale allowlist
+  entry behind. Marked as scaffolding: it is to be rewritten against the write
+  facade once write-path unification lands.
+
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
   tippecanoe, pinned to the zoom band where its worst tile fits the
