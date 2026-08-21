@@ -217,6 +217,26 @@ def linearize_curves_options(func):
     )(func)
 
 
+def _validate_write_memory(ctx, param, value):
+    """Reject a --write-memory value that isn't a plain size.
+
+    The value is interpolated into DuckDB's ``SET memory_limit = '…'``, so
+    validating here both blocks SQL injection and turns garbage input into a
+    clean parameter error instead of a raw DuckDB ParserException traceback.
+    One shared decorator means one place to fix.
+    """
+    if value is None:
+        return None
+
+    from geoparquet_io.core.write_strategies.duckdb_kv import validate_memory_limit
+
+    try:
+        validate_memory_limit(value)
+    except ValueError as e:
+        raise click.BadParameter(str(e), ctx=ctx, param=param) from None
+    return value
+
+
 def write_memory_option(func):
     """
     Add --write-memory option to a command.
@@ -229,8 +249,11 @@ def write_memory_option(func):
         "--write-memory",
         type=str,
         default=None,
+        callback=_validate_write_memory,
+        # Click does not printf-format help text, so a literal "%%" would be
+        # rendered verbatim.
         help="Memory limit for streaming writes (e.g., '512MB', '2GB'). "
-        "Default: 50%% of available RAM (container-aware).",
+        "Default: 50% of available RAM (container-aware).",
     )(func)
 
 

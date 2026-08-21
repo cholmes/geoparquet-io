@@ -92,6 +92,7 @@ def sort_by_column(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Sort a GeoParquet file by specified column(s).
@@ -115,6 +116,7 @@ def sort_by_column(
         row_group_rows: Exact number of rows per row group
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
 
@@ -143,6 +145,7 @@ def sort_by_column(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -213,6 +216,7 @@ def sort_by_column(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
+            memory_limit=memory_limit,
         )
 
         success(f"Sorted by {', '.join(column_list)} to: {output_parquet}")
@@ -238,6 +242,7 @@ def _sort_by_column_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for sort_by_column."""
     # Suppress verbose when streaming to stdout
@@ -278,6 +283,7 @@ def _sort_by_column_streaming(
         row_group_rows=row_group_rows,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):

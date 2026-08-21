@@ -157,6 +157,7 @@ def add_bbox_column(
     force: bool = False,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add a bbox struct column to a GeoParquet file.
@@ -184,6 +185,7 @@ def add_bbox_column(
         profile: AWS profile name (S3 only, optional)
         force: Whether to replace an existing bbox column
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
 
     Note:
         Bbox covering metadata is automatically added when the file is written.
@@ -204,6 +206,7 @@ def add_bbox_column(
             profile,
             force,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -222,6 +225,7 @@ def add_bbox_column(
         force,
         geoparquet_version,
         overwrite,
+        memory_limit=memory_limit,
     )
 
 
@@ -237,6 +241,7 @@ def _add_bbox_streaming(
     profile: str | None,
     force: bool,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_bbox."""
     # Suppress verbose when streaming to stdout
@@ -284,6 +289,7 @@ def _add_bbox_streaming(
         profile=profile,
         custom_metadata=covering_metadata,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):
@@ -303,7 +309,8 @@ def _add_bbox_file_based(
     profile: str | None,
     force: bool,
     geoparquet_version: str | None,
-    overwrite: bool = False,
+    overwrite: bool,
+    memory_limit: str | None,
 ) -> None:
     """Handle file-based add_bbox operation."""
     # Check if output file exists and handle overwrite (fixes issue #278)
@@ -387,6 +394,7 @@ def _add_bbox_file_based(
         replace_column=replace_column,
         geoparquet_version=geoparquet_version,
         custom_metadata=covering_metadata,
+        memory_limit=memory_limit,
     )
 
     if not dry_run:

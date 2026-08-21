@@ -288,6 +288,7 @@ def add_kdtree_column(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add a KD-tree cell ID column to a GeoParquet file.
@@ -321,6 +322,7 @@ def add_kdtree_column(
         auto_target_rows: If set, auto-compute iterations to target this many rows per partition
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
 
@@ -341,6 +343,7 @@ def add_kdtree_column(
             sample_size,
             profile,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -532,6 +535,7 @@ def add_kdtree_column(
         verbose=verbose,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     con.close()
@@ -555,6 +559,7 @@ def _add_kdtree_streaming(
     sample_size: int,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_kdtree."""
     # Suppress verbose when streaming to stdout
@@ -611,6 +616,7 @@ def _add_kdtree_streaming(
                 verbose=verbose,
                 profile=profile,
                 geoparquet_version=geoparquet_version,
+                memory_limit=memory_limit,
             )
         finally:
             con.close()

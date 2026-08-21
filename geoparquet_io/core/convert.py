@@ -1867,6 +1867,7 @@ def convert_to_geoparquet(
     repair_geometry=True,
     linearize_curves=True,
     max_angle_deg=None,
+    memory_limit=None,
 ):
     """
     Convert vector format to optimized GeoParquet.
@@ -1908,6 +1909,8 @@ def convert_to_geoparquet(
             False raises the actionable unsupported-geometry error instead.
         max_angle_deg: Maximum angular step per stroked arc segment in degrees
             (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
+        memory_limit: DuckDB memory limit for the write, e.g. "2GB" (default: None,
+            meaning half of available RAM).
 
     Raises:
         GeoParquetError: If input file not found or conversion fails
@@ -2031,6 +2034,7 @@ def convert_to_geoparquet(
             # Geography inputs: DuckDB demotes GEOGRAPHY to GEOMETRY and drops
             # the edges declaration; the shared write path restores it (#588).
             input_file=input_file if is_parquet and has_geometry else None,
+            memory_limit=memory_limit,
         )
 
         _report_conversion_results(output_file, start_time, is_geo=has_geometry)

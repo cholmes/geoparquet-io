@@ -323,6 +323,7 @@ def add_quadkey_column(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add a quadkey column to a GeoParquet file.
@@ -348,6 +349,7 @@ def add_quadkey_column(
         row_group_rows: Exact number of rows per row group
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -366,6 +368,7 @@ def add_quadkey_column(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -385,6 +388,7 @@ def add_quadkey_column(
         profile,
         geoparquet_version,
         overwrite,
+        memory_limit=memory_limit,
     )
 
 
@@ -401,6 +405,7 @@ def _add_quadkey_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_quadkey."""
     # Suppress verbose when streaming to stdout
@@ -488,6 +493,7 @@ def _add_quadkey_streaming(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            memory_limit=memory_limit,
         )
 
         if not should_stream_output(output_path):
@@ -511,7 +517,8 @@ def _add_quadkey_file_based(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    overwrite: bool = False,
+    overwrite: bool,
+    memory_limit: str | None,
 ) -> None:
     """Handle file-based add_quadkey operation."""
     configure_verbose(verbose)
@@ -650,6 +657,7 @@ def _add_quadkey_file_based(
             profile=profile,
             geoparquet_version=geoparquet_version,
             custom_metadata=quadkey_metadata,
+            memory_limit=memory_limit,
         )
 
         success(

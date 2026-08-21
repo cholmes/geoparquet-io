@@ -651,6 +651,7 @@ def _execute_per_level_joins(
     extra_kv=None,
     source_crs=None,
     has_native_geometry=False,
+    memory_limit=None,
 ):
     """Run separate spatial joins per admin level for per-level-source datasets.
 
@@ -711,6 +712,7 @@ def _execute_per_level_joins(
                 profile=profile,
                 geoparquet_version=geoparquet_version,
                 extra_kv_metadata=extra_kv,
+                memory_limit=memory_limit,
             )
         else:
             temp_table = f"_gpio_admin_step_{i}"
@@ -745,6 +747,7 @@ def add_admin_divisions_multi(
     prefix: str | None = None,
     no_cache: bool = False,
     vecorel: bool = False,
+    memory_limit: str | None = None,
 ):
     """
     Add admin division columns from a multi-level admin dataset.
@@ -765,6 +768,7 @@ def add_admin_divisions_multi(
         profile: AWS profile name (S3 only, optional)
         prefix: Optional column name prefix (default: dataset name, use "admin" for admin: format)
         no_cache: Skip local cache and use remote dataset directly
+        memory_limit: DuckDB memory limit for the write (e.g. '2GB')
     """
     # When vecorel mode is active, override prefix to use Vecorel column names
     effective_prefix = "vecorel" if vecorel else prefix
@@ -857,6 +861,7 @@ def add_admin_divisions_multi(
                     extra_kv=extra_kv,
                     source_crs=source_crs,
                     has_native_geometry=has_native_geometry,
+                    memory_limit=memory_limit,
                 )
                 if dry_run:
                     return
@@ -914,6 +919,7 @@ def add_admin_divisions_multi(
                     profile=profile,
                     geoparquet_version=geoparquet_version,
                     extra_kv_metadata=extra_kv,
+                    memory_limit=memory_limit,
                 )
 
                 total_features, features_with_admin, unique_counts = _get_result_stats(
