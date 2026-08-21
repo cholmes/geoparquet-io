@@ -80,7 +80,7 @@ class TestUnsupportedWkbError:
 
         import geoparquet_io.core.linearize as linearize_mod
 
-        monkeypatch.setattr(linearize_mod, "linearize_wkb", _fail)
+        monkeypatch.setattr(linearize_mod, "linearize_wkb_stats", _fail)
 
         with pytest.raises(GeoParquetError) as exc:
             gpio.convert(str(CURVED_GPKG))

@@ -30,10 +30,18 @@ dependencies = [
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
     "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
     # S2 support needs the 'geography' community extension, which is built per
-    # DuckDB release. It is published up to 1.5.1 but NOT for 1.5.2/1.5.3/1.5.4
+    # DuckDB release. It is published up to 1.5.1 but NOT for 1.5.2-1.5.5
     # (INSTALL ... FROM community returns HTTP 404). Cap below 1.5.2 so S2 keeps
     # working; raise the cap once 'geography' is republished for a newer DuckDB.
     # (gpio still errors clearly via ExtensionUnavailableError if it is missing.)
+    #
+    # Staying on <=1.5.1 keeps us on a DuckDB whose TRY() applies the selection
+    # vector twice under conditional execution (dropped in 1.5.2, see
+    # duckdb/duckdb-spatial#858): TRY() over a blob can segfault, and over a
+    # fixed-width type it can silently return another row's value. That is why
+    # core/geometry_repair.py counts invalid geometry in layers (#645). When the
+    # cap moves past 1.5.1, that workaround — and the risk at the other TRY()
+    # call sites — goes away.
     "duckdb>=1.5.0,<1.5.2",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
