@@ -38,14 +38,20 @@ that those two names must always carry the same value. A key absent from the
 map is a knob one side does not have (the table-centric `add_*_table` functions
 take no compression or row-group options at all -- they do not write).
 
-Known gaps live in `KNOWN_PARITY_GAPS`, keyed by
-``(case id, front end, canonical name)`` with a written justification, in the
-style of `tests/test_cli_api_default_parity.py`. A per-key allowlist is used
-rather than `xfail` on the parametrized case because `xfail` is case-granular:
-xfailing `partition h3` over its known auto-resolution gap would also stop
-`hive`, `overwrite` and `keep_h3_column` from being checked.
-`test_known_parity_gap_still_diverges` re-surfaces every entry as its own named
-test, so the findings stay visible in the pytest report.
+Known gaps live in `KNOWN_PARITY_GAPS`, keyed by ``(case id, front end,
+canonical name, repr(CLI value), repr(API value))`` with a written
+justification, following `collect_divergences()` in
+`tests/test_cli_api_default_parity.py`. The two reprs are part of the key on
+purpose: an allowlist recording only "these differ" would stay green if
+`Table.add_kdtree` changed `iterations` from 9 to 4 -- still a divergence, but a
+different one nobody reviewed.
+
+A per-key allowlist is used rather than `xfail` on the parametrized case because
+`xfail` is case-granular: xfailing `partition h3` over its known auto-resolution
+gap would also stop `hive`, `overwrite` and `keep_h3_column` from being checked.
+`test_known_parity_gap_still_diverges_the_same_way` re-surfaces every entry as
+its own named test, so the findings stay visible in the pytest report and a gap
+that gets *fixed* fails until its entry is deleted.
 
 Complements (does not duplicate) `tests/test_cli_api_default_parity.py`, which
 diffs *declared signature defaults* across the whole CLI by introspection. This
@@ -55,16 +61,21 @@ CLI deriving `iterations` from `--partitions` or upper-casing `--compression`
 on the way down.
 
 Patching note (project memory): dotted-string `mock.patch("...cli.main.X")`
-targets fail on Python 3.10. Every patch here is `patch.object(module, name)`.
+targets fail on Python 3.10. Every patch here is `patch.object(module, name)`,
+which is unaffected -- the trap is about string targets only.
+
+Running note: this file mocks core out, so it covers very little of the package
+and running it *alone* trips the 67% coverage gate. Use `--no-cov` when running
+it in isolation; in the full suite it is a non-issue.
 """
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -204,27 +215,17 @@ def _table(module: Any, attr: str, reference: Callable, call: Callable[[Ctx], An
 
 
 def _install_write_strategy(_frontend, recorder: _Recorder):
-    """Patch the strategy factory so Table.write's core write call is recorded."""
-    return _patch_object(
+    """Patch the strategy factory so Table.write's core write call is recorded.
+
+    `get_strategy` is a `classmethod`; `patch.object` restores the descriptor
+    itself rather than the bound method `getattr` would hand back, so the class
+    is left exactly as it was found.
+    """
+    return patch.object(
         core_write_strategies.WriteStrategyFactory,
         "get_strategy",
         lambda *_args, **_kwargs: _StrategyStub(recorder),
     )
-
-
-@contextlib.contextmanager
-def _patch_object(target: Any, attribute: str, replacement: Any):
-    """`unittest.mock.patch.object` equivalent, spelled out to keep it object-based.
-
-    Dotted-string patch targets under `geoparquet_io.cli.main` fail on Python
-    3.10, so this module never uses them.
-    """
-    original = getattr(target, attribute)
-    setattr(target, attribute, replacement)
-    try:
-        yield
-    finally:
-        setattr(target, attribute, original)
 
 
 # --------------------------------------------------------------------------
@@ -529,11 +530,19 @@ _AUTO_FROM_FILE = (
     "for the declared defaults -- the facade has to pick one behaviour."
 )
 
-KNOWN_PARITY_GAPS: dict[tuple[str, str, str], str] = {
+# Keys are (case id, front end, canonical name, repr(CLI value), repr(API value)),
+# following `collect_divergences()` in tests/test_cli_api_default_parity.py. The two
+# reprs are load-bearing: an allowlist that recorded only "these differ" would stay
+# green if `Table.add_kdtree` changed `iterations` from 9 to 4 -- still a divergence,
+# but a *different* one that nobody reviewed. Pinning the pair means any change to
+# either side has to come back through this table.
+KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
     (
         "sort hilbert",
         "ops",
         "geometry_column",
+        "'geometry'",
+        "None",
     ): (
         "CLI --geometry-column defaults to the conventional name 'geometry'; ops.sort_hilbert "
         "passes None so core auto-detects. Table.sort_hilbert does not have this gap because a "
@@ -543,6 +552,8 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str], str] = {
         "add kdtree",
         "ops",
         "iterations",
+        "None",
+        "9",
     ): (
         "The CLI has no --iterations: with no flags it selects auto mode (iterations=None, "
         "auto_target_rows=('rows', 120000)) so core sizes the tree from the row count. The API "
@@ -552,13 +563,15 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str], str] = {
         "add kdtree",
         "table",
         "iterations",
+        "None",
+        "9",
     ): (
         "Same as ('add kdtree', 'ops', 'iterations'): Table.add_kdtree also pins iterations=9 "
         "while the CLI defaults to auto-sizing from the row count."
     ),
-    ("partition h3", "table", "resolution"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "resolution"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "partition_resolution"): _AUTO_FROM_FILE,
+    ("partition h3", "table", "resolution", "None", "9"): _AUTO_FROM_FILE,
+    ("partition quadkey", "table", "resolution", "None", "13"): _AUTO_FROM_FILE,
+    ("partition quadkey", "table", "partition_resolution", "None", "6"): _AUTO_FROM_FILE,
 }
 
 
@@ -596,7 +609,7 @@ def _capture(frontend: Frontend, ctx: Ctx) -> dict[str, Any]:
         patcher = frontend.install(frontend, recorder)
     else:
         target, attribute = frontend.patch_site
-        patcher = _patch_object(target, attribute, recorder)
+        patcher = patch.object(target, attribute, recorder)
 
     with patcher:
         frontend.invoke(ctx)
@@ -613,9 +626,16 @@ def _capture(frontend: Frontend, ctx: Ctx) -> dict[str, Any]:
     return recorder.calls[0]
 
 
-def _mismatches(case: ParityCase, side: str, cli_call: dict, api_call: dict) -> dict[str, str]:
-    """Diff one front end against the CLI over the case's canonical parameters."""
-    out: dict[str, str] = {}
+def _mismatches(
+    case: ParityCase, side: str, cli_call: dict, api_call: dict
+) -> dict[str, tuple[str, str]]:
+    """Diff one front end against the CLI over the case's canonical parameters.
+
+    Returns ``{canonical name: (repr(CLI value), repr(API value))}`` for the knobs
+    that disagree. The values -- not just the fact of disagreement -- are what the
+    allowlist matches on.
+    """
+    out: dict[str, tuple[str, str]] = {}
     for canonical, (cli_name, api_name) in sorted(case.normalize.items()):
         cli_value = cli_call.get(cli_name, MISSING)
         api_value = api_call.get(api_name, MISSING)
@@ -628,8 +648,22 @@ def _mismatches(case: ParityCase, side: str, cli_call: dict, api_call: dict) -> 
             f"which {side} never passed (got {sorted(api_call)})"
         )
         if cli_value != api_value or isinstance(cli_value, bool) != isinstance(api_value, bool):
-            out[canonical] = f"CLI {cli_name}={cli_value!r} vs {side} {api_name}={api_value!r}"
+            out[canonical] = (repr(cli_value), repr(api_value))
     return out
+
+
+def _render(case: ParityCase, side: str, canonical: str, pair: tuple[str, str]) -> str:
+    cli_name, api_name = case.normalize[canonical]
+    return f"CLI {cli_name}={pair[0]} vs {side} {api_name}={pair[1]}"
+
+
+def _known_pairs(case_id: str, side: str) -> dict[str, tuple[str, str]]:
+    """The value pairs the allowlist expects for one (case, front end)."""
+    return {
+        key[2]: (key[3], key[4])
+        for key in KNOWN_PARITY_GAPS
+        if key[0] == case_id and key[1] == side
+    }
 
 
 def _assert_parity(case: ParityCase, side: str, ctx: Ctx) -> None:
@@ -638,15 +672,29 @@ def _assert_parity(case: ParityCase, side: str, ctx: Ctx) -> None:
     api_call = _capture(frontend, ctx)
 
     found = _mismatches(case, side, cli_call, api_call)
-    known = {key[2] for key in KNOWN_PARITY_GAPS if key[0] == case.id and key[1] == side}
-    unexpected = {name: why for name, why in found.items() if name not in known}
-    detail = "\n".join(f"  {name}: {why}" for name, why in sorted(unexpected.items()))
+    known = _known_pairs(case.id, side)
+
+    # A knob is acceptable only if it diverges *exactly* the way the allowlist
+    # recorded. A gap whose values shifted is a new, unreviewed divergence.
+    unexpected = {name: pair for name, pair in found.items() if known.get(name) != pair}
+    lines = []
+    for name, pair in sorted(unexpected.items()):
+        rendered = _render(case, side, name, pair)
+        if name in known:
+            was = known[name]
+            lines.append(
+                f"  {name}: {rendered}\n"
+                f"    (KNOWN_PARITY_GAPS still records CLI={was[0]} vs {side} {was[1]}; "
+                f"the divergence changed -- re-review it and update the entry)"
+            )
+        else:
+            lines.append(f"  {name}: {rendered}")
     # Surface the case's caveats: they usually explain why a knob looks unequal.
     caveats = "".join(f"\nNote: {note}" for note in case.notes)
     assert not unexpected, (
         f"`gpio {case.id}` and its {side} twin now hand core different values.\n"
-        f"Either align them, or add an entry to KNOWN_PARITY_GAPS with a "
-        f"justification:\n" + detail + caveats
+        f"Either align them, or add/update an entry in KNOWN_PARITY_GAPS with a "
+        f"justification:\n" + "\n".join(lines) + caveats
     )
 
 
@@ -666,21 +714,32 @@ def test_cli_and_table_pass_the_same_values_to_core(case_id, parity_ctx):
     _assert_parity(CASES_BY_ID[case_id], "table", parity_ctx)
 
 
-@pytest.mark.parametrize("gap", sorted(KNOWN_PARITY_GAPS), ids=lambda g: " / ".join(g))
-def test_known_parity_gap_still_diverges(gap, parity_ctx):
-    """Each recorded gap is a real, current divergence -- delete it once it is fixed.
+@pytest.mark.parametrize("gap", sorted(KNOWN_PARITY_GAPS), ids=lambda g: " / ".join(g[:3]))
+def test_known_parity_gap_still_diverges_the_same_way(gap, parity_ctx):
+    """Each recorded gap must still diverge, and diverge with the recorded values.
 
-    Without this, a gap fixed in the code would sit in the allowlist forever and
-    silently permit the divergence to come back.
+    Two ways this earns its keep. A gap fixed in the code would otherwise sit in
+    the allowlist forever, silently re-permitting the divergence later. And a gap
+    whose values merely *shifted* -- `Table.add_kdtree` going from `iterations=9`
+    to `4` -- is a different divergence that nobody reviewed, so pinning only
+    "these differ" would let it through unnoticed.
     """
-    case_id, side, canonical = gap
+    case_id, side, canonical, cli_repr, api_repr = gap
     case = CASES_BY_ID[case_id]
     cli_call = _capture(case.cli, parity_ctx)
     api_call = _capture(getattr(case, side), parity_ctx)
     found = _mismatches(case, side, cli_call, api_call)
+
     assert canonical in found, (
         f"`gpio {case_id}` and its {side} twin now agree on {canonical!r}. "
         f"Remove this entry from KNOWN_PARITY_GAPS so the parity is enforced."
+    )
+    assert found[canonical] == (cli_repr, api_repr), (
+        f"`gpio {case_id}` / {side} still diverges on {canonical!r}, but not the way "
+        f"the allowlist records.\n"
+        f"  recorded: CLI={cli_repr} vs {side}={api_repr}\n"
+        f"  actual:   {_render(case, side, canonical, found[canonical])}\n"
+        f"Re-review the divergence and update the KNOWN_PARITY_GAPS entry."
     )
 
 
@@ -691,7 +750,7 @@ def test_every_known_gap_has_a_justification():
 
 def test_every_known_gap_names_a_real_case_and_parameter():
     """A typo in the allowlist would silently disable a comparison."""
-    for case_id, side, canonical in KNOWN_PARITY_GAPS:
+    for case_id, side, canonical, _cli_repr, _api_repr in KNOWN_PARITY_GAPS:
         assert case_id in CASES_BY_ID, f"{case_id!r} is not a parity case"
         case = CASES_BY_ID[case_id]
         assert side in ("ops", "table"), f"{side!r} is not a front end"
