@@ -148,8 +148,11 @@ Config in `pyproject.toml [tool.pytest.ini_options]`.
 
 ```bash
 uv run pytest -n auto -m "not slow and not network"  # Fast tests (no coverage)
-uv run pytest --cov=geoparquet_io --cov-report=term-missing  # opt into coverage
+uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0  # opt into coverage
 ```
+
+`--cov-fail-under=0` is needed on partial runs: `[tool.coverage.report].fail_under`
+re-arms the 67% floor whenever you opt into `--cov`, and a subset never clears it.
 
 Local runs are uninstrumented: `addopts` carries no `--cov`, so a single-file run
 is fast and a partial run can't fail a whole-suite gate. The 67% floor and the 90%

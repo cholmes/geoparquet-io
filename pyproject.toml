@@ -271,8 +271,8 @@ ignore_errors = true
 [tool.mutmut]
 source_paths = ["geoparquet_io/"]
 # Fast tests only: slow/network tests are nondeterministic (live third-party
-# servers) and far too slow to run once per mutant. --no-cov drops the
-# coverage overhead and the global --cov-fail-under gate from addopts.
+# servers) and far too slow to run once per mutant. --no-cov drops the coverage
+# overhead and stops [tool.coverage.report].fail_under from failing every mutant.
 # NOTE: mutmut 3 runs pytest in-process and IGNORES a `runner` setting;
 # extra args must go in pytest_add_cli_args.
 # The --ignore'd files are tooling meta-tests that spawn `uv run ...`
