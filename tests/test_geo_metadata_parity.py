@@ -48,7 +48,12 @@ from geoparquet_io.core.crs_utils import (
 from geoparquet_io.core.duckdb_metadata import get_geo_metadata as read_duckdb
 from geoparquet_io.core.geo_metadata import parse_geo_metadata as read_geo_metadata
 from geoparquet_io.core.inspect_utils import _crs_are_equivalent
-from geoparquet_io.core.validate import _crs_equals, _is_crs84_equivalent
+from geoparquet_io.core.validate import (
+    CheckStatus,
+    _check_crs_valid,
+    _crs_equals,
+    _is_crs84_equivalent,
+)
 
 DATA = Path(__file__).parent / "data"
 CORPUS = DATA / "geoparquet-testing"
@@ -107,7 +112,18 @@ def _assert_readers_agree(path: Path) -> None:
 
 
 def _has_geo_key(path: Path) -> bool:
-    metadata = _schema_metadata(path)
+    """Whether ``path`` carries a ``geo`` kv key. Runs at COLLECTION time.
+
+    An unreadable/corrupt parquet is treated as non-geo rather than allowed to
+    raise: a raise here happens during collection and would take down the whole
+    module. Routing it to NON_GEO_FIXTURES instead means the bad file surfaces as
+    one failing case in ``test_readers_agree_on_non_geo_fixtures`` (where a reader
+    will raise on it), which is a far more useful signal than a collection error.
+    """
+    try:
+        metadata = _schema_metadata(path)
+    except Exception:
+        return False
     return bool(metadata) and b"geo" in metadata
 
 
@@ -142,12 +158,25 @@ CORPUS_SAMPLE = [
 # default would silently SKIP the whole parity test instead of failing.
 MIN_GEO_FIXTURES = 14
 
+# Same guard for the non-geo half (7 today). Without it, a change that made
+# _has_geo_key wrongly report True for everything would empty this list and
+# silently skip the whole absent-key test rather than failing.
+MIN_NON_GEO_FIXTURES = 5
+
 
 def test_geo_fixture_inventory_is_populated():
     """Guard: a vanished fixture set must fail loudly, not silently skip."""
     assert len(GEO_FIXTURES) >= MIN_GEO_FIXTURES, (
         f"expected >= {MIN_GEO_FIXTURES} geo fixtures under {DATA}, "
         f"found {len(GEO_FIXTURES)}: {[p.name for p in GEO_FIXTURES]}"
+    )
+
+
+def test_non_geo_fixture_inventory_is_populated():
+    """Guard: the absent-geo-key cases must not silently vanish either."""
+    assert len(NON_GEO_FIXTURES) >= MIN_NON_GEO_FIXTURES, (
+        f"expected >= {MIN_NON_GEO_FIXTURES} non-geo fixtures under {DATA}, "
+        f"found {len(NON_GEO_FIXTURES)}: {[p.name for p in NON_GEO_FIXTURES]}"
     )
 
 
@@ -176,6 +205,7 @@ def test_readers_agree_on_non_geo_fixtures(fixture):
 
 
 @pytest.mark.corpus
+@pytest.mark.integration
 @pytest.mark.parametrize("relative_path", CORPUS_SAMPLE)
 def test_readers_agree_on_corpus_files(relative_path):
     """The same parity holds on the official geoparquet-testing corpus."""
@@ -558,6 +588,54 @@ CRS_DECISIONS = {
     ),
 }
 
+# The trio's LARGEST split is not between the two binary helpers — it is between
+# the unary helper and both binaries. ``_is_crs84_equivalent(x)`` asks "is x the
+# CRS84 default?" while ``_crs_equals(x, crs84)`` / ``_crs_are_equivalent(x, crs84)``
+# ask "is x equal to the CRS84 value?" Those should be the same question, and for
+# three of five inputs they give opposite answers. Derived from the literals above:
+# unary True vs both binaries False.
+UNARY_DECISIONS = {
+    "absent": (
+        "_is_crs84_equivalent(None) is True (absent CRS defaults to OGC:CRS84 per "
+        "spec), but comparing the same absent value against the CRS84 PROJJSON is "
+        "False in BOTH binaries. DECIDE: should the binaries resolve the default "
+        "before comparing, so absent == CRS84?"
+    ),
+    "null": (
+        "_is_crs84_equivalent(None) is True, but an explicit null means UNKNOWN CRS, "
+        "not CRS84 — the unary is arguably wrong here and only reaches True because "
+        "the null/absent collapse (see below) already erased the distinction. "
+        "DECIDE: this looks like a latent bug, not merely an inconsistency."
+    ),
+    "epsg4326": (
+        "_is_crs84_equivalent(EPSG:4326) is True — GeoParquet fixes axis order to "
+        "(x, y), so EPSG:4326 metadata describes the same coordinates as OGC:CRS84. "
+        "Both binaries say EPSG:4326 != OGC:CRS84 because they trust differing "
+        "authority:code ids. DECIDE: should the binaries adopt the unary's "
+        "axis-order-agnostic CRS84/4326 equivalence?"
+    ),
+}
+
+# DECISION (fallback contract asymmetry, found by source reading — deliberately
+# NOT covered by an executable case here; deferred to the consolidation PR):
+# the two binary helpers disagree on what pyproj equality MEANS when they fall
+# back to semantic comparison.
+#
+#   validate._crs_equals (~:2735):
+#       PyprojCRS.from_json_dict(crs1).equals(..., ignore_axis_order=True)
+#   inspect_utils._crs_are_equivalent (~:155):
+#       CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2))   # default: axis order MATTERS
+#
+# So for PROJJSON that carries no complete ``id`` — exactly when the fallback
+# runs — a lat/lon vs lon/lat pair is EQUAL to _crs_equals and NOT EQUAL to
+# _crs_are_equivalent. Since GeoParquet fixes coordinate order to (x, y)
+# regardless of the CRS's own axis definition, ``ignore_axis_order=True`` is the
+# spec-correct reading and _crs_are_equivalent's default ``.equals()`` is the
+# likely bug. The 5x5 matrix above cannot catch this: every value carries an
+# ``id``, so the fast path short-circuits before the fallback. Pinning it would
+# need id-less PROJJSON, whose verdicts churn with the pyproj version — hence a
+# recorded decision rather than a test.
+
 
 @pytest.mark.parametrize("name", CRS_NAMES)
 def test_is_crs84_equivalent_matrix(name):
@@ -606,17 +684,53 @@ def test_crs_helper_disagreement_inventory_is_exact():
     )
 
 
+def test_unary_vs_binary_disagreement_inventory_is_exact():
+    """ "Is x CRS84?" and "does x equal CRS84?" must not silently start agreeing.
+
+    Guards the unary-vs-binary split the same way the binary-vs-binary guard
+    works: derived from the pinned literals, so consolidating the trio forces an
+    explicit update to UNARY_DECISIONS rather than a quiet behavior change.
+    """
+    observed = {
+        name
+        for name in CRS_NAMES
+        if IS_CRS84_EQUIVALENT[name] is not CRS_EQUALS[name]["crs84"]
+        or IS_CRS84_EQUIVALENT[name] is not CRS_ARE_EQUIVALENT[name]["crs84"]
+    }
+    assert observed == set(UNARY_DECISIONS), (
+        "unary-vs-binary CRS84 disagreements changed.\n"
+        f"  newly agreeing (drop from UNARY_DECISIONS): {sorted(set(UNARY_DECISIONS) - observed)}\n"
+        f"  newly disagreeing (add to UNARY_DECISIONS): {sorted(observed - set(UNARY_DECISIONS))}"
+    )
+
+
 def test_absent_and_explicit_null_collapse_at_helper_boundary():
     """An absent ``crs`` and an explicit ``"crs": null`` are indistinguishable here.
 
     The spec gives them different meanings (absent => OGC:CRS84 default;
-    null => unknown/engineering CRS), but every call site extracts with
-    ``col_meta.get("crs")``, so both arrive as ``None``. Pinned because the
-    consolidated CRS reader must decide whether to preserve the distinction.
+    null => unknown/engineering CRS). ``validate._check_crs_valid`` DOES preserve
+    the distinction, and it does so by testing membership *before* extracting::
+
+        if "crs" not in col_meta:      # validate.py:307 -> defaults to OGC:CRS84
+            ...
+        crs = col_meta.get("crs")      # validate.py:315 -> None for BOTH shapes
+
+    Every CRS *equality* call site uses only the second idiom, so the distinction
+    is already gone by the time the trio is called. This test pins both halves:
+    the production check that keeps the distinction, and the extraction that
+    loses it. A future call-site fix that carries the distinction through to the
+    helpers flips the second half and fails here — which is the intent.
     """
-    assert crs_value("absent") is None
-    assert crs_value("null") is None
-    for name in CRS_NAMES:
-        assert _crs_equals(crs_value("absent"), crs_value(name)) is _crs_equals(
-            crs_value("null"), crs_value(name)
-        )
+    absent_col = CRS_COLUMN_META["absent"]
+    null_col = CRS_COLUMN_META["null"]
+
+    # Production path that DOES distinguish them: different check outcomes.
+    assert _check_crs_valid(absent_col, "geometry").status is CheckStatus.PASSED
+    assert _check_crs_valid(null_col, "geometry").status is CheckStatus.WARNING
+
+    # The extraction the equality helpers actually receive: identical for both.
+    assert "crs" not in absent_col and "crs" in null_col, (
+        "fixture shapes must differ, otherwise the collapse below is trivially true"
+    )
+    assert absent_col.get("crs") is None
+    assert null_col.get("crs") is None
