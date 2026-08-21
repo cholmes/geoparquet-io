@@ -221,3 +221,81 @@ class TestCountryCodesDryRun:
         assert "Using native geometry with DuckDB SPATIAL_JOIN" in output
         assert "no bbox optimization" not in output
         assert "ON ST_Intersects" in output
+
+
+class TestCountryCodesLocalCountriesFile:
+    """End-to-end (non-dry-run) runs against a local countries file, no network.
+
+    The dry-run tests above return before the connection is used for real work,
+    so nothing covered the write path -- which is also the path the DuckDB
+    connection context manager wraps.
+    """
+
+    @staticmethod
+    def _make_countries_file(source_parquet, dest):
+        """Build a countries file from ``source_parquet``'s geometries.
+
+        Reusing the input's own geometries guarantees every feature joins, so
+        the assertions below are about plumbing rather than spatial luck. Both a
+        country and a subdivision column are present because
+        ``_print_results_summary`` queries ``admin:subdivision_code``
+        unconditionally.
+        """
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL spatial; LOAD spatial;")
+            con.execute(
+                f"COPY (SELECT geometry, 'US' AS country_code, "
+                f"'US-CA' AS subdivision_code FROM read_parquet('{source_parquet}')) "
+                f"TO '{dest}' (FORMAT PARQUET)"
+            )
+        finally:
+            con.close()
+        return str(dest)
+
+    def test_local_countries_file_joins_and_writes(self, fields_v2_file, tmp_path):
+        """A non-default --countries file produces country/subdivision columns.
+
+        Regression test for the doubled quoting in _determine_code_columns:
+        _setup_countries_source hands back an already-quoted URL, and
+        find_subdivision_code_column quoted it a second time, so every
+        non-default countries file died on `FROM ''/path''`.
+        """
+        countries = self._make_countries_file(fields_v2_file, tmp_path / "countries.parquet")
+        output = tmp_path / "out.parquet"
+
+        add_country_codes(
+            input_parquet=fields_v2_file,
+            countries_parquet=countries,
+            output_parquet=str(output),
+            add_bbox_flag=False,
+            dry_run=False,
+            verbose=True,
+        )
+
+        assert output.exists()
+        table = pq.read_table(output)
+        assert "admin:country_code" in table.column_names
+        assert "admin:subdivision_code" in table.column_names
+        assert table.num_rows == pq.read_table(fields_v2_file).num_rows
+        assert set(table.column("admin:country_code").to_pylist()) == {"US"}
+        assert set(table.column("admin:subdivision_code").to_pylist()) == {"US-CA"}
+
+    def test_local_countries_file_reports_totals(self, fields_v2_file, tmp_path, caplog):
+        """The run reports its input count and its results summary."""
+        countries = self._make_countries_file(fields_v2_file, tmp_path / "countries.parquet")
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=fields_v2_file,
+                countries_parquet=countries,
+                output_parquet=str(output),
+                add_bbox_flag=False,
+                dry_run=False,
+                verbose=True,
+            )
+
+        assert "input features..." in caplog.text
+        assert "Added country codes to" in caplog.text
+        assert "Found 1 unique countries" in caplog.text

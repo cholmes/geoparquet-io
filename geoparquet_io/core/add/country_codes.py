@@ -328,8 +328,17 @@ def _determine_code_columns(
     if verbose:
         debug(f"Using country code column: {country_code_col}")
 
+    # `_setup_countries_source` returns the URL ALREADY wrapped in quotes, while
+    # both finders quote it themselves when is_subquery is False -- passing
+    # countries_source straight through produced `FROM ''/path''` and a parser
+    # error for every non-default --countries file. Hand over the same raw URL
+    # the country-code finder above gets, and only use the table name when the
+    # source really is the filtered temp table.
+    is_filtered_table = countries_source == countries_table
     subdivision_code_col = find_subdivision_code_column(
-        con, countries_source, is_subquery=(countries_source == countries_table)
+        con,
+        countries_table if is_filtered_table else countries_url,
+        is_subquery=is_filtered_table,
     )
     if subdivision_code_col and verbose:
         debug(f"Using subdivision code column: {subdivision_code_col}")
