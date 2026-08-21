@@ -68,7 +68,13 @@ uv run pre-commit install
 uv run pytest                                          # Full suite
 uv run pytest tests/test_yourfile.py -v               # Single file
 uv run pytest -m "not slow and not network"           # Fast tests only
+uv run pytest --cov=geoparquet_io --cov-report=term-missing   # With coverage
 ```
+
+Local runs are **not** instrumented for coverage — pass `--cov` yourself when you
+want a report. Instrumenting every run slowed single-file runs by 39-49%, and a
+partial run can never clear a whole-suite floor, so the default invocation used to
+exit 1 on a gate that measured nothing. Both gates below still run in CI.
 
 CI runs three test tiers:
 

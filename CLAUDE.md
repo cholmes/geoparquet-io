@@ -144,11 +144,17 @@ Additional patterns (not yet enforced):
 <!-- freshness: last-verified: 2026-04-03, maps-to: pyproject.toml -->
 ## Testing
 
-Config in `pyproject.toml [tool.pytest.ini_options]`. Coverage: 67% minimum (enforced).
+Config in `pyproject.toml [tool.pytest.ini_options]`.
 
 ```bash
-uv run pytest -n auto -m "not slow and not network"  # Fast tests
+uv run pytest -n auto -m "not slow and not network"  # Fast tests (no coverage)
+uv run pytest --cov=geoparquet_io --cov-report=term-missing  # opt into coverage
 ```
+
+Local runs are uninstrumented: `addopts` carries no `--cov`, so a single-file run
+is fast and a partial run can't fail a whole-suite gate. The 67% floor and the 90%
+diff-cover gate on changed lines are enforced in CI (the ubuntu/3.11 job in
+`.github/workflows/tests.yml`), which passes the coverage flags explicitly.
 
 <!-- BEGIN GENERATED: test-markers -->
 ### Test Markers

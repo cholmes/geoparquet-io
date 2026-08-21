@@ -109,8 +109,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Full history so diff-cover can diff against the PR base branch.
-          fetch-depth: 0
+          # Full history ONLY for the one job that runs diff-cover (ubuntu +
+          # 3.11); the other nine cloned the entire history for nothing.
+          # Written inverted on purpose: `cond && 0 || 1` always yields 1
+          # because 0 is falsy in GitHub expressions, so the depth-1 branch
+          # has to be the truthy one.
+          fetch-depth: >-
+            ${{ (matrix.os != 'ubuntu-latest' || matrix.python-version != '3.11')
+            && 1 || 0 }}
           # geoparquet-testing corpus for the corpus conformance tests
           submodules: true
 
@@ -155,14 +161,27 @@ jobs:
 
       - name: Run fast tests with pytest (parallel)
         shell: bash
+        env:
+          # Only ubuntu + 3.11 consumes coverage (Codecov upload and the
+          # diff-cover gate below). The other nine matrix jobs used to
+          # instrument every line and every spawned subprocess, then throw the
+          # result away — measured at up to +49% wall on a -n 4 run. The
+          # reporting job passes every flag explicitly because `addopts` no
+          # longer carries them: the 67% floor is enforced HERE.
+          COV_ARGS: >-
+            ${{ (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11')
+            && '--cov=geoparquet_io --cov-report=term-missing --cov-report=xml --cov-fail-under=67'
+            || '--no-cov' }}
         run: |
+          # word-splitting intended: COV_ARGS is a flag list (or --no-cov)
+          # shellcheck disable=SC2086
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload coverage to Codecov
@@ -289,6 +308,15 @@ jobs:
 
       - name: Run slow tests (parallel)
         shell: bash
+        env:
+          # Only ubuntu uploads slow-suite coverage to Codecov (step below);
+          # macOS and Windows discarded theirs. --cov-fail-under=0 stays on the
+          # reporting job because the slow suite alone never reaches the 67%
+          # floor that [tool.coverage.report] would otherwise apply.
+          COV_ARGS: >-
+            ${{ matrix.os == 'ubuntu-latest'
+            && '--cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0'
+            || '--no-cov' }}
         run: |
           # Security tests (the live pip-audit) are owned by the dedicated
           # `security` job, which handles CVE ignores and PR blocking. Never run
@@ -298,11 +326,11 @@ jobs:
 
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload slow test coverage to Codecov

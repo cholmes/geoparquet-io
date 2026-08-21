@@ -196,6 +196,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Changed
 
+- **Local `pytest` runs are no longer instrumented for coverage (#665).**
+  `--cov`/`--cov-fail-under` moved out of `addopts` in `pyproject.toml` and into
+  the CI job that actually reports coverage. A plain `uv run pytest` is now fast
+  (39-49% quicker on a single file) and exits 0 instead of failing a whole-suite
+  67% gate that a partial run could never clear; pass `--cov=geoparquet_io` to
+  opt in. CI is unchanged in strictness: the ubuntu/3.11 fast-test job still
+  enforces the 67% floor, uploads to Codecov, and runs the 90% diff-cover gate.
+  The other nine matrix jobs (and the two non-reporting slow-suite jobs) no
+  longer compute coverage they discarded, and `fetch-depth: 0` is now limited to
+  the one job that needs git history.
+
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
   within ±180/±90) under a projected CRS now reports a WARNING instead of
