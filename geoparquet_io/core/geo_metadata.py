@@ -594,7 +594,7 @@ def compute_geo_stats_via_sql(
     if _geo_stats_unsupported(con, query, geometry_column):
         return _separately()
 
-    quoted = '"{}"'.format(geometry_column.replace('"', '""'))
+    quoted = quote_identifier(geometry_column)
     stats_query = f"""
         SELECT
             ST_GeometryType({quoted}) || {zm_suffix_sql(quoted)} AS geom_type,
