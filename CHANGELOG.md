@@ -130,18 +130,20 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   a geometry column named `geom`, multi-row-group), and kv-metadata passthrough
   — plus four normalized geo-metadata snapshots under `tests/data/snapshots/`
   as canaries for silent field drift (refresh with `GPIO_UPDATE_SNAPSHOT=1`).
-  Building it surfaced five cross-path disagreements, recorded as `xfail`
-  entries with reasons rather than pinned as correct: `gpio convert
-  geoparquet --geoparquet-version 1.0` writes the 1.1-only `covering` key into
-  a 1.0 file; `write_geoparquet_table` ignores `parquet-geo-only`; the
+  Building it surfaced six write-path defects, each recorded as an `xfail`
+  carrying its issue number rather than pinned as correct behaviour:
+  `gpio convert geoparquet --geoparquet-version 1.0` writes the 1.1-only
+  `covering` key into a 1.0 file and still exits 0 (#686);
+  `write_geoparquet_table` ignores `parquet-geo-only` (#687); the
   arrow-streaming strategy's on-disk geometry type changes depending on
-  whether anything in the process imported `geoarrow.pyarrow`; `disk-rewrite`
-  silently ignores `row_group_rows`/`row_group_size_mb`; and `api.Table.write`
-  and `gpio convert geoparquet` drop input non-geo kv metadata that the two
-  core writers preserve. It also records that `1.1-geoarrow` output — now
-  produced identically by all four strategies, since the writer auto-routes —
-  is rejected by gpio's own validator, which does not accept GeoArrow
-  encodings that GeoParquet 1.1 permits.
+  whether anything in the process imported `geoarrow.pyarrow` (#688);
+  `disk-rewrite` silently ignores `row_group_rows`/`row_group_size_mb` (#689);
+  `api.Table.write` and `gpio convert geoparquet` drop input non-geo kv
+  metadata that the core query writer preserves (#690); and `1.1-geoarrow`
+  output is rejected by gpio's own validator, which does not accept GeoArrow
+  encodings that GeoParquet 1.1 permits (#691). The suite also covers auto
+  version mode, where the four paths resolve a native-geo-only input two
+  different ways (#600).
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
