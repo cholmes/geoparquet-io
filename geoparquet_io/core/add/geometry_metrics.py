@@ -48,6 +48,7 @@ def add_geometry_metrics(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     show_sql: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add geometry metrics (area and perimeter) to a GeoParquet file.
@@ -71,6 +72,7 @@ def add_geometry_metrics(
         geoparquet_version: GeoParquet version to write
         overwrite: Overwrite existing output file
         show_sql: Print SQL statements
+        memory_limit: DuckDB memory limit for the write (e.g. '2GB')
     """
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
 
@@ -86,6 +88,7 @@ def add_geometry_metrics(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit,
         )
         return
 
@@ -103,6 +106,7 @@ def add_geometry_metrics(
         geoparquet_version,
         overwrite,
         show_sql,
+        memory_limit,
     )
 
 
@@ -117,6 +121,7 @@ def _add_metrics_streaming(
     row_group_rows,
     profile,
     geoparquet_version,
+    memory_limit,
 ) -> None:
     """Handle streaming input/output for geometry metrics."""
     from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
@@ -157,6 +162,7 @@ def _add_metrics_streaming(
         profile=profile,
         geoparquet_version=geoparquet_version,
         extra_kv_metadata=extra_kv,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):
@@ -177,6 +183,7 @@ def _add_metrics_file_based(
     geoparquet_version,
     overwrite,
     show_sql,
+    memory_limit,
 ) -> None:
     """Handle file-based geometry metrics addition — two passes via add_computed_column."""
     handle_output_overwrite(output_parquet, overwrite, input_parquet)
@@ -216,6 +223,7 @@ def _add_metrics_file_based(
             row_group_rows=row_group_rows,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            memory_limit=memory_limit,
         )
 
         # Pass 2: add perimeter column to final output
@@ -231,6 +239,7 @@ def _add_metrics_file_based(
             row_group_rows=row_group_rows,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            memory_limit=memory_limit,
         )
     finally:
         if os.path.exists(temp_file):
@@ -240,13 +249,15 @@ def _add_metrics_file_based(
     if vecorel:
         from geoparquet_io.core.constants import ensure_vecorel_columns
 
-        _add_vecorel_metadata_to_file(output_parquet, verbose)
+        _add_vecorel_metadata_to_file(output_parquet, verbose, memory_limit)
         ensure_vecorel_columns(output_parquet, verbose)
 
     success(f"Added {AREA_COLUMN} and {PERIMETER_COLUMN} to: {output_parquet}")
 
 
-def _add_vecorel_metadata_to_file(parquet_file: str, verbose: bool) -> None:
+def _add_vecorel_metadata_to_file(
+    parquet_file: str, verbose: bool, memory_limit: str | None
+) -> None:
     """Add Vecorel schema metadata to an existing file via rewrite."""
     from geoparquet_io.core.common import write_parquet_with_metadata
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
@@ -286,6 +297,7 @@ def _add_vecorel_metadata_to_file(parquet_file: str, verbose: bool) -> None:
                 original_metadata=metadata,
                 extra_kv_metadata=extra_kv,
                 verbose=verbose,
+                memory_limit=memory_limit,
             )
         finally:
             # Release DuckDB's read handle on the source before replacing it;

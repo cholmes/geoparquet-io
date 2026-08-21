@@ -567,6 +567,7 @@ class TestAddBboxCoveringMetadata:
             profile=None,
             force=False,
             geoparquet_version="2.0",
+            memory_limit=None,
         )
 
         assert os.path.exists(output_file)

@@ -25,6 +25,7 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
+from geoparquet_io.core.write_strategies.duckdb_kv import validate_memory_limit
 
 # Regex patterns for GCP resource validation
 # Project IDs: 6-30 chars, lowercase letters, digits, hyphens, must start with letter
@@ -774,6 +775,7 @@ def extract_bigquery(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     repair_geometry: bool = True,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """
     Extract data from BigQuery table to GeoParquet or plain Parquet.
@@ -874,6 +876,7 @@ def extract_bigquery(
         geoparquet_version=geoparquet_version,
         verbose=verbose,
         repair_geometry=repair_geometry,
+        memory_limit=memory_limit,
     )
 
 
@@ -901,6 +904,7 @@ def _execute_bigquery_extraction(
     geoparquet_version: str | None,
     verbose: bool,
     repair_geometry: bool = True,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """Execute the BigQuery extraction with the given parameters."""
     debug("Connecting to BigQuery...")
@@ -908,6 +912,14 @@ def _execute_bigquery_extraction(
         project=project,
         credentials_file=credentials_file,
     ) as con:
+        # The BigQuery scan is what actually consumes memory here (the result is
+        # materialised as an Arrow table before the PyArrow write), so apply the
+        # user's limit to this connection. validate_memory_limit guards the
+        # interpolation — a SET value cannot be parameterised.
+        if memory_limit is not None:
+            con.execute(f"SET memory_limit = '{validate_memory_limit(memory_limit)}'")
+            debug(f"DuckDB memory limit: {memory_limit}")
+
         # Detect geometry column from schema (native GEOMETRY type only)
         geom_col = _detect_geometry_column_from_schema(con, validated_table_id, geography_column)
         is_native_geometry = geom_col is not None  # Track whether geometry is native GEOGRAPHY type

@@ -33,6 +33,38 @@ if TYPE_CHECKING:
 # Valid compression values whitelist (prevents injection via compression param)
 VALID_COMPRESSIONS = frozenset({"ZSTD", "SNAPPY", "GZIP", "LZ4", "UNCOMPRESSED", "BROTLI"})
 
+# DuckDB's memory_limit is a SET value, which cannot be parameterised, so the
+# value has to be interpolated into SQL. Only accept a plain size literal: a
+# decimal number with an optional decimal (KB/MB/GB/TB) or binary (KiB/…) unit.
+_MEMORY_LIMIT_RE = re.compile(r"^\d+(\.\d+)?\s*(K|M|G|T)?i?B$", re.IGNORECASE)
+
+
+def validate_memory_limit(value: str) -> str:
+    """Validate/normalize a DuckDB memory limit before interpolating it into SQL.
+
+    ``memory_limit`` originates from ``--write-memory`` (or from a library
+    caller's config) and ends up inside ``SET memory_limit = '…'``. DuckDB's
+    ``execute`` runs multi-statement strings, so an unvalidated value can close
+    the string literal and append arbitrary SQL. Reject anything that is not a
+    plain size.
+
+    Args:
+        value: Candidate memory limit, e.g. "512MB", "2GB", "4.5 GB", "1GiB"
+
+    Returns:
+        The normalized value (whitespace removed, unit upper-cased).
+
+    Raises:
+        ValueError: If the value is not a plain size literal.
+    """
+    text = str(value).strip()
+    if not _MEMORY_LIMIT_RE.match(text):
+        raise ValueError(
+            f"Invalid memory_limit {value!r}; expected a size like "
+            f"'512MB', '2GB', '4.5GB', or '1GiB'."
+        )
+    return text.upper().replace(" ", "")
+
 
 def _get_available_memory() -> int | None:
     """
@@ -384,7 +416,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         # spilling). Safe because threads=1 already makes the single pipeline emit
         # rows in order, so output ordering (e.g. sorted files) is preserved.
         con.execute("SET preserve_insertion_order = false")
-        effective_limit = memory_limit or get_default_memory_limit()
+        # Validate before interpolation: a SET value cannot be parameterised.
+        effective_limit = validate_memory_limit(memory_limit or get_default_memory_limit())
         con.execute(f"SET memory_limit = '{effective_limit}'")
         if verbose:
             debug(f"DuckDB memory limit: {effective_limit}")

@@ -1367,6 +1367,7 @@ def convert_to_geoparquet_cmd(
                 repair_geometry=repair_geometry,
                 linearize_curves=linearize_curves,
                 max_angle_deg=max_angle_deg,
+                memory_limit=write_memory,
             )
         else:
             convert_to_geoparquet(
@@ -1391,6 +1392,7 @@ def convert_to_geoparquet_cmd(
                 repair_geometry=repair_geometry,
                 linearize_curves=linearize_curves,
                 max_angle_deg=max_angle_deg,
+                memory_limit=write_memory,
             )
 
 
@@ -1414,6 +1416,7 @@ def _convert_streaming(
     repair_geometry=True,
     linearize_curves=True,
     max_angle_deg=None,
+    memory_limit=None,
 ):
     """Handle streaming output for convert command."""
     import tempfile
@@ -1449,6 +1452,7 @@ def _convert_streaming(
             repair_geometry=repair_geometry,
             linearize_curves=linearize_curves,
             max_angle_deg=max_angle_deg,
+            memory_limit=memory_limit,
         )
 
         # Read and stream to stdout
@@ -3076,6 +3080,7 @@ def extract_bigquery_cmd(
         geoparquet_version=geoparquet_version,
         overwrite=overwrite,
         repair_geometry=repair_geometry,
+        memory_limit=write_memory,
     )
 
 
@@ -4107,6 +4112,7 @@ def add_country_codes(
         prefix=prefix,
         no_cache=no_cache,
         vecorel=vecorel,
+        memory_limit=write_memory,
     )
 
 
@@ -4194,6 +4200,7 @@ def add_geometry_metrics_cmd(
         geoparquet_version=geoparquet_version,
         overwrite=overwrite,
         show_sql=show_sql,
+        memory_limit=write_memory,
     )
 
 
@@ -4280,17 +4287,18 @@ def add_bbox(
             add_bbox_column_impl(
                 input_parquet,
                 output_parquet,
-                bbox_name,
-                dry_run,
-                verbose,
-                compression.upper(),
-                compression_level,
-                row_group_mb,
-                row_group_size,
-                None,
-                force,
-                geoparquet_version,
+                bbox_column_name=bbox_name,
+                dry_run=dry_run,
+                verbose=verbose,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                profile=None,
+                force=force,
+                geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                memory_limit=write_memory,
             )
         except StreamingError as e:
             raise click.ClickException(str(e)) from None

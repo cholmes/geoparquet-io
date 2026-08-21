@@ -332,7 +332,7 @@ def _add_s2_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    memory_limit: str | None = None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_s2."""
     # Suppress verbose when streaming to stdout

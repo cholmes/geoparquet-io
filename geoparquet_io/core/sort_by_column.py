@@ -242,7 +242,7 @@ def _sort_by_column_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    memory_limit: str | None = None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for sort_by_column."""
     # Suppress verbose when streaming to stdout

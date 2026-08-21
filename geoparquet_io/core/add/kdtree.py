@@ -559,7 +559,7 @@ def _add_kdtree_streaming(
     sample_size: int,
     profile: str | None,
     geoparquet_version: str | None,
-    memory_limit: str | None = None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_kdtree."""
     # Suppress verbose when streaming to stdout

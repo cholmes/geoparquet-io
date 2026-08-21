@@ -405,7 +405,7 @@ def _add_quadkey_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    memory_limit: str | None = None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_quadkey."""
     # Suppress verbose when streaming to stdout
@@ -517,8 +517,8 @@ def _add_quadkey_file_based(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    overwrite: bool = False,
-    memory_limit: str | None = None,
+    overwrite: bool,
+    memory_limit: str | None,
 ) -> None:
     """Handle file-based add_quadkey operation."""
     configure_verbose(verbose)

@@ -24,6 +24,7 @@ import pyarrow as pa
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.streaming import (
     apply_geoarrow_extension_type,
@@ -245,6 +246,13 @@ def write_output(
     validate_output(output_path)
 
     if should_stream_output(output_path):
+        # Arrow IPC to stdout has no DuckDB write engine to configure, so a
+        # memory limit cannot be applied. Say so rather than dropping it silently.
+        if memory_limit is not None:
+            warn(
+                "--write-memory is ignored when streaming to stdout "
+                "(it only applies to file outputs)."
+            )
         return _write_stream_output(con, query, original_metadata, geometry_column)
     else:
         _write_file_output(
@@ -448,7 +456,7 @@ def execute_transform(
 
         execute_transform("input.parquet", None, make_query, verbose=True)
     """
-    from geoparquet_io.core.logging_config import progress, warn
+    from geoparquet_io.core.logging_config import progress
 
     # Suppress verbose when streaming to stdout (would corrupt the stream)
     if should_stream_output(output_path):

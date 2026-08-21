@@ -273,11 +273,41 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   read that needs it, and the unused `get_bigquery_connection()` helper — which
   set `GOOGLE_APPLICATION_CREDENTIALS` with no restore — is removed in favour of
   the `BigQueryConnection` context manager the extract path already used.
-- **`--write-memory` now honored by `add h3`/`a5`/`s2`/`kdtree`/`quadkey` and
-  `sort column`/`quadkey` (previously silently ignored).** These commands
-  accepted the flag but never forwarded it to the DuckDB write engine, so the
-  value was dropped and the auto-detected default memory limit was used
-  instead — the same bug class fixed for `sort hilbert` in #627.
+- **`--write-memory` now honored by every command that offers it (previously
+  silently ignored on twelve of them).** `add h3`/`a5`/`s2`/`kdtree`/`quadkey`/
+  `bbox`/`geometry-metrics`/`admin-divisions`, `sort column`/`quadkey`,
+  `convert geoparquet` and `extract bigquery` accepted the flag but never
+  forwarded it, so the value was dropped and the auto-detected default limit
+  was used instead — the same bug class fixed for `sort hilbert` in #627. The
+  flag is now forwarded by all 22 commands that expose it (`convert
+  geoparquet`/`reproject`, `extract geoparquet`/`bigquery`, `sort
+  hilbert`/`column`/`quadkey`, `add admin-divisions`/`geometry-metrics`/`bbox`/
+  `h3`/`a5`/`s2`/`kdtree`/`quadkey`, and all seven `partition` subcommands).
+  It remains absent — by design — from commands with no DuckDB write engine to
+  configure: `convert geojson`/`geopackage`/`flatgeobuf`/`csv`/`shapefile`,
+  `extract arcgis`/`wfs`/`carto`, `add bbox-metadata`, `pmtiles
+  create`/`pyramid`, `process overview`/`aggregate`, and `publish
+  stac`/`upload`. On `extract bigquery` the limit is applied to the DuckDB
+  connection that runs the BigQuery scan (the memory-heavy step); the Parquet
+  write itself is a PyArrow write.
+
+- **`--write-memory` is validated instead of reaching SQL unchecked.** The
+  value is interpolated into DuckDB's `SET memory_limit = '…'` (a SET value
+  cannot be parameterised), and DuckDB executes multi-statement strings, so an
+  unvalidated value could append arbitrary SQL — reachable from any library
+  caller passing a config-supplied `memory_limit`. Values must now match a
+  plain size literal (`512MB`, `2GB`, `4.5GB`, `1GiB`); anything else is a
+  clean Click parameter error rather than a raw DuckDB `ParserException`
+  traceback.
+
+- **`--write-memory` no longer aborts with `--geoparquet-version
+  1.1-geoarrow`.** That version reroutes WKB input to the arrow-streaming
+  write strategy, which cannot honour a memory limit; the combination raised a
+  raw `ValueError` traceback on `sort hilbert` (since #627) and on the seven
+  commands above. gpio now warns and ignores the limit when *it* rerouted the
+  strategy, and reports a clean parameter error only when the user explicitly
+  chose an incompatible `--write-strategy`. Streaming Arrow IPC to stdout also
+  warns rather than dropping the limit silently.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

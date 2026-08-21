@@ -128,12 +128,17 @@ Override auto-detection when needed:
 
     # Smaller limit for restricted environments
     gpio extract input.parquet output.parquet --write-memory 512MB
-
-    # Combine with strategy selection
-    gpio extract input.parquet output.parquet \
-        --write-strategy streaming \
-        --write-memory 1GB
     ```
+
+    !!! warning "`--write-memory` requires the `duckdb-kv` strategy"
+        Only `duckdb-kv` (the default) has a DuckDB write engine to configure.
+        Combining `--write-memory` with an explicitly chosen `--write-strategy`
+        of `streaming`, `in-memory`, or `disk-rewrite` is rejected as a
+        parameter error. `--geoparquet-version 1.1-geoarrow` internally reroutes
+        WKB input to the arrow-streaming strategy; there gpio warns and ignores
+        `--write-memory` rather than failing. Streaming Arrow IPC to stdout
+        (`-`) also has no write engine to configure, so the limit is ignored
+        with a warning — `--write-memory` only applies to file outputs.
 
 === "Python"
 

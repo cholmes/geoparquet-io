@@ -2369,6 +2369,7 @@ def write_parquet_with_metadata(
             # which requires the arrow-streaming strategy (DuckDB COPY TO cannot emit
             # nested GeoArrow types). Already-native inputs keep their preservation
             # path (duckdb-kv passes the native column through unchanged).
+            auto_routed_strategy = False
             if geoparquet_version == "1.1-geoarrow":
                 primary = (geometry_info or {}).get("primary")
                 input_encoding = (
@@ -2381,16 +2382,31 @@ def write_parquet_with_metadata(
                     if verbose:
                         debug("Routing 1.1-geoarrow WKB input through arrow-streaming")
                     write_strategy = "streaming"
+                    auto_routed_strategy = True
 
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
 
-            # Validate memory_limit is only used with duckdb-kv strategy
+            # Only duckdb-kv can honour a memory limit. If *we* rerouted the
+            # strategy (1.1-geoarrow above), the user did nothing wrong: warn and
+            # drop the limit rather than aborting a command that worked before
+            # --write-memory was plumbed through (#663). A strategy the user
+            # explicitly asked for is a real error — raised as a core exception so
+            # the CLI shows a clean message instead of a traceback.
             if memory_limit is not None and strategy_enum != WriteStrategy.DUCKDB_KV:
-                raise ValueError(
-                    f"--write-memory is only supported with the 'duckdb-kv' strategy, "
-                    f"not '{write_strategy}'"
-                )
+                if auto_routed_strategy:
+                    warn(
+                        "--write-memory is ignored for GeoParquet 1.1-geoarrow output: "
+                        "GeoArrow encoding requires the arrow-streaming write strategy, "
+                        "which does not support a memory limit."
+                    )
+                    memory_limit = None
+                else:
+                    raise InvalidParameterError(
+                        "--write-memory",
+                        f"a memory limit is only supported with the 'duckdb-kv' "
+                        f"write strategy, not '{write_strategy}'",
+                    )
 
             if verbose:
                 debug(f"Writing GeoParquet version: {effective_version}")
@@ -3052,7 +3068,7 @@ def add_computed_column(
     profile=None,
     replace_column=None,
     geoparquet_version=None,
-    memory_limit=None,
+    memory_limit: str | None = None,
 ):
     """
     Add a computed column to a GeoParquet file using SQL expression.

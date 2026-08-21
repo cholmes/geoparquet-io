@@ -286,7 +286,7 @@ def _add_a5_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
-    memory_limit: str | None = None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_a5."""
     # Suppress verbose when streaming to stdout
