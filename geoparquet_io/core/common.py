@@ -57,7 +57,6 @@ from geoparquet_io.core.logging_config import (
 from geoparquet_io.core.parquet_writer import ParquetWriteSettings
 from geoparquet_io.core.remote import (
     _sanitize_url_for_logging,
-    aws_profile_scope,
     is_remote_url,
     needs_httpfs,
     remote_write_context,
@@ -1711,14 +1710,12 @@ def write_geoparquet_via_arrow(
     query_columns = _get_query_columns(con, query)
     has_geometry = geometry_column in query_columns
 
-    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
-    # never leaks into the host process env (restored on exit, incl. was-unset).
-    with (
-        aws_profile_scope(profile, output_file),
-        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-            actual_output,
-            is_remote,
-        ),
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
+    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+        actual_output,
+        is_remote,
     ):
         # Validate compression settings
         compression, compression_level, compression_desc = validate_compression_settings(
@@ -2340,14 +2337,12 @@ def write_parquet_with_metadata(
         info("\n-- Query:")
         progress(query)
 
-    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
-    # never leaks into the host process env (restored on exit, incl. was-unset).
-    with (
-        aws_profile_scope(profile, output_file),
-        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-            actual_output,
-            is_remote,
-        ),
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
+    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+        actual_output,
+        is_remote,
     ):
         if not rewrite_needed:
             # Fast path: plain DuckDB COPY TO without geo metadata manipulation
@@ -2588,14 +2583,12 @@ def write_geoparquet_table(
     # Normalize large_string/large_binary back to string/binary for Parquet compatibility
     table = _normalize_arrow_large_types(table)
 
-    # Scope AWS_PROFILE to the actual output write/upload so a profile= argument
-    # never leaks into the host process env (restored on exit, incl. was-unset).
-    with (
-        aws_profile_scope(profile, output_file),
-        remote_write_context(output_file, is_directory=False, verbose=verbose) as (
-            actual_output,
-            is_remote,
-        ),
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
+    with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
+        actual_output,
+        is_remote,
     ):
         # Apply GeoParquet metadata only if geometry column exists
         if has_geometry:

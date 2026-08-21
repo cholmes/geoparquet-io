@@ -236,44 +236,6 @@ def _setup_bigquery_connection() -> duckdb.DuckDBPyConnection:
         raise
 
 
-def get_bigquery_connection(
-    project: str | None = None,
-    credentials_file: str | None = None,
-) -> duckdb.DuckDBPyConnection:
-    """
-    Create DuckDB connection with BigQuery extension loaded.
-
-    NOTE: This function mutates GOOGLE_APPLICATION_CREDENTIALS environment variable.
-    For proper cleanup, use BigQueryConnection context manager instead.
-
-    Args:
-        project: Default GCP project ID (optional, uses gcloud default if not set)
-        credentials_file: Path to service account JSON file (optional)
-
-    Returns:
-        Configured DuckDB connection with BigQuery extension
-    """
-
-    con = _setup_bigquery_connection()
-
-    try:
-        # Configure authentication via environment variable if credentials file provided
-        if credentials_file:
-            # Expand user paths like ~/
-            credentials_file = os.path.expanduser(credentials_file)
-            if not os.path.exists(credentials_file):
-                raise FileNotFoundError(f"Credentials file not found: {credentials_file}")
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_file
-
-        # Note: project ID is specified in the fully-qualified table name
-        # (project.dataset.table) passed to bigquery_scan(), not as a SET parameter
-
-        return con
-    except Exception:
-        con.close()
-        raise
-
-
 def _get_table_row_count(
     con: duckdb.DuckDBPyConnection,
     table_id: str,

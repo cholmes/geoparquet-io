@@ -389,32 +389,30 @@ class TestTableUpload:
     def test_upload_writes_temp_and_calls_upload(self, sample_table):
         """Test that upload() writes to temp file and calls core upload."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
-                # Make upload a no-op
-                mock_upload.return_value = None
+            # Make upload a no-op
+            mock_upload.return_value = None
 
-                sample_table.upload("s3://test-bucket/test.parquet")
+            sample_table.upload("s3://test-bucket/test.parquet")
 
-                # Verify upload was called
-                mock_upload.assert_called_once()
-                call_args = mock_upload.call_args
-                assert call_args.kwargs["destination"] == "s3://test-bucket/test.parquet"
+            # Verify upload was called
+            mock_upload.assert_called_once()
+            call_args = mock_upload.call_args
+            assert call_args.kwargs["destination"] == "s3://test-bucket/test.parquet"
 
     def test_upload_with_s3_endpoint(self, sample_table):
         """Test upload() with custom S3 endpoint."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
-                mock_upload.return_value = None
+            mock_upload.return_value = None
 
-                sample_table.upload(
-                    "s3://test-bucket/test.parquet",
-                    s3_endpoint="minio.example.com:9000",
-                    s3_use_ssl=False,
-                )
+            sample_table.upload(
+                "s3://test-bucket/test.parquet",
+                s3_endpoint="minio.example.com:9000",
+                s3_use_ssl=False,
+            )
 
-                call_args = mock_upload.call_args
-                assert call_args.kwargs["s3_endpoint"] == "minio.example.com:9000"
-                assert call_args.kwargs["s3_use_ssl"] is False
+            call_args = mock_upload.call_args
+            assert call_args.kwargs["s3_endpoint"] == "minio.example.com:9000"
+            assert call_args.kwargs["s3_use_ssl"] is False
 
     def test_upload_cleans_up_temp_file(self, sample_table):
         """Test that upload() cleans up temp file even on error."""
@@ -425,16 +423,15 @@ class TestTableUpload:
             raise Exception("Upload failed")
 
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.remote.setup_aws_profile_if_needed"):
-                mock_upload.side_effect = capture_and_raise
+            mock_upload.side_effect = capture_and_raise
 
-                with pytest.raises(Exception, match="Upload failed"):
-                    sample_table.upload("s3://test-bucket/test.parquet")
+            with pytest.raises(Exception, match="Upload failed"):
+                sample_table.upload("s3://test-bucket/test.parquet")
 
-                # Verify the temp file path was captured and cleaned up
-                assert len(captured_paths) == 1
-                temp_path = captured_paths[0]
-                assert not Path(temp_path).exists(), "Temp file should be deleted after error"
+            # Verify the temp file path was captured and cleaned up
+            assert len(captured_paths) == 1
+            temp_path = captured_paths[0]
+            assert not Path(temp_path).exists(), "Temp file should be deleted after error"
 
 
 class TestTableMetadataProperties:

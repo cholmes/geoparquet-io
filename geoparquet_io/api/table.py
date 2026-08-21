@@ -1011,7 +1011,11 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import aws_profile_scope, is_remote_url
+        import pyarrow as pa
+
+        from geoparquet_io.core.remote import is_remote_url
+        from geoparquet_io.core.upload import upload
+        from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
 
         # Auto mode: resolve to a concrete version with the same decision the
         # CLI uses (native-geo-only → 2.0), falling back to the hint captured
@@ -1038,49 +1042,9 @@ class Table:
         else:
             local_path = PathLib(path)
 
-        # Scope AWS_PROFILE to this write so a profile= argument never leaks into
-        # the host process environment (library-safe: restored on exit, including
-        # the was-unset case). No-op for local paths / no profile.
-        profile_path = path_str if is_remote else None
-        with aws_profile_scope(profile, profile_path):
-            return self._run_geoparquet_write(
-                path=path,
-                path_str=path_str,
-                local_path=local_path,
-                is_remote=is_remote,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_size_mb=row_group_size_mb,
-                row_group_rows=row_group_rows,
-                geoparquet_version=geoparquet_version,
-                write_strategy=write_strategy,
-                profile=profile,
-                verbose=verbose,
-            )
-
-    def _run_geoparquet_write(
-        self,
-        path: str | Path,
-        path_str: str,
-        local_path,
-        is_remote: bool,
-        compression: str,
-        compression_level: int | None,
-        row_group_size_mb: float | None,
-        row_group_rows: int | None,
-        geoparquet_version: str | None,
-        write_strategy: str,
-        profile: str | None,
-        verbose: bool,
-    ) -> Path:
-        """Execute the GeoParquet write/upload under an active AWS profile scope."""
-        from pathlib import Path as PathLib
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.upload import upload
-        from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
-
+        # No AWS_PROFILE env mutation: profile= is handed straight to upload(),
+        # which resolves the credentials for it explicitly, so a library call
+        # never rewrites the host process environment.
         try:
             # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
             # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
@@ -1149,7 +1113,7 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import is_remote_url
         from geoparquet_io.core.upload import upload
 
         # Check if destination is remote
@@ -1233,8 +1197,8 @@ class Table:
 
             # Upload to remote if needed
             if is_remote:
-                setup_aws_profile_if_needed(profile, path_str)
-
+                # profile= is passed explicitly to upload() below, so there is no
+                # AWS_PROFILE env mutation to leak into the host process.
                 # Special handling for shapefiles: zip all sidecars into .shp.zip
                 if format == "shapefile":
                     from geoparquet_io.core.common import create_shapefile_zip
@@ -2062,10 +2026,7 @@ class Table:
         import uuid
         from pathlib import Path
 
-        from geoparquet_io.core.remote import setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload as do_upload
-
-        setup_aws_profile_if_needed(profile, destination)
 
         # Write to temp file with uuid to avoid Windows file locking issues
         temp_path = Path(tempfile.gettempdir()) / f"gpio_upload_{uuid.uuid4()}.parquet"

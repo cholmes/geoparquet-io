@@ -248,16 +248,31 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   outside `core/duckdb_utils.py` — including via an aliased or
   `from duckdb import ...` import, which would otherwise slip past the check.
   A trailing `# allow-bare-connect` comment marks a deliberate exception.
-- **Library-safe writes: no global state leaks.** Three side effects that made
-  `gpio` unsafe to embed are fixed. (1) The write path no longer mutates a
-  caller-supplied `extra_kv_metadata` dict in place — a dict reused across
-  writes (e.g. partition loops) no longer accumulates preserved keys from prior
-  files. (2) A `.write(profile=...)` / `.upload(profile=...)` to S3 now restores
-  the previous `AWS_PROFILE` when it returns (including the was-unset case)
-  instead of permanently mutating the host process environment; the CLI's
-  existing save/restore behavior is unchanged. (3) `configure_verbose()` is now
-  symmetric — a `verbose=True` call followed by `verbose=False` lowers the
-  logger back to `INFO` instead of leaving the whole process at `DEBUG`.
+- **Library-safe writes: no global state leaks.** Side effects that made `gpio`
+  unsafe to embed in a host application are fixed. (1) `write_parquet_with_metadata()`
+  no longer mutates a caller-supplied `extra_kv_metadata` dict in place — a dict
+  reused across writes (e.g. a partition loop) no longer accumulates preserved
+  keys from prior files — and caller-supplied keys now explicitly win over keys
+  preserved from the input file. (2) `.write(profile=...)` and
+  `.upload(profile=...)` to S3 no longer set `AWS_PROFILE` in the host process
+  environment at all, including the non-parquet (`.fgb`/`.gpkg`/`.csv`/`.shp`/
+  `.geojson`) write path. The profile was already handed explicitly to the
+  uploader, which resolves credentials from it directly, so the environment
+  mutation was redundant as well as leaky — and, being an unlocked
+  process-global, wrong under concurrency. The CLI's existing save/restore
+  behavior is unchanged. (3) `configure_verbose()` no longer stamps a level onto
+  the shared `geoparquet_io` logger: a default (`verbose=False`) call leaves a
+  level the host application chose untouched, and a nested default call no
+  longer truncates the output of an outer `--verbose` run. (4) The first
+  library call no longer hijacks a host application's logging: when the host
+  has already configured logging, `gpio` attaches a `logging.NullHandler` and
+  propagates instead of installing its own stream handler, so messages are no
+  longer emitted twice. (5) Two environment variables are no longer set
+  permanently by a library call: the ArcGIS reader lifts GDAL's per-feature
+  GeoJSON size cap (`OGR_GEOJSON_MAX_OBJ_SIZE`) only for the duration of the
+  read that needs it, and the unused `get_bigquery_connection()` helper — which
+  set `GOOGLE_APPLICATION_CREDENTIALS` with no restore — is removed in favour of
+  the `BigQueryConnection` context manager the extract path already used.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

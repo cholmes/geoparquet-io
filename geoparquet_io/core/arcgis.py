@@ -12,6 +12,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,8 +85,9 @@ class ArcGISLayerInfo:
 BATCH_SIZE_FALLBACKS = [1000, 500, 100, 50, 10, 1]
 
 
-def _disable_gdal_geojson_size_limit() -> None:
-    """Lift GDAL's per-feature GeoJSON object size limit before ST_Read.
+@contextmanager
+def _gdal_geojson_size_limit_lifted():
+    """Lift GDAL's per-feature GeoJSON object size limit around an ST_Read.
 
     GDAL's GeoJSON/ESRIJSON drivers cap a single feature object at 200 MB by
     default (``OGR_GEOJSON_MAX_OBJ_SIZE``, in megabytes) and raise an
@@ -93,10 +95,21 @@ def _disable_gdal_geojson_size_limit() -> None:
     it. Large, complex polygon layers — e.g. national admin boundaries with
     detailed coastlines — blow past this even at ``batch_size=1``, so the
     batch-size fallback ladder cannot recover. GDAL reads the option from the
-    process environment; "0" removes the limit. Idempotent and harmless to call
-    on every page conversion. See issue #517.
+    process environment; "0" removes the limit. See issue #517.
+
+    Scoped rather than set once: this is a process-global environment variable,
+    and permanently lifting GDAL's safety cap for an embedding application (or
+    for every later, unrelated gpio call) is not ours to do.
     """
+    previous = os.environ.get("OGR_GEOJSON_MAX_OBJ_SIZE")
     os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("OGR_GEOJSON_MAX_OBJ_SIZE", None)
+        else:
+            os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] = previous
 
 
 def _get_reduced_batch_size(current_batch: int) -> int | None:
@@ -969,10 +982,6 @@ def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Tab
         with open(temp_file, "w") as f:
             json.dump(doc, f)
 
-        # Allow arbitrarily large/complex single features through GDAL's parser
-        # (issue #517) — must be in effect before ST_Read reads the temp file.
-        _disable_gdal_geojson_size_limit()
-
         query = f"""
             SELECT
                 ST_AsWKB(geom) as geometry,
@@ -980,7 +989,10 @@ def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Tab
             FROM ST_Read('{temp_file}')
         """
 
-        return con.execute(query).arrow().read_all()
+        # Allow arbitrarily large/complex single features through GDAL's parser
+        # (issue #517) — must be in effect while ST_Read reads the temp file.
+        with _gdal_geojson_size_limit_lifted():
+            return con.execute(query).arrow().read_all()
 
     finally:
         if owns_con:
