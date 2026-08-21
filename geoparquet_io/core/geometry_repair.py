@@ -57,8 +57,10 @@ def _layered_invalid_count_sql(source_sql: str, parsed_expr: str) -> str:
 
     Filtering ``IS NOT NULL`` and evaluating ``ST_IsValid`` over the raw rows in
     one WHERE clause segfaults DuckDB 1.5.x's spatial extension when the column
-    contains NULLs (selection-vector misalignment under conditional execution;
-    the same bug family as the OR-form repair crash noted below). Verified on
+    contains NULLs: DuckDB 1.5.1's TRY() applies the selection vector twice
+    under conditional execution, reading uninitialized vector memory (fixed in
+    DuckDB 1.5.2, see duckdb/duckdb-spatial#858 — we are pinned below it for the
+    'geography' extension). Verified on
     issue #642's reproduction: projecting the parsed geometry first, filtering
     NULLs in a middle layer, and running ``ST_IsValid`` outermost is logically
     identical and crash-free.
