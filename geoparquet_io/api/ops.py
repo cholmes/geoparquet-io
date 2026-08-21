@@ -120,6 +120,7 @@ def add_admin_divisions(
     dataset: str = "gaul",
     levels: list[str] | None = None,
     vecorel: bool = False,
+    prefix: str | None = None,
 ) -> pa.Table:
     """
     Add administrative division columns via spatial join.
@@ -128,8 +129,14 @@ def add_admin_divisions(
         table: Input PyArrow Table
         dataset: Boundaries dataset ("gaul", "overture"). Default matches the
             CLI (`gpio add admin-divisions --dataset`).
-        levels: Admin levels to add (e.g., ["country", "region"])
+        levels: Admin levels to add (e.g., ["country", "region"]). None adds
+            every level the dataset provides, matching the CLI with no
+            ``--levels``: ``["continent", "country", "department"]`` for GAUL,
+            ``["country", "region"]`` for Overture.
         vecorel: Output Vecorel-compliant columns (default: False)
+        prefix: Column name prefix, as with the CLI's ``--prefix``. None uses
+            the dataset's own name (``gaul_country``, ``overture_country``);
+            "admin" produces ``admin:country``.
 
     Returns:
         New table with admin division columns added
@@ -140,6 +147,7 @@ def add_admin_divisions(
         >>> table = ops.add_admin_divisions(table, vecorel=True)
     """
     from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+    from geoparquet_io.core.admin_datasets import default_admin_levels
 
     if vecorel:
         dataset = "overture"
@@ -149,8 +157,9 @@ def add_admin_divisions(
         table,
         add_admin_divisions_multi,
         dataset_name=dataset,
-        levels=levels or ["country"],
+        levels=levels or default_admin_levels(dataset),
         vecorel=vecorel,
+        prefix=prefix,
         verbose=False,
     )
 
@@ -1123,7 +1132,7 @@ def from_wfs(
     page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     repair_geometry: bool = True,
 ) -> pa.Table:
     """
@@ -1147,8 +1156,10 @@ def from_wfs(
             requested. If False (default), warn and use the server's actual CRS.
             The CRS the server declares in its GeoJSON response is authoritative;
             gpio never guesses from coordinates when the server states it (#499).
-        auto_tile: Automatically subdivide into spatial tiles for servers with
-            startIndex limits (default: False)
+        auto_tile: Automatically subdivide into spatial tiles when the server
+            caps responses (maxFeatures or startIndex limits). Matches the CLI
+            default; setting it False accepts silently truncated results
+            (default: True)
 
     Returns:
         PyArrow Table with geometry column
@@ -1156,8 +1167,8 @@ def from_wfs(
     Example:
         >>> from geoparquet_io.api import ops
         >>> table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
-        >>> # For large datasets on servers with startIndex limits:
-        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
+        >>> # Accept whatever a capped server returns, without tiling:
+        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=False)
     """
     from geoparquet_io.core.wfs import wfs_to_table
 
@@ -1188,7 +1199,7 @@ def from_wfs_layers(
     parallel_layers: int = 1,
     axis_order: str = "auto",
     strict_crs: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     compression: str = "ZSTD",
@@ -1212,8 +1223,10 @@ def from_wfs_layers(
         parallel_layers: Number of layers to extract concurrently (default: 1)
         axis_order: Bbox axis order ('auto', 'xy', 'latlon')
         strict_crs: If True, fail when the server returns a different CRS than requested
-        auto_tile: Automatically subdivide into spatial tiles for servers with
-            startIndex limits (default: False)
+        auto_tile: Automatically subdivide into spatial tiles when the server
+            caps responses (maxFeatures or startIndex limits). Matches the CLI
+            default; setting it False accepts silently truncated results
+            (default: True)
         skip_hilbert: Skip Hilbert curve sorting (default: False)
         skip_bbox: Skip adding bbox column (default: False)
         compression: Compression algorithm (default: 'ZSTD')

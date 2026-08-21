@@ -92,6 +92,7 @@ from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_i
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
 from geoparquet_io.core.upload import check_credentials
 from geoparquet_io.core.upload import upload as upload_impl
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 
 class OptionalIntCommand(GlobAwareCommand):
@@ -3155,8 +3156,9 @@ def _deprecated_version_callback(ctx, param, value):
 @click.option(
     "--page-size",
     type=click.IntRange(1000, 500000),
-    default=100000,
-    help="Features per page when using --workers > 1. Default: 100000.",
+    default=DEFAULT_WFS_PAGE_SIZE,
+    show_default=True,
+    help="Features per page when using --workers > 1.",
 )
 @click.option(
     "--parallel-layers",
@@ -4011,11 +4013,11 @@ def add_country_codes(
     Input data must have valid geometries in WGS84 or compatible CRS.
     """
     from geoparquet_io.core.admin_datasets import (
-        AdminDatasetFactory,
-        get_cache_dir,
+        clear_cache as clear_admin_cache,
     )
     from geoparquet_io.core.admin_datasets import (
-        clear_cache as clear_admin_cache,
+        default_admin_levels,
+        get_cache_dir,
     )
     from geoparquet_io.core.logging_config import info, success
     from geoparquet_io.core.streaming import is_stdin, should_stream_output
@@ -4082,9 +4084,8 @@ def add_country_codes(
     elif levels:
         level_list = [level.strip() for level in levels.split(",")]
     else:
-        # Use all available levels for the dataset
-        temp_dataset = AdminDatasetFactory.create(dataset, None, verbose=False)
-        level_list = temp_dataset.get_available_levels()
+        # Use all available levels for the dataset (shared with the Python API)
+        level_list = default_admin_levels(dataset)
 
     add_admin_divisions_multi(
         input_parquet,

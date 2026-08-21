@@ -8,6 +8,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is the first beta release of geoparquet-io 1.0, featuring major new spatial indexing systems, auto-resolution partitioning, comprehensive `--overwrite` support, and significant performance improvements.
 
+### Breaking
+
+- **BREAKING (Python API): CLI and Python API defaults aligned.** `gpio <cmd>`
+  and its `geoparquet_io.api` twin are advertised as the same operation, but
+  several defaults had silently diverged, so the "same" call did two different
+  things. The API now follows the CLI. **These change library behaviour for
+  callers that relied on the old defaults** (the CLI is unaffected):
+  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `dataset` now
+    defaults to `"gaul"` (was `"overture"`), matching
+    `gpio add admin-divisions --dataset`. **This changes output column names**
+    — the prefix is derived from the dataset name, so what used to land as
+    `overture_country` now lands as `gaul_country`, and downstream
+    `df["overture_country"]` raises `KeyError`. The new `prefix` parameter
+    (mirroring the CLI's `--prefix`) pins the old names:
+    `add_admin_divisions(dataset="overture", prefix="overture")`.
+  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `levels=None` now
+    adds **every level the dataset provides** (GAUL: `continent`, `country`,
+    `department`), matching the CLI with no `--levels`. It previously added
+    `country` only.
+  - `Table.partition_by_h3/quadkey/s2/a5/string/kdtree/admin`: `hive` now
+    defaults to `False` (was `True`), matching `gpio partition <scheme>
+    --hive`, which is off by default. Pass `hive=True` explicitly for
+    Hive-style `key=value/` output directories. **With `hive=False` the
+    partition value lives only in the file name, so the generated index column
+    (`quadkey`, `h3_cell`, `s2_cell`, `a5_cell`, `kdtree_cell`) is dropped from
+    the output files.** The new `keep_<scheme>_column` parameters mirror the
+    CLI's `--keep-*-column` and restore it without switching to Hive layout.
+  - `ops.from_wfs` / `ops.from_wfs_layers` / `Table.from_wfs`: `auto_tile` now
+    defaults to `True`, matching `gpio extract wfs`. With it off, a server that
+    caps responses (`maxFeatures` / `startIndex` limits) returned a **silently
+    truncated** table and reported success; the CLI tiled and fetched
+    everything. Pass `auto_tile=False` to opt back out.
+  - `Table.from_wfs`: `page_size` now defaults to `100000` (was `10000`),
+    matching `ops.from_wfs` and `gpio extract wfs --page-size`. Every entry
+    point — the CLI option, `wfs_to_table`, `convert_wfs_to_geoparquet`,
+    `convert_wfs_layers_to_directory`, `fetch_all_features_duckdb`,
+    `_fetch_with_spatial_tiles` and both API wrappers — now references a single
+    `DEFAULT_WFS_PAGE_SIZE` constant in `core/wfs.py`.
+  - `Table.check_spatial`: `limit_rows` now defaults to `500000` (was
+    `100000`), matching `gpio check spatial --limit-rows`; the API previously
+    analysed 5x fewer rows and could report a different verdict on the same
+    file.
+  - `Table.partition_by_string/kdtree/admin`: `compression_level` now defaults
+    to `None` (was a hardcoded `15`), letting each codec pick its own default.
+    The pinned value made every non-ZSTD codec raise —
+    `partition_by_string(..., compression="GZIP")` failed with "GZIP
+    compression level must be between 1 and 9, got 15" while the equivalent
+    CLI command succeeded.
+
+  `tests/test_cli_api_default_parity.py` now walks every Click command, resolves
+  its API twin and diffs the two default sets, so a *new* mismatch fails the
+  suite rather than waiting to be noticed.
+
 ### Added
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
@@ -142,22 +195,6 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Bbox overlap detection for order validation
 
 ### Changed
-
-- **CLI and Python API defaults aligned for three shared parameters.**
-  These are behavior changes for API callers relying on the old defaults:
-  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `dataset`
-    now defaults to `"gaul"` (was `"overture"`), matching
-    `gpio add admin-divisions --dataset`, which has always defaulted to
-    `gaul` and is documented as the default boundaries dataset.
-  - `Table.partition_by_h3/quadkey/s2/a5/string/kdtree/admin`: `hive` now
-    defaults to `False` (was `True`), matching `gpio partition <scheme>
-    --hive`, which is off by default. Pass `hive=True` explicitly for
-    Hive-style `key=value/` output directories.
-  - `Table.from_wfs`: `page_size` now defaults to `100000` (was `10000`),
-    matching `ops.from_wfs`, the CLI's `gpio extract wfs --page-size`, and
-    the core `wfs_to_table` default. Both API wrappers now reference a
-    single `DEFAULT_WFS_PAGE_SIZE` constant in `core/wfs.py` so the
-    defaults cannot drift apart again.
 
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values

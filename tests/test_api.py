@@ -632,6 +632,90 @@ class TestTablePartitionByA5:
         assert any("a5_cell=" in d.name for d in subdirs)
 
 
+class TestPartitionKeepColumn:
+    """The index column gpio generates must survive a non-Hive partition run.
+
+    Without ``--hive`` / ``hive=True`` the partition value is encoded only in
+    the file name, and the generating column is excluded from the output. The
+    CLI offers ``--keep-<scheme>-column`` to override that; the Python API must
+    offer the same escape hatch or an API caller cannot produce the column at
+    all.
+    """
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.fixture
+    def output_dir(self):
+        tmp_dir = Path(tempfile.gettempdir()) / f"test_part_keep_{uuid.uuid4()}"
+        yield tmp_dir
+        if tmp_dir.exists():
+            import shutil
+
+            shutil.rmtree(tmp_dir)
+
+    @staticmethod
+    def _column_names(output_dir):
+        files = sorted(Path(output_dir).rglob("*.parquet"))
+        assert files, f"no parquet files written to {output_dir}"
+        return set(pq.ParquetFile(files[0]).schema_arrow.names)
+
+    def test_non_hive_drops_the_quadkey_column_by_default(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(output_dir, partition_resolution=3, overwrite=True)
+        assert "quadkey" not in self._column_names(output_dir)
+
+    def test_keep_quadkey_column_restores_it_without_hive(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(
+            output_dir,
+            partition_resolution=3,
+            overwrite=True,
+            keep_quadkey_column=True,
+        )
+        assert "quadkey" in self._column_names(output_dir)
+        # Still flat files, not key=value/ directories.
+        assert not [d for d in Path(output_dir).iterdir() if d.is_dir()]
+
+    def test_hive_keeps_the_quadkey_column(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(
+            output_dir, partition_resolution=3, overwrite=True, hive=True
+        )
+        assert "quadkey" in self._column_names(output_dir)
+
+
+class TestPartitionCompressionLevel:
+    """Partition methods must let each codec resolve its own default level.
+
+    A pinned ``compression_level=15`` is out of range for every codec but ZSTD
+    (GZIP accepts 1-9), so it turned a valid CLI invocation into an API error.
+    """
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.fixture
+    def output_dir(self):
+        tmp_dir = Path(tempfile.gettempdir()) / f"test_part_codec_{uuid.uuid4()}"
+        yield tmp_dir
+        if tmp_dir.exists():
+            import shutil
+
+            shutil.rmtree(tmp_dir)
+
+    @pytest.mark.parametrize("compression", ["GZIP", "ZSTD"])
+    def test_partition_by_kdtree_accepts_any_codec(self, sample_table, output_dir, compression):
+        result = sample_table.partition_by_kdtree(
+            output_dir, iterations=2, overwrite=True, compression=compression
+        )
+        assert isinstance(result, dict)
+        assert list(Path(output_dir).rglob("*.parquet"))
+
+
 class TestReadPartition:
     """Tests for the read_partition() function."""
 
@@ -642,14 +726,16 @@ class TestReadPartition:
             pytest.skip("Test data not available")
         return read(PLACES_PARQUET)
 
-    @pytest.fixture
-    def partition_dir(self, sample_table):
-        """Create a temporary partitioned directory."""
+    @pytest.fixture(params=[False, True], ids=["flat", "hive"])
+    def partition_dir(self, request, sample_table):
+        """Create a temporary partitioned directory, flat and Hive-style."""
         tmp_dir = Path(tempfile.gettempdir()) / f"test_partition_{uuid.uuid4()}"
         tmp_dir.mkdir(exist_ok=True)
 
         # Use the full table (766 rows) which is above the minimum threshold
-        sample_table.partition_by_quadkey(tmp_dir, overwrite=True, partition_resolution=3)
+        sample_table.partition_by_quadkey(
+            tmp_dir, overwrite=True, partition_resolution=3, hive=request.param
+        )
 
         yield tmp_dir
 

@@ -395,12 +395,14 @@ The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds 
     ```python
     import geoparquet_io as gpio
 
-    # Add country codes using Overture dataset
+    # Add all GAUL levels (continent, country, department) -- the default,
+    # exactly like the CLI with no --dataset/--levels
     table = gpio.read('input.parquet')
-    enriched = table.add_admin_divisions(
-        dataset='overture',
-        levels=['country']
-    )
+    enriched = table.add_admin_divisions()
+    enriched.write('output.parquet')
+
+    # Or name the levels explicitly
+    enriched = table.add_admin_divisions(dataset='gaul', levels=['country'])
     enriched.write('output.parquet')
     ```
 
@@ -436,11 +438,11 @@ Add multiple hierarchical administrative levels:
     )
     enriched.write('output.parquet')
 
-    # With country filter for faster processing
+    # Overture dataset, pinning the pre-1.4 column prefix
     enriched = table.add_admin_divisions(
         dataset='overture',
         levels=['country', 'region'],
-        country_filter='US'
+        prefix='overture'
     )
     ```
 
@@ -529,7 +531,7 @@ Admin datasets (GAUL, Overture) are automatically cached locally on first use:
     # Default: uses cached datasets automatically
     gpio.read('input.parquet').add_admin_divisions(
         dataset='overture',
-        levels=['country', 'admin1']
+        levels=['country', 'region']
     ).write('output.parquet')
 
     # Check cache location (~/.geoparquet-io/cache/admin/)

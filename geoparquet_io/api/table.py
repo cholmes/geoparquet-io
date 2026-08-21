@@ -54,7 +54,7 @@ def _run_partition_with_temp_file(
     temp_prefix: str = "gpio_partition",
     core_kwargs: dict,
     compression: str = "ZSTD",
-    compression_level: int = 15,
+    compression_level: int | None = None,
     collect_stats: bool = False,
 ) -> dict:
     """
@@ -70,7 +70,7 @@ def _run_partition_with_temp_file(
         temp_prefix: Prefix for the temp file name
         core_kwargs: Keyword arguments for the core function
         compression: Compression codec
-        compression_level: Compression level
+        compression_level: Compression level (None lets the codec pick its own)
         collect_stats: If True, return file count stats instead of core_fn result
 
     Returns:
@@ -649,7 +649,7 @@ class Table:
         page_size: int = DEFAULT_WFS_PAGE_SIZE,
         axis_order: str = "auto",
         strict_crs: bool = False,
-        auto_tile: bool = False,
+        auto_tile: bool = True,
         repair_geometry: bool = True,
     ) -> Table:
         """
@@ -674,8 +674,10 @@ class Table:
                 CRS. The CRS the server declares in its GeoJSON response is
                 authoritative; gpio never guesses from coordinates when the
                 server states it (#499).
-            auto_tile: Automatically subdivide into spatial tiles for servers with
-                startIndex limits (default: False)
+            auto_tile: Automatically subdivide into spatial tiles when the server
+                caps responses (maxFeatures or startIndex limits). Matches the CLI
+                default; setting it False accepts silently truncated results
+                (default: True)
 
         Returns:
             Table for chaining operations
@@ -683,8 +685,8 @@ class Table:
         Example:
             >>> import geoparquet_io as gpio
             >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'cities').add_bbox().write('cities.parquet')
-            >>> # For large datasets on servers with startIndex limits:
-            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
+            >>> # Accept whatever a capped server returns, without tiling:
+            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=False)
         """
         from geoparquet_io.core.wfs import wfs_to_table
 
@@ -1769,10 +1771,11 @@ class Table:
         partition_resolution: int = 6,
         compression: str = "ZSTD",
         hive: bool = False,
+        keep_quadkey_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by quadkey.
+        Partition the table into a directory of files split by quadkey.
 
         Args:
             output_dir: Output directory path
@@ -1780,6 +1783,10 @@ class Table:
             partition_resolution: Resolution for partition boundaries (default: 6)
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_quadkey_column: Keep the generated ``quadkey`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-quadkey-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1802,6 +1809,7 @@ class Table:
                 "resolution": resolution,
                 "partition_resolution": partition_resolution,
                 "hive": hive,
+                "keep_quadkey_column": keep_quadkey_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1815,16 +1823,21 @@ class Table:
         resolution: int = 9,
         compression: str = "ZSTD",
         hive: bool = False,
+        keep_h3_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by H3 cell.
+        Partition the table into a directory of files split by H3 cell.
 
         Args:
             output_dir: Output directory path
             resolution: H3 resolution level 0-15 (default: 9)
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_h3_column: Keep the generated ``h3_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-h3-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1846,6 +1859,7 @@ class Table:
             core_kwargs={
                 "resolution": resolution,
                 "hive": hive,
+                "keep_h3_column": keep_h3_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1859,10 +1873,11 @@ class Table:
         level: int = 13,
         compression: str = "ZSTD",
         hive: bool = False,
+        keep_s2_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by S2 cell.
+        Partition the table into a directory of files split by S2 cell.
 
         Uses Google's S2 spherical geometry library to partition data
         by cell boundaries at the specified level.
@@ -1872,6 +1887,10 @@ class Table:
             level: S2 level 0-30 (default: 13, ~1.2 km² cells)
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_s2_column: Keep the generated ``s2_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-s2-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1893,6 +1912,7 @@ class Table:
             core_kwargs={
                 "level": level,
                 "hive": hive,
+                "keep_s2_column": keep_s2_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1906,10 +1926,11 @@ class Table:
         resolution: int = 15,
         compression: str = "ZSTD",
         hive: bool = False,
+        keep_a5_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by A5 cell.
+        Partition the table into a directory of files split by A5 cell.
 
         A5 is a hierarchical grid system similar to H3 but with different
         properties. Uses fixed precision levels from 0-30.
@@ -1919,6 +1940,10 @@ class Table:
             resolution: A5 resolution level 0-30 (default: 15)
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_a5_column: Keep the generated ``a5_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-a5-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1940,6 +1965,7 @@ class Table:
             core_kwargs={
                 "resolution": resolution,
                 "hive": hive,
+                "keep_a5_column": keep_a5_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1970,7 +1996,9 @@ class Table:
         Args:
             destination: Object store URL (e.g., s3://bucket/path/data.parquet)
             compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
             row_group_size_mb: Target row group size in MB
             row_group_rows: Exact rows per row group
             geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
@@ -2443,7 +2471,7 @@ class Table:
         results = self._with_temp_file(check_all, verbose=False, return_results=True, quiet=True)
         return CheckResult(results, check_type="all")
 
-    def check_spatial(self, sample_size: int = 100, limit_rows: int = 100000) -> CheckResult:
+    def check_spatial(self, sample_size: int = 100, limit_rows: int = 500000) -> CheckResult:
         """
         Check if data is spatially ordered.
 
@@ -2451,8 +2479,9 @@ class Table:
         A ratio < 0.5 indicates good spatial clustering.
 
         Args:
-            sample_size: Number of random pairs to sample
-            limit_rows: Maximum rows to analyze
+            sample_size: Number of random pairs to sample (default: 100)
+            limit_rows: Maximum rows to analyze (default: 500000, matching
+                `gpio check spatial --limit-rows`)
 
         Returns:
             CheckResult with spatial ordering analysis
@@ -2682,6 +2711,7 @@ class Table:
         dataset: str = "gaul",
         levels: list[str] | None = None,
         vecorel: bool = False,
+        prefix: str | None = None,
     ) -> Table:
         """
         Add administrative division columns via spatial join.
@@ -2693,20 +2723,31 @@ class Table:
             dataset: Boundaries dataset ("gaul", "overture", or custom URL).
                 Default matches the CLI
                 (`gpio add admin-divisions --dataset`).
-            levels: Admin levels to add (e.g., ["country", "admin1"])
+            levels: Admin levels to add (e.g., ["country", "department"]). None
+                adds every level the dataset provides, matching the CLI with no
+                ``--levels``: ``["continent", "country", "department"]`` for
+                GAUL, ``["country", "region"]`` for Overture.
             vecorel: Output Vecorel-compliant columns. Forces Overture dataset
                 with country,region levels. (default: False)
+            prefix: Column name prefix, as with the CLI's ``--prefix``. None
+                uses the dataset's own name (``gaul_country``,
+                ``overture_country``); "admin" produces ``admin:country``.
 
         Returns:
             Table with admin division columns added
 
         Example:
             >>> table = gpio.read('data.parquet')
-            >>> enriched = table.add_admin_divisions(levels=["country", "admin1"])
+            >>> enriched = table.add_admin_divisions(levels=["country"])
+            >>> # Keep the pre-1.4 column names when switching datasets
+            >>> enriched = table.add_admin_divisions(
+            ...     dataset="overture", prefix="overture"
+            ... )
             >>> # Vecorel-compliant output
             >>> enriched = table.add_admin_divisions(vecorel=True)
         """
         from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+        from geoparquet_io.core.admin_datasets import default_admin_levels
 
         if vecorel:
             dataset = "overture"
@@ -2715,8 +2756,9 @@ class Table:
         result_table = self._with_temp_io_files(
             add_admin_divisions_multi,
             dataset_name=dataset,
-            levels=levels or ["country"],
+            levels=levels or default_admin_levels(dataset),
             vecorel=vecorel,
+            prefix=prefix,
             verbose=False,
         )
         return self._wrap(result_table, self._geometry_column)
@@ -2806,7 +2848,7 @@ class Table:
         hive: bool = False,
         overwrite: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by string column values.
@@ -2821,7 +2863,9 @@ class Table:
             hive: Use Hive-style partitioning (column=value/) (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2858,9 +2902,10 @@ class Table:
         *,
         iterations: int = 9,
         hive: bool = False,
+        keep_kdtree_column: bool | None = None,
         overwrite: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by KD-tree spatial cells.
@@ -2872,9 +2917,15 @@ class Table:
             output_dir: Output directory for partition files
             iterations: Number of KD-tree splits (creates 2^iterations partitions)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_kdtree_column: Keep the generated ``kdtree_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-kdtree-column``.
             overwrite: Overwrite existing files
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2894,6 +2945,7 @@ class Table:
             core_kwargs={
                 "iterations": iterations,
                 "hive": hive,
+                "keep_kdtree_column": keep_kdtree_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -2910,7 +2962,7 @@ class Table:
         overwrite: bool = False,
         vecorel: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by administrative boundaries.
@@ -2921,7 +2973,8 @@ class Table:
         Args:
             output_dir: Output directory for partition files
             dataset: Boundaries dataset ("gaul", "overture", or custom URL)
-            levels: Admin levels to partition by (e.g., ["country", "admin1"])
+            levels: Admin levels to partition by (e.g., ["country",
+                "department"] for GAUL, ["country", "region"] for Overture)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             vecorel: Output Vecorel-compliant admin columns
@@ -2929,7 +2982,9 @@ class Table:
                 with schema metadata. Forces the Overture dataset with
                 country,region levels. (default: False)
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2939,7 +2994,7 @@ class Table:
             >>> stats = table.partition_by_admin(
             ...     'output/',
             ...     dataset='gaul',
-            ...     levels=['country', 'admin1']
+            ...     levels=['country', 'department']
             ... )
         """
         from geoparquet_io.core.partition.admin_hierarchical import (
