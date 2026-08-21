@@ -530,21 +530,31 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         col_meta: dict,
         verbose: bool,
     ) -> None:
-        """Compute missing bbox and geometry_types metadata."""
-        from geoparquet_io.core.common import compute_geometry_types_via_sql
-        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
+        """Compute whichever of bbox/geometry_types the carried metadata lacks.
 
-        if "bbox" not in col_meta:
-            if verbose:
-                debug("Computing bbox via SQL...")
-            bbox = compute_bbox_via_sql(con, query, geometry_column)
-            if bbox:
-                col_meta["bbox"] = bbox
+        Both come out of one scan, so a caller that invalidated both (a row
+        filter, a reprojection, a multi-file merge) pays for a single pass.
+        """
+        from geoparquet_io.core.geo_metadata import compute_geo_stats_via_sql
 
-        if "geometry_types" not in col_meta:
-            if verbose:
-                debug("Computing geometry types via SQL...")
-            col_meta["geometry_types"] = compute_geometry_types_via_sql(con, query, geometry_column)
+        need_bbox = "bbox" not in col_meta
+        need_types = "geometry_types" not in col_meta
+        if not (need_bbox or need_types):
+            return
+
+        if verbose:
+            debug("Computing bbox/geometry types via SQL...")
+        bbox, geometry_types = compute_geo_stats_via_sql(
+            con,
+            query,
+            geometry_column,
+            need_bbox=need_bbox,
+            need_geometry_types=need_types,
+        )
+        if need_bbox and bbox:
+            col_meta["bbox"] = bbox
+        if need_types:
+            col_meta["geometry_types"] = geometry_types
 
     def _add_bbox_covering_if_present(
         self,

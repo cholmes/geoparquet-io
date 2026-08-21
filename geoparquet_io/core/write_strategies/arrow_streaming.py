@@ -27,6 +27,21 @@ if TYPE_CHECKING:
 DEFAULT_BATCH_SIZE = 100_000
 
 
+def _has_carried_bbox(original_metadata: dict | None, geometry_column: str) -> bool:
+    """True when ``original_metadata`` still carries a bbox for this column.
+
+    Callers that filter rows or move coordinates strip it first, which is the
+    signal that this write must compute a fresh one.
+    """
+    from geoparquet_io.core.write_strategies.base import _parse_existing_geo_metadata
+
+    geo_meta = _parse_existing_geo_metadata(original_metadata)
+    if not isinstance(geo_meta, dict):
+        return False
+    col_meta = (geo_meta.get("columns") or {}).get(geometry_column)
+    return isinstance(col_meta, dict) and col_meta.get("bbox") is not None
+
+
 def _detect_bbox_column(schema: pa.Schema) -> dict:
     """Detect bbox column from schema using common naming conventions."""
     for name in schema.names:
@@ -129,9 +144,18 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         should_add_geo_metadata = geoparquet_version != "parquet-geo-only"
         geoarrow_native = geoparquet_version == "1.1-geoarrow"
 
-        # Pre-compute metadata
+        # Pre-compute metadata. A carried bbox is only reusable when it survived
+        # into original_metadata; if a caller invalidated it (filter, reproject,
+        # multi-file merge) it must be recomputed here or the v1.x output would
+        # ship with no bbox at all.
         precomputed_bbox, precomputed_geom_types = self._precompute_metadata(
-            con, query, geometry_column, verbose, should_add_geo_metadata, use_native_geometry
+            con,
+            query,
+            geometry_column,
+            verbose,
+            should_add_geo_metadata,
+            need_bbox=use_native_geometry
+            or not _has_carried_bbox(original_metadata, geometry_column),
         )
 
         # Compute the geoarrow target type once from whole-dataset geometry types.
@@ -212,23 +236,19 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_column: str,
         verbose: bool,
         should_add_geo_metadata: bool,
-        use_native_geometry: bool,
+        need_bbox: bool,
     ) -> tuple[list[float] | None, list[str]]:
-        """Pre-compute bbox and geometry types via SQL."""
-        from geoparquet_io.core.common import compute_geometry_types_via_sql
+        """Pre-compute bbox and geometry types in a single scan of the query."""
+        from geoparquet_io.core.geo_metadata import compute_geo_stats_via_sql
 
         if not should_add_geo_metadata:
             return None, []
 
         if verbose:
-            debug("Pre-computing geometry types via SQL...")
-        geom_types = compute_geometry_types_via_sql(con, query, geometry_column)
-
-        bbox = None
-        if use_native_geometry:
-            bbox = self._compute_bbox_via_duckdb(con, query, geometry_column, verbose)
-
-        return bbox, geom_types
+            debug("Pre-computing bbox/geometry types via SQL...")
+        return compute_geo_stats_via_sql(
+            con, query, geometry_column, need_bbox=need_bbox, need_geometry_types=True
+        )
 
     def _build_geo_metadata_for_query(
         self,
@@ -584,21 +604,6 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
 
         if verbose:
             success(f"Wrote {rows_written:,} rows in {batches_written} row groups")
-
-    def _compute_bbox_via_duckdb(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        query: str,
-        geometry_column: str,
-        verbose: bool,
-    ) -> list[float] | None:
-        """Pre-compute bbox via DuckDB aggregation for v2.0."""
-        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
-
-        if verbose:
-            debug("Pre-computing bbox via DuckDB aggregation...")
-
-        return compute_bbox_via_sql(con, query, geometry_column)
 
     def _build_streaming_schema(
         self,

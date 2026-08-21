@@ -308,17 +308,49 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   strategy, and reports a clean parameter error only when the user explicitly
   chose an incompatible `--write-strategy`. Streaming Arrow IPC to stdout also
   warns rather than dropping the limit silently.
-- **Stale geo-metadata `bbox` after reproject and filtered extract.**
-  `gpio convert reproject` no longer carries the input's degree-space collection
-  `bbox` into output whose coordinates were reprojected to another CRS, and
-  `gpio extract` with a row filter (`--bbox`/`--geometry`/`--where`/`--limit`)
-  no longer advertises the full pre-filter extent. The stale bbox is dropped so
-  the write machinery recomputes it from the written data; a zero-row extract
-  omits `bbox` entirely (it is optional per spec) rather than claiming a
-  non-empty extent. An unfiltered, untransformed copy still preserves its
-  carried bbox. Both file-based and streaming paths are fixed. Additionally,
-  `extract` now warns instead of silently dropping all `geo`/KV metadata when
-  the input footer cannot be read for preservation.
+- **Stale geo metadata after reproject, filtered extract, and multi-file
+  merges.** The per-column `bbox` and `geometry_types` are derived from the
+  data, so every path that changes which rows or coordinates get written now
+  invalidates them and lets the write machinery recompute them from the output:
+
+  - `gpio convert reproject` no longer carries the input's degree-space
+    collection `bbox` into output reprojected to another CRS.
+  - `gpio extract` with a row filter (`--bbox`/`--geometry`/`--where`/`--limit`)
+    no longer advertises the full pre-filter extent. A zero-row extract omits
+    `bbox` entirely (it is optional per spec) rather than claiming a non-empty
+    one.
+  - `gpio extract` over a glob or directory no longer stamps the FIRST input
+    file's `bbox`/`geometry_types` on the merged output. That was an
+    *under-covering* bbox, which is worse than an over-covering one: conformant
+    readers skip data that falls outside it.
+  - `geometry_types` (required in GeoParquet 1.1) is recomputed alongside
+    `bbox` rather than being carried through unchanged — filtering out the only
+    polygon no longer leaves `["Point", "Polygon"]` behind.
+  - `--write-strategy streaming` now emits a `bbox` for GeoParquet 1.0/1.1
+    output instead of only for 2.0. (This strategy is also selected implicitly
+    for `1.1-geoarrow`.)
+
+  An unfiltered, untransformed single-file copy still preserves its carried
+  stats. Both file-based and streaming/stdout paths are fixed.
+
+  Recomputing costs one extra aggregate scan of the (already filtered) query —
+  measured ~33% slower on a 3M-row/50MB file (0.96s vs 0.72s) — and reproject
+  runs `ST_Transform` over every row a second time to do it. `bbox` and
+  `geometry_types` are now derived in a single grouped scan rather than two
+  independent ones, which claws back part of that.
+
+- **`gpio extract --exclude-cols` left dangling geo metadata.** Dropping the
+  `bbox` column left the `covering` entry pointing at a column that is no
+  longer in the schema (`gpio check spec` failed on the result); dropping the
+  geometry column produced a file that still advertised itself as GeoParquet
+  with a geometry column that did not exist. Geo metadata entries and
+  `covering` references are now pruned to the output schema, and an output with
+  no geometry column is written as plain Parquet with a warning.
+
+- **`gpio extract` metadata-preservation failures are visible.** `extract` now
+  warns instead of silently dropping all `geo`/KV metadata when the input
+  footer cannot be read for preservation, for any failure mode (a corrupt
+  footer can surface as `OSError`, `GeoParquetError`, or an Arrow exception).
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

@@ -34,7 +34,6 @@ from .base import (
     atomic_write,
     build_geo_metadata,
     needs_metadata_rewrite,
-    strip_stale_bbox,
 )
 
 
@@ -107,5 +106,4 @@ __all__ = [
     "atomic_write",
     "build_geo_metadata",
     "needs_metadata_rewrite",
-    "strip_stale_bbox",
 ]

@@ -18,8 +18,6 @@ the shared contract explicit and lets ``import-linter`` reason about it.
 
 from __future__ import annotations
 
-import copy
-import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -27,6 +25,7 @@ from urllib.parse import unquote
 
 from geoparquet_io.core.common import write_parquet_with_metadata
 from geoparquet_io.core.exceptions import PartitionError
+from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.write_strategies.duckdb_kv import (
     get_default_memory_limit,
@@ -191,8 +190,9 @@ def finalize_partition_file(
 
     Reads the (small) staging partition via a glob so a partition that DuckDB
     split across files still collapses into one output file. Recomputes the
-    tight per-partition bbox by stripping the inherited bbox. Returns ``True``
-    when a file was written, ``False`` when skipped (exists and not overwrite).
+    tight per-partition ``bbox``/``geometry_types`` by stripping the inherited
+    ones. Returns ``True`` when a file was written, ``False`` when skipped
+    (exists and not overwrite).
     """
     if os.path.exists(output_filename) and not overwrite:
         if verbose:
@@ -209,48 +209,10 @@ def finalize_partition_file(
         con,
         query,
         output_filename,
-        original_metadata=_strip_bbox_from_metadata(metadata),
+        original_metadata=strip_derived_stats(metadata),
         verbose=False,
         **options.as_write_kwargs(),
     )
     if verbose:
         debug(f"Wrote {output_filename}")
     return True
-
-
-def _strip_bbox_from_metadata(metadata: dict | None) -> dict | None:
-    """Strip bbox from metadata so it is recomputed per partition.
-
-    Each partition holds only a subset of the data, so the original file's bbox
-    must not be reused. ``get_parquet_metadata`` returns bytes-keyed KV in this
-    codepath; the str/dict branches are defensive for other callers.
-    """
-    if not metadata:
-        return None
-
-    metadata_copy = copy.deepcopy(metadata)
-
-    for geo_key in ("geo", b"geo"):
-        if geo_key in metadata_copy:
-            geo_data = metadata_copy[geo_key]
-
-            if isinstance(geo_data, bytes):
-                geo_dict = json.loads(geo_data.decode("utf-8"))
-            elif isinstance(geo_data, str):
-                geo_dict = json.loads(geo_data)
-            else:
-                geo_dict = copy.deepcopy(geo_data)
-
-            if "columns" in geo_dict:
-                for _col_name, col_meta in geo_dict["columns"].items():
-                    if "bbox" in col_meta:
-                        del col_meta["bbox"]
-
-            if isinstance(geo_data, bytes):
-                metadata_copy[geo_key] = json.dumps(geo_dict).encode("utf-8")
-            elif isinstance(geo_data, str):
-                metadata_copy[geo_key] = json.dumps(geo_dict)
-            else:
-                metadata_copy[geo_key] = geo_dict
-
-    return metadata_copy
