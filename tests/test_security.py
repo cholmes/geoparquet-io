@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -28,8 +30,15 @@ def _load_pyproject() -> dict:
         return tomllib.load(f)
 
 
+@pytest.mark.meta
 class TestSecurityToolAvailability:
-    """Verify that security tools are installed and runnable."""
+    """Verify that security tools are installed and runnable.
+
+    Tooling checks only: they spawn `uv run` subprocesses and are covered for
+    real by the dedicated `security` job, which actually runs bandit and
+    pip-audit. Marked `meta` so they stay out of the fast suite. The bandit
+    configuration tests below are plain pyproject.toml parsing and stay fast.
+    """
 
     def test_bandit_command_exists(self):
         """Verify bandit is installed and reports its version."""

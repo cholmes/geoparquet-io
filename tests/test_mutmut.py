@@ -13,6 +13,12 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+# Repo tooling checks: mutation-testing and nightly-workflow configuration, not
+# library behaviour. Runs in the meta lane, not the fast suite. mutmut has no
+# pre-commit hook, so unlike most of the lane this is not duplicated by the
+# lint job -- the meta lane is the only place it is checked.
+pytestmark = pytest.mark.meta
+
 PROJECT_ROOT = Path(__file__).parent.parent
 
 

@@ -121,7 +121,7 @@ jobs:
           fi
 
           # Run the fast suite to confirm the upgrade didn't break anything.
-          uv run pytest -n 4 -m "not slow and not network" -q --tb=short --no-cov -p no:cacheprovider
+          uv run pytest -n 4 -m "not slow and not network and not meta" -q --tb=short --no-cov -p no:cacheprovider
           TEST_EXIT=$?
 
           if [ $TEST_EXIT -eq 0 ]; then

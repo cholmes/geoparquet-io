@@ -157,6 +157,7 @@ markers = [
     "network: marks tests requiring network access (deselect with '-m \"not network\"')",
     "integration: marks end-to-end integration tests",
     "corpus: tests against the official geoparquet-testing corpus (requires git submodule)",
+    "meta: repo tooling checks, excluded from the fast suite",
 ]
 
 [tool.ruff]
