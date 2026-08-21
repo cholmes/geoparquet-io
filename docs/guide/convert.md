@@ -678,11 +678,17 @@ Validates lat/lon ranges (-90 to 90, -180 to 180). Warns on large coordinates su
 
 ### Invalid Geometries
 
-Fails on invalid WKT by default. Skip with `--skip-invalid`:
+Fails on invalid WKT by default. Skip the unparsable rows with
+`--skip-invalid`:
 
 ```bash
 gpio convert messy.csv out.parquet --skip-invalid
 ```
+
+A row whose geometry column is *empty* is not invalid — it is a row without
+geometry. Those rows are kept either way, with NULL geometry, so their
+attributes survive the conversion; they sort after the ordered rows, as they do
+for every other input format.
 
 Skips invalid rows, disables Hilbert ordering. Mixed geometry types supported.
 

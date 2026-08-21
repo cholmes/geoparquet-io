@@ -1251,7 +1251,8 @@ def convert(ctx):
 @click.option(
     "--skip-invalid",
     is_flag=True,
-    help="CSV/TSV: Skip rows with invalid geometries instead of failing",
+    help="CSV/TSV: Skip rows whose geometry cannot be parsed instead of failing "
+    "(rows with no geometry at all are kept, with NULL geometry)",
 )
 @click.option(
     "--csv-max-line-size",

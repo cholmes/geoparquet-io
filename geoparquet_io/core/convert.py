@@ -502,6 +502,25 @@ def _detect_csv_geometry_column(
     return None
 
 
+def _check_coord_range(axis, parameter, low, high, measured_min, measured_max):
+    """Raise if one axis's measured range falls outside its valid domain.
+
+    ``measured_min`` is None when every value in that column is NULL — MIN/MAX
+    ignore NULLs — leaving no range to check. Each axis is therefore checked
+    independently: a column of nothing but empty values must not silence the
+    *other* axis, which may still hold measurable, and invalid, coordinates
+    (issue #655).
+    """
+    if measured_min is None:
+        return
+    if measured_min < low or measured_max > high:
+        raise InvalidParameterError(
+            parameter,
+            f"invalid {axis} values (range: {measured_min:.6f} to {measured_max:.6f}). "
+            f"{axis.capitalize()} must be between {low} and {high}.",
+        )
+
+
 def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
     """Validate lat/lon columns have valid numeric ranges."""
     if verbose:
@@ -522,23 +541,15 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
         min_lat, max_lat, min_lon, max_lon, null_count = result
 
         if null_count > 0:
-            warn(f"⚠️  Warning: {null_count} rows have NULL lat/lon values and will be skipped")
-
-        if min_lat < -90 or max_lat > 90:
-            raise InvalidParameterError(
-                "lat_column",
-                f"invalid latitude values (range: {min_lat:.6f} to {max_lat:.6f}). "
-                f"Latitude must be between -90 and 90.",
+            warn(
+                f"⚠️  Warning: {null_count} rows have NULL lat/lon values and will be "
+                "written with NULL geometry"
             )
 
-        if min_lon < -180 or max_lon > 180:
-            raise InvalidParameterError(
-                "lon_column",
-                f"invalid longitude values (range: {min_lon:.6f} to {max_lon:.6f}). "
-                f"Longitude must be between -180 and 180.",
-            )
+        _check_coord_range("latitude", "lat_column", -90, 90, min_lat, max_lat)
+        _check_coord_range("longitude", "lon_column", -180, 180, min_lon, max_lon)
 
-        if verbose:
+        if verbose and min_lat is not None and min_lon is not None:
             debug(
                 f"Lat/lon ranges validated: lat=[{min_lat:.6f}, {max_lat:.6f}], "
                 f"lon=[{min_lon:.6f}, {max_lon:.6f}]"
@@ -558,7 +569,10 @@ def _check_null_wkt_rows(con, csv_read, wkt_col):
     ).fetchone()[0]
 
     if null_count > 0:
-        warn(f"⚠️  Warning: {null_count} rows have NULL WKT values and will be skipped")
+        warn(
+            f"⚠️  Warning: {null_count} rows have NULL WKT values and will be "
+            "written with NULL geometry"
+        )
 
 
 def _check_invalid_wkt_rows(con, csv_read, wkt_col):
@@ -682,24 +696,32 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         geom_expr = f"ST_GeomFromText({wkt_col})"
         exclude_cols = wkt_col
 
-        # For skip_invalid, use TRY() to silently return NULL for invalid WKT
+        # For skip_invalid, use TRY() to silently return NULL for invalid WKT.
+        # A row whose WKT is absent is not invalid — it is a row without
+        # geometry, and dropping it loses its attributes (issue #655), so only
+        # rows that failed to parse are filtered out.
         if skip_invalid:
+            # The WKT column rides along inside the CTE so the outer WHERE can
+            # tell "no geometry given" from "geometry did not parse"; it is
+            # excluded from the output there instead.
             query_base = f"""
                 WITH parsed_geoms AS (
                     SELECT
-                        * EXCLUDE ({exclude_cols}),
+                        *,
                         TRY(ST_GeomFromText({wkt_col})) AS geometry
                     FROM {csv_read}
                 )
                 SELECT
-                    * EXCLUDE (geometry),
+                    * EXCLUDE ({exclude_cols}, geometry),
                     geometry{bbox_expr("geometry")}
                 FROM parsed_geoms
-                WHERE geometry IS NOT NULL
+                WHERE {wkt_col} IS NULL OR geometry IS NOT NULL
             """
             return query_base
         else:
-            where_clause = f"WHERE {wkt_col} IS NOT NULL"
+            # NULL WKT yields NULL geometry (ST_GeomFromText propagates it), so
+            # the row survives with its attributes instead of being filtered.
+            where_clause = ""
 
     elif geom_info["type"] == "latlon":
         lat_col = geom_info["lat_column"]
@@ -708,8 +730,9 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         geom_expr = f"ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))"
         exclude_cols = f"{lat_col}, {lon_col}"
 
-        # Skip rows with NULL lat/lon
-        where_clause = f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL"
+        # A missing coordinate means no geometry, not no row: ST_Point yields
+        # NULL and the row keeps its attributes (issue #655).
+        where_clause = ""
 
     else:
         raise GeoParquetError("Unknown geometry type in CSV detection")
@@ -741,7 +764,12 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
 
 
 def _get_geom_expr_and_where(geom_info, skip_invalid):
-    """Get geometry expression and WHERE clause for CSV bounds/query."""
+    """Geometry expression and WHERE clause for the CSV *bounds* pass.
+
+    The filters here exclude rows the envelope must not be measured from
+    (missing or unparsable geometry). The conversion query deliberately keeps
+    those rows — see :func:`_build_csv_conversion_query` and issue #655.
+    """
     if geom_info["type"] == "wkt":
         wkt_col = geom_info["wkt_column"]
         if skip_invalid:
