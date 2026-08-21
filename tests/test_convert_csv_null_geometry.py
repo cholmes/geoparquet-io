@@ -139,3 +139,66 @@ class TestBoundsIgnoreNullRows:
         finally:
             con.close()
         assert (xmin, ymax) == pytest.approx((0.0, 10.0))
+
+
+class TestWarningsMatchBehavior:
+    """The NULL-row warnings must not promise a skip that no longer happens."""
+
+    def test_wkt_warning_does_not_claim_rows_are_skipped(self, tmp_path, caplog):
+        import logging
+
+        source = _write(tmp_path / "wkt.csv", "id,geom\n1,POINT(1 1)\n2,\n")
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.WARNING):
+            result = _convert(source, output, "--wkt-column", "geom")
+
+        assert result.exit_code == 0, result.output
+        message = "\n".join(r.message for r in caplog.records)
+        assert "1 row" in message and "NULL" in message
+        assert "skipped" not in message
+
+    def test_latlon_warning_does_not_claim_rows_are_skipped(self, tmp_path, caplog):
+        import logging
+
+        source = _write(tmp_path / "ll.csv", "id,lat,lon\n1,10,10\n2,,\n3,20,20\n")
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.WARNING):
+            result = _convert(source, output, "--lat-column", "lat", "--lon-column", "lon")
+
+        assert result.exit_code == 0, result.output
+        assert len(_rows(output)) == 3
+        message = "\n".join(r.message for r in caplog.records)
+        assert "skipped" not in message
+
+
+class TestAllNullLatLon:
+    def test_all_null_lat_lon_converts(self, tmp_path):
+        """The lat/lon analogue of all-NULL WKT: range validation has nothing to
+        compare, which used to surface as a raw TypeError from `None < -90`."""
+        source = _write(tmp_path / "ll.csv", "id,lat,lon\n1,,\n2,,\n")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--lat-column", "lat", "--lon-column", "lon")
+
+        assert result.exit_code == 0, result.output
+        rows = _rows(output)
+        assert len(rows) == 2
+        assert all(is_null for _, is_null in rows)
+
+
+class TestSentinelFreeSkipInvalid:
+    def test_column_named_like_the_old_sentinel_converts(self, tmp_path):
+        """The skip_invalid path used to synthesize __gpio_wkt_missing, which a
+        column of that name collided with."""
+        source = _write(
+            tmp_path / "wkt.csv",
+            "id,geom,__gpio_wkt_missing\n1,POINT(1 1),x\n2,,y\n",
+        )
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--wkt-column", "geom", "--skip-invalid")
+
+        assert result.exit_code == 0, result.output
+        assert len(_rows(output)) == 2

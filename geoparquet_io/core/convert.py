@@ -522,7 +522,15 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
         min_lat, max_lat, min_lon, max_lon, null_count = result
 
         if null_count > 0:
-            warn(f"⚠️  Warning: {null_count} rows have NULL lat/lon values and will be skipped")
+            warn(
+                f"⚠️  Warning: {null_count} rows have NULL lat/lon values and will be "
+                "written with NULL geometry"
+            )
+
+        # Every coordinate NULL: the aggregates are NULL, so there is no range
+        # to check — and comparing None would raise a bare TypeError (#655).
+        if min_lat is None or min_lon is None:
+            return
 
         if min_lat < -90 or max_lat > 90:
             raise InvalidParameterError(
@@ -558,7 +566,10 @@ def _check_null_wkt_rows(con, csv_read, wkt_col):
     ).fetchone()[0]
 
     if null_count > 0:
-        warn(f"⚠️  Warning: {null_count} rows have NULL WKT values and will be skipped")
+        warn(
+            f"⚠️  Warning: {null_count} rows have NULL WKT values and will be "
+            "written with NULL geometry"
+        )
 
 
 def _check_invalid_wkt_rows(con, csv_read, wkt_col):
@@ -687,19 +698,21 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
         # geometry, and dropping it loses its attributes (issue #655), so only
         # rows that failed to parse are filtered out.
         if skip_invalid:
+            # The WKT column rides along inside the CTE so the outer WHERE can
+            # tell "no geometry given" from "geometry did not parse"; it is
+            # excluded from the output there instead.
             query_base = f"""
                 WITH parsed_geoms AS (
                     SELECT
-                        * EXCLUDE ({exclude_cols}),
-                        TRY(ST_GeomFromText({wkt_col})) AS geometry,
-                        {wkt_col} IS NULL AS __gpio_wkt_missing
+                        *,
+                        TRY(ST_GeomFromText({wkt_col})) AS geometry
                     FROM {csv_read}
                 )
                 SELECT
-                    * EXCLUDE (geometry, __gpio_wkt_missing),
+                    * EXCLUDE ({exclude_cols}, geometry),
                     geometry{bbox_expr("geometry")}
                 FROM parsed_geoms
-                WHERE __gpio_wkt_missing OR geometry IS NOT NULL
+                WHERE {wkt_col} IS NULL OR geometry IS NOT NULL
             """
             return query_base
         else:
