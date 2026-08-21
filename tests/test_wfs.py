@@ -35,7 +35,7 @@ from geoparquet_io.core.wfs import (
 
 @pytest.fixture
 def offline_wfs_probes():
-    """Complete the mock for ``wfs_to_table``: block every real HTTP request.
+    """Complete the mock for ``wfs_to_table`` so it stops reaching the network.
 
     Mocking ``negotiate_wfs_version`` / ``get_layer_info`` /
     ``fetch_all_features_duckdb`` is *not* enough to take ``wfs_to_table``
@@ -51,6 +51,12 @@ def offline_wfs_probes():
     additionally replaced with a tripwire, and the recorded calls are asserted
     on teardown so a *future* unmocked network path fails loudly instead of
     silently sleeping.
+
+    Scope note: the tripwire covers only ``_make_request``-mediated traffic.
+    ``_fetch_wfs_page`` and ``_probe_startindex_limit`` drive httpx directly and
+    bypass it -- here they are neutralised by the ``fetch_all_features_duckdb``
+    mock and the ``_probe_startindex_limit`` stub respectively, not by the
+    tripwire.
     """
     escaped_requests: list[str] = []
 

@@ -242,8 +242,9 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   every exception, so the tests passed while silently making live network
   requests, contrary to the module's stated "mocked HTTP responses to avoid
   network dependencies". A shared `offline_wfs_probes` fixture now completes the
-  mock and installs a tripwire on `_make_request` that fails the test if any
-  future unmocked request escapes. No assertion changed meaning — the stubs
+  mock and installs a tripwire on `_make_request` that fails the test if a
+  future unmocked request escapes through that path. No assertion changed
+  meaning — the stubs
   return the `None` the failed requests already produced — and the file's serial
   runtime drops from 67.6s to 45.4s.
 - **Six internal DuckDB connections now route through the shared connection
