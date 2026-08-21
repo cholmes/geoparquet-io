@@ -21,6 +21,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import duckdb
@@ -28,6 +29,7 @@ import pyarrow as pa
 
 # Public API
 __all__ = [
+    "DEFAULT_WFS_PAGE_SIZE",
     "EmptyLayerError",
     "LayerNotFoundError",
     "WFSAuthenticationError",
@@ -337,6 +339,18 @@ def get_wfs_capabilities(service_url: str, version: str = "1.1.0"):
 
 # WFS versions in preference order (newest first)
 WFS_VERSIONS = ["2.0.0", "1.1.0", "1.0.0"]
+
+# Single source of truth for the default page size used when paginating WFS
+# requests. Every entry point references it -- the CLI option
+# (`gpio extract wfs --page-size`), the core functions (`wfs_to_table`,
+# `convert_wfs_to_geoparquet`, `convert_wfs_layers_to_directory`,
+# `fetch_all_features_duckdb`, `_fetch_with_spatial_tiles`) and the Python API
+# wrappers (`ops.from_wfs`, `ops.from_wfs_layers`, `Table.from_wfs`) -- so their
+# defaults cannot drift apart again.
+#
+# Note: the CLI option is typed `click.IntRange(1000, 500000)`, so any new
+# value for this constant must fall inside that range.
+DEFAULT_WFS_PAGE_SIZE: Final[int] = 100_000
 
 
 def negotiate_wfs_version(service_url: str, preferred_version: str = "auto"):
@@ -1756,7 +1770,7 @@ def _fetch_with_spatial_tiles(
     layer_bbox: tuple[float, float, float, float],
     crs: str,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     max_features: int | None = None,
     sort_by: str | None = None,
@@ -2101,7 +2115,7 @@ def fetch_all_features_duckdb(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     extract_fid: bool = False,
     sort_by: str | None = None,
@@ -2310,7 +2324,7 @@ def wfs_to_table(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,
@@ -2568,7 +2582,7 @@ def convert_wfs_to_geoparquet(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     skip_hilbert: bool = False,
@@ -2580,7 +2594,7 @@ def convert_wfs_to_geoparquet(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     sort_by: str | None = None,
     repair_geometry: bool = True,
 ) -> None:
@@ -2613,7 +2627,9 @@ def convert_wfs_to_geoparquet(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing file
         verbose: Enable debug output
-        auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
+        auto_tile: Automatically subdivide into spatial tiles when the server caps
+            responses (maxFeatures or startIndex limits). Disabling this accepts
+            silently truncated results (default: True)
         sort_by: Attribute to sort by for stable pagination. If None, auto-detected.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
@@ -2717,7 +2733,7 @@ def convert_wfs_layers_to_directory(
     output_dir: str | Path,
     parallel_layers: int = 1,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     version: str = "1.1.0",
     bbox: tuple[float, float, float, float] | None = None,
     bbox_mode: str = "auto",
@@ -2734,7 +2750,7 @@ def convert_wfs_layers_to_directory(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     sort_by: str | None = None,
     repair_geometry: bool = True,
 ) -> dict[str, Path]:
@@ -2766,7 +2782,9 @@ def convert_wfs_layers_to_directory(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing files
         verbose: Enable debug output
-        auto_tile: Auto-tile for servers with startIndex limits
+        auto_tile: Auto-tile when the server caps responses (maxFeatures or
+            startIndex limits). Disabling this accepts silently truncated
+            results (default: True)
         sort_by: Sort attribute for stable pagination
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
