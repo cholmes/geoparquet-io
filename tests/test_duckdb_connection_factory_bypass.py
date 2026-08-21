@@ -21,7 +21,6 @@ bare `duckdb.connect(` outside `core/duckdb_utils.py`.
 """
 
 import subprocess
-import time
 from pathlib import Path
 
 import pyarrow as pa
@@ -125,25 +124,48 @@ class TestBenchmarkDuckdb:
     def test_factory_setup_is_outside_the_measured_window(self, monkeypatch, tmp_path):
         """The connection must be built before the timer starts: extension
         install/load is fixed overhead the GeoPandas/pyogrio arms never pay, so
-        including it would bias the comparison against DuckDB."""
+        including it would bias the comparison against DuckDB.
+
+        Asserts the ORDER of the two calls rather than comparing elapsed times.
+        The earlier version timed a baseline run and required a second run of the
+        same COPY to land within a fixed 0.5s of it, which run-to-run jitter on a
+        loaded CI runner exceeds -- it failed on windows-latest/3.11 while
+        measuring nothing the ordering check misses.
+        """
         import geoparquet_io.core.benchmark as benchmark
 
-        baseline, _ = benchmark.benchmark_duckdb(GEOJSON_FILE, tmp_path / "baseline.parquet")
+        events: list[str] = []
+        real_factory = benchmark.get_duckdb_connection
+        real_time = benchmark.time
 
-        slow_setup_seconds = 1.0
+        def spy_factory(**kwargs):
+            events.append("connect")
+            return real_factory(**kwargs)
 
-        def slow_factory(**kwargs):
-            con = real_get_duckdb_connection(**kwargs)
-            time.sleep(slow_setup_seconds)
-            return con
+        class _TimeSpy:
+            """Proxy benchmark's `time` module, recording perf_counter calls.
 
-        monkeypatch.setattr(benchmark, "get_duckdb_connection", slow_factory)
+            Scoped to the benchmark module so patching cannot disturb pytest's
+            own perf_counter use during the call.
+            """
 
-        elapsed, _ = benchmark.benchmark_duckdb(GEOJSON_FILE, tmp_path / "out.parquet")
+            def __getattr__(self, name):
+                return getattr(real_time, name)
 
-        # Half the injected delay: well clear of run-to-run jitter on the same
-        # COPY, but nowhere near enough to absorb the setup cost.
-        assert elapsed < baseline + slow_setup_seconds / 2
+            def perf_counter(self):
+                events.append("timer")
+                return real_time.perf_counter()
+
+        monkeypatch.setattr(benchmark, "get_duckdb_connection", spy_factory)
+        monkeypatch.setattr(benchmark, "time", _TimeSpy())
+
+        benchmark.benchmark_duckdb(GEOJSON_FILE, tmp_path / "out.parquet")
+
+        assert "connect" in events, "benchmark_duckdb never built a connection"
+        assert "timer" in events, "benchmark_duckdb never started its timer"
+        assert events.index("connect") < events.index("timer"), (
+            f"connection setup landed inside the measured window: {events}"
+        )
 
 
 class TestWkbToWktPreview:
