@@ -716,10 +716,15 @@ def test_absent_and_explicit_null_collapse_at_helper_boundary():
         crs = col_meta.get("crs")      # validate.py:315 -> None for BOTH shapes
 
     Every CRS *equality* call site uses only the second idiom, so the distinction
-    is already gone by the time the trio is called. This test pins both halves:
-    the production check that keeps the distinction, and the extraction that
-    loses it. A future call-site fix that carries the distinction through to the
-    helpers flips the second half and fails here — which is the intent.
+    is already gone by the time the trio is called.
+
+    The two halves below carry different weight. The ``_check_crs_valid``
+    PASSED-vs-WARNING half is the real pin: it exercises production code and
+    fails if an explicit null ever collapses into the absent branch. The
+    ``.get("crs") is None`` half documents the collapse at the extraction idiom
+    itself — it is a property of ``dict.get`` on these two shapes, so it stays
+    green under any production change and is here to make the mechanism explicit
+    at the point of use, not to detect a regression.
     """
     absent_col = CRS_COLUMN_META["absent"]
     null_col = CRS_COLUMN_META["null"]
