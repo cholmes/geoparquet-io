@@ -22,7 +22,11 @@ from geoparquet_io.core.common import (
     write_geoparquet_table,
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import quote_identifier, validate_where_clause
+from geoparquet_io.core.duckdb_utils import (
+    quote_identifier,
+    validate_where_clause,
+    where_condition_fragment,
+)
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -159,8 +163,10 @@ def _build_carto_query(
     # Build WHERE clause
     conditions = []
     if where:
-        # Already validated upstream in carto_to_table() via validate_where_clause
-        conditions.append(f"({where})")
+        # Already validated upstream in carto_to_table() via validate_where_clause.
+        # where_condition_fragment() closes the paren on its own line so a trailing
+        # '--' in the clause cannot comment out the bbox condition or the LIMIT.
+        conditions.append(where_condition_fragment(where))
     if bbox and include_geom:
         minx, miny, maxx, maxy = bbox
         # Use ST_Intersects with ST_MakeEnvelope for spatial filter
@@ -175,6 +181,40 @@ def _build_carto_query(
 
     if limit is not None:
         sql += f" LIMIT {limit}"
+
+    return sql
+
+
+def _build_carto_count_query(
+    table_name: str,
+    where: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> str:
+    """Build the COUNT(*) query for a Carto table with the same filters as the scan.
+
+    Note:
+        The where clause is validated upstream in ``carto_to_table()`` via
+        ``validate_where_clause`` before it reaches this function, and is wrapped
+        with :func:`where_condition_fragment` so a trailing ``--`` comment cannot
+        swallow the bbox condition that follows it.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+
+    sql = f"SELECT COUNT(*) as count FROM {quoted_table}"
+
+    conditions = []
+    if where:
+        conditions.append(where_condition_fragment(where))
+    if bbox:
+        minx, miny, maxx, maxy = bbox
+        conditions.append(
+            f"ST_Intersects({quote_identifier('the_geom')}, "
+            f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
+        )
+
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
 
     return sql
 
@@ -200,25 +240,7 @@ def _get_row_count(
     Returns:
         Number of rows matching the filter
     """
-    # Validate and quote table name
-    _validate_table_name(table_name)
-    quoted_table = quote_identifier(table_name)
-
-    # Build count query with same filters
-    sql = f"SELECT COUNT(*) as count FROM {quoted_table}"
-
-    conditions = []
-    if where:
-        conditions.append(f"({where})")
-    if bbox:
-        minx, miny, maxx, maxy = bbox
-        conditions.append(
-            f"ST_Intersects({quote_identifier('the_geom')}, "
-            f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
-        )
-
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
+    sql = _build_carto_count_query(table_name, where=where, bbox=bbox)
 
     full_url = f"{url}?q={quote(sql)}"
     if api_key:

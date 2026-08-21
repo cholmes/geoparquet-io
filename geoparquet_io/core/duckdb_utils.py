@@ -135,6 +135,15 @@ def quote_identifier(name: str) -> str:
 
 # SQL keywords that could be dangerous in a user-supplied WHERE clause.
 # These could modify data or database structure.
+#
+# REPLACE is deliberately absent: ``REPLACE(str, from, to)`` is a standard
+# scalar function in DuckDB, BigQuery Standard SQL and Carto/Postgres alike, so
+# blocking it rejects ordinary filters such as ``REPLACE(zip,'-','')='19104'``.
+# A function call cannot modify data; the statement gate below is what actually
+# stops DML. TRUNCATE is kept by the opposite half of the same argument: none of
+# those three backends spells its scalar truncation ``TRUNCATE`` (they all use
+# ``trunc``/``TRUNC``), so the word only ever shows up as the DDL statement, and
+# keeping it costs no legitimate clause.
 DANGEROUS_SQL_KEYWORDS = [
     "DROP",
     "DELETE",
@@ -146,90 +155,113 @@ DANGEROUS_SQL_KEYWORDS = [
     "EXEC",
     "EXECUTE",
     "MERGE",
-    "REPLACE",
     "GRANT",
     "REVOKE",
 ]
 
 
-def _has_unquoted_semicolon(where_clause: str) -> bool:
-    """True if ``where_clause`` contains a ``;`` outside a quoted string/identifier.
-
-    Quote state is tracked so legitimate data (``name = 'a;b'``) and identifiers
-    (``"weird;col"``) are not flagged. A doubled quote inside a literal toggles
-    the state twice, which leaves the tracking correct.
-    """
-    in_single = False
-    in_double = False
-    for ch in where_clause:
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == ";" and not in_single and not in_double:
-            return True
-    return False
-
-
-def where_sql_fragment(where_clause: str | None) -> str:
-    """Return a `` WHERE (...)`` fragment for ``where_clause`` (empty if None).
+def where_condition_fragment(where_clause: str) -> str:
+    """Return ``(<clause>\\n)`` -- the clause as one AND-able boolean condition.
 
     A newline is placed before the closing paren so a trailing ``--`` comment in
     the clause cannot swallow the paren -- or whatever the caller appends next
-    (``USING SAMPLE``, a JOIN, ...). Callers are responsible for validating the
-    clause with :func:`validate_where_clause` first.
+    (another AND-ed condition, ``LIMIT``, ``USING SAMPLE``, a JOIN, ...).
+    Callers are responsible for validating the clause with
+    :func:`validate_where_clause` first.
     """
+    return f"({where_clause}\n)"
+
+
+def where_sql_fragment(where_clause: str | None) -> str:
+    """Return a `` WHERE (...)`` fragment for ``where_clause`` (empty if None)."""
     if not where_clause:
         return ""
-    return f" WHERE ({where_clause}\n)"
+    return f" WHERE {where_condition_fragment(where_clause)}"
+
+
+def _dangerous_keywords_in(where_clause: str) -> list[str]:
+    """Return the blocklisted keywords that appear as real SQL words.
+
+    Keywords inside string literals (``name = 'Grant County'``), inside quoted
+    identifiers, or inside comments are *data*, not statements, and must not be
+    flagged. DuckDB's own lexer is used to find the word tokens, which handles
+    every literal form the SQL dialect has (``'...'``, ``E'...'``, ``$$...$$``)
+    plus ``--`` and ``/* */`` comments. If the lexer is unavailable, fall back to
+    a conservative whole-word regex over the raw clause.
+    """
+    try:
+        tokens = duckdb.tokenize(where_clause)
+        word_types = {duckdb.token_type.keyword, duckdb.token_type.identifier}
+        words = set()
+        for position, token_type in tokens:
+            if token_type not in word_types:
+                continue
+            match = re.match(r"\w+", where_clause[position:])
+            if match:
+                words.add(match.group(0).upper())
+        return [kw for kw in DANGEROUS_SQL_KEYWORDS if kw in words]
+    except Exception:  # pragma: no cover - lexer is part of the duckdb API
+        upper_clause = where_clause.upper()
+        return [kw for kw in DANGEROUS_SQL_KEYWORDS if re.search(rf"\b{kw}\b", upper_clause)]
 
 
 def validate_where_clause(where_clause: str) -> None:
     """
-    Validate WHERE clause for potentially dangerous SQL keywords.
+    Validate that a user-supplied WHERE clause is a single filter expression.
 
-    This is a basic safety check to prevent accidental or intentional
-    SQL injection attacks. It checks for keywords that could modify
-    data or database structure, and for statement separators: DuckDB's
-    ``execute()`` runs multi-statement strings, so a ``;`` in an interpolated
-    clause could append an entirely new statement (gpio #612).
+    Two checks run:
 
-    Note: This feature is intended for trusted users. For untrusted input,
-    additional validation or parameterized queries would be required.
+    1. A blocklist of keywords that could modify data or database structure,
+       matched against real SQL word tokens only (see
+       :func:`_dangerous_keywords_in`).
+    2. A parser-based statement gate. The clause is composed into the same
+       ``WHERE (<clause>\\n)`` shape the callers emit and handed to DuckDB's
+       parser; anything that parses as more than one statement is rejected.
+       DuckDB's ``execute()`` runs multi-statement strings, so a clause that
+       smuggles in a second statement could ``COPY`` data out or ``ATTACH`` a
+       database (gpio #612). Counting parsed statements -- rather than scanning
+       the text for ``;`` -- is what makes the gate hold: dollar quoting
+       (``$$'$$``), block comments, line comments and ``E'\\''`` escapes all hide
+       a ``;`` from a hand-rolled quote-state walker but not from the parser.
+
+    Note: this is a safety net for *trusted* input, not a security boundary. It
+    stops a clause from becoming extra statements; it cannot stop abuse that
+    stays inside one expression (e.g. reading a local file through a scalar
+    function). Untrusted input needs parameterized queries or a real allowlist.
 
     Args:
         where_clause: The WHERE clause string to validate
 
     Raises:
-        ValidationError: If dangerous SQL keywords or a statement separator are found
+        ValidationError: If dangerous SQL keywords are found, if the clause does
+            not parse, or if it composes into more than one statement.
     """
     from geoparquet_io.core.exceptions import ValidationError
 
-    # Match dangerous keywords as whole words (case-insensitive); word boundaries
-    # avoid false positives (e.g. "UPDATED_AT" must not match).
-    upper_clause = where_clause.upper()
-    found_keywords = []
-
-    for keyword in DANGEROUS_SQL_KEYWORDS:
-        pattern = rf"\b{keyword}\b"
-        if re.search(pattern, upper_clause):
-            found_keywords.append(keyword)
-
+    found_keywords = _dangerous_keywords_in(where_clause)
     if found_keywords:
         raise ValidationError(
             f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
             "Only SELECT-style filtering expressions are allowed in --where. "
-            "If you need to perform data modifications, use DuckDB directly."
+            "Run data-modifying statements against the source system directly."
         )
 
-    # The keyword blocklist cannot see every harmful statement (COPY, ATTACH,
-    # PRAGMA, ...), so reject the separator itself: without a ';' the clause
-    # cannot start a second statement whatever it contains (gpio #612).
-    if _has_unquoted_semicolon(where_clause):
+    probe_query = f"SELECT 1 WHERE {where_condition_fragment(where_clause)}"
+    try:
+        statements = duckdb.extract_statements(probe_query)
+    except Exception as e:
         raise ValidationError(
-            "WHERE clause contains a ';' statement separator outside a quoted string. "
-            "Only a single filtering expression is allowed in --where. "
-            "If you need to run multiple statements, use DuckDB directly."
+            f"WHERE clause is not a single filtering expression: it could not be parsed "
+            f"as SQL. {e}. Note that --where is parsed with DuckDB's SQL dialect even "
+            "when the query runs on another backend."
+        ) from e
+
+    if len(statements) > 1:
+        raise ValidationError(
+            f"WHERE clause is not a single filtering expression: it resolves to "
+            f"{len(statements)} SQL statements, separated by a ';' (possibly hidden in a "
+            "comment or a quoted string). Run additional statements against the source "
+            "system directly."
         )
 
 

@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.carto import (
     CartoError,
+    _build_carto_count_query,
     _build_carto_query,
     _create_empty_geoparquet_table,
     _detect_geometry_column,
@@ -130,7 +131,8 @@ class TestBuildCartoQuery:
     def test_with_where(self):
         """Query with WHERE clause."""
         sql = _build_carto_query("my_table", where="status = 'active'")
-        assert "WHERE (status = 'active')" in sql
+        # The closing paren sits on its own line so a trailing '--' cannot eat it.
+        assert "WHERE (status = 'active'\n)" in sql
 
     def test_with_bbox(self):
         """Query with bounding box filter."""
@@ -157,7 +159,7 @@ class TestBuildCartoQuery:
             bbox=(-75.2, 39.9, -75.1, 40.0),
             limit=100,
         )
-        assert "WHERE (status = 'active') AND ST_Intersects" in sql
+        assert "WHERE (status = 'active'\n) AND ST_Intersects" in sql
         assert "LIMIT 100" in sql
 
     def test_no_geom_does_not_force_the_geom(self):
@@ -185,7 +187,7 @@ class TestBuildCartoQuery:
             limit=50,
             include_geom=False,
         )
-        assert "WHERE (pop > 1000)" in sql
+        assert "WHERE (pop > 1000\n)" in sql
         assert "LIMIT 50" in sql
 
 
@@ -281,14 +283,24 @@ class TestWhereClauseValidation:
 
         monkeypatch.setattr(carto_module.urllib.request, "urlopen", _fail_urlopen)
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
             carto_to_table(
                 url="https://phl.carto.com/api/v2/sql",
                 table_name="opa_properties_public",
                 where=self.INJECTION_WHERE,
             )
 
-    def test_allows_legitimate_where(self, monkeypatch):
+    # Blocklisted keywords (GRANT, DROP, DELETE) appear inside quoted literals
+    # here, so a validator that uppercases the whole clause rejects them.
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "name = 'Grant County'",
+            "descr ILIKE '%drop off%'",
+            "REPLACE(zip, '-', '') = '19104'",
+        ],
+    )
+    def test_allows_legitimate_where(self, monkeypatch, clause):
         """A legitimate --where does not raise and reaches the fetch stage."""
         import pyarrow as pa
 
@@ -302,10 +314,36 @@ class TestWhereClauseValidation:
         result = carto_to_table(
             url="https://phl.carto.com/api/v2/sql",
             table_name="opa_properties_public",
-            where="population > 1000",
+            where=clause,
             geometry=False,
         )
         assert result is dummy_table
+
+
+def _strip_line_comments(sql: str) -> str:
+    """Drop everything a ``--`` comment would swallow, line by line."""
+    return "\n".join(line.split("--")[0] for line in sql.splitlines())
+
+
+class TestWhereClauseCannotSwallowLaterClauses:
+    """A trailing ``--`` in --where must not comment out the rest of the query."""
+
+    TRAILING_COMMENT_WHERE = "1=1) --"
+
+    def test_build_carto_query_keeps_bbox_and_limit(self):
+        sql = _build_carto_query(
+            "t",
+            where=self.TRAILING_COMMENT_WHERE,
+            bbox=(0, 0, 1, 1),
+            limit=10,
+        )
+        live_sql = _strip_line_comments(sql)
+        assert "ST_Intersects" in live_sql
+        assert "LIMIT 10" in live_sql
+
+    def test_build_carto_count_query_keeps_bbox(self):
+        sql = _build_carto_count_query("t", where=self.TRAILING_COMMENT_WHERE, bbox=(0, 0, 1, 1))
+        assert "ST_Intersects" in _strip_line_comments(sql)
 
 
 @pytest.mark.network

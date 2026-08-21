@@ -487,21 +487,31 @@ class TestWhereClauseValidation:
         from geoparquet_io.core.exceptions import ValidationError
         from geoparquet_io.core.extract_bigquery import extract_bigquery
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
             extract_bigquery(
                 table_id="project.dataset.table",
                 dry_run=True,
                 where=self.INJECTION_WHERE,
             )
 
-    def test_dry_run_allows_legitimate_where(self):
+    # Blocklisted keywords (GRANT, DROP, DELETE) appear inside quoted literals
+    # here, so a validator that uppercases the whole clause rejects them.
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "name = 'Grant County'",
+            "descr ILIKE '%drop off%'",
+            "REPLACE(zip, '-', '') = '19104'",
+        ],
+    )
+    def test_dry_run_allows_legitimate_where(self, clause):
         """A legitimate --where does not raise on the dry-run path."""
         from geoparquet_io.core.extract_bigquery import extract_bigquery
 
         result = extract_bigquery(
             table_id="project.dataset.table",
             dry_run=True,
-            where="population > 1000",
+            where=clause,
         )
         assert result is None
 
@@ -515,7 +525,7 @@ class TestWhereClauseValidation:
             "network connection attempted before where-clause validation"
         )
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
             extract_bigquery(
                 table_id="project.dataset.table",
                 dry_run=False,
@@ -523,6 +533,54 @@ class TestWhereClauseValidation:
             )
 
         mock_setup.assert_not_called()
+
+
+def _strip_line_comments(sql: str) -> str:
+    """Drop everything a ``--`` comment would swallow, line by line."""
+    return "\n".join(line.split("--")[0] for line in sql.splitlines())
+
+
+class TestWhereClauseCannotSwallowLaterClauses:
+    """A trailing ``--`` in --where must not comment out the rest of the query."""
+
+    TRAILING_COMMENT_WHERE = "1=1) --"
+
+    def test_build_bigquery_query_keeps_limit(self):
+        from geoparquet_io.core.extract_bigquery import _build_bigquery_query
+
+        sql = _build_bigquery_query(
+            con=None,
+            validated_table_id="project.dataset.table",
+            select_cols="*",
+            bbox=None,
+            bbox_mode="auto",
+            bbox_threshold=1000,
+            geom_col=None,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+        assert "LIMIT 10" in _strip_line_comments(sql)
+
+    def test_dry_run_sql_keeps_bbox_and_limit(self, monkeypatch):
+        import geoparquet_io.core.extract_bigquery as bq_module
+
+        printed: list[str] = []
+        monkeypatch.setattr(bq_module, "progress", printed.append)
+
+        bq_module._handle_dry_run(
+            validated_table_id="project.dataset.table",
+            include_list=None,
+            bbox="0,0,1,1",
+            bbox_mode="local",
+            bbox_threshold=1000,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+
+        sql = next(line for line in printed if line.startswith("SQL: "))
+        live_sql = _strip_line_comments(sql)
+        assert "ST_Intersects" in live_sql
+        assert "LIMIT 10" in live_sql
 
 
 class TestPythonAPI:

@@ -18,6 +18,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
     validate_where_clause,
+    where_condition_fragment,
 )
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
@@ -580,12 +581,11 @@ def _handle_dry_run(
 
     query = _build_dry_run_query(validated_table_id, select_cols, bbox, bbox_mode, bbox_threshold)
 
-    # Add DuckDB-side conditions
+    # Add DuckDB-side conditions. where_condition_fragment() closes the paren on
+    # its own line so a trailing '--' in the clause cannot comment out the LIMIT.
     if where:
-        if "WHERE" in query:
-            query += f" AND ({where})"
-        else:
-            query += f" WHERE ({where})"
+        keyword = " AND " if "WHERE" in query else " WHERE "
+        query += keyword + where_condition_fragment(where)
     if limit is not None:
         query += f" LIMIT {limit}"
 
@@ -1082,7 +1082,9 @@ def _build_bigquery_query(
     # Add WHERE clause
     conditions = local_conditions.copy()
     if where:
-        conditions.append(f"({where})")
+        # Validated upstream in extract_bigquery(); wrapped so a trailing '--'
+        # cannot comment out a following condition or the LIMIT.
+        conditions.append(where_condition_fragment(where))
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
