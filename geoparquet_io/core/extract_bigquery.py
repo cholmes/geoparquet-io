@@ -14,7 +14,11 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+)
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
@@ -829,6 +833,11 @@ def extract_bigquery(
             or project ID doesn't match GCP naming rules
     """
     configure_verbose(verbose)
+
+    # Validate --where before it is interpolated into any query (dry-run or
+    # real), and before any network connection is established (gpio #612 parity).
+    if where:
+        validate_where_clause(where)
 
     # Normalize table_id early - validates format and applies project override
     # This ensures validated_table_id is always project.dataset.table format

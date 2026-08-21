@@ -387,6 +387,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `o'brien/data.parquet`) was escaped twice and reported as not found by
   `check`, `inspect`, `add bbox` and `convert`; paths are now escaped exactly
   once.
+- **`--where` on `gpio extract bigquery` and `gpio extract carto` is now
+  validated (parity with #612).** Both extractors route their `--where`
+  clause through the same `validate_where_clause` check used everywhere
+  else — including the dry-run/build path — before it is interpolated into
+  a query or a network request is made, closing a statement-separator gap
+  that the primary extract/partition/aggregate paths already closed.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

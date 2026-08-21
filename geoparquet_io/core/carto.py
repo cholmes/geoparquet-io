@@ -22,7 +22,7 @@ from geoparquet_io.core.common import (
     write_geoparquet_table,
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import quote_identifier, validate_where_clause
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -563,6 +563,13 @@ def carto_to_table(
         InvalidParameterError: If URL or table name is invalid
     """
     configure_verbose(verbose)
+
+    # Validate --where before it is interpolated into any query, and before any
+    # network probe/request is made (gpio #612 parity). This is the single
+    # choke point every carto_to_table caller (geometry and plain/tabular
+    # extraction alike) funnels through.
+    if where:
+        validate_where_clause(where)
 
     # Validate URL
     url = _validate_carto_url(url)
