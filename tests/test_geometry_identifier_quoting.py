@@ -541,6 +541,7 @@ class TestAddBboxStreamingQuoting:
             profile=None,
             force=force,
             geoparquet_version="2.0",
+            memory_limit=None,
         )
 
         table = pq.read_table(output_path)

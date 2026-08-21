@@ -19,8 +19,8 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 if TYPE_CHECKING:
     from pathlib import Path

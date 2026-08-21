@@ -19,6 +19,8 @@ import sqlite3
 import struct
 from pathlib import Path
 
+from geoparquet_io.core.duckdb_utils import quote_identifier
+
 #: ISO WKB type codes outside the linear Simple Features set (base code,
 #: i.e. modulo the 1000/2000/3000 Z/M/ZM offsets).
 NON_LINEAR_WKB_TYPES: dict[int, str] = {
@@ -74,11 +76,13 @@ def find_non_linear_gpkg_types(path: str | Path, layer: str | None = None) -> li
             for table, col in tables:
                 if layer and table != layer:
                     continue
-                qtable = table.replace('"', '""')
-                qcol = col.replace('"', '""')
+                # SQLite quotes identifiers exactly as DuckDB does (double an
+                # embedded '"'), so the shared helper applies here too.
+                qtable = quote_identifier(table)
+                qcol = quote_identifier(col)
                 for (blob,) in con.execute(
-                    f'SELECT substr("{qcol}", 1, {_HEADER_BYTES}) FROM "{qtable}" '
-                    f'WHERE "{qcol}" IS NOT NULL LIMIT {_SCAN_CAP}'
+                    f"SELECT substr({qcol}, 1, {_HEADER_BYTES}) FROM {qtable} "
+                    f"WHERE {qcol} IS NOT NULL LIMIT {_SCAN_CAP}"
                 ):
                     if not blob or blob[:2] != b"GP" or len(blob) < 8:
                         continue

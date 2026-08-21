@@ -111,6 +111,8 @@ repos:
             # an alias or a direct symbol import would slip straight past it.
             if grep -rnE '^[[:space:]]*(import duckdb as |from duckdb import)' geoparquet_io/ --include="*.py" | awk -F: '$1 != "geoparquet_io/core/duckdb_utils.py"' | grep .; then
               echo "ERROR: Import duckdb as 'import duckdb' only - an alias or 'from duckdb import connect' evades the bare-connect check above."
+              errors=1
+            fi
             # Hand-rolled identifier quoting. f'"{col}"' and col.replace('"', '""')
             # tolerate a space but silently break on an embedded double quote, and a
             # column name can come straight from a file's geo.primary_column or from
