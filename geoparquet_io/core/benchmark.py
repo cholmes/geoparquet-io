@@ -110,41 +110,40 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
         }
 
     try:
-        conn = get_duckdb_connection(load_spatial=True, load_httpfs=False)
-
-        # Get feature count and basic info
-        safe_filepath = _escape_sql_string(str(filepath))
-        result = conn.execute(f"""
-            SELECT COUNT(*) as cnt
-            FROM ST_Read('{safe_filepath}')
-        """).fetchone()
-
-        feature_count = result[0] if result else 0
-
-        # Get schema to find geometry column
-        schema = conn.execute(f"""
-            SELECT * FROM ST_Read('{safe_filepath}') LIMIT 0
-        """).description
-
-        # Find geometry column (common names)
-        geom_col = None
-        for col_info in schema:
-            col_name = col_info[0].lower()
-            if col_name in [n.lower() for n in STANDARD_GEOMETRY_NAMES]:
-                geom_col = col_info[0]
-                break
-
-        # Try to get geometry type from first row
-        geom_type = "unknown"
-        if geom_col:
-            geom_result = conn.execute(f"""
-                SELECT ST_GeometryType({geom_col}) as geom_type
+        # Context-managed so the handle is closed on the error paths too; a
+        # leaked DuckDB handle breaks file cleanup on Windows.
+        with get_duckdb_connection(load_httpfs=False) as conn:
+            # Get feature count and basic info
+            safe_filepath = _escape_sql_string(str(filepath))
+            result = conn.execute(f"""
+                SELECT COUNT(*) as cnt
                 FROM ST_Read('{safe_filepath}')
-                LIMIT 1
             """).fetchone()
-            geom_type = geom_result[0] if geom_result else "unknown"
 
-        conn.close()
+            feature_count = result[0] if result else 0
+
+            # Get schema to find geometry column
+            schema = conn.execute(f"""
+                SELECT * FROM ST_Read('{safe_filepath}') LIMIT 0
+            """).description
+
+            # Find geometry column (common names)
+            geom_col = None
+            for col_info in schema:
+                col_name = col_info[0].lower()
+                if col_name in [n.lower() for n in STANDARD_GEOMETRY_NAMES]:
+                    geom_col = col_info[0]
+                    break
+
+            # Try to get geometry type from first row
+            geom_type = "unknown"
+            if geom_col:
+                geom_result = conn.execute(f"""
+                    SELECT ST_GeometryType({geom_col}) as geom_type
+                    FROM ST_Read('{safe_filepath}')
+                    LIMIT 1
+                """).fetchone()
+                geom_type = geom_result[0] if geom_result else "unknown"
 
         return {
             "name": filepath.name,
@@ -243,23 +242,27 @@ def benchmark_duckdb(input_path: Path, output_path: Path) -> tuple[float, float]
     Returns:
         Tuple of (elapsed_time_seconds, peak_memory_mb)
     """
-    tracemalloc.start()
-
-    start = time.perf_counter()
-
-    conn = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    # Connect before the timer starts. Factory setup (extension install/load,
+    # session settings, ambient S3 config) is fixed overhead that the GeoPandas
+    # and pyogrio arms never pay, so timing it here would bias the comparison
+    # against DuckDB. Only the COPY is measured.
+    conn = get_duckdb_connection(load_httpfs=False)
     safe_input = _escape_sql_string(str(input_path))
     safe_output = _escape_sql_string(str(output_path))
-    conn.execute(f"""
-        COPY (SELECT * FROM ST_Read('{safe_input}'))
-        TO '{safe_output}'
-        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
-    """)
-    conn.close()
 
-    elapsed = time.perf_counter() - start
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    tracemalloc.start()
+    start = time.perf_counter()
+    try:
+        conn.execute(f"""
+            COPY (SELECT * FROM ST_Read('{safe_input}'))
+            TO '{safe_output}'
+            (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)
+        """)
+        elapsed = time.perf_counter() - start
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        conn.close()
 
     peak_memory_mb = peak / (1024 * 1024)
 

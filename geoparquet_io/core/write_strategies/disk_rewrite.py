@@ -193,7 +193,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         if effective_version is None:
             effective_version = _detect_version_from_table(table, verbose)
 
-        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+        con = get_duckdb_connection(load_httpfs=False)
         try:
             con.register("input_table", table)
 

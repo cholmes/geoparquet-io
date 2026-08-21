@@ -236,14 +236,18 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
-  disk-rewrite write strategy previously called bare `duckdb.connect()`,
-  which silently skipped `get_duckdb_connection()`'s mandatory session
-  settings (`arrow_large_buffer_size` for >2GB string/WKB Arrow exports,
-  `geometry_always_xy` for DuckDB 1.5 axis-order correctness). One site
-  (`get_column_statistics`) omitted `arrow_large_buffer_size` entirely. All
-  six now go through the factory, and a new `duckdb-antipatterns` pre-commit
-  check bans bare `duckdb.connect(` outside `core/duckdb_utils.py` to prevent
-  regressions.
+  disk-rewrite write strategy previously called bare `duckdb.connect()` and
+  re-applied session settings by hand, skipping `get_duckdb_connection()`.
+  All six now gain `arrow_large_buffer_size` (required for >2GB string/WKB
+  Arrow exports), which none of them had set, alongside the
+  `geometry_always_xy` axis-order setting they had each been reimplementing
+  inline. `gpio inspect stats` also now loads httpfs when the file it is
+  inspecting lives on cloud storage, matching `gpio inspect head`.
+  To prevent regressions, the `duckdb-antipatterns` pre-commit check now bans
+  `duckdb.connect(`, `.sql(`, `.query(`, `.execute(` and `.read_parquet(`
+  outside `core/duckdb_utils.py` — including via an aliased or
+  `from duckdb import ...` import, which would otherwise slip past the check.
+  A trailing `# allow-bare-connect` comment marks a deliberate exception.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

@@ -97,10 +97,20 @@ repos:
             # session settings (arrow_large_buffer_size for >2GB Arrow exports,
             # geometry_always_xy for DuckDB 1.5 axis order, spatial extension
             # loading) and silently drifts whenever the factory gains a new one.
-            # core/duckdb_utils.py itself is exempt: it's the factory's own
-            # internal connect().
-            if grep -rn 'duckdb\.connect(' geoparquet_io/ --include="*.py" | grep -v '/duckdb_utils\.py:' | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
+            # duckdb.sql/query/execute/read_parquet are covered too: each spins up
+            # the same unconfigured implicit default connection.
+            # core/duckdb_utils.py itself is exempt (matched on the path field, not
+            # the line text): it's the factory's own internal connect().
+            # Deliberate exceptions elsewhere: trailing "# allow-bare-connect".
+            if grep -rnE 'duckdb\.(connect|sql|query|execute|read_parquet)\(' geoparquet_io/ --include="*.py" | awk -F: '$1 != "geoparquet_io/core/duckdb_utils.py"' | grep -v 'allow-bare-connect' | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
               echo "ERROR: Use get_duckdb_connection() from core/duckdb_utils.py instead of bare duckdb.connect() - it applies mandatory session settings (arrow_large_buffer_size, geometry_always_xy, spatial extension loading) that bare connect() silently omits."
+              echo "       Deliberate exception? Add a trailing '# allow-bare-connect' comment."
+              errors=1
+            fi
+            # The rule above keys on the 'duckdb.' prefix, so keep the import canonical:
+            # an alias or a direct symbol import would slip straight past it.
+            if grep -rnE '^[[:space:]]*(import duckdb as |from duckdb import)' geoparquet_io/ --include="*.py" | awk -F: '$1 != "geoparquet_io/core/duckdb_utils.py"' | grep .; then
+              echo "ERROR: Import duckdb as 'import duckdb' only - an alias or 'from duckdb import connect' evades the bare-connect check above."
               errors=1
             fi
             exit $errors
@@ -206,7 +216,7 @@ repos:
         description: Auto-update generated doc sections (CLAUDE.md, SKILL.md, contributing.md)
         entry: uv run python scripts/doc_sync.py --update
         language: system
-        files: ^(geoparquet_io/cli/main\.py|geoparquet_io/cli/decorators\.py|pyproject\.toml|geoparquet_io/core/.*\.py|scripts/doc_sync\.py|docs/contributing\.md)$
+        files: ^(CHANGELOG\.md|geoparquet_io/cli/main\.py|geoparquet_io/cli/decorators\.py|pyproject\.toml|geoparquet_io/core/.*\.py|scripts/doc_sync\.py|docs/contributing\.md)$
         pass_filenames: false
 
       - id: sync-dependencies

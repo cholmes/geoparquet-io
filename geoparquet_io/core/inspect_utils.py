@@ -22,7 +22,7 @@ from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
 )
-from geoparquet_io.core.remote import is_remote_url
+from geoparquet_io.core.remote import is_remote_url, needs_httpfs
 
 
 def extract_file_info(parquet_file: str, con=None) -> dict[str, Any]:
@@ -449,7 +449,7 @@ def wkb_to_wkt_preview(wkb_bytes: bytes, max_length: int = 45) -> str:
         return "<GEOMETRY>"
 
     try:
-        with get_duckdb_connection(load_spatial=True, load_httpfs=False) as con:
+        with get_duckdb_connection(load_httpfs=False) as con:
             # Check if this is DuckDB's internal GEOMETRY format (starts with 0x02)
             # vs standard ISO WKB (starts with 0x00 or 0x01 for byte order)
             if wkb_bytes[0] == 0x02:
@@ -613,14 +613,12 @@ def get_preview_data(
         get_geo_metadata,
         get_row_count,
     )
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.remote import needs_httpfs
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     total_rows = get_row_count(parquet_file)
 
     # Create DuckDB connection
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(parquet_file))
+    con = get_duckdb_connection(load_httpfs=needs_httpfs(parquet_file))
 
     try:
         # Detect geometry columns from native Parquet types
@@ -747,7 +745,7 @@ def get_column_statistics(
         dict: Statistics per column
     """
     safe_url = safe_file_url(parquet_file, verbose=False)
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
+    con = get_duckdb_connection(load_httpfs=needs_httpfs(parquet_file))
 
     try:
         stats = {}
