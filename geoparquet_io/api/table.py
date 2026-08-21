@@ -2818,7 +2818,7 @@ class Table:
             output_dir: Output directory for partition files
             column: Column name to partition by
             chars: Use first N characters as prefix (None for full value)
-            hive: Use Hive-style partitioning (column=value/)
+            hive: Use Hive-style partitioning (column=value/) (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             compression: Compression codec
             compression_level: Compression level
@@ -2871,7 +2871,7 @@ class Table:
         Args:
             output_dir: Output directory for partition files
             iterations: Number of KD-tree splits (creates 2^iterations partitions)
-            hive: Use Hive-style partitioning
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             compression: Compression codec
             compression_level: Compression level
@@ -2922,7 +2922,7 @@ class Table:
             output_dir: Output directory for partition files
             dataset: Boundaries dataset ("gaul", "overture", or custom URL)
             levels: Admin levels to partition by (e.g., ["country", "admin1"])
-            hive: Use Hive-style partitioning
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             vecorel: Output Vecorel-compliant admin columns
                 (admin:country_code, admin:subdivision_code) in each partition
