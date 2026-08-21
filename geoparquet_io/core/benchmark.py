@@ -22,7 +22,11 @@ from typing import Any
 import duckdb
 import psutil
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError, GeoParquetError
 from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 from geoparquet_io.core.logging_config import progress
@@ -139,7 +143,7 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
             geom_type = "unknown"
             if geom_col:
                 geom_result = conn.execute(f"""
-                    SELECT ST_GeometryType({geom_col}) as geom_type
+                    SELECT ST_GeometryType({quote_identifier(geom_col)}) as geom_type
                     FROM ST_Read('{safe_filepath}')
                     LIMIT 1
                 """).fetchone()

@@ -16,6 +16,7 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
 )
 from geoparquet_io.core.constants import VECOREL_METRICS_SCHEMA, build_collection_metadata
+from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import success
@@ -143,8 +144,8 @@ def _add_metrics_streaming(
 
         return (
             f"SELECT *, "
-            f'CAST(ST_Area_Spheroid("{geom_col}") AS FLOAT) AS "{AREA_COLUMN}", '
-            f'CAST(ST_Perimeter_Spheroid("{geom_col}") AS FLOAT) AS "{PERIMETER_COLUMN}" '
+            f"CAST(ST_Area_Spheroid({quote_identifier(geom_col)}) AS FLOAT) AS {quote_identifier(AREA_COLUMN)}, "
+            f"CAST(ST_Perimeter_Spheroid({quote_identifier(geom_col)}) AS FLOAT) AS {quote_identifier(PERIMETER_COLUMN)} "
             f"FROM {source}"
         )
 
@@ -191,8 +192,8 @@ def _add_metrics_file_based(
 
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
-    area_expr = f'CAST(ST_Area_Spheroid("{geom_col}") AS FLOAT)'
-    perimeter_expr = f'CAST(ST_Perimeter_Spheroid("{geom_col}") AS FLOAT)'
+    area_expr = f"CAST(ST_Area_Spheroid({quote_identifier(geom_col)}) AS FLOAT)"
+    perimeter_expr = f"CAST(ST_Perimeter_Spheroid({quote_identifier(geom_col)}) AS FLOAT)"
 
     if dry_run:
         from geoparquet_io.core.logging_config import info

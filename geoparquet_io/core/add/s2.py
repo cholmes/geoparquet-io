@@ -22,7 +22,11 @@ from geoparquet_io.core.crs_utils import (
     source_crs_string,
     transform_geom_sql,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, load_community_extension
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
@@ -56,8 +60,10 @@ def _create_geometry_view(con, table, geom_col):
     if geom_is_blob and geom_col in table.column_names:
         # Create view with geometry conversion
         # Quote all column names for safety with special characters
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-        col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+        col_defs = other_cols + [
+            f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+        ]
         view_query = f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
         con.execute(view_query)
         return "__input_view"
@@ -75,7 +81,7 @@ def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level, g
         str: Complete SELECT query with S2 expression
     """
     if geom_ref is None:
-        geom_ref = f'"{geom_col}"'
+        geom_ref = quote_identifier(geom_col)
 
     # Build S2 cell expression (keyed on lon/lat, reprojected when needed)
     s2_expr = f"""s2_cell_token(
@@ -89,21 +95,21 @@ def _build_s2_select_query(table, source_ref, geom_col, s2_column_name, level, g
     )"""
 
     # Build column list
-    other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+    other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
     select_cols = ", ".join(other_cols) if other_cols else ""
 
     # Build SELECT query
     if select_cols:
         return f"""
             SELECT {select_cols},
-                   ST_AsWKB("{geom_col}") AS "{geom_col}",
-                   {s2_expr} AS "{s2_column_name}"
+                   ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                   {s2_expr} AS {quote_identifier(s2_column_name)}
             FROM {source_ref}
         """
     else:
         return f"""
-            SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                   {s2_expr} AS "{s2_column_name}"
+            SELECT ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                   {s2_expr} AS {quote_identifier(s2_column_name)}
             FROM {source_ref}
         """
 
@@ -150,7 +156,7 @@ def add_s2_table(
         con.register("__input_table", table)
 
         source_ref = _create_geometry_view(con, table, geom_col)
-        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+        geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
         query = _build_s2_select_query(
             table, source_ref, geom_col, s2_column_name, level, geom_ref=geom_ref
         )
@@ -177,7 +183,7 @@ def _make_add_s2_query(
     ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
     (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
     """
-    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
+    geom_ref = transform_geom_sql(quote_identifier(geometry_column), source_crs)
     # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get desired level
     s2_expr = f"""s2_cell_token(
         s2_cell_parent(
@@ -188,7 +194,7 @@ def _make_add_s2_query(
             {level}
         )
     )"""
-    return f'SELECT *, {s2_expr} AS "{s2_column_name}" FROM {source}'
+    return f"SELECT *, {s2_expr} AS {quote_identifier(s2_column_name)} FROM {source}"
 
 
 def add_s2_column(
@@ -273,7 +279,9 @@ def add_s2_column(
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # S2 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
-    geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs_string(input_parquet, verbose))
+    geom_ref = transform_geom_sql(
+        quote_identifier(geom_col), source_crs_string(input_parquet, verbose)
+    )
 
     # Define the S2 SQL expression (using token/string format for portability)
     # s2_cellfromlonlat returns a cell at level 30, use s2_cell_parent to get desired level

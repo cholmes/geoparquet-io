@@ -188,9 +188,10 @@ def _wrap_query_with_wkb_conversion(
     if not geometry_column:
         return query
 
+    quoted_geom = quote_identifier(geometry_column)
     return f"""
         WITH __stream_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB({geometry_column}) AS {geometry_column})
+        SELECT * REPLACE (ST_AsWKB({quoted_geom}) AS {quoted_geom})
         FROM __stream_source
     """
 

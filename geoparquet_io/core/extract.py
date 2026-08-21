@@ -23,10 +23,10 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import get_crs_display_name
 from geoparquet_io.core.duckdb_utils import (
-    DANGEROUS_SQL_KEYWORDS,  # noqa: F401 - re-exported for backwards compatibility
     _escape_sql_string,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
+    quote_identifier,
     validate_where_clause,
 )
 from geoparquet_io.core.exceptions import (
@@ -123,11 +123,9 @@ def _get_crs_from_file(input_parquet: str, geometry_col: str) -> dict | str | No
         parse_geometry_logical_type,
     )
 
-    safe_url = safe_file_url(input_parquet, verbose=False)
-
     # First try GeoParquet file-level metadata
     try:
-        geo_meta = get_geo_metadata(safe_url)
+        geo_meta = get_geo_metadata(input_parquet)
         if geo_meta:
             columns_meta = geo_meta.get("columns", {})
             if geometry_col in columns_meta:
@@ -140,7 +138,7 @@ def _get_crs_from_file(input_parquet: str, geometry_col: str) -> dict | str | No
 
     # Fall back to Parquet geo logical type (for GeoParquet 2.0 / parquet-geo)
     try:
-        schema_info = get_schema_info(safe_url)
+        schema_info = get_schema_info(input_parquet)
         for col in schema_info:
             name = col.get("name", "")
             if name != geometry_col:
@@ -168,10 +166,10 @@ def _get_data_bounds(input_parquet: str, geometry_col: str) -> tuple | None:
         safe_url = safe_file_url(input_parquet, verbose=False)
         result = con.execute(f"""
             SELECT
-                MIN(ST_XMin("{geometry_col}")) as xmin,
-                MIN(ST_YMin("{geometry_col}")) as ymin,
-                MAX(ST_XMax("{geometry_col}")) as xmax,
-                MAX(ST_YMax("{geometry_col}")) as ymax
+                MIN(ST_XMin({quote_identifier(geometry_col)})) as xmin,
+                MIN(ST_YMin({quote_identifier(geometry_col)})) as ymin,
+                MAX(ST_XMax({quote_identifier(geometry_col)})) as xmax,
+                MAX(ST_YMax({quote_identifier(geometry_col)})) as ymax
             FROM read_parquet('{safe_url}')
         """).fetchone()
         con.close()
@@ -542,12 +540,12 @@ def build_spatial_filter(
         if bbox_info.get("has_bbox_column"):
             bbox_col = bbox_info["bbox_column_name"]
             conditions.append(
-                f'("{bbox_col}".xmax >= {xmin} AND "{bbox_col}".xmin <= {xmax} '
-                f'AND "{bbox_col}".ymax >= {ymin} AND "{bbox_col}".ymin <= {ymax})'
+                f"({quote_identifier(bbox_col)}.xmax >= {xmin} AND {quote_identifier(bbox_col)}.xmin <= {xmax} "
+                f"AND {quote_identifier(bbox_col)}.ymax >= {ymin} AND {quote_identifier(bbox_col)}.ymin <= {ymax})"
             )
         else:
             conditions.append(
-                f'ST_Intersects("{geometry_col}", ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))'
+                f"ST_Intersects({quote_identifier(geometry_col)}, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
             )
 
     if geometry_wkt:
@@ -569,7 +567,7 @@ def build_extract_query(
     """Build the complete extraction query."""
     from geoparquet_io.core.partition.reader import build_read_parquet_expr
 
-    col_list = ", ".join(f'"{c}"' for c in columns)
+    col_list = ", ".join(quote_identifier(c) for c in columns)
     # Use partition reader to build read_parquet expression with proper options
     read_expr = build_read_parquet_expr(
         input_path,
@@ -602,7 +600,7 @@ def _build_query_for_source(
     limit: int | None = None,
 ) -> str:
     """Build extraction query for a DuckDB source reference (table or read_parquet)."""
-    col_list = ", ".join(f'"{c}"' for c in columns)
+    col_list = ", ".join(quote_identifier(c) for c in columns)
     query = f"SELECT {col_list} FROM {source_ref}"
 
     conditions = []
@@ -659,8 +657,10 @@ def _setup_geometry_view(
         return "__input_table", False
 
     # Create view with geometry conversion (quote column names for special chars)
-    other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-    col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+    other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+    col_defs = other_cols + [
+        f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+    ]
     view_query = f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
     con.execute(view_query)
     return "__input_view", True
@@ -676,7 +676,9 @@ def _build_query_with_wkb_conversion(
 ) -> str:
     """Build query with WKB conversion for geometry column."""
     cols_with_wkb = [
-        f'ST_AsWKB("{geom_col}") AS "{geom_col}"' if c == geom_col else f'"{c}"'
+        f"ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+        if c == geom_col
+        else quote_identifier(c)
         for c in selected_columns
     ]
     col_list = ", ".join(cols_with_wkb)

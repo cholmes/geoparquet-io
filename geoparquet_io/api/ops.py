@@ -1386,18 +1386,18 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
     safe_url = safe_file_url(parquet_file, verbose=False)
 
     # Try native geo stats first (GeoParquet 2.0 / parquet-geo-only)
-    rg_stats = get_per_row_group_native_geo_stats(safe_url)
+    rg_stats = get_per_row_group_native_geo_stats(parquet_file)
 
     # Fall back to bbox column if no native stats
     if not rg_stats:
-        has_bbox, bbox_col_name = has_bbox_column(safe_url)
+        has_bbox, bbox_col_name = has_bbox_column(parquet_file)
         if has_bbox and bbox_col_name:
-            rg_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+            rg_stats = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
 
     if not rg_stats:
         return []
 
-    file_meta = get_file_metadata(safe_url)
+    file_meta = get_file_metadata(parquet_file)
     num_rows_per_rg = _get_num_rows_per_row_group(safe_url, file_meta)
 
     return _merge_row_counts(rg_stats, num_rows_per_rg)

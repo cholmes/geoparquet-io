@@ -13,7 +13,6 @@ from rich.table import Table
 from rich.text import Text
 
 from geoparquet_io.core.common import format_size
-from geoparquet_io.core.file_utils import safe_file_url
 
 
 def _check_parquet_schema_string(field_name, parquet_schema_str):
@@ -412,11 +411,9 @@ def has_parquet_geo_row_group_stats(parquet_file: str, geometry_column: str | No
         "sample_bbox": None,
     }
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Auto-detect geometry column if not specified
     if not geometry_column:
-        geo_columns = detect_geometry_columns(safe_url)
+        geo_columns = detect_geometry_columns(parquet_file)
         if geo_columns:
             geometry_column = next(iter(geo_columns.keys()))
 
@@ -424,13 +421,13 @@ def has_parquet_geo_row_group_stats(parquet_file: str, geometry_column: str | No
         return result
 
     # Check for bbox column using DuckDB
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
 
     if not has_bbox or not bbox_col_name:
         return result
 
     # Get row group stats for first row group
-    rg_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+    rg_stats = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
 
     if rg_stats and len(rg_stats) > 0:
         first_rg = rg_stats[0]
@@ -468,16 +465,14 @@ def extract_bbox_from_row_group_stats(
         has_bbox_column,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Check for bbox column using DuckDB
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
 
     if not has_bbox or not bbox_col_name:
         return None
 
     # Get overall bbox from row group stats using DuckDB
-    return get_bbox_from_row_group_stats(safe_url, bbox_col_name)
+    return get_bbox_from_row_group_stats(parquet_file, bbox_col_name)
 
 
 def _build_row_group_json(rg_id: int, cols_in_rg: list, geo_columns: dict) -> dict:
@@ -731,13 +726,11 @@ def format_parquet_metadata_enhanced(
         get_schema_info,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
-    file_meta = get_file_metadata(safe_url)
-    schema_info = get_schema_info(safe_url)
-    row_group_meta = get_row_group_metadata(safe_url)
-    geo_columns = detect_geometry_columns(safe_url)
-    bloom_filter_info = get_bloom_filter_info(safe_url)
+    file_meta = get_file_metadata(parquet_file)
+    schema_info = get_schema_info(parquet_file)
+    row_group_meta = get_row_group_metadata(parquet_file)
+    geo_columns = detect_geometry_columns(parquet_file)
+    bloom_filter_info = get_bloom_filter_info(parquet_file)
 
     num_columns = len([c for c in schema_info if c.get("name") and "." not in c.get("name", "")])
     schema_str = ", ".join(
@@ -925,20 +918,18 @@ def format_parquet_geo_metadata(
         has_bbox_column,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
-    file_meta = get_file_metadata(safe_url)
-    schema_info = get_schema_info(safe_url)
+    file_meta = get_file_metadata(parquet_file)
+    schema_info = get_schema_info(parquet_file)
     num_row_groups = file_meta.get("num_row_groups", 0)
 
-    geo_columns = detect_geometry_columns(safe_url)
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    geo_columns = detect_geometry_columns(parquet_file)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
 
     geo_columns_info = _build_geo_columns_info(schema_info, geo_columns)
 
     # Add row group stats: try bbox column first, then native geo_bbox
     if has_bbox and bbox_col_name:
-        rg_bbox_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+        rg_bbox_stats = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
         for col_name in geo_columns_info:
             for rg_stat in rg_bbox_stats:
                 geo_columns_info[col_name]["row_group_stats"].append(
@@ -952,7 +943,9 @@ def format_parquet_geo_metadata(
                 )
     else:
         for col_name in geo_columns_info:
-            native_stats = get_per_row_group_native_geo_stats(safe_url, geometry_column=col_name)
+            native_stats = get_per_row_group_native_geo_stats(
+                parquet_file, geometry_column=col_name
+            )
             if native_stats:
                 for rg_stat in native_stats:
                     geo_columns_info[col_name]["row_group_stats"].append(
@@ -992,8 +985,7 @@ def format_geoparquet_metadata(parquet_file: str, json_output: bool) -> None:
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(parquet_file)
 
     if not geo_meta:
         if json_output:
@@ -1150,11 +1142,9 @@ def format_all_metadata(
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     if json_output:
         # For JSON, combine all metadata into one object
-        geo_meta = get_geo_metadata(safe_url)
+        geo_meta = get_geo_metadata(parquet_file)
         primary_col = geo_meta.get("primary_column") if geo_meta else None
 
         # We need to manually construct the combined JSON output
@@ -1167,7 +1157,7 @@ def format_all_metadata(
         print(json.dumps(output, indent=2))
     else:
         # Terminal output - show all three sections
-        geo_meta = get_geo_metadata(safe_url)
+        geo_meta = get_geo_metadata(parquet_file)
         primary_col = geo_meta.get("primary_column") if geo_meta else None
 
         # Section 1: Parquet File Metadata
@@ -1204,16 +1194,14 @@ def format_row_group_geo_stats(
         has_bbox_column,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Try native geo stats first (GeoParquet 2.0 / parquet-geo-only)
-    rg_stats = get_per_row_group_native_geo_stats(safe_url)
+    rg_stats = get_per_row_group_native_geo_stats(parquet_file)
 
     # Fall back to bbox column if no native stats
     if not rg_stats:
-        has_bbox, bbox_col_name = has_bbox_column(safe_url)
+        has_bbox, bbox_col_name = has_bbox_column(parquet_file)
         if has_bbox and bbox_col_name:
-            rg_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+            rg_stats = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
 
     if not rg_stats:
         if json_output:
@@ -1229,8 +1217,8 @@ def format_row_group_geo_stats(
             console.print()
         return
 
-    file_meta = get_file_metadata(safe_url)
-    num_rows_per_rg = _get_num_rows_per_row_group(safe_url, file_meta)
+    file_meta = get_file_metadata(parquet_file)
+    num_rows_per_rg = _get_num_rows_per_row_group(parquet_file, file_meta)
 
     # Merge num_rows into stats
     stats_with_rows = _merge_row_counts(rg_stats, num_rows_per_rg)
@@ -1245,18 +1233,20 @@ def format_row_group_geo_stats(
         _format_geo_stats_terminal(stats_with_rows, total_row_groups)
 
 
-def _get_num_rows_per_row_group(safe_url: str, file_meta: dict) -> dict[int, int]:
+def _get_num_rows_per_row_group(parquet_file: str, file_meta: dict) -> dict[int, int]:
     """Get num_rows per row group from file metadata.
+
+    Takes a RAW path: ``_safe_url`` is the single SQL-escaping point.
 
     Returns a mapping of row_group_id to row count.
     """
     from geoparquet_io.core.duckdb_metadata import _get_connection_for_file, _safe_url
 
-    connection, should_close = _get_connection_for_file(safe_url)
+    connection, should_close = _get_connection_for_file(parquet_file)
     try:
         result = connection.execute(f"""
             SELECT row_group_id, row_group_num_rows
-            FROM parquet_metadata('{_safe_url(safe_url)}')
+            FROM parquet_metadata('{_safe_url(parquet_file)}')
             GROUP BY row_group_id, row_group_num_rows
             ORDER BY row_group_id
         """).fetchall()

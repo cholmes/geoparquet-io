@@ -9,7 +9,7 @@ import json
 import os
 from functools import lru_cache
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.logging_config import debug, warn
 
 
@@ -206,10 +206,9 @@ def _wrap_query_with_crs(
         warn("input_crs does not look like valid PROJJSON — skipping CRS application")
         return query
 
-    escaped_geom = geometry_column.replace('"', '""')
     crs_json = _escape_sql_string(json.dumps(input_crs))
     return f"""
-        SELECT * REPLACE (ST_SetCRS("{escaped_geom}", '{crs_json}') AS "{escaped_geom}")
+        SELECT * REPLACE (ST_SetCRS({quote_identifier(geometry_column)}, '{crs_json}') AS {quote_identifier(geometry_column)})
         FROM ({query})
     """
 
@@ -333,7 +332,7 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
 
     safe_url = safe_file_url(parquet_file, verbose=False)
 
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(parquet_file)
     if geo_meta:
         primary_col = geo_meta.get("primary_column", "geometry")
         columns = geo_meta.get("columns", {})
@@ -346,7 +345,7 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
                     debug(f"Found CRS in GeoParquet metadata: {_format_crs_display(crs)}")
                 return crs
 
-    schema_info = get_schema_info(safe_url)
+    schema_info = get_schema_info(parquet_file)
     for col in schema_info:
         logical_type = col.get("logical_type") or ""
         if logical_type and (

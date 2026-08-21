@@ -9,7 +9,7 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     detect_geoparquet_file_type,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -23,16 +23,6 @@ from geoparquet_io.core.streaming import (
     is_stdin,
     should_stream_output,
 )
-
-
-def _build_bbox_sql(geometry_column: str, bbox_column_name: str = "bbox") -> str:
-    """Build SQL expression for bbox struct column."""
-    return f"""STRUCT_PACK(
-        xmin := ST_XMin("{geometry_column}"),
-        ymin := ST_YMin("{geometry_column}"),
-        xmax := ST_XMax("{geometry_column}"),
-        ymax := ST_YMax("{geometry_column}")
-    ) AS "{bbox_column_name}" """
 
 
 def add_bbox_table(
@@ -73,11 +63,15 @@ def add_bbox_table(
         columns_info = con.execute("DESCRIBE __input_table").fetchall()
         geom_is_blob = any(col[0] == geom_col and "BLOB" in col[1].upper() for col in columns_info)
 
+        quoted_geom_col = quote_identifier(geom_col)
+        quoted_bbox_col = quote_identifier(bbox_column_name)
+
         if geom_is_blob and geom_col in table.column_names:
             # Create view with geometry conversion
-            # Quote column names to handle special characters (colons, spaces, etc.)
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            # Quote column names to handle special characters (colons, spaces,
+            # embedded quotes, etc.)
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [f"ST_GeomFromWKB({quoted_geom_col}) AS {quoted_geom_col}"]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -88,28 +82,28 @@ def add_bbox_table(
 
         # Build query to add bbox column
         bbox_expr = f"""STRUCT_PACK(
-            xmin := ST_XMin("{geom_col}"),
-            ymin := ST_YMin("{geom_col}"),
-            xmax := ST_XMax("{geom_col}"),
-            ymax := ST_YMax("{geom_col}")
+            xmin := ST_XMin({quoted_geom_col}),
+            ymin := ST_YMin({quoted_geom_col}),
+            xmax := ST_XMax({quoted_geom_col}),
+            ymax := ST_YMax({quoted_geom_col})
         )"""
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build SELECT with geometry converted back to WKB
         if select_cols:
             query = f"""
                 SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {bbox_expr} AS "{bbox_column_name}"
+                       ST_AsWKB({quoted_geom_col}) AS {quoted_geom_col},
+                       {bbox_expr} AS {quoted_bbox_col}
                 FROM {source_ref}
             """
         else:
             query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {bbox_expr} AS "{bbox_column_name}"
+                SELECT ST_AsWKB({quoted_geom_col}) AS {quoted_geom_col},
+                       {bbox_expr} AS {quoted_bbox_col}
                 FROM {source_ref}
             """
         result = con.execute(query).arrow().read_all()
@@ -130,17 +124,21 @@ def _make_add_bbox_query(
     replace_existing: bool = False,
 ) -> str:
     """Build query to add bbox column to a source."""
+    quoted_geom_col = quote_identifier(geometry_column)
+    quoted_bbox_col = quote_identifier(bbox_column_name)
     bbox_expr = f"""STRUCT_PACK(
-        xmin := ST_XMin("{geometry_column}"),
-        ymin := ST_YMin("{geometry_column}"),
-        xmax := ST_XMax("{geometry_column}"),
-        ymax := ST_YMax("{geometry_column}")
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     if replace_existing:
-        return f'SELECT * EXCLUDE ("{bbox_column_name}"), {bbox_expr} AS "{bbox_column_name}" FROM {source}'
+        return (
+            f"SELECT * EXCLUDE ({quoted_bbox_col}), {bbox_expr} AS {quoted_bbox_col} FROM {source}"
+        )
     else:
-        return f'SELECT *, {bbox_expr} AS "{bbox_column_name}" FROM {source}'
+        return f"SELECT *, {bbox_expr} AS {quoted_bbox_col} FROM {source}"
 
 
 def add_bbox_column(
@@ -357,11 +355,12 @@ def _add_bbox_file_based(
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # Define the SQL expression (the only unique part)
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Build covering metadata for the bbox column (GeoParquet 1.1+ spec)

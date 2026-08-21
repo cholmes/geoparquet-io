@@ -147,10 +147,9 @@ def _validate_crs_for_quadkey(input_parquet: str, geom_col: str, verbose: bool) 
 
     Quadkeys require lat/lon coordinates. Raises ClickException if CRS is projected.
     """
-    safe_url = safe_file_url(input_parquet, verbose=False)
 
     # Get CRS from GeoParquet metadata
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(input_parquet)
     _validate_crs_from_geo_metadata(geo_meta, geom_col, verbose, source_description="file")
 
 
@@ -262,8 +261,10 @@ def add_quadkey_table(
 
         if geom_is_blob and geom_col in table.column_names:
             # Quote column names to handle special characters (colons, spaces, etc.)
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [
+                f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+            ]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -274,29 +275,33 @@ def add_quadkey_table(
 
         # Build lat/lon expressions (reproject to lon/lat when source is non-CRS84)
         if use_bbox and bbox_col:
-            lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
-            lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
+            lat_expr = (
+                f"(({quote_identifier(bbox_col)}.ymin + {quote_identifier(bbox_col)}.ymax) / 2.0)"
+            )
+            lon_expr = (
+                f"(({quote_identifier(bbox_col)}.xmin + {quote_identifier(bbox_col)}.xmax) / 2.0)"
+            )
         else:
-            geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+            geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
             lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
             lon_expr = f"ST_X(ST_Centroid({geom_ref}))"
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build SELECT with geometry converted back to WKB
         if select_cols:
             query = f"""
                 SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS "{quadkey_column_name}"
+                       ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
                 FROM {source_ref}
             """
         else:
             query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS "{quadkey_column_name}"
+                SELECT ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
                 FROM {source_ref}
             """
         result = con.execute(query).arrow().read_all()
@@ -463,16 +468,20 @@ def _add_quadkey_streaming(
 
         # Build lat/lon expressions (reproject to lon/lat when source is non-CRS84)
         if bbox_col:
-            lat_expr = f'(("{bbox_col}".ymin + "{bbox_col}".ymax) / 2.0)'
-            lon_expr = f'(("{bbox_col}".xmin + "{bbox_col}".xmax) / 2.0)'
+            lat_expr = (
+                f"(({quote_identifier(bbox_col)}.ymin + {quote_identifier(bbox_col)}.ymax) / 2.0)"
+            )
+            lon_expr = (
+                f"(({quote_identifier(bbox_col)}.xmin + {quote_identifier(bbox_col)}.xmax) / 2.0)"
+            )
         else:
-            geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+            geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
             lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
             lon_expr = f"ST_X(ST_Centroid({geom_ref}))"
 
         query = f"""
             SELECT *,
-                   lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS "{quadkey_column_name}"
+                   lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
             FROM {source}
         """
 
@@ -552,7 +561,7 @@ def _add_quadkey_file_based(
 
     # Check if column already exists (skip in dry-run)
     if not dry_run:
-        column_names = get_column_names(input_url)
+        column_names = get_column_names(input_parquet)
         if quadkey_column_name in column_names:
             raise GeoParquetError(
                 f"Column '{quadkey_column_name}' already exists in the file. "

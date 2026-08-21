@@ -15,6 +15,7 @@ from rich.console import Console
 
 from geoparquet_io.core.common import split_zm_suffix, zm_suffix_sql
 from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError
 
 
@@ -761,6 +762,7 @@ def _check_encoding_matches_data(
     from geoparquet_io.core.file_utils import safe_file_url
 
     safe_url = safe_file_url(parquet_file, verbose=False)
+    quoted_geom = quote_identifier(geom_col)
 
     # For WKB encoding, verify we can parse geometries as WKB
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
@@ -768,7 +770,7 @@ def _check_encoding_matches_data(
     try:
         # First check if DuckDB already has it as a GEOMETRY type
         # In that case, the encoding was valid (DuckDB parsed it)
-        type_query = f"DESCRIBE SELECT {geom_col} FROM read_parquet('{safe_url}')"
+        type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
         type_result = con.execute(type_query).fetchone()
         col_type = type_result[1] if type_result else ""
 
@@ -776,7 +778,7 @@ def _check_encoding_matches_data(
             # DuckDB already parsed it as geometry - encoding is valid
             count_query = f"""
                 SELECT COUNT(*) FROM read_parquet('{safe_url}')
-                WHERE {geom_col} IS NOT NULL {limit_clause}
+                WHERE {quoted_geom} IS NOT NULL {limit_clause}
             """
             count_result = con.execute(count_query).fetchone()
             total = count_result[0] if count_result else 0
@@ -790,11 +792,11 @@ def _check_encoding_matches_data(
         # Try to parse geometries - if WKB is valid, ST_GeomFromWKB succeeds
         query = f"""
             SELECT COUNT(*) as total,
-                   COUNT(CASE WHEN ST_GeomFromWKB({geom_col}) IS NOT NULL THEN 1 END) as valid
+                   COUNT(CASE WHEN ST_GeomFromWKB({quoted_geom}) IS NOT NULL THEN 1 END) as valid
             FROM (
-                SELECT {geom_col}
+                SELECT {quoted_geom}
                 FROM read_parquet('{safe_url}')
-                WHERE {geom_col} IS NOT NULL
+                WHERE {quoted_geom} IS NOT NULL
                 {limit_clause}
             )
         """
@@ -866,15 +868,15 @@ def _check_geometry_types_match_data(
 
     try:
         # Check if DuckDB already has it as a GEOMETRY type
-        type_query = f"DESCRIBE SELECT \"{geom_col}\" FROM read_parquet('{safe_url}')"
+        type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
         type_result = con.execute(type_query).fetchone()
         col_type = type_result[1] if type_result else ""
 
         # Build the geometry expression based on column type
         if "GEOMETRY" in col_type.upper():
-            geom_expr = f'"{geom_col}"'
+            geom_expr = quote_identifier(geom_col)
         else:
-            geom_expr = f'ST_GeomFromWKB("{geom_col}")'
+            geom_expr = f"ST_GeomFromWKB({quote_identifier(geom_col)})"
 
         # Get both distinct types and total count in one query. The dimension
         # suffix matters: "LineString" and "LineString ZM" are distinct
@@ -883,9 +885,9 @@ def _check_geometry_types_match_data(
         query = f"""
             SELECT {typed_expr} as geom_type, COUNT(*) as cnt
             FROM (
-                SELECT "{geom_col}"
+                SELECT {quote_identifier(geom_col)}
                 FROM read_parquet('{safe_url}')
-                WHERE "{geom_col}" IS NOT NULL
+                WHERE {quote_identifier(geom_col)} IS NOT NULL
                 {limit_clause}
             )
             GROUP BY {typed_expr}
@@ -979,10 +981,11 @@ def _build_bbox_query(
     xmin, ymin, xmax, ymax = bbox
 
     # Use geometry column directly if native type, otherwise convert from WKB
+    quoted_geom = quote_identifier(geom_col)
     if "GEOMETRY" in col_type.upper():
-        geom_expr = geom_col
+        geom_expr = quoted_geom
     else:
-        geom_expr = f"ST_GeomFromWKB({geom_col})"
+        geom_expr = f"ST_GeomFromWKB({quoted_geom})"
     # Empties have no extent; the same expression filters them out pre-LIMIT.
     geom_expr_filter = geom_expr
 
@@ -995,9 +998,9 @@ def _build_bbox_query(
                    ST_YMax({geom_expr}) <= {ymax}
                THEN 1 END) as within_bbox
         FROM (
-            SELECT {geom_col}
+            SELECT {quoted_geom}
             FROM read_parquet('{safe_url}')
-            WHERE {geom_col} IS NOT NULL
+            WHERE {quoted_geom} IS NOT NULL
               AND NOT ST_IsEmpty({geom_expr_filter})
             {limit_clause}
         )
@@ -1066,7 +1069,7 @@ def _check_bbox_contains_data(
 
     try:
         # Check if DuckDB already has it as a GEOMETRY type
-        type_query = f"DESCRIBE SELECT {geom_col} FROM read_parquet('{safe_url}')"
+        type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
         type_result = con.execute(type_query).fetchone()
         col_type = type_result[1] if type_result else ""
 
@@ -1581,14 +1584,14 @@ def _check_geography_coordinate_bounds(
 
 def _execute_bounds_query(con, safe_url: str, geom_col: str, limit_clause: str):
     """Execute query to get coordinate bounds for a geometry column."""
-    type_query = f"DESCRIBE SELECT \"{geom_col}\" FROM read_parquet('{safe_url}')"
+    type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
     type_result = con.execute(type_query).fetchone()
     col_type = type_result[1] if type_result else ""
 
     if "GEOMETRY" in col_type.upper():
-        geom_expr = f'"{geom_col}"'
+        geom_expr = quote_identifier(geom_col)
     else:
-        geom_expr = f'ST_GeomFromWKB("{geom_col}")'
+        geom_expr = f"ST_GeomFromWKB({quote_identifier(geom_col)})"
 
     query = f"""
         SELECT
@@ -1597,9 +1600,9 @@ def _execute_bounds_query(con, safe_url: str, geom_col: str, limit_clause: str):
             MIN(ST_YMin({geom_expr})) as min_y,
             MAX(ST_YMax({geom_expr})) as max_y
         FROM (
-            SELECT "{geom_col}"
+            SELECT {quote_identifier(geom_col)}
             FROM read_parquet('{safe_url}')
-            WHERE "{geom_col}" IS NOT NULL
+            WHERE {quote_identifier(geom_col)} IS NOT NULL
             {limit_clause}
         )
     """
@@ -1719,10 +1722,11 @@ def _check_native_geo_statistics(parquet_file: str, geom_col: str) -> Validation
 
         with get_duckdb_connection(load_spatial=True) as con:
             # Check for geo_bbox in parquet_metadata for the geometry column
+            escaped_geom_col = _escape_sql_string(geom_col)
             result = con.execute(f"""
                 SELECT geo_bbox, geo_types
                 FROM parquet_metadata('{safe_url}')
-                WHERE path_in_schema = '{geom_col}'
+                WHERE path_in_schema = '{escaped_geom_col}'
                 LIMIT 1
             """).fetchone()
 
@@ -1797,10 +1801,11 @@ def _check_native_geo_stats_contains_data(
         safe_url = safe_file_url(parquet_file, verbose=False)
 
         # Get geo_bbox from parquet metadata
+        escaped_geom_col = _escape_sql_string(geom_col)
         meta_result = con.execute(f"""
             SELECT geo_bbox
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geom_col}'
+            WHERE path_in_schema = '{escaped_geom_col}'
             LIMIT 1
         """).fetchone()
 
@@ -1843,16 +1848,16 @@ def _check_native_geo_stats_contains_data(
         query = f"""
             SELECT COUNT(*) as total,
                    COUNT(CASE WHEN
-                       ST_XMin("{geom_col}") >= {xmin} AND
-                       ST_YMin("{geom_col}") >= {ymin} AND
-                       ST_XMax("{geom_col}") <= {xmax} AND
-                       ST_YMax("{geom_col}") <= {ymax}
+                       ST_XMin({quote_identifier(geom_col)}) >= {xmin} AND
+                       ST_YMin({quote_identifier(geom_col)}) >= {ymin} AND
+                       ST_XMax({quote_identifier(geom_col)}) <= {xmax} AND
+                       ST_YMax({quote_identifier(geom_col)}) <= {ymax}
                    THEN 1 END) as within_bbox
             FROM (
-                SELECT "{geom_col}"
+                SELECT {quote_identifier(geom_col)}
                 FROM read_parquet('{safe_url}')
-                WHERE "{geom_col}" IS NOT NULL
-                  AND NOT ST_IsEmpty("{geom_col}")
+                WHERE {quote_identifier(geom_col)} IS NOT NULL
+                  AND NOT ST_IsEmpty({quote_identifier(geom_col)})
                 {limit_clause}
             )
         """
@@ -1909,10 +1914,11 @@ def _check_native_geo_types_match(
         safe_url = safe_file_url(parquet_file, verbose=False)
 
         # Get declared geo_types from parquet metadata
+        escaped_geom_col = _escape_sql_string(geom_col)
         meta_result = con.execute(f"""
             SELECT DISTINCT unnest(geo_types) as geo_type
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geom_col}'
+            WHERE path_in_schema = '{escaped_geom_col}'
               AND geo_types IS NOT NULL
         """).fetchall()
 
@@ -1930,23 +1936,23 @@ def _check_native_geo_types_match(
         # Sample actual geometry types from the data. DuckDB's geo_types
         # naming is dimension-aware ("linestring_m"), so append the matching
         # suffix from ST_HasZ/ST_HasM instead of comparing base names only.
-        quoted_col = f'"{geom_col}"'
+        quoted_col = quote_identifier(geom_col)
         typed_expr = f"ST_GeometryType({quoted_col}) || {zm_suffix_sql(quoted_col, sep='_')}"
         if sample_size == 0:
             # Check all rows
             actual_result = con.execute(f"""
                 SELECT DISTINCT {typed_expr} as geom_type
                 FROM read_parquet('{safe_url}')
-                WHERE "{geom_col}" IS NOT NULL
+                WHERE {quote_identifier(geom_col)} IS NOT NULL
             """).fetchall()
         else:
             # Sample rows
             actual_result = con.execute(f"""
                 SELECT DISTINCT {typed_expr} as geom_type
                 FROM (
-                    SELECT "{geom_col}"
+                    SELECT {quote_identifier(geom_col)}
                     FROM read_parquet('{safe_url}')
-                    WHERE "{geom_col}" IS NOT NULL
+                    WHERE {quote_identifier(geom_col)} IS NOT NULL
                     LIMIT {sample_size}
                 )
             """).fetchall()
@@ -2547,12 +2553,14 @@ def _get_geometry_bounds(
 ) -> tuple[float, float, float, float, int] | None:
     """Query actual coordinate bounds from geometry data."""
     # Check if DuckDB already has it as a GEOMETRY type
-    type_query = f"DESCRIBE SELECT \"{geom_col}\" FROM read_parquet('{safe_url}')"
+    type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
     type_result = con.execute(type_query).fetchone()
     col_type = type_result[1] if type_result else ""
 
     geom_expr = (
-        f'"{geom_col}"' if "GEOMETRY" in col_type.upper() else f'ST_GeomFromWKB("{geom_col}")'
+        quote_identifier(geom_col)
+        if "GEOMETRY" in col_type.upper()
+        else f"ST_GeomFromWKB({quote_identifier(geom_col)})"
     )
 
     query = f"""
@@ -2563,9 +2571,9 @@ def _get_geometry_bounds(
             MAX(ST_YMax({geom_expr})) as max_y,
             COUNT(*) as total
         FROM (
-            SELECT "{geom_col}"
+            SELECT {quote_identifier(geom_col)}
             FROM read_parquet('{safe_url}')
-            WHERE "{geom_col}" IS NOT NULL
+            WHERE {quote_identifier(geom_col)} IS NOT NULL
             {limit_clause}
         )
     """
@@ -2786,13 +2794,10 @@ def validate_geoparquet(
         get_schema_info,
     )
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.logging_config import configure_verbose
     from geoparquet_io.core.remote import needs_httpfs
 
     configure_verbose(verbose)
-
-    safe_url = safe_file_url(parquet_file, verbose=verbose)
 
     def _metadata_failure_message(exc: Exception) -> str:
         """Honest failure text: an unreadable file is not evidence of corruption."""
@@ -2844,10 +2849,10 @@ def validate_geoparquet(
     # yield a FAILED report, never an exception — rejecting such files is this
     # function's job.
     try:
-        kv_metadata = get_kv_metadata(safe_url)
-        geo_meta = get_geo_metadata(safe_url)
-        schema_info = get_schema_info(safe_url)
-        geo_columns = detect_geometry_columns(safe_url)
+        kv_metadata = get_kv_metadata(parquet_file)
+        geo_meta = get_geo_metadata(parquet_file)
+        schema_info = get_schema_info(parquet_file)
+        geo_columns = detect_geometry_columns(parquet_file)
     except (GeoParquetError, UnicodeDecodeError, ValueError) as e:
         result.checks.append(
             ValidationCheck(

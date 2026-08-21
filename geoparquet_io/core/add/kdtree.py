@@ -8,7 +8,7 @@ import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -78,8 +78,8 @@ def _build_sampling_query(
         WITH RECURSIVE kdtree_sample(iteration, x, y, partition_id, split_value) AS (
             SELECT
                 0 AS iteration,
-                ST_X(ST_Centroid({geom_col})) AS x,
-                ST_Y(ST_Centroid({geom_col})) AS y,
+                ST_X(ST_Centroid({quote_identifier(geom_col)})) AS x,
+                ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS y,
                 '0' AS partition_id,
                 NULL::DOUBLE AS split_value
             FROM '{input_url}' USING SAMPLE {sample_size} ROWS
@@ -142,8 +142,8 @@ def _build_sampling_query(
     cte_parts.append(f"""
         data_with_coords AS (
             SELECT *,
-                ST_X(ST_Centroid({geom_col})) AS _kdtree_x,
-                ST_Y(ST_Centroid({geom_col})) AS _kdtree_y,
+                ST_X(ST_Centroid({quote_identifier(geom_col)})) AS _kdtree_x,
+                ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS _kdtree_y,
                 '0' AS _kdtree_partition
             FROM '{input_url}'
         )
@@ -436,8 +436,8 @@ def add_kdtree_column(
             WITH RECURSIVE kdtree(iteration, x, y, partition_id, row_id) AS (
                 SELECT
                     0 AS iteration,
-                    ST_X(ST_Centroid({geom_col})) AS x,
-                    ST_Y(ST_Centroid({geom_col})) AS y,
+                    ST_X(ST_Centroid({quote_identifier(geom_col)})) AS x,
+                    ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS y,
                     '0' AS partition_id,
                     ROW_NUMBER() OVER () AS row_id
                 FROM '{input_url}'

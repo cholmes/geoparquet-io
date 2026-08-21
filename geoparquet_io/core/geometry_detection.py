@@ -36,7 +36,7 @@ def detect_parquet_geometry_column(parquet_file: str, verbose: bool = False) -> 
     safe_url = safe_file_url(parquet_file, verbose=False)
 
     # 1. Check GeoParquet metadata first
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(parquet_file)
     if geo_meta and isinstance(geo_meta, dict):
         primary = geo_meta.get("primary_column")
         if primary:
@@ -121,10 +121,8 @@ def find_primary_geometry_column(parquet_file: str, verbose: bool = False) -> st
         str: Name of the primary geometry column (defaults to 'geometry')
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-    from geoparquet_io.core.file_utils import safe_file_url
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(parquet_file)
 
     if verbose and geo_meta:
         debug(f"Geo metadata: {_summarize_geo_metadata(geo_meta)}")

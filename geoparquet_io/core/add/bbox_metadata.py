@@ -195,8 +195,8 @@ def add_bbox_metadata(
         debug(json.dumps(geo_meta, indent=2))
 
     # Get original file properties
-    row_group_stats = get_row_group_stats(safe_url)
-    compression_info = get_compression_info(safe_url, primary_col)
+    row_group_stats = get_row_group_stats(parquet_file)
+    compression_info = get_compression_info(parquet_file, primary_col)
     row_group_size = int(row_group_stats["avg_rows_per_group"])
     compression = compression_info[primary_col]
 

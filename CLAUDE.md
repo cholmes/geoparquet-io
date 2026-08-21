@@ -125,6 +125,15 @@ from pathlib import Path  # Prefer over os.path
 | `.fetch_arrow_table()` | `.arrow().read_all()` |
 | `.to_arrow_table()` | `.arrow().read_all()` |
 | `TRY_CAST(x AS GEOMETRY)` | `TRY(ST_GeomFromText(x))` |
+| `f'"{col}"'` / `col.replace('"', '""')` | `quote_identifier(col)` |
+| `WHERE path = '{value}'` | `_escape_sql_string(value)` |
+
+Never hand-roll SQL escaping. `quote_identifier()` is for **identifiers**
+(column/table names — doubles embedded `"`); `_escape_sql_string()` is for SQL
+**string literals** (doubles embedded `'`). Both live in `core/duckdb_utils.py`
+and take a RAW value — escaping is not idempotent, so escape exactly once.
+Column names arrive from a file's own `geo.primary_column` and from
+`--column`/`--bbox-name`, so this is an injection surface, not a style nit.
 
 Additional patterns (not yet enforced):
 - `ST_Transform(..., always_xy := true)` → `SET geometry_always_xy = true` at session level

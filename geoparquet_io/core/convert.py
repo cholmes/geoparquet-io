@@ -198,8 +198,7 @@ def detect_all_geometry_columns(input_file: str, verbose: bool = False) -> dict:
             con.close()
         return result
 
-    safe_url = safe_file_url(input_file, verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(input_file)
 
     if not geo_meta:
         # No GeoParquet metadata - detect single column from schema
@@ -526,6 +525,8 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
     if verbose:
         debug(f"Validating lat/lon ranges for columns: {lat_col}, {lon_col}")
 
+    lat_col = quote_identifier(lat_col)
+    lon_col = quote_identifier(lon_col)
     query = f"""
         SELECT
             MIN(CAST({lat_col} AS DOUBLE)) as min_lat,
@@ -564,8 +565,9 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
 
 def _check_null_wkt_rows(con, csv_read, wkt_col):
     """Check and warn about NULL WKT values."""
+    quoted_wkt = quote_identifier(wkt_col)
     null_count = con.execute(
-        f"SELECT COUNT(*) FILTER ({wkt_col} IS NULL) FROM {csv_read}"
+        f"SELECT COUNT(*) FILTER ({quoted_wkt} IS NULL) FROM {csv_read}"
     ).fetchone()[0]
 
     if null_count > 0:
@@ -587,11 +589,12 @@ def _check_invalid_wkt_rows(con, csv_read, wkt_col):
         csv_read: SQL expression for reading the CSV (e.g., "read_csv('file.csv')").
         wkt_col: Name of the WKT column to validate.
     """
+    quoted_wkt = quote_identifier(wkt_col)
     try:
         # Use TRY() to catch WKT parse errors — returns NULL for invalid WKT
         invalid_count = con.execute(
             f"SELECT COUNT(*) FROM {csv_read} "
-            f"WHERE {wkt_col} IS NOT NULL AND TRY(ST_GeomFromText({wkt_col})) IS NULL"
+            f"WHERE {quoted_wkt} IS NOT NULL AND TRY(ST_GeomFromText({quoted_wkt})) IS NULL"
         ).fetchone()[0]
 
         if invalid_count > 0:
@@ -618,10 +621,12 @@ def _validate_wkt_strict(con, csv_read, wkt_col):
     Raises:
         GeometryError: If WKT parsing fails, with suggestion to use --skip-invalid.
     """
+    quoted_wkt = quote_identifier(wkt_col)
     try:
         # Use ::VARCHAR cast to avoid DuckDB 1.5+ GEOMETRY serialization error
         con.execute(
-            f"SELECT ST_GeomFromText({wkt_col})::VARCHAR FROM {csv_read} WHERE {wkt_col} IS NOT NULL LIMIT 1"
+            f"SELECT ST_GeomFromText({quoted_wkt})::VARCHAR FROM {csv_read} "
+            f"WHERE {quoted_wkt} IS NOT NULL LIMIT 1"
         ).fetchone()
     except Exception as e:
         raise GeometryError(
@@ -632,11 +637,12 @@ def _validate_wkt_strict(con, csv_read, wkt_col):
 
 def _warn_if_projected_crs(con, csv_read, wkt_col):
     """Warn if coordinates suggest projected CRS instead of WGS84."""
+    quoted_wkt = quote_identifier(wkt_col)
     try:
         result = con.execute(
-            f"SELECT MAX(ABS(ST_XMax(ST_GeomFromText({wkt_col})))) as max_x, "
-            f"MAX(ABS(ST_YMax(ST_GeomFromText({wkt_col})))) as max_y "
-            f"FROM {csv_read} WHERE {wkt_col} IS NOT NULL LIMIT 1000"
+            f"SELECT MAX(ABS(ST_XMax(ST_GeomFromText({quoted_wkt})))) as max_x, "
+            f"MAX(ABS(ST_YMax(ST_GeomFromText({quoted_wkt})))) as max_y "
+            f"FROM {csv_read} WHERE {quoted_wkt} IS NOT NULL LIMIT 1000"
         ).fetchone()
 
         if result and result[0] is not None:
@@ -692,7 +698,7 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
 
     # Build geometry expression and exclusion list
     if geom_info["type"] == "wkt":
-        wkt_col = geom_info["wkt_column"]
+        wkt_col = quote_identifier(geom_info["wkt_column"])
         geom_expr = f"ST_GeomFromText({wkt_col})"
         exclude_cols = wkt_col
 
@@ -724,8 +730,8 @@ def _build_csv_conversion_query(geom_info, skip_hilbert, bounds, skip_invalid, s
             where_clause = ""
 
     elif geom_info["type"] == "latlon":
-        lat_col = geom_info["lat_column"]
-        lon_col = geom_info["lon_column"]
+        lat_col = quote_identifier(geom_info["lat_column"])
+        lon_col = quote_identifier(geom_info["lon_column"])
         # Note: ST_Point expects (lon, lat) order
         geom_expr = f"ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))"
         exclude_cols = f"{lat_col}, {lon_col}"
@@ -771,7 +777,7 @@ def _get_geom_expr_and_where(geom_info, skip_invalid):
     those rows — see :func:`_build_csv_conversion_query` and issue #655.
     """
     if geom_info["type"] == "wkt":
-        wkt_col = geom_info["wkt_column"]
+        wkt_col = quote_identifier(geom_info["wkt_column"])
         if skip_invalid:
             # Use TRY() to silently skip invalid WKT
             geom_expr = f"TRY(ST_GeomFromText({wkt_col}))"
@@ -782,8 +788,8 @@ def _get_geom_expr_and_where(geom_info, skip_invalid):
         return geom_expr, where_clause
 
     # latlon
-    lat_col = geom_info["lat_column"]
-    lon_col = geom_info["lon_column"]
+    lat_col = quote_identifier(geom_info["lat_column"])
+    lon_col = quote_identifier(geom_info["lon_column"])
     geom_expr = f"ST_Point(CAST({lon_col} AS DOUBLE), CAST({lat_col} AS DOUBLE))"
     where_clause = f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL"
     return geom_expr, where_clause

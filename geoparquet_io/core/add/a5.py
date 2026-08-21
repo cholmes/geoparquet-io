@@ -14,6 +14,7 @@ from geoparquet_io.core.crs_utils import (
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
+    quote_identifier,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
@@ -81,8 +82,10 @@ def add_a5_table(
         if geom_is_blob and geom_col in table.column_names:
             # Create view with geometry conversion
             # Quote all column names for safety with special characters
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [
+                f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+            ]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -92,7 +95,7 @@ def add_a5_table(
             source_ref = "__input_table"
 
         # Build A5 column query (reproject to lon/lat when source is non-CRS84)
-        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+        geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
         a5_expr = f"""a5_lonlat_to_cell(
             ST_X(ST_Centroid({geom_ref})),
             ST_Y(ST_Centroid({geom_ref})),
@@ -100,21 +103,21 @@ def add_a5_table(
         )"""
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build SELECT with geometry converted back to WKB
         if select_cols:
             query = f"""
                 SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {a5_expr} AS "{a5_column_name}"
+                       ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       {a5_expr} AS {quote_identifier(a5_column_name)}
                 FROM {source_ref}
             """
         else:
             query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {a5_expr} AS "{a5_column_name}"
+                SELECT ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       {a5_expr} AS {quote_identifier(a5_column_name)}
                 FROM {source_ref}
             """
         result = con.execute(query).arrow().read_all()
@@ -140,13 +143,13 @@ def _make_add_a5_query(
     ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
     (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
     """
-    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
+    geom_ref = transform_geom_sql(quote_identifier(geometry_column), source_crs)
     a5_expr = f"""a5_lonlat_to_cell(
         ST_X(ST_Centroid({geom_ref})),
         ST_Y(ST_Centroid({geom_ref})),
         {resolution}
     )"""
-    return f'SELECT *, {a5_expr} AS "{a5_column_name}" FROM {source}'
+    return f"SELECT *, {a5_expr} AS {quote_identifier(a5_column_name)} FROM {source}"
 
 
 def add_a5_column(
@@ -232,7 +235,9 @@ def add_a5_column(
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # A5 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
-    geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs_string(input_parquet, verbose))
+    geom_ref = transform_geom_sql(
+        quote_identifier(geom_col), source_crs_string(input_parquet, verbose)
+    )
 
     # Define the A5 SQL expression
     sql_expression = f"""a5_lonlat_to_cell(

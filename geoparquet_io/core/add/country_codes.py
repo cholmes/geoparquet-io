@@ -144,9 +144,9 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
     """Build the SELECT clause for country and subdivision codes."""
     # Country code selection
     if country_code_col == "admin:country_code":
-        country_select = f'b."{country_code_col}"'
+        country_select = f"b.{quote_identifier(country_code_col)}"
     else:
-        country_select = f'b."{country_code_col}" as "admin:country_code"'
+        country_select = f'b.{quote_identifier(country_code_col)} as "admin:country_code"'
 
     # Subdivision code selection
     if not subdivision_code_col:
@@ -158,9 +158,11 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
             'ELSE b.region END as "admin:subdivision_code"'
         )
     elif subdivision_code_col == "admin:subdivision_code":
-        subdivision_select = f', b."{subdivision_code_col}"'
+        subdivision_select = f", b.{quote_identifier(subdivision_code_col)}"
     else:
-        subdivision_select = f', b."{subdivision_code_col}" as "admin:subdivision_code"'
+        subdivision_select = (
+            f', b.{quote_identifier(subdivision_code_col)} as "admin:subdivision_code"'
+        )
 
     return country_select + subdivision_select
 

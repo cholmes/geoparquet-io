@@ -164,17 +164,15 @@ def detect_geoparquet_file_type(parquet_file, verbose=False, con=None):
         "bbox_recommended": True,  # Default for v1.x
     }
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Check for geo metadata (uses PyArrow for local files, DuckDB for remote)
-    geo_meta = get_geo_metadata(safe_url, con=con)
+    geo_meta = get_geo_metadata(parquet_file, con=con)
     if geo_meta:
         result["has_geo_metadata"] = True
         if isinstance(geo_meta, dict) and "version" in geo_meta:
             result["geo_version"] = geo_meta["version"]
 
     # Check for native Parquet geo types using schema
-    geo_columns = detect_geometry_columns(safe_url, con=con)
+    geo_columns = detect_geometry_columns(parquet_file, con=con)
     if geo_columns:
         result["has_native_geo_types"] = True
 
@@ -236,10 +234,8 @@ def get_parquet_metadata(parquet_file, verbose=False):
         if first_file:
             file_to_check = first_file
 
-    safe_url = safe_file_url(file_to_check, verbose=False)
-
     # Get key-value metadata (returns dict like {b'geo': b'...'})
-    kv_metadata = get_kv_metadata(safe_url)
+    kv_metadata = get_kv_metadata(file_to_check)
 
     # Get PyArrow schema for backward compatibility
     # (some code uses schema.field(i).name patterns)
@@ -247,7 +243,7 @@ def get_parquet_metadata(parquet_file, verbose=False):
         # For remote files, use a DuckDB-based approach to read schema
         from geoparquet_io.core.duckdb_metadata import get_schema_info
 
-        schema_info = get_schema_info(safe_url)
+        schema_info = get_schema_info(file_to_check)
         # Create a simple object that mimics PyArrow schema for basic usage
         schema = _DuckDBSchemaWrapper(schema_info)
     else:
@@ -284,14 +280,12 @@ def calculate_file_bounds(file_path, geom_column=None, verbose=False):
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(file_path))
 
     try:
-        # Quote column name to handle special characters, uppercase, etc.
-        quoted_geom = geom_column.replace('"', '""')
         bounds_query = f"""
             SELECT
-                MIN(ST_XMin("{quoted_geom}")) as xmin,
-                MIN(ST_YMin("{quoted_geom}")) as ymin,
-                MAX(ST_XMax("{quoted_geom}")) as xmax,
-                MAX(ST_YMax("{quoted_geom}")) as ymax
+                MIN(ST_XMin({quote_identifier(geom_column)})) as xmin,
+                MIN(ST_YMin({quote_identifier(geom_column)})) as ymin,
+                MAX(ST_XMax({quote_identifier(geom_column)})) as xmax,
+                MAX(ST_YMax({quote_identifier(geom_column)})) as ymax
             FROM read_parquet('{safe_url}')
         """
         result = con.execute(bounds_query).fetchone()
@@ -520,9 +514,7 @@ def compute_geometry_types_via_sql(
     if "STRUCT" in col_type:
         return []
 
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    quoted_col = f'"{escaped_col}"'
+    quoted_col = quote_identifier(geometry_column)
     typed_expr = f"ST_GeometryType({quoted_col}) || {zm_suffix_sql(quoted_col)}"
     types_query = f"""
         SELECT DISTINCT {typed_expr} as geom_type
@@ -572,15 +564,15 @@ def compute_geometry_dimensions_via_sql(
     if "STRUCT" in col_type:
         return set()
 
-    escaped_col = geometry_column.replace('"', '""')
-    geom_expr = f'"{escaped_col}"'
+    quoted_col = quote_identifier(geometry_column)
+    geom_expr = quoted_col
     if "BLOB" in col_type or "BINARY" in col_type:
         geom_expr = f"ST_GeomFromWKB({geom_expr})"
 
     dims_query = f"""
         SELECT DISTINCT ST_ZMFlag({geom_expr}) AS zm
         FROM ({query})
-        WHERE "{escaped_col}" IS NOT NULL
+        WHERE {quoted_col} IS NOT NULL
     """
     try:
         results = con.execute(dims_query).fetchall()
@@ -2874,10 +2866,8 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata, get_schema_info
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Get schema info using DuckDB
-    schema_info = get_schema_info(safe_url)
+    schema_info = get_schema_info(parquet_file)
 
     if verbose:
         debug("\nSchema fields:")
@@ -2889,7 +2879,7 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
 
     # Find the bbox column: the authoritative covering metadata first (spec-valid
     # files may use non-conventional names), then the naming-convention fallback.
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(parquet_file)
     bbox_column_name = None
     covering_column = _bbox_column_from_covering(geo_meta)
     if covering_column:
@@ -3201,7 +3191,7 @@ def add_computed_column(
 
         # Only check for column collision if not replacing
         if not replace_column:
-            column_names = get_column_names(input_url)
+            column_names = get_column_names(input_parquet)
             if column_name in column_names:
                 raise InvalidParameterError(
                     "column_name",
@@ -3237,7 +3227,7 @@ def add_computed_column(
 
     # Build the query
     # Quote column name to handle special characters (e.g., colons in "metrics:area")
-    quoted_col = f'"{column_name}"'
+    quoted_col = quote_identifier(column_name)
 
     # Use EXCLUDE to drop existing column when replacing
     if replace_column:
@@ -3321,8 +3311,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
     from geoparquet_io.core.duckdb_metadata import get_column_names
 
     # Check if column already exists using DuckDB
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    column_names = get_column_names(safe_url)
+    column_names = get_column_names(parquet_file)
 
     if bbox_column_name in column_names:
         raise InvalidParameterError(
@@ -3338,11 +3327,12 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         debug(f"Adding bbox column for geometry column: {geom_col}")
 
     # Define SQL expression
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Create temporary file path

@@ -97,12 +97,38 @@ def quote_identifier(name: str) -> str:
     This handles column/table names with spaces, special characters, reserved words,
     or uppercase letters that need to be preserved.
 
+    The input must be a **bare** identifier, exactly as it appears in the file's
+    schema (e.g. from ``find_primary_geometry_column`` or ``table.column_names``).
+    The function is deliberately not idempotent: quoting an already-quoted name
+    yields an identifier that literally contains double quotes, so never pass it
+    something already quoted.
+
+    For a SQL *string literal* (e.g. ``WHERE path_in_schema = '...'``) use
+    :func:`_escape_sql_string` instead; the two escapes are not interchangeable.
+
     Args:
         name: The identifier (column name, table name, etc.) to quote
 
     Returns:
         A safely quoted identifier string
+
+    Raises:
+        ValueError: If the name is empty or contains a NUL byte. Both are legal
+            Parquet field names but have no quoted SQL spelling: ``""`` is a
+            zero-length delimited identifier and a NUL truncates the identifier
+            inside DuckDB's parser, so emitting either produces unparsable SQL
+            rather than an actionable error.
     """
+    if not name:
+        raise ValueError(
+            "cannot quote an empty SQL identifier: DuckDB rejects the "
+            'zero-length delimited identifier ""'
+        )
+    if "\x00" in name:
+        raise ValueError(
+            "cannot quote a SQL identifier containing a NUL byte: DuckDB's "
+            "parser truncates the identifier there"
+        )
     escaped = name.replace('"', '""')
     return f'"{escaped}"'
 
@@ -713,13 +739,10 @@ def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None)
         except Exception:
             pass
 
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
     # Cast to BLOB to produce plain binary without geoarrow extension type
     # Use SELECT * REPLACE to preserve column order
     return f"""
         WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}")::BLOB AS "{quoted_geom}")
+        SELECT * REPLACE (ST_AsWKB({quote_identifier(geometry_column)})::BLOB AS {quote_identifier(geometry_column)})
         FROM __arrow_source
     """
