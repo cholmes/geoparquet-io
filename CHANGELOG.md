@@ -122,6 +122,27 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   layers`, `skills`) are recorded there, and the test fails both on a new
   twin-less command and on an entry that has since grown an API.
 
+- **Write-contract characterization suite (#664)**: `tests/test_write_contract.py`
+  pins what gpio's write paths actually put on disk, using
+  `core/validate.py::validate_geoparquet` as the oracle. Three decoupled
+  matrices — the four public write entry points x four requested versions, the
+  four write strategies x six input shapes (zero-row, null geometries, ZM,
+  a geometry column named `geom`, multi-row-group), and kv-metadata passthrough
+  — plus four normalized geo-metadata snapshots under `tests/data/snapshots/`
+  as canaries for silent field drift (refresh with `GPIO_UPDATE_SNAPSHOT=1`).
+  Building it surfaced five cross-path disagreements, recorded as `xfail`
+  entries with reasons rather than pinned as correct: `gpio convert
+  geoparquet --geoparquet-version 1.0` writes the 1.1-only `covering` key into
+  a 1.0 file; `write_geoparquet_table` ignores `parquet-geo-only`; the
+  arrow-streaming strategy's on-disk geometry type changes depending on
+  whether anything in the process imported `geoarrow.pyarrow`; `disk-rewrite`
+  silently ignores `row_group_rows`/`row_group_size_mb`; and `api.Table.write`
+  and `gpio convert geoparquet` drop input non-geo kv metadata that the two
+  core writers preserve. It also records that `1.1-geoarrow` output — now
+  produced identically by all four strategies, since the writer auto-routes —
+  is rejected by gpio's own validator, which does not accept GeoArrow
+  encodings that GeoParquet 1.1 permits.
+
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
   tippecanoe, pinned to the zoom band where its worst tile fits the
