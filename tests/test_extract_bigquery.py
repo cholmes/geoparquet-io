@@ -504,12 +504,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_loads_extensions_in_order(self, mock_get_con):
         """Test that spatial is loaded before bigquery, and bigquery install uses try/except."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         # Verify get_duckdb_connection was called with spatial=True
         mock_get_con.assert_called_once_with(load_spatial=True, load_httpfs=False)
@@ -522,12 +522,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_no_deprecated_geography_setting(self, mock_get_con):
         """Test that deprecated bq_geography_as_geometry is NOT set (v1.5+)."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         calls = [call[0][0] for call in mock_con.execute.call_args_list]
         geom_setting_calls = [c for c in calls if "geography_as_geometry" in c.lower()]
@@ -538,12 +538,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_sets_arrow_compression(self, mock_get_con):
         """Test that bq_arrow_compression is set for efficient data transfer."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         calls = [call[0][0] for call in mock_con.execute.call_args_list]
         compression_calls = [c for c in calls if "bq_arrow_compression" in c.lower()]
@@ -552,7 +552,7 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_handles_install_race(self, mock_get_con):
         """Test that bigquery INSTALL failure (race condition) is handled gracefully."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
@@ -566,17 +566,48 @@ class TestBigQueryConnection:
         mock_con.execute.side_effect = execute_side_effect
 
         # Should not raise — INSTALL failure is caught internally
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
     @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
     def test_credentials_file_validation(self, mock_setup):
         """Test that non-existent credentials file raises error."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import BigQueryConnection
 
         mock_setup.return_value = MagicMock()
 
         with pytest.raises(FileNotFoundError, match="Credentials file not found"):
-            get_bigquery_connection(credentials_file="/nonexistent/path/credentials.json")
+            with BigQueryConnection(credentials_file="/nonexistent/path/credentials.json"):
+                pass
+
+    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
+    def test_credentials_env_var_is_restored(self, mock_setup, tmp_path, monkeypatch):
+        """The only credentials path must restore GOOGLE_APPLICATION_CREDENTIALS."""
+        import os
+
+        from geoparquet_io.core.extract_bigquery import BigQueryConnection
+
+        mock_setup.return_value = MagicMock()
+        creds = tmp_path / "sa.json"
+        creds.write_text("{}")
+
+        monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+        with BigQueryConnection(credentials_file=str(creds)):
+            assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(creds)
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
+
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/host/creds.json")
+        with BigQueryConnection(credentials_file=str(creds)):
+            assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(creds)
+        assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == "/host/creds.json"
+
+    def test_no_unrestored_credentials_helper(self):
+        """The env-mutating helper with no restore must not exist any more."""
+        import geoparquet_io.core.extract_bigquery as bq
+
+        assert not hasattr(bq, "get_bigquery_connection"), (
+            "get_bigquery_connection set GOOGLE_APPLICATION_CREDENTIALS without "
+            "restoring it; BigQueryConnection is the only supported entry point"
+        )
 
     @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
     def test_context_manager_no_deprecated_geography_setting(self, mock_setup):

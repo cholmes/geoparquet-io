@@ -1011,7 +1011,9 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
+        import pyarrow as pa
+
+        from geoparquet_io.core.remote import is_remote_url
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
 
@@ -1035,12 +1037,14 @@ class Table:
 
         # For remote destinations, write to temp file first
         if is_remote:
-            setup_aws_profile_if_needed(profile, path_str)
             temp_dir = PathLib(tempfile.gettempdir())
             local_path = temp_dir / f"gpio_write_{uuid.uuid4()}.parquet"
         else:
             local_path = PathLib(path)
 
+        # No AWS_PROFILE env mutation: profile= is handed straight to upload(),
+        # which resolves the credentials for it explicitly, so a library call
+        # never rewrites the host process environment.
         try:
             # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
             # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
@@ -1109,7 +1113,7 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import is_remote_url
         from geoparquet_io.core.upload import upload
 
         # Check if destination is remote
@@ -1193,8 +1197,8 @@ class Table:
 
             # Upload to remote if needed
             if is_remote:
-                setup_aws_profile_if_needed(profile, path_str)
-
+                # profile= is passed explicitly to upload() below, so there is no
+                # AWS_PROFILE env mutation to leak into the host process.
                 # Special handling for shapefiles: zip all sidecars into .shp.zip
                 if format == "shapefile":
                     from geoparquet_io.core.common import create_shapefile_zip
@@ -2022,10 +2026,7 @@ class Table:
         import uuid
         from pathlib import Path
 
-        from geoparquet_io.core.remote import setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload as do_upload
-
-        setup_aws_profile_if_needed(profile, destination)
 
         # Write to temp file with uuid to avoid Windows file locking issues
         temp_path = Path(tempfile.gettempdir()) / f"gpio_upload_{uuid.uuid4()}.parquet"

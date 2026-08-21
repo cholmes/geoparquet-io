@@ -472,31 +472,36 @@ class TestNoGeometryConversions:
         # Should have a friendly error message, not raw GDAL error
         assert "FlatGeobuf requires geometry" in str(exc_info.value)
 
-    def test_shapefile_no_geometry_warns(self, plain_parquet, tmp_path, capfd):
+    def test_shapefile_no_geometry_warns(self, plain_parquet, tmp_path, caplog):
         """Test Shapefile warns when no geometry column found."""
+        import logging
+
         output_file = tmp_path / "output.shp"
 
-        write_shapefile(
-            input_path=plain_parquet,
-            output_path=str(output_file),
-            verbose=False,
-        )
-        # Should warn about no geometry
-        captured = capfd.readouterr()
-        assert "no geometry" in captured.err.lower() or "no geometry" in captured.out.lower()
+        # Assert on the log record, not on stdout: which handler the package
+        # logger carries depends on whether the embedding application (here,
+        # pytest) has configured logging itself.
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            write_shapefile(
+                input_path=plain_parquet,
+                output_path=str(output_file),
+                verbose=False,
+            )
+        assert "no geometry" in caplog.text.lower()
 
-    def test_geopackage_no_geometry_warns(self, plain_parquet, tmp_path, capfd):
+    def test_geopackage_no_geometry_warns(self, plain_parquet, tmp_path, caplog):
         """Test GeoPackage warns when no geometry column found."""
+        import logging
+
         output_file = tmp_path / "output.gpkg"
 
-        write_geopackage(
-            input_path=plain_parquet,
-            output_path=str(output_file),
-            verbose=False,
-        )
-        # Should warn about no geometry
-        captured = capfd.readouterr()
-        assert "no geometry" in captured.err.lower() or "no geometry" in captured.out.lower()
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            write_geopackage(
+                input_path=plain_parquet,
+                output_path=str(output_file),
+                verbose=False,
+            )
+        assert "no geometry" in caplog.text.lower()
 
     def test_geojson_no_geometry_raises_error(self, plain_parquet, tmp_path):
         """Test GeoJSON export errors when no geometry is present."""
