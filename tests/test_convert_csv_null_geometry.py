@@ -202,3 +202,42 @@ class TestSentinelFreeSkipInvalid:
 
         assert result.exit_code == 0, result.output
         assert len(_rows(output)) == 2
+
+
+class TestPerAxisRangeValidation:
+    """One axis being entirely NULL must not silence the other's range check.
+
+    `MIN`/`MAX` ignore NULLs, so a column of nothing but empty values aggregates
+    to None while the *other* column may still hold measurable — and invalid —
+    coordinates. Guarding both axes together skipped a validation `main`
+    performed, so each is guarded on its own.
+    """
+
+    def test_bad_lat_still_caught_when_lon_is_all_null(self, tmp_path):
+        source = _write(tmp_path / "ll.csv", "id,lat,lon\n1,200,\n2,300,\n")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--lat-column", "lat", "--lon-column", "lon")
+
+        assert result.exit_code != 0
+        assert "latitude" in result.output
+
+    def test_bad_lon_still_caught_when_lat_is_all_null(self, tmp_path):
+        source = _write(tmp_path / "ll.csv", "id,lat,lon\n1,,500\n2,,600\n")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--lat-column", "lat", "--lon-column", "lon")
+
+        assert result.exit_code != 0
+        assert "longitude" in result.output
+
+    def test_verbose_survives_a_wholly_null_axis(self, tmp_path):
+        """The verbose range debug formats all four bounds with `:.6f`, which the
+        combined early return used to shield from None."""
+        source = _write(tmp_path / "ll.csv", "id,lat,lon\n1,10,\n2,20,\n")
+        output = tmp_path / "out.parquet"
+
+        result = _convert(source, output, "--lat-column", "lat", "--lon-column", "lon", "--verbose")
+
+        assert result.exit_code == 0, result.output
+        assert len(_rows(output)) == 2

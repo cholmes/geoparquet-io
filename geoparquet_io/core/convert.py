@@ -502,6 +502,25 @@ def _detect_csv_geometry_column(
     return None
 
 
+def _check_coord_range(axis, parameter, low, high, measured_min, measured_max):
+    """Raise if one axis's measured range falls outside its valid domain.
+
+    ``measured_min`` is None when every value in that column is NULL — MIN/MAX
+    ignore NULLs — leaving no range to check. Each axis is therefore checked
+    independently: a column of nothing but empty values must not silence the
+    *other* axis, which may still hold measurable, and invalid, coordinates
+    (issue #655).
+    """
+    if measured_min is None:
+        return
+    if measured_min < low or measured_max > high:
+        raise InvalidParameterError(
+            parameter,
+            f"invalid {axis} values (range: {measured_min:.6f} to {measured_max:.6f}). "
+            f"{axis.capitalize()} must be between {low} and {high}.",
+        )
+
+
 def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
     """Validate lat/lon columns have valid numeric ranges."""
     if verbose:
@@ -527,26 +546,10 @@ def _validate_latlon_ranges(con, csv_read, lat_col, lon_col, verbose):
                 "written with NULL geometry"
             )
 
-        # Every coordinate NULL: the aggregates are NULL, so there is no range
-        # to check — and comparing None would raise a bare TypeError (#655).
-        if min_lat is None or min_lon is None:
-            return
+        _check_coord_range("latitude", "lat_column", -90, 90, min_lat, max_lat)
+        _check_coord_range("longitude", "lon_column", -180, 180, min_lon, max_lon)
 
-        if min_lat < -90 or max_lat > 90:
-            raise InvalidParameterError(
-                "lat_column",
-                f"invalid latitude values (range: {min_lat:.6f} to {max_lat:.6f}). "
-                f"Latitude must be between -90 and 90.",
-            )
-
-        if min_lon < -180 or max_lon > 180:
-            raise InvalidParameterError(
-                "lon_column",
-                f"invalid longitude values (range: {min_lon:.6f} to {max_lon:.6f}). "
-                f"Longitude must be between -180 and 180.",
-            )
-
-        if verbose:
+        if verbose and min_lat is not None and min_lon is not None:
             debug(
                 f"Lat/lon ranges validated: lat=[{min_lat:.6f}, {max_lat:.6f}], "
                 f"lon=[{min_lon:.6f}, {max_lon:.6f}]"
