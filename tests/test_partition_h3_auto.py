@@ -6,6 +6,15 @@ import pytest
 
 from geoparquet_io.core.partition.by_h3 import partition_by_h3
 
+# DuckDB community extensions (a5 / geography / h3) are downloaded and
+# INSTALLed on first use. Concurrent INSTALLs from several xdist workers
+# race on the shared extension directory (duckdb#12589), which is why
+# Windows CI used to serialize whole files via --dist=loadfile. This mark
+# pins every community-extension test onto a single worker under
+# --dist=loadgroup, so exactly one process ever performs the INSTALL,
+# while the rest of the suite is free to load-balance per test.
+pytestmark = pytest.mark.xdist_group("duckdb-community-extensions")
+
 
 class TestH3AutoResolutionIntegration:
     """Test H3 auto-resolution with real files."""

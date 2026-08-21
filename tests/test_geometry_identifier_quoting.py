@@ -48,6 +48,15 @@ from geoparquet_io.core.duckdb_metadata import (
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.stream_io import _wrap_query_with_wkb_conversion
 
+# DuckDB community extensions (a5 / geography / h3) are downloaded and
+# INSTALLed on first use. Concurrent INSTALLs from several xdist workers
+# race on the shared extension directory (duckdb#12589), which is why
+# Windows CI used to serialize whole files via --dist=loadfile. This mark
+# pins every community-extension test onto a single worker under
+# --dist=loadgroup, so exactly one process ever performs the INSTALL,
+# while the rest of the suite is free to load-balance per test.
+pytestmark = pytest.mark.xdist_group("duckdb-community-extensions")
+
 # A geometry column name with a space -- breaks unquoted identifier
 # interpolation (`ST_XMin(geom col)` is a parse error).
 SPACED_COL = "geom col"

@@ -196,6 +196,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Changed
 
+- **Windows CI distributes tests per test instead of per file (#665).** The
+  Windows fast-test job used `--dist=loadfile` to avoid concurrent DuckDB
+  community-extension `INSTALL`s racing on the shared extension directory
+  (duckdb#12589). Instrumenting the suite showed the extension installs are
+  spread over 13 test files, so `loadfile` never actually serialized them —
+  `a5` and `h3` were each installed by three workers concurrently. Those 13
+  files now carry `xdist_group("duckdb-community-extensions")` and the job runs
+  `--dist=loadgroup`, which pins exactly that group to one worker while
+  scheduling the other ~3.6k tests individually rather than queueing them
+  behind 200-test files.
+
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
   within ±180/±90) under a projected CRS now reports a WARNING instead of

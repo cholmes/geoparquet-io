@@ -15,6 +15,15 @@ from click.testing import CliRunner
 from geoparquet_io.core.add.h3 import add_h3_column, add_h3_table
 from tests.conftest import safe_unlink
 
+# DuckDB community extensions (a5 / geography / h3) are downloaded and
+# INSTALLed on first use. Concurrent INSTALLs from several xdist workers
+# race on the shared extension directory (duckdb#12589), which is why
+# Windows CI used to serialize whole files via --dist=loadfile. This mark
+# pins every community-extension test onto a single worker under
+# --dist=loadgroup, so exactly one process ever performs the INSTALL,
+# while the rest of the suite is free to load-balance per test.
+pytestmark = pytest.mark.xdist_group("duckdb-community-extensions")
+
 
 class TestAddH3Table:
     """Tests for add_h3_table function."""

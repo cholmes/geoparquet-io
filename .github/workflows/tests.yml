@@ -157,8 +157,17 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
-            # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            # EXPERIMENT (#665 item 6): loadgroup replaces the blanket loadfile.
+            # loadfile pinned every file to one worker to dodge concurrent DuckDB
+            # community-extension INSTALLs (duckdb#12589) -- but those INSTALLs are
+            # spread over 13 files, so loadfile never actually serialized them.
+            # loadgroup schedules per test, except for tests carrying an
+            # xdist_group mark, which share a worker. The 13 extension-touching
+            # files carry xdist_group("duckdb-community-extensions"), so exactly
+            # one worker ever INSTALLs -- stricter than loadfile -- while the
+            # remaining ~3.6k tests load-balance instead of queueing behind
+            # 200-test files.
+            uv run pytest -n 4 --dist=loadgroup -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           elif [ "$RUNNER_OS" == "macOS" ]; then
             uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
           else
