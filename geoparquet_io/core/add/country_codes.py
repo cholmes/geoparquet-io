@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import duckdb
+from typing import TYPE_CHECKING
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
@@ -13,6 +13,7 @@ from geoparquet_io.core.duckdb_utils import (
     SPATIAL_JOIN_BBOX_PREFILTER,
     SPATIAL_JOIN_NATIVE,
     build_spatial_join_condition,
+    get_duckdb_connection,
     quote_identifier,
     spatial_join_strategy,
 )
@@ -21,6 +22,9 @@ from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
+
+if TYPE_CHECKING:
+    import duckdb
 
 
 def find_country_code_column(con, countries_source, is_subquery=False):
@@ -324,8 +328,17 @@ def _determine_code_columns(
     if verbose:
         debug(f"Using country code column: {country_code_col}")
 
+    # `_setup_countries_source` returns the URL ALREADY wrapped in quotes, while
+    # both finders quote it themselves when is_subquery is False -- passing
+    # countries_source straight through produced `FROM ''/path''` and a parser
+    # error for every non-default --countries file. Hand over the same raw URL
+    # the country-code finder above gets, and only use the table name when the
+    # source really is the filtered temp table.
+    is_filtered_table = countries_source == countries_table
     subdivision_code_col = find_subdivision_code_column(
-        con, countries_source, is_subquery=(countries_source == countries_table)
+        con,
+        countries_table if is_filtered_table else countries_url,
+        is_subquery=is_filtered_table,
     )
     if subdivision_code_col and verbose:
         debug(f"Using subdivision code column: {subdivision_code_col}")
@@ -510,15 +523,16 @@ def _setup_countries_source(
     return f"'{countries_url}'"
 
 
-def _create_duckdb_connection(using_default):
-    """Create and configure DuckDB connection."""
-    con = duckdb.connect()
-    con.execute("INSTALL spatial;")
-    con.execute("LOAD spatial;")
-    con.execute("SET geometry_always_xy = true;")
+def _create_duckdb_connection(using_default: bool) -> "duckdb.DuckDBPyConnection":
+    """Create and configure DuckDB connection.
+
+    The default countries source is the remote Overture release on S3, so that
+    path needs httpfs and the bucket's region. A user-supplied countries file is
+    read from local disk and needs neither.
+    """
     if using_default:
-        con.execute("SET s3_region='us-west-2';")
-    return con
+        return get_duckdb_connection(load_httpfs=True, s3_region="us-west-2")
+    return get_duckdb_connection(load_httpfs=False)
 
 
 def _print_bbox_status(
@@ -589,72 +603,75 @@ def add_country_codes(
     if not dry_run and verbose:
         debug(f"Using geometry columns: {input_geom_col} (input), {countries_geom_col} (countries)")
 
-    con = _create_duckdb_connection(using_default)
+    # Context-managed: the dry-run path returns early, and a leaked DuckDB
+    # handle keeps the input file open (breaks cleanup on Windows).
+    with _create_duckdb_connection(using_default) as con:
+        if not dry_run:
+            total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+            progress(f"Processing {total_count:,} input features...")
 
-    if not dry_run:
-        total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
-        progress(f"Processing {total_count:,} input features...")
-
-    countries_table = "filtered_countries"
-    countries_source = _setup_countries_source(
-        con,
-        using_default,
-        countries_url,
-        input_parquet,
-        input_url,
-        input_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
-        dry_run,
-        verbose,
-    )
-
-    country_code_col, subdivision_code_col = _determine_code_columns(
-        con, countries_url, countries_source, countries_table, using_default, dry_run, verbose
-    )
-
-    select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
-    _print_bbox_status(input_bbox_col, countries_bbox_col, verbose, dry_run, has_native_geometry)
-
-    query = _build_spatial_join_query(
-        input_url,
-        countries_source,
-        select_clause,
-        input_geom_col,
-        countries_geom_col,
-        input_bbox_col,
-        countries_bbox_col,
-    )
-
-    if dry_run:
-        _print_dry_run_query(
-            query,
-            output_parquet,
-            compression,
-            compression_level,
+        countries_table = "filtered_countries"
+        countries_source = _setup_countries_source(
+            con,
             using_default,
+            countries_url,
+            input_parquet,
+            input_url,
+            input_geom_col,
             input_bbox_col,
             countries_bbox_col,
-            has_native_geometry,
+            dry_run,
+            verbose,
         )
-        return
 
-    if verbose:
-        debug("Performing spatial join with country boundaries...")
+        country_code_col, subdivision_code_col = _determine_code_columns(
+            con, countries_url, countries_source, countries_table, using_default, dry_run, verbose
+        )
 
-    write_parquet_with_metadata(
-        con,
-        query,
-        output_parquet,
-        original_metadata=metadata,
-        compression=compression,
-        compression_level=compression_level,
-        row_group_size_mb=row_group_size_mb,
-        row_group_rows=row_group_rows,
-        verbose=verbose,
-    )
+        select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
+        _print_bbox_status(
+            input_bbox_col, countries_bbox_col, verbose, dry_run, has_native_geometry
+        )
 
-    _print_results_summary(con, output_parquet)
+        query = _build_spatial_join_query(
+            input_url,
+            countries_source,
+            select_clause,
+            input_geom_col,
+            countries_geom_col,
+            input_bbox_col,
+            countries_bbox_col,
+        )
+
+        if dry_run:
+            _print_dry_run_query(
+                query,
+                output_parquet,
+                compression,
+                compression_level,
+                using_default,
+                input_bbox_col,
+                countries_bbox_col,
+                has_native_geometry,
+            )
+            return
+
+        if verbose:
+            debug("Performing spatial join with country boundaries...")
+
+        write_parquet_with_metadata(
+            con,
+            query,
+            output_parquet,
+            original_metadata=metadata,
+            compression=compression,
+            compression_level=compression_level,
+            row_group_size_mb=row_group_size_mb,
+            row_group_rows=row_group_rows,
+            verbose=verbose,
+        )
+
+        _print_results_summary(con, output_parquet)
 
 
 if __name__ == "__main__":
