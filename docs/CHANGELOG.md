@@ -351,6 +351,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   warns instead of silently dropping all `geo`/KV metadata when the input
   footer cannot be read for preservation, for any failure mode (a corrupt
   footer can surface as `OSError`, `GeoParquetError`, or an Arrow exception).
+- **Geometry-column identifiers are now quoted at every raw SQL interpolation
+  (todo #008).** Files whose primary geometry column name has a space,
+  uppercase letter, reserved word, or embedded quote — a name read verbatim
+  from the file's own `geo.primary_column` metadata — previously crashed
+  several commands with a DuckDB `ParserException`, since the column name was
+  interpolated unquoted into a generated SQL identifier. Fixed in `stream_io`'s
+  WKB-conversion wrapper, `add bbox`'s `STRUCT_PACK` expression (both the CLI
+  path and the shared `add_bbox` helper used by `admin-divisions`/
+  `country-codes`), and `check spatial`'s sampling-method queries — all now
+  use the existing `quote_identifier` helper. Separately, the native
+  Parquet-geo-stats getters in `duckdb_metadata` (and sibling `bbox`/
+  `compression` lookups) compared the column name as a SQL **string literal**
+  (`WHERE path_in_schema = '...'`) rather than an identifier; a space there
+  was always harmless, but an embedded `'` broke the literal and was silently
+  swallowed by a broad `except Exception`, returning `None`/empty stats
+  instead of raising or the correct value. Fixed with `_escape_sql_string`.
+  Since a hostile filename can carry such a name via `geo.primary_column`,
+  this was also a latent SQL-injection vector, not just a crash bug.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

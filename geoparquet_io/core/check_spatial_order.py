@@ -4,7 +4,7 @@
 import random as _random
 from statistics import mean
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress
@@ -41,9 +41,10 @@ def _bboxes_overlap(bbox1: dict, bbox2: dict) -> bool:
 
 def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbose):
     """Calculate average distance between consecutive features."""
+    quoted_geom = quote_identifier(geometry_column)
     query = f"""
     WITH numbered AS (
-        SELECT ROW_NUMBER() OVER () as id, {geometry_column} as geom
+        SELECT ROW_NUMBER() OVER () as id, {quoted_geom} as geom
         FROM '{safe_url}' {row_limit}
     )
     SELECT AVG(ST_Distance(a.geom, b.geom)) as avg_dist
@@ -60,8 +61,9 @@ def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbos
 
 def _calculate_random_avg(con, safe_url, geometry_column, row_limit, random_sample_size, verbose):
     """Calculate average distance between random pairs of features."""
+    quoted_geom = quote_identifier(geometry_column)
     query = f"""
-    WITH sample AS (SELECT {geometry_column} as geom FROM '{safe_url}' {row_limit}),
+    WITH sample AS (SELECT {quoted_geom} as geom FROM '{safe_url}' {row_limit}),
     random_pairs AS (
         SELECT a.geom as geom1, b.geom as geom2
         FROM (SELECT geom FROM sample ORDER BY random() LIMIT {random_sample_size}) a,

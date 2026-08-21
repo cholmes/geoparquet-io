@@ -3338,11 +3338,12 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         debug(f"Adding bbox column for geometry column: {geom_col}")
 
     # Define SQL expression
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Create temporary file path

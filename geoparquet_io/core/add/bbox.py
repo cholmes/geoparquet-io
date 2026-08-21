@@ -9,7 +9,7 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     detect_geoparquet_file_type,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -357,11 +357,12 @@ def _add_bbox_file_based(
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # Define the SQL expression (the only unique part)
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Build covering metadata for the bbox column (GeoParquet 1.1+ spec)
