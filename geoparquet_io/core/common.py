@@ -3052,6 +3052,7 @@ def add_computed_column(
     profile=None,
     replace_column=None,
     geoparquet_version=None,
+    memory_limit=None,
 ):
     """
     Add a computed column to a GeoParquet file using SQL expression.
@@ -3081,6 +3082,8 @@ def add_computed_column(
         custom_metadata: Optional dict with custom metadata (e.g., H3 info)
         profile: AWS profile name (S3 only, optional)
         replace_column: Name of existing column to replace (uses EXCLUDE in query)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB');
+            None auto-detects based on available system/container memory
 
     Example:
         add_computed_column(
@@ -3215,6 +3218,7 @@ TO '{output_parquet}'
         verbose=verbose,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
 

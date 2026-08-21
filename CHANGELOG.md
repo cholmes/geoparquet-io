@@ -273,6 +273,11 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   read that needs it, and the unused `get_bigquery_connection()` helper — which
   set `GOOGLE_APPLICATION_CREDENTIALS` with no restore — is removed in favour of
   the `BigQueryConnection` context manager the extract path already used.
+- **`--write-memory` now honored by `add h3`/`a5`/`s2`/`kdtree`/`quadkey` and
+  `sort column`/`quadkey` (previously silently ignored).** These commands
+  accepted the flag but never forwarded it to the DuckDB write engine, so the
+  value was dropped and the auto-detected default memory limit was used
+  instead — the same bug class fixed for `sort hilbert` in #627.
 
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now

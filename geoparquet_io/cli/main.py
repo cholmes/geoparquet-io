@@ -3771,6 +3771,7 @@ def sort_column(
             row_group_rows=row_group_size,
             geoparquet_version=geoparquet_version,
             overwrite=overwrite,
+            memory_limit=write_memory,
         )
 
 
@@ -3857,6 +3858,7 @@ def sort_quadkey(
             row_group_rows=row_group_size,
             geoparquet_version=geoparquet_version,
             overwrite=overwrite,
+            memory_limit=write_memory,
         )
 
 
@@ -4384,17 +4386,18 @@ def add_h3(
             add_h3_column_impl(
                 input_parquet,
                 output_parquet,
-                h3_name,
-                resolution,
-                dry_run,
-                verbose,
-                compression.upper(),
-                compression_level,
-                row_group_mb,
-                row_group_size,
-                None,
-                geoparquet_version,
+                h3_column_name=h3_name,
+                h3_resolution=resolution,
+                dry_run=dry_run,
+                verbose=verbose,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                profile=None,
+                geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                memory_limit=write_memory,
             )
         except StreamingError as e:
             raise click.ClickException(str(e)) from None
@@ -4466,17 +4469,18 @@ def add_a5(
             add_a5_column_impl(
                 input_parquet,
                 output_parquet,
-                a5_name,
-                resolution,
-                dry_run,
-                verbose,
-                compression.upper(),
-                compression_level,
-                row_group_mb,
-                row_group_size,
-                None,
-                geoparquet_version,
+                a5_column_name=a5_name,
+                a5_resolution=resolution,
+                dry_run=dry_run,
+                verbose=verbose,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                profile=None,
+                geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                memory_limit=write_memory,
             )
         except StreamingError as e:
             raise click.ClickException(str(e)) from None
@@ -4548,17 +4552,18 @@ def add_s2(
             add_s2_column_impl(
                 input_parquet,
                 output_parquet,
-                s2_name,
-                level,
-                dry_run,
-                verbose,
-                compression.upper(),
-                compression_level,
-                row_group_mb,
-                row_group_size,
-                None,
-                geoparquet_version,
+                s2_column_name=s2_name,
+                s2_level=level,
+                dry_run=dry_run,
+                verbose=verbose,
+                compression=compression.upper(),
+                compression_level=compression_level,
+                row_group_size_mb=row_group_mb,
+                row_group_rows=row_group_size,
+                profile=None,
+                geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                memory_limit=write_memory,
             )
         except StreamingError as e:
             raise click.ClickException(str(e)) from None
@@ -4693,20 +4698,21 @@ def add_kdtree(
         add_kdtree_column_impl(
             input_parquet,
             output_parquet,
-            kdtree_name,
-            iterations,
-            dry_run,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            force,
-            sample_size,
-            auto_target,
-            None,
-            geoparquet_version,
+            kdtree_column_name=kdtree_name,
+            iterations=iterations,
+            dry_run=dry_run,
+            verbose=verbose,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            force=force,
+            sample_size=sample_size,
+            auto_target_rows=auto_target,
+            profile=None,
+            geoparquet_version=geoparquet_version,
             overwrite=overwrite,
+            memory_limit=write_memory,
         )
 
 
@@ -4797,6 +4803,7 @@ def add_quadkey(
                 row_group_rows=row_group_size,
                 geoparquet_version=geoparquet_version,
                 overwrite=overwrite,
+                memory_limit=write_memory,
             )
         except StreamingError as e:
             raise click.ClickException(str(e)) from None
