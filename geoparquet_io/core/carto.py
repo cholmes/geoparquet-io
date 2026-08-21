@@ -138,8 +138,8 @@ def _build_carto_query(
 
     Note:
         The table_name is quoted using PostgreSQL identifier quoting.
-        The where clause is user-provided and passed through - Carto's
-        server-side validation handles SQL injection for WHERE clauses.
+        The where clause is validated upstream in ``carto_to_table()`` via
+        ``validate_where_clause`` before it reaches this function.
     """
     # Validate and quote table name to prevent SQL injection
     _validate_table_name(table_name)
@@ -159,7 +159,7 @@ def _build_carto_query(
     # Build WHERE clause
     conditions = []
     if where:
-        # WHERE clause is user-provided - Carto validates on server side
+        # Already validated upstream in carto_to_table() via validate_where_clause
         conditions.append(f"({where})")
     if bbox and include_geom:
         minx, miny, maxx, maxy = bbox
