@@ -28,6 +28,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
+from geoparquet_io.core.logging_config import _bootstrap_default_handler
 from geoparquet_io.core.logging_config import logger as gpio_logger
 
 S3_DEST = "s3://fake-bucket/out.parquet"
@@ -354,3 +355,60 @@ def test_cli_verbose_output_survives_nested_default_calls(buildings_test_file, t
     combined = result.stdout + result.stderr
     for expected in ("Adding column 'bbox'...", "Creating column 'bbox'...", "Schema fields:"):
         assert expected in combined, f"verbose line lost after spec validation: {expected!r}"
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap when NOTHING has configured logging (a bare script importing gpio)
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_installs_a_real_handler_when_nothing_configured_logging():
+    """With an unconfigured root logger, gpio must still emit output.
+
+    The duplicate-output fix short-circuits to a NullHandler whenever the host
+    already has root handlers. Under pytest that is always true, so the other
+    branch -- a bare script that imports gpio and configures nothing -- needs
+    the root handlers cleared to be reachable at all.
+    """
+    root = logging.getLogger()
+    root.handlers[:] = []
+    gpio_logger.handlers[:] = []
+    gpio_logger.setLevel(logging.NOTSET)
+
+    _bootstrap_default_handler(verbose=False)
+
+    assert gpio_logger.handlers, "gpio installed no handler; output would be dropped"
+    assert not all(isinstance(h, logging.NullHandler) for h in gpio_logger.handlers), (
+        "gpio installed only a NullHandler with no host handlers to propagate to"
+    )
+
+
+def test_bootstrap_restores_a_level_the_caller_chose_explicitly():
+    """setup_cli_logging() sets a level; an explicit caller choice must win.
+
+    Covers the `chosen_level != NOTSET` restore -- without it, a script that
+    silences gpio before its first call would have that choice overwritten by
+    the bootstrap.
+    """
+    root = logging.getLogger()
+    root.handlers[:] = []
+    gpio_logger.handlers[:] = []
+    gpio_logger.setLevel(logging.WARNING)
+
+    _bootstrap_default_handler(verbose=False)
+
+    assert gpio_logger.level == logging.WARNING, (
+        "bootstrap overwrote a level the caller set before the first gpio call"
+    )
+
+
+def test_bootstrap_leaves_notset_level_to_setup_cli_logging():
+    """A caller who chose nothing gets the CLI default, not a forced NOTSET."""
+    root = logging.getLogger()
+    root.handlers[:] = []
+    gpio_logger.handlers[:] = []
+    gpio_logger.setLevel(logging.NOTSET)
+
+    _bootstrap_default_handler(verbose=False)
+
+    assert gpio_logger.level != logging.NOTSET
