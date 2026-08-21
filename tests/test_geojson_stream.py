@@ -541,3 +541,80 @@ class TestWgs84Constant:
     def test_wgs84_crs_value(self):
         """Test WGS84_CRS is correctly defined."""
         assert WGS84_CRS == "EPSG:4326"
+
+
+class TestRepairAfterReprojection:
+    """Geometry must be repaired in the CRS it is written in, not the source CRS.
+
+    Reprojection is not topology-preserving, so repairing first leaves
+    ST_ReducePrecision to raise TopologyException on geometry the transform has
+    just invalidated.
+    """
+
+    # A sliver from the SITEX Extremadura "mancomunidades" layer: valid in
+    # EPSG:25830 (two of its vertices differ only in the 13th decimal), invalid
+    # once transformed to WGS84. Repairing before the transform makes
+    # ST_ReducePrecision raise "TopologyException: unable to assign free hole to
+    # a shell" on it.
+    SLIVER_25830 = (
+        "POLYGON (("
+        "217334.43251087563 4419513.990336159, "
+        "217334.2614384655 4419513.996670783, "
+        "217334.2527995768 4419513.996990671, "
+        "217334.5221580651 4419514.098189879, "
+        "217334.60769426968 4419514.09502257, "
+        "217334.60769426887 4419514.09502257, "
+        "217334.43251087563 4419513.990336159))"
+    )
+
+    def test_repair_wraps_the_reprojected_geometry(self):
+        """The repair must be applied after the transform, not before it."""
+        query = _build_feature_query("t", "geometry", ["name"], source_crs="EPSG:25830")
+        # The transform happens in the subquery that feeds the repair, so the
+        # repaired expression is a plain column reference.
+        assert "ST_MakeValid(ST_Transform(" not in query.replace(" ", "")
+        transform_pos = query.index("ST_Transform")
+        repair_pos = query.index("ST_MakeValid")
+        assert transform_pos > repair_pos, "repair must consume the reprojected column"
+
+    def test_transform_is_evaluated_once_per_row(self):
+        """repair_geometry_sql repeats its argument; ST_Transform must not be."""
+        query = _build_feature_query(
+            "t", "geometry", ["name"], source_crs="EPSG:25830", write_bbox=True
+        )
+        assert query.count("ST_Transform") == 1
+
+    def test_reprojected_sliver_survives_precision_reduction(self):
+        """The real-world regression: this raised before the reorder."""
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute(
+            f"CREATE TABLE t AS SELECT ST_GeomFromText('{self.SLIVER_25830}') "
+            "AS geometry, 'sliver' AS name"
+        )
+        query = _build_feature_query(
+            "t", "geometry", ["name"], precision=6, source_crs="EPSG:25830"
+        )
+        rows = con.execute(query).fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0][0])["type"] == "Feature"
+
+    def test_null_geometry_still_filtered_with_reprojection(self):
+        """The NULL filter must survive the subquery rewrite."""
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES "
+            f"(ST_GeomFromText('{self.SLIVER_25830}'), 'kept'), "
+            "(NULL::GEOMETRY, 'dropped')) AS v(geometry, name)"
+        )
+        query = _build_feature_query(
+            "t", "geometry", ["name"], precision=6, source_crs="EPSG:25830"
+        )
+        rows = con.execute(query).fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0][0])["properties"]["name"] == "kept"

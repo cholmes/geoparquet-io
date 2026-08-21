@@ -159,18 +159,30 @@ def _build_feature_query(
     """
     quoted_geom = quote_identifier(geometry_column)
 
-    # Repair invalid geometry (issue #506) before reproject/precision/GeoJSON so
-    # downstream consumers (e.g. tippecanoe in the PMTiles pipeline) never see a
+    # Reproject first, in a subquery, so everything below sees the geometry in
+    # the CRS it will be written in. Reprojection is not topology-preserving: a
+    # polygon ST_MakeValid has just made valid in the source CRS can come out of
+    # ST_Transform invalid in WGS84, and ST_ReducePrecision - a GEOS topology
+    # operation - then raises TopologyException on it. Repairing after the
+    # transform is also what the explicit --src-crs route already does, since
+    # core/pmtiles.py reprojects in a separate process before piping into this
+    # query; only the auto-detected CRS path had the two in the wrong order.
+    #
+    # The transform lives in a subquery rather than inline because
+    # repair_geometry_sql repeats its argument, and ST_Transform is far too
+    # expensive to evaluate once per repetition per row.
+    if source_crs:
+        source_ref = (
+            f"(SELECT * REPLACE ("
+            f"ST_Transform({quoted_geom}, '{source_crs}', '{WGS84_CRS}') AS {quoted_geom}"
+            f") FROM {source_ref} WHERE {quoted_geom} IS NOT NULL)"
+        )
+
+    # Repair invalid geometry (issue #506) before precision/GeoJSON so downstream
+    # consumers (e.g. tippecanoe in the PMTiles pipeline) never see a
     # self-intersection. The NULL filter in the WHERE clause stays on the raw
     # column. ST_AsGeoJSON requires native GEOMETRY, which this already is.
-    geom_base = repair_geometry_sql(quoted_geom) if repair_geometry else quoted_geom
-
-    # Apply reprojection if needed
-    if source_crs:
-        # Transform to WGS84 before converting to GeoJSON
-        geom_for_output = f"ST_Transform({geom_base}, '{source_crs}', '{WGS84_CRS}')"
-    else:
-        geom_for_output = geom_base
+    geom_for_output = repair_geometry_sql(quoted_geom) if repair_geometry else quoted_geom
 
     # Apply coordinate precision using ST_ReducePrecision before GeoJSON conversion.
     # The grid size is 10^-precision (e.g., precision=7 -> grid=0.0000001).
