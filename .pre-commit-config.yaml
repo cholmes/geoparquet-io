@@ -93,6 +93,16 @@ repos:
               echo "ERROR: apply_crs_to_parquet() was removed. Use _wrap_query_with_crs() instead."
               errors=1
             fi
+            # Bare duckdb.connect() bypasses get_duckdb_connection()'s mandatory
+            # session settings (arrow_large_buffer_size for >2GB Arrow exports,
+            # geometry_always_xy for DuckDB 1.5 axis order, spatial extension
+            # loading) and silently drifts whenever the factory gains a new one.
+            # core/duckdb_utils.py itself is exempt: it's the factory's own
+            # internal connect().
+            if grep -rn 'duckdb\.connect(' geoparquet_io/ --include="*.py" | grep -v '/duckdb_utils\.py:' | awk -F: '$3 !~ /^[[:space:]]*#/' | grep .; then
+              echo "ERROR: Use get_duckdb_connection() from core/duckdb_utils.py instead of bare duckdb.connect() - it applies mandatory session settings (arrow_large_buffer_size, geometry_always_xy, spatial extension loading) that bare connect() silently omits."
+              errors=1
+            fi
             exit $errors
         language: system
         pass_filenames: false

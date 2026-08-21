@@ -233,6 +233,18 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Six internal DuckDB connections now route through the shared connection
+  factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
+  `get_column_statistics`, `add country-codes`'s connection setup, and the
+  disk-rewrite write strategy previously called bare `duckdb.connect()`,
+  which silently skipped `get_duckdb_connection()`'s mandatory session
+  settings (`arrow_large_buffer_size` for >2GB string/WKB Arrow exports,
+  `geometry_always_xy` for DuckDB 1.5 axis-order correctness). One site
+  (`get_column_statistics`) omitted `arrow_large_buffer_size` entirely. All
+  six now go through the factory, and a new `duckdb-antipatterns` pre-commit
+  check bans bare `duckdb.connect(` outside `core/duckdb_utils.py` to prevent
+  regressions.
+
 - **Clear errors for missing `--metric`/`--breakdown` columns in
   `gpio process aggregate`.** Requesting a column that doesn't exist now
   reports the column name and the available columns instead of a raw DuckDB

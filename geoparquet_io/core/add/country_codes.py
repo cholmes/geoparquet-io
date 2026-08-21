@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-import duckdb
-
 from geoparquet_io.core.common import (
     check_bbox_structure,
     get_bbox_advice,
@@ -13,6 +11,7 @@ from geoparquet_io.core.duckdb_utils import (
     SPATIAL_JOIN_BBOX_PREFILTER,
     SPATIAL_JOIN_NATIVE,
     build_spatial_join_condition,
+    get_duckdb_connection,
     quote_identifier,
     spatial_join_strategy,
 )
@@ -512,13 +511,8 @@ def _setup_countries_source(
 
 def _create_duckdb_connection(using_default):
     """Create and configure DuckDB connection."""
-    con = duckdb.connect()
-    con.execute("INSTALL spatial;")
-    con.execute("LOAD spatial;")
-    con.execute("SET geometry_always_xy = true;")
-    if using_default:
-        con.execute("SET s3_region='us-west-2';")
-    return con
+    s3_region = "us-west-2" if using_default else None
+    return get_duckdb_connection(load_spatial=True, load_httpfs=False, s3_region=s3_region)
 
 
 def _print_bbox_status(

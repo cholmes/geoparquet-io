@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 
@@ -176,8 +176,6 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         custom_metadata: dict | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using temporary file and rewrite."""
-        import duckdb
-
         from geoparquet_io.core.common import _detect_version_from_table
 
         configure_verbose(verbose)
@@ -195,10 +193,8 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         if effective_version is None:
             effective_version = _detect_version_from_table(table, verbose)
 
-        con = duckdb.connect()
+        con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
-            con.execute("INSTALL spatial; LOAD spatial")
-            con.execute("SET geometry_always_xy = true;")
             con.register("input_table", table)
 
             # Convert WKB bytes to GEOMETRY for proper spatial processing

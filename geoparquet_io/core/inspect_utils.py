@@ -10,7 +10,6 @@ import os
 import struct
 from typing import Any
 
-import duckdb
 import pyarrow as pa
 from rich.console import Console
 from rich.table import Table
@@ -18,6 +17,7 @@ from rich.text import Text
 
 from geoparquet_io.core.common import format_size
 from geoparquet_io.core.crs_utils import _extract_crs_identifier, is_default_crs
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
@@ -449,10 +449,7 @@ def wkb_to_wkt_preview(wkb_bytes: bytes, max_length: int = 45) -> str:
         return "<GEOMETRY>"
 
     try:
-        with duckdb.connect() as con:
-            con.execute("LOAD spatial;")
-            con.execute("SET geometry_always_xy = true;")
-
+        with get_duckdb_connection(load_spatial=True, load_httpfs=False) as con:
             # Check if this is DuckDB's internal GEOMETRY format (starts with 0x02)
             # vs standard ISO WKB (starts with 0x00 or 0x01 for byte order)
             if wkb_bytes[0] == 0x02:
@@ -750,13 +747,9 @@ def get_column_statistics(
         dict: Statistics per column
     """
     safe_url = safe_file_url(parquet_file, verbose=False)
-    con = duckdb.connect()
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
 
     try:
-        con.execute("INSTALL spatial;")
-        con.execute("LOAD spatial;")
-        con.execute("SET geometry_always_xy = true;")
-
         stats = {}
 
         for col in columns_info:

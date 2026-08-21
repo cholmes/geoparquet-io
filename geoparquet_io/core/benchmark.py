@@ -110,9 +110,7 @@ def get_file_info(filepath: Path) -> dict[str, Any]:
         }
 
     try:
-        conn = duckdb.connect()
-        conn.execute("INSTALL spatial; LOAD spatial;")
-        conn.execute("SET geometry_always_xy = true;")
+        conn = get_duckdb_connection(load_spatial=True, load_httpfs=False)
 
         # Get feature count and basic info
         safe_filepath = _escape_sql_string(str(filepath))
@@ -249,9 +247,7 @@ def benchmark_duckdb(input_path: Path, output_path: Path) -> tuple[float, float]
 
     start = time.perf_counter()
 
-    conn = duckdb.connect()
-    conn.execute("INSTALL spatial; LOAD spatial;")
-    conn.execute("SET geometry_always_xy = true;")
+    conn = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     safe_input = _escape_sql_string(str(input_path))
     safe_output = _escape_sql_string(str(output_path))
     conn.execute(f"""
