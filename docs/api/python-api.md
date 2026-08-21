@@ -580,22 +580,23 @@ table = gpio.read('input.parquet').add_geometry_metrics(vecorel=False)
 
 Adds `metrics:area` and `metrics:perimeter` columns. With `vecorel=True` (default), also writes Vecorel schema metadata and ensures `id`/`geometry` are present and non-nullable.
 
-#### `add_admin_divisions(dataset='overture', levels=None, vecorel=False)`
+#### `add_admin_divisions(dataset='gaul', levels=None, vecorel=False)`
 
 Add administrative division columns via spatial join with remote boundary datasets.
+Default matches the CLI (`gpio add admin-divisions --dataset`).
 
 ```python
-# Add country codes using Overture dataset
+# Add country codes using the default GAUL dataset
 table = gpio.read('input.parquet').add_admin_divisions(levels=['country'])
+
+# Overture dataset with multiple levels
+table = gpio.read('input.parquet').add_admin_divisions(
+    dataset='overture',
+    levels=['country', 'region']
+)
 
 # Vecorel-compliant output (forces Overture with country,region)
 table = gpio.read('input.parquet').add_admin_divisions(vecorel=True)
-
-# GAUL dataset with multiple levels
-table = gpio.read('input.parquet').add_admin_divisions(
-    dataset='gaul',
-    levels=['continent', 'country', 'department']
-)
 ```
 
 #### `add_kdtree(column_name='kdtree_cell', iterations=9, sample_size=100000)`
@@ -786,9 +787,9 @@ arrow_table = table.to_arrow()
 
 All spatial partitioning methods support automatic resolution calculation via CLI (`--auto` flag). Python API currently requires explicit resolution specification; auto-resolution support is planned.
 
-#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=False, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by quadkey.
+Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
 ```python
 # Partition to a directory
@@ -804,9 +805,9 @@ stats = table.partition_by_quadkey(
 )
 ```
 
-#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=False, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by H3 cell.
+Partition the table into a directory by H3 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
 ```python
 # Partition by H3
@@ -814,9 +815,9 @@ stats = table.partition_by_h3('output/', resolution=6)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=False, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by S2 cell.
+Partition the table into a directory by S2 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
 ```python
 # Partition by S2
@@ -824,9 +825,9 @@ stats = table.partition_by_s2('output/', level=10)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=False, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by A5 cell.
+Partition the table into a directory by A5 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
 ```python
 # Partition by A5
@@ -834,7 +835,7 @@ stats = table.partition_by_a5('output/', resolution=12)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_string(output_dir, column, chars=None, hive=True, overwrite=False)`
+#### `partition_by_string(output_dir, column, chars=None, hive=False, overwrite=False)`
 
 Partition by string column values or prefixes.
 
@@ -846,7 +847,7 @@ stats = table.partition_by_string('output/', column='category')
 stats = table.partition_by_string('output/', column='mgrs_code', chars=2)
 ```
 
-#### `partition_by_kdtree(output_dir, iterations=9, hive=True, overwrite=False)`
+#### `partition_by_kdtree(output_dir, iterations=9, hive=False, overwrite=False)`
 
 Partition by KD-tree spatial cells.
 
@@ -858,7 +859,7 @@ stats = table.partition_by_kdtree('output/')
 stats = table.partition_by_kdtree('output/', iterations=6)
 ```
 
-#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False, vecorel=False)`
+#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=False, overwrite=False, vecorel=False)`
 
 Partition by administrative boundaries.
 
@@ -1112,14 +1113,13 @@ result = sub_partition_directory(
 
 **Note:** When `auto=True`, the function automatically calculates the best resolution based on data distribution. Use `skip_analysis=True` for faster batch processing when you trust the resolution settings.
 
-#### `add_admin_divisions(dataset='overture', levels=None, country_filter=None, use_centroid=False)`
+#### `add_admin_divisions(dataset='gaul', levels=None, country_filter=None, use_centroid=False)`
 
 Add administrative division columns via spatial join.
 
 ```python
-# Add country codes
+# Add country codes (default GAUL dataset)
 enriched = table.add_admin_divisions(
-    dataset='overture',
     levels=['country']
 )
 
@@ -1440,7 +1440,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.add_a5(table, column_name='a5_cell', resolution=15, geometry_column=None)` | Add A5 cell column |
 | `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column |
 | `ops.add_geometry_metrics(table, vecorel=True)` | Add geodesic area and perimeter columns |
-| `ops.add_admin_divisions(table, dataset='overture', levels=None, vecorel=False)` | Add admin division columns via spatial join |
+| `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |

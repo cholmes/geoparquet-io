@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -103,7 +104,7 @@ def _run_partition_with_temp_file(
             return {
                 "output_dir": str(output_path),
                 "file_count": len(parquet_files),
-                "hive": core_kwargs.get("hive", True),
+                "hive": core_kwargs.get("hive", False),
             }
 
         return result if result else {"status": "completed"}
@@ -645,7 +646,7 @@ class Table:
         bbox: tuple[float, float, float, float] | None = None,
         limit: int | None = None,
         max_workers: int = 1,
-        page_size: int = 10000,
+        page_size: int = DEFAULT_WFS_PAGE_SIZE,
         axis_order: str = "auto",
         strict_crs: bool = False,
         auto_tile: bool = False,
@@ -665,7 +666,7 @@ class Table:
             bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
             limit: Maximum features to fetch
             max_workers: Parallel requests for large datasets (default: 1)
-            page_size: Features per page when using parallel mode (default: 10000)
+            page_size: Features per page when using parallel mode (default: 100000)
             axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
                 CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
             strict_crs: If True, fail when the server returns a different CRS than
@@ -1767,7 +1768,7 @@ class Table:
         resolution: int = 13,
         partition_resolution: int = 6,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
     ) -> dict:
         """
@@ -1778,7 +1779,7 @@ class Table:
             resolution: Quadkey resolution for sorting (0-23, default: 13)
             partition_resolution: Resolution for partition boundaries (default: 6)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1813,7 +1814,7 @@ class Table:
         *,
         resolution: int = 9,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
     ) -> dict:
         """
@@ -1823,7 +1824,7 @@ class Table:
             output_dir: Output directory path
             resolution: H3 resolution level 0-15 (default: 9)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1857,7 +1858,7 @@ class Table:
         *,
         level: int = 13,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
     ) -> dict:
         """
@@ -1870,7 +1871,7 @@ class Table:
             output_dir: Output directory path
             level: S2 level 0-30 (default: 13, ~1.2 km² cells)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1904,7 +1905,7 @@ class Table:
         *,
         resolution: int = 15,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
     ) -> dict:
         """
@@ -1917,7 +1918,7 @@ class Table:
             output_dir: Output directory path
             resolution: A5 resolution level 0-30 (default: 15)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -2678,7 +2679,7 @@ class Table:
     def add_admin_divisions(
         self,
         *,
-        dataset: str = "overture",
+        dataset: str = "gaul",
         levels: list[str] | None = None,
         vecorel: bool = False,
     ) -> Table:
@@ -2689,7 +2690,9 @@ class Table:
         based on spatial intersection with an administrative boundaries dataset.
 
         Args:
-            dataset: Boundaries dataset ("overture", "gaul", or custom URL)
+            dataset: Boundaries dataset ("gaul", "overture", or custom URL).
+                Default matches the CLI
+                (`gpio add admin-divisions --dataset`).
             levels: Admin levels to add (e.g., ["country", "admin1"])
             vecorel: Output Vecorel-compliant columns. Forces Overture dataset
                 with country,region levels. (default: False)
@@ -2800,7 +2803,7 @@ class Table:
         column: str,
         *,
         chars: int | None = None,
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
         compression: str = "ZSTD",
         compression_level: int = 15,
@@ -2854,7 +2857,7 @@ class Table:
         output_dir: str | Path,
         *,
         iterations: int = 9,
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
         compression: str = "ZSTD",
         compression_level: int = 15,
@@ -2903,7 +2906,7 @@ class Table:
         *,
         dataset: str = "gaul",
         levels: list[str] | None = None,
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
         vecorel: bool = False,
         compression: str = "ZSTD",

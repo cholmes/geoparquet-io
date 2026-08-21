@@ -30,6 +30,7 @@ from geoparquet_io.core.hilbert_order import hilbert_order_table
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 
 def add_bbox(
@@ -116,7 +117,7 @@ def add_geometry_metrics(
 def add_admin_divisions(
     table: pa.Table,
     *,
-    dataset: str = "overture",
+    dataset: str = "gaul",
     levels: list[str] | None = None,
     vecorel: bool = False,
 ) -> pa.Table:
@@ -125,7 +126,8 @@ def add_admin_divisions(
 
     Args:
         table: Input PyArrow Table
-        dataset: Boundaries dataset ("overture", "gaul")
+        dataset: Boundaries dataset ("gaul", "overture"). Default matches the
+            CLI (`gpio add admin-divisions --dataset`).
         levels: Admin levels to add (e.g., ["country", "region"])
         vecorel: Output Vecorel-compliant columns (default: False)
 
@@ -1118,7 +1120,7 @@ def from_wfs(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     auto_tile: bool = False,
@@ -1182,7 +1184,7 @@ def from_wfs_layers(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     parallel_layers: int = 1,
     axis_order: str = "auto",
     strict_crs: bool = False,

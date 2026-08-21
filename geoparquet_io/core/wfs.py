@@ -28,6 +28,7 @@ import pyarrow as pa
 
 # Public API
 __all__ = [
+    "DEFAULT_WFS_PAGE_SIZE",
     "EmptyLayerError",
     "LayerNotFoundError",
     "WFSAuthenticationError",
@@ -337,6 +338,12 @@ def get_wfs_capabilities(service_url: str, version: str = "1.1.0"):
 
 # WFS versions in preference order (newest first)
 WFS_VERSIONS = ["2.0.0", "1.1.0", "1.0.0"]
+
+# Single source of truth for the default page size used when paginating WFS
+# requests. The CLI (`gpio extract wfs --page-size`) and every Python API
+# wrapper (`ops.from_wfs`, `Table.from_wfs`) should reference this constant
+# so their defaults cannot drift apart again.
+DEFAULT_WFS_PAGE_SIZE = 100000
 
 
 def negotiate_wfs_version(service_url: str, preferred_version: str = "auto"):
@@ -2310,7 +2317,7 @@ def wfs_to_table(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,

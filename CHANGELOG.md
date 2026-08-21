@@ -143,6 +143,22 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Changed
 
+- **CLI and Python API defaults aligned for three shared parameters.**
+  These are behavior changes for API callers relying on the old defaults:
+  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `dataset`
+    now defaults to `"gaul"` (was `"overture"`), matching
+    `gpio add admin-divisions --dataset`, which has always defaulted to
+    `gaul` and is documented as the default boundaries dataset.
+  - `Table.partition_by_h3/quadkey/s2/a5/string/kdtree/admin`: `hive` now
+    defaults to `False` (was `True`), matching `gpio partition <scheme>
+    --hive`, which is off by default. Pass `hive=True` explicitly for
+    Hive-style `key=value/` output directories.
+  - `Table.from_wfs`: `page_size` now defaults to `100000` (was `10000`),
+    matching `ops.from_wfs`, the CLI's `gpio extract wfs --page-size`, and
+    the core `wfs_to_table` default. Both API wrappers now reference a
+    single `DEFAULT_WFS_PAGE_SIZE` constant in `core/wfs.py` so the
+    defaults cannot drift apart again.
+
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
   within ±180/±90) under a projected CRS now reports a WARNING instead of
