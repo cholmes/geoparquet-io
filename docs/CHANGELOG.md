@@ -233,6 +233,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **WFS tests no longer reach the network.** Six `tests/test_wfs.py` tests that
+  exercise `wfs_to_table` mocked the version negotiation, layer lookup and
+  feature fetch, but not `_get_feature_count` — which `wfs_to_table` calls twice
+  before the mocked fetch as part of its auto-tiling probe. Against the fake
+  host those calls were real HTTP GETs that failed DNS resolution and burned the
+  full 1s+2s retry backoff twice, ~6.15s per test. `_get_feature_count` swallows
+  every exception, so the tests passed while silently making live network
+  requests, contrary to the module's stated "mocked HTTP responses to avoid
+  network dependencies". A shared `offline_wfs_probes` fixture now completes the
+  mock and installs a tripwire on `_make_request` that fails the test if any
+  future unmocked request escapes. No assertion changed meaning — the stubs
+  return the `None` the failed requests already produced — and the file's serial
+  runtime drops from 67.6s to 45.4s.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

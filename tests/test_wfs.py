@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Module-level imports for WFS functions (avoids per-test imports)
+from geoparquet_io.core import wfs as wfs_module
 from geoparquet_io.core.wfs import (
     EmptyLayerError,
     LayerNotFoundError,
@@ -30,6 +31,45 @@ from geoparquet_io.core.wfs import (
     get_wfs_capabilities,
     list_available_layers,
 )
+
+
+@pytest.fixture
+def offline_wfs_probes():
+    """Complete the mock for ``wfs_to_table``: block every real HTTP request.
+
+    Mocking ``negotiate_wfs_version`` / ``get_layer_info`` /
+    ``fetch_all_features_duckdb`` is *not* enough to take ``wfs_to_table``
+    offline. Before it reaches the mocked fetch, its auto-tiling logic calls
+    ``_get_feature_count`` twice (once for WFS 2.0.0, then for the requested
+    version), and those calls are unmocked. Against a fake host they resolve to
+    real DNS lookups that fail, and ``_get_feature_count`` swallows every
+    exception -- so the tests still passed while quietly burning the 1s+2s
+    retry backoff twice, ~6s per test.
+
+    Stubbing the probes to ``None`` reproduces exactly what the failed requests
+    already returned, so no assertion changes meaning. ``_make_request`` is
+    additionally replaced with a tripwire, and the recorded calls are asserted
+    on teardown so a *future* unmocked network path fails loudly instead of
+    silently sleeping.
+    """
+    escaped_requests: list[str] = []
+
+    def _blocked_request(url, *args, **kwargs):
+        escaped_requests.append(url)
+        raise AssertionError(f"unmocked WFS HTTP request to {url}")
+
+    with (
+        patch.object(wfs_module, "_get_feature_count", return_value=None),
+        patch.object(wfs_module, "_probe_startindex_limit", return_value=None),
+        patch.object(wfs_module, "_make_request", side_effect=_blocked_request),
+    ):
+        yield
+
+    assert not escaped_requests, (
+        f"wfs_to_table made unmocked HTTP request(s): {escaped_requests}. "
+        "Extend the offline_wfs_probes fixture to cover the new call."
+    )
+
 
 # =============================================================================
 # Mock WFS Response Data
@@ -2435,7 +2475,7 @@ class TestCRSValidation:
         assert 0 < x < 10, f"Expected longitude ~4-6, got {x}"
         assert 45 < y < 55, f"Expected latitude ~50, got {y}"
 
-    def test_wfs_to_table_reprojects_on_mismatch(self):
+    def test_wfs_to_table_reprojects_on_mismatch(self, offline_wfs_probes):
         """wfs_to_table should reproject when output_crs set and server returns different CRS."""
         from unittest.mock import MagicMock, patch
 
@@ -2493,7 +2533,7 @@ class TestCRSValidation:
         assert -180 <= x <= 180, f"X {x} not in WGS84 range"
         assert -90 <= y <= 90, f"Y {y} not in WGS84 range"
 
-    def test_reproject_error_wrapped_in_wfs_error(self):
+    def test_reproject_error_wrapped_in_wfs_error(self, offline_wfs_probes):
         """Reprojection errors should be wrapped in WFSError with context."""
         from unittest.mock import MagicMock, patch
 
@@ -2780,7 +2820,7 @@ class TestResolveCRSForOutput:
         # The fallback to coordinate inference is announced (visible under --verbose).
         assert any("declared no CRS" in str(call.args[0]) for call in mock_debug.call_args_list)
 
-    def test_wfs_to_table_trusts_server_crs_end_to_end(self):
+    def test_wfs_to_table_trusts_server_crs_end_to_end(self, offline_wfs_probes):
         """End-to-end #499 regression: declared EPSG:22174 stays EPSG:22174."""
         import json
         from unittest.mock import MagicMock, patch
@@ -2818,7 +2858,7 @@ class TestResolveCRSForOutput:
         expected = parse_crs_string_to_projjson("EPSG:22174")
         assert geo["columns"]["geometry"]["crs"] == expected
 
-    def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self):
+    def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self, offline_wfs_probes):
         """Issue #499: local bbox filtering must not drop the server CRS.
 
         The local-filter path round-trips the table through DuckDB, which
@@ -2863,7 +2903,7 @@ class TestResolveCRSForOutput:
         geo = json.loads(result.schema.metadata[b"geo"])
         assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
 
-    def test_local_bbox_filter_reprojects_bbox_to_server_crs(self):
+    def test_local_bbox_filter_reprojects_bbox_to_server_crs(self, offline_wfs_probes):
         """Issue #499: a bbox in the requested CRS must be aligned to the CRS the
         server actually returned, or local filtering drops valid rows.
 
@@ -2904,7 +2944,7 @@ class TestResolveCRSForOutput:
         # The point is retained because the bbox was reprojected to EPSG:22174.
         assert result.num_rows == 1
 
-    def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
+    def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self, offline_wfs_probes):
         """The internal server-CRS marker never leaks into the output schema.
 
         Even when no geo metadata is written (projjson unavailable for the
