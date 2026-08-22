@@ -772,6 +772,17 @@ def _check_geometry_not_grouped(
 
 
 # GeoArrow encoding -> number of LIST levels wrapping the coordinate struct.
+#
+# Depth is not a unique key: two pairs share a level and are therefore
+# structurally identical in Parquet, storing exactly the same bytes —
+#   linestring <-> multipoint      (depth 1, STRUCT(x,y)[])
+#   polygon    <-> multilinestring (depth 2, STRUCT(x,y)[][])
+# so a column mislabeled as its twin cannot be caught from the layout alone.
+# That is a *missed detection*, never a false positive: a correctly labeled
+# file always passes. Only the extension name in the Arrow field metadata
+# ("geoarrow.multipoint") distinguishes them, and reading it would mean a
+# pq.read_schema() call (pyarrow.parquet is already imported in this module's
+# callers) — a possible future strengthening, not a correctness gap today.
 _GEOARROW_LIST_DEPTH = {
     "point": 0,
     "linestring": 1,
@@ -831,7 +842,9 @@ def _check_geometry_byte_array(
     """Check 15: WKB geometry columns must be stored using BYTE_ARRAY parquet type."""
     for col in schema_info:
         if col.get("name") == geom_col:
-            physical_type = col.get("type", "").upper()
+            # parquet_schema() reports a group node's type as an explicit None,
+            # so the "" default never applies: `or ""` is the guard, not `get`.
+            physical_type = (col.get("type") or "").upper()
             if _is_geoarrow_encoding(encoding):
                 return _check_geoarrow_layout(physical_type, geom_col, encoding)
             # BYTE_ARRAY is represented as BYTE_ARRAY or sometimes as a binary type
@@ -1136,6 +1149,12 @@ def _check_geoarrow_geometry_types(
     A single-geometry-type encoding pins the geometry type of every value in the
     column, and the coordinate struct pins its dimensionality, so the types
     present follow from the column type rather than from a per-value scan.
+
+    The type therefore comes from the *declared* encoding, which check 15 has
+    already reconciled against the stored nesting depth. Since depth does not
+    separate linestring from multipoint (nor polygon from multilinestring, see
+    _GEOARROW_LIST_DEPTH), a column mislabeled as its structural twin is
+    reported here as that twin — a missed detection, not a false positive.
     """
     quoted_geom = quote_identifier(geom_col)
     found = _GEOARROW_ENCODING_TYPE[encoding] + _geoarrow_zm_suffix(
@@ -1206,8 +1225,11 @@ def _check_geometry_types_match_data(
 
         return _compare_geometry_types(normalized_found, declared_types, total_count, geom_col)
     except Exception as e:
+        check_name = f"geometry_types_match_data_{geom_col}"
+        if _is_geoarrow_encoding(encoding):
+            return _geoarrow_layout_error(check_name, encoding, "geometry types", e)
         return ValidationCheck(
-            name=f"geometry_types_match_data_{geom_col}",
+            name=check_name,
             status=CheckStatus.FAILED,
             message=f"failed to validate geometry types: {e}",
             category="data_validation",
@@ -1367,6 +1389,10 @@ def _check_bbox_contains_data(
         # Check if DuckDB already has it as a GEOMETRY type
         col_type = _describe_geom_type(con, safe_url, geom_col)
 
+        # NOTE: bbox[:4] mishandles the spec's 6-element 3D form
+        # [xmin,ymin,zmin,xmax,ymax,zmax], comparing against
+        # [xmin,ymin,zmin,xmax]. Pre-existing and equally wrong for WKB;
+        # tracked as #603 item 1 (same line), so it is not fixed here.
         query = _build_bbox_query(
             safe_url, geom_col, col_type, tuple(bbox[:4]), limit_clause, encoding
         )

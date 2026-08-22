@@ -23,6 +23,8 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.validate import (
     CheckStatus,
     _check_encoding_valid,
+    _check_geometry_byte_array,
+    _check_geometry_not_grouped,
     _geoarrow_zm_suffix,
     validate_geoparquet,
 )
@@ -234,6 +236,31 @@ class TestGeoArrowDataChecksStillCatchErrors:
         check = _checks_by_name(result)["bbox_contains_data_geometry"]
         assert check.status == CheckStatus.FAILED, check.message
 
+    def test_metadata_naming_an_absent_column_reports_cleanly(self, tmp_path):
+        """Every GeoArrow data scan must explain itself, never leak a binder error."""
+        import pyarrow as pa
+
+        out = tmp_path / "missing_col.parquet"
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "point", "geometry_types": ["Point"]}},
+        }
+        # The metadata names "geometry"; the file has no such column.
+        table = pa.table({"id": [1], "other": [b"\x00"]})
+        pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), out)
+
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        checks = _checks_by_name(result)
+        for name in (
+            "encoding_matches_data_geometry",
+            "geometry_types_match_data_geometry",
+            "coordinates_valid_for_crs_geometry",
+        ):
+            assert checks[name].status == CheckStatus.FAILED, checks[name].message
+            assert "does not match GeoArrow encoding" in checks[name].message
+        assert _binder_errors(result) == []
+
     def test_encoding_not_matching_the_stored_layout_is_detected(self, geoarrow_files, tmp_path):
         """A struct-of-points column may not claim the "polygon" nesting."""
         out = _rewrite_geo_metadata(
@@ -308,6 +335,51 @@ class TestGeoArrowEdgeCases:
             f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
         ]
         assert failures == [], failures
+
+
+class TestDuckDBSchemaPath:
+    """The schema checks must survive parquet_schema()'s group nodes.
+
+    get_schema_info() falls back to DuckDB whenever the pyarrow reader bails —
+    which happens locally, not just for remote files (an ``srid:``-style CRS
+    makes geoarrow-pyarrow raise, see duckdb_metadata._pyarrow_get_schema_info).
+    That path reports a nested column as a group node whose "type" is None,
+    where a native GeoArrow column has children and no type string at all.
+    """
+
+    def test_schema_checks_survive_a_typeless_group_node(self):
+        """type=None is present-but-None, so .get("type", "") returns None."""
+        schema_info = [{"name": "geometry", "type": None, "num_children": 1}]
+        byte_array = _check_geometry_byte_array(schema_info, "geometry", "polygon")
+        assert byte_array.status == CheckStatus.PASSED, byte_array.message
+        not_grouped = _check_geometry_not_grouped(schema_info, "geometry", "polygon")
+        assert not_grouped.status == CheckStatus.PASSED, not_grouped.message
+
+    def test_wkb_column_with_no_type_string_does_not_crash(self):
+        schema_info = [{"name": "geometry", "type": None, "num_children": 0}]
+        check = _check_geometry_byte_array(schema_info, "geometry", "WKB")
+        assert check.status == CheckStatus.FAILED
+        assert "BYTE_ARRAY" in check.message
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_real_duckdb_schema_of_a_geoarrow_file(self, geoarrow_files, encoding):
+        """End-to-end over the actual parquet_schema() rows, not a stand-in."""
+        from geoparquet_io.core.duckdb_metadata import get_schema_info
+
+        con = get_duckdb_connection()
+        try:
+            schema_info = get_schema_info(str(geoarrow_files[encoding]), con=con)
+        finally:
+            con.close()
+
+        # Guard the guard: this must really be the group-node shape.
+        geom_rows = [c for c in schema_info if c.get("name") == "geometry"]
+        assert geom_rows and geom_rows[0].get("type") is None, geom_rows
+
+        byte_array = _check_geometry_byte_array(schema_info, "geometry", encoding)
+        assert byte_array.status == CheckStatus.PASSED, byte_array.message
+        not_grouped = _check_geometry_not_grouped(schema_info, "geometry", encoding)
+        assert not_grouped.status == CheckStatus.PASSED, not_grouped.message
 
 
 class TestGeoArrowDimensionSuffix:
