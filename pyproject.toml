@@ -142,7 +142,9 @@ python_functions = "test_*"
 # .github/workflows/tests.yml passes --cov=geoparquet_io --cov-report=term-missing
 # --cov-report=xml --cov-fail-under=67 over the whole fast suite, and feeds
 # Codecov plus the 90% diff-cover gate. Locally, opt in with:
-#   uv run pytest --cov=geoparquet_io --cov-report=term-missing
+#   uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0
+# (--cov-fail-under=0 is required on a subset: [tool.coverage.report].fail_under
+# re-arms the 67% floor on any --cov run, which a partial run can never clear.)
 addopts = [
     "-v",
     "--tb=short",
