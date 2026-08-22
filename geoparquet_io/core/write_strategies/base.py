@@ -280,6 +280,7 @@ class BaseWriteStrategy(ABC):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """
         Write Arrow table to GeoParquet file.
@@ -296,6 +297,10 @@ class BaseWriteStrategy(ABC):
             verbose: Enable verbose logging
             input_crs: CRS dict to apply to geometry column
             custom_metadata: Optional dict with custom metadata (e.g., H3 covering info)
+            extra_kv_metadata: Additional Parquet file-level KV metadata as
+                {key: json_string}, written alongside 'geo'. Callers pass the
+                input's preserved non-geo keys here so sidecar payloads
+                (fiboa, vecorel, STAC) survive on every strategy (#690).
         """
         ...
 

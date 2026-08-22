@@ -659,6 +659,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using batch streaming."""
         from geoparquet_io.core.common import (
@@ -751,6 +752,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             input_crs=input_crs,
             geom_types=geo_meta["columns"][geometry_column]["geometry_types"] if geo_meta else [],
             verbose=verbose,
+            extra_kv_metadata=extra_kv_metadata,
             geoarrow_target_type=geoarrow_target_type,
         )
 
