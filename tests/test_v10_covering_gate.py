@@ -386,6 +386,31 @@ def test_check_bbox_flags_v10_file_that_carries_covering(v10_with_bbox_column):
     check_metadata_and_bbox(str(v10_with_bbox_column), return_results=True, quiet=False)
 
 
+def test_add_bbox_on_v10_file_does_not_suggest_a_command_that_refuses(v10_with_bbox_column):
+    """`add bbox` must not send a 1.0 user to `add bbox-metadata`, which now refuses.
+
+    The file already has a bbox column but no covering, so `add bbox` bails with
+    advice. Pointing at `add bbox-metadata` would be a dead end for a 1.0 file.
+    """
+    runner = CliRunner()
+    out = v10_with_bbox_column.parent / "add_bbox_out.parquet"
+    result = runner.invoke(cli, ["add", "bbox", str(v10_with_bbox_column), str(out)])
+
+    assert "1.1" in result.output, result.output
+    assert "add bbox-metadata" not in result.output, (
+        f"1.0 user sent to a command that will refuse: {result.output}"
+    )
+
+
+def test_add_bbox_on_v11_file_still_suggests_bbox_metadata(v11_with_bbox_column):
+    """The 1.1 advice is unchanged — that command does work there."""
+    runner = CliRunner()
+    out = v11_with_bbox_column.parent / "add_bbox_out.parquet"
+    result = runner.invoke(cli, ["add", "bbox", str(v11_with_bbox_column), str(out)])
+
+    assert "add bbox-metadata" in result.output, result.output
+
+
 def test_strip_unsupported_covering_tolerates_malformed_columns():
     """Malformed third-party geo metadata must not crash the gate."""
     from geoparquet_io.core.geo_metadata import strip_unsupported_covering
