@@ -194,6 +194,26 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Auto-detection of spatial clustering in check command
 - Bbox overlap detection for order validation
 
+#### Testing
+- Geo-metadata reader agreement suite (`tests/test_geo_metadata_parity.py`).
+  Pins the current behavior of the five `geo` metadata call sites — four
+  distinct implementations, since `core/add/quadkey.py` is now a one-line
+  delegate — so the planned metadata consolidation is verifiable: all five must
+  produce an identical parsed dict on every geo fixture in `tests/data/` and on
+  a representative slice of the geoparquet-testing corpus. Edge cases where the
+  readers legitimately diverge (str-keyed metadata, invalid JSON, absent key,
+  empty dict) are pinned per reader rather than forced equal, and the
+  CRS-equality trio (`validate._crs_equals`, `validate._is_crs84_equivalent`,
+  `inspect_utils._crs_are_equivalent`) is pinned over a 5x5 CRS matrix with the
+  cells where the helpers disagree recorded as a consolidation decision list.
+  Three cells contradict the GeoParquet specification rather than merely
+  disagreeing with each other — an explicit `"crs": null` reported as CRS84, an
+  omitted `crs` reported as unequal to OGC:CRS84, and OGC:CRS84 reported as
+  unequal to EPSG:4326 — and are recorded as `xfail(strict=True)` cases
+  asserting the spec-correct verdict, tracked by #699. Also covers the
+  pyproj-fallback axis-order split between the two binary helpers and the
+  boundary behavior of `validate._version_at_least`.
+
 ### Changed
 
 - **Local `pytest` runs are no longer instrumented for coverage (#665).**
