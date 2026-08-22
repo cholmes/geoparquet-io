@@ -11,6 +11,7 @@ Speed: Slightly slower due to batch overhead
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,129 @@ if TYPE_CHECKING:
 
 # Default batch size for streaming (100K rows per batch)
 DEFAULT_BATCH_SIZE = 100_000
+
+# Extension names that mean "these are WKB bytes", not a native nested GeoArrow
+# geometry. Only these are safe to unwrap back to plain binary.
+_WKB_EXTENSION_NAMES = frozenset({"geoarrow.wkb", "ogc.wkb"})
+
+
+def _extension_name(field: pa.Field) -> str | None:
+    """Extension name of a field, whether PyArrow resolved it or left it as metadata.
+
+    ``geoarrow.pyarrow`` registers its extension types process-globally on
+    import, so the same DuckDB column arrives either as a resolved extension
+    type (registered) or as plain storage carrying ``ARROW:extension:name`` in
+    the field metadata (not registered). Both are the same column (#688).
+    """
+    name = getattr(field.type, "extension_name", None)
+    if name is not None:
+        return str(name)
+    raw = (field.metadata or {}).get(b"ARROW:extension:name")
+    return raw.decode("utf-8") if raw else None
+
+
+def _is_wkb_carrier(field: pa.Field) -> bool:
+    """True when a field holds WKB bytes, in any shape DuckDB's Arrow export emits."""
+    name = _extension_name(field)
+    if name is not None and name not in _WKB_EXTENSION_NAMES:
+        return False  # native nested GeoArrow (geoarrow.point, ...) — not WKB bytes
+    storage = field.type.storage_type if isinstance(field.type, pa.ExtensionType) else field.type
+    return pa.types.is_binary(storage) or pa.types.is_large_binary(storage)
+
+
+def canonicalize_wkb_fields(
+    schema: pa.Schema,
+    geometry_columns: set[str],
+    native_column: str | None,
+) -> pa.Schema:
+    """Rewrite WKB geometry fields to the canonical plain-``binary`` carrier.
+
+    GeoParquet 1.x requires geometry to be a plain BYTE_ARRAY WKB column, but
+    DuckDB hands the streaming writer one of three shapes for the very same
+    column depending on whether anything in the process imported
+    ``geoarrow.pyarrow``: ``large_binary`` (writes a LARGE_BINARY column),
+    ``large_binary`` plus raw ``ARROW:extension:name`` metadata, or a resolved
+    ``geoarrow.wkb`` extension type (which PyArrow writes as a *native* Parquet
+    GEOMETRY logical type — illegal below GeoParquet 2.0). Normalizing here makes
+    the output a function of the inputs alone (#688).
+
+    ``native_column`` is the primary geometry column when the target version
+    writes it natively (2.0 / parquet-geo-only / 1.1-geoarrow); it is left alone.
+    """
+    fields = [
+        pa.field(field.name, pa.binary(), nullable=field.nullable)
+        if (
+            field.name != native_column
+            and (field.name in geometry_columns or _extension_name(field))
+            and _is_wkb_carrier(field)
+        )
+        else field
+        for field in schema
+    ]
+    return pa.schema(fields)
+
+
+def _wkb_storage(array: pa.Array) -> pa.Array:
+    """The underlying binary array, whether or not geoarrow's extension type is registered."""
+    return array.storage if isinstance(array, pa.ExtensionArray) else array
+
+
+def _to_plain_wkb_array(array: pa.Array | pa.ChunkedArray) -> pa.Array | pa.ChunkedArray:
+    """Unwrap an extension array and narrow 64-bit offsets to Arrow's plain ``binary``."""
+    array = _wkb_storage(array)
+    if array.type == pa.binary():
+        return array
+    try:
+        return array.cast(pa.binary())
+    except pa.ArrowInvalid as e:
+        # Plain ``binary`` uses 32-bit offsets, so >2 GB of WKB in one batch
+        # cannot be narrowed. Splitting (see _binary_cast_spans) handles this,
+        # so reaching here means several WKB columns overflowed at once.
+        raise ValueError(
+            "Geometry batch is too large to write as a plain WKB column "
+            f"(Arrow's 2 GB limit for 32-bit binary offsets): {e}. "
+            "Write smaller row groups (--row-group-rows) or simplify very large geometries."
+        ) from e
+
+
+def _coerce_column(array: pa.Array, target_type: pa.DataType) -> pa.Array:
+    """Narrow one column to the canonical carrier when the schema asks for plain binary."""
+    if target_type == pa.binary() and array.type != target_type:
+        return _to_plain_wkb_array(array)
+    return array
+
+
+def _binary_cast_spans(batch: pa.RecordBatch, schema: pa.Schema) -> list[tuple[int, int]]:
+    """Row spans that keep every narrowed WKB column under Arrow's 32-bit ceiling.
+
+    Returns a single whole-batch span in the normal case. When a column would
+    overflow, the boundaries of every offending column are merged so each
+    resulting slice satisfies all of them at once.
+    """
+    from geoparquet_io.core.streaming import _MAX_WKB_CHUNK_BYTES, byte_limited_spans
+
+    whole = [(0, batch.num_rows)]
+    boundaries = {0, batch.num_rows}
+    oversized = False
+    for index, field in enumerate(schema):
+        column = batch.column(index)
+        if field.type != pa.binary() or column.type == field.type:
+            continue
+        # nbytes counts offsets/validity too, so it only ever over-estimates:
+        # a batch that passes this cheap gate provably fits.
+        if column.nbytes <= _MAX_WKB_CHUNK_BYTES:
+            continue
+        oversized = True
+        # Measure the storage array: pyarrow's binary kernels reject extension
+        # arrays, which is what a registered geoarrow.wkb column arrives as.
+        boundaries.update(
+            offset for offset, _ in byte_limited_spans(_wkb_storage(column), _MAX_WKB_CHUNK_BYTES)
+        )
+
+    if not oversized:
+        return whole
+    ordered = sorted(boundaries)
+    return [(start, end - start) for start, end in zip(ordered, ordered[1:], strict=False)]
 
 
 def _has_carried_bbox(original_metadata: dict | None, geometry_column: str) -> bool:
@@ -435,39 +559,65 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         batches_written = 0
 
         with pq.ParquetWriter(output_path, schema_with_meta, **writer_kwargs) as writer:
-            # Write first batch
-            if use_native_geometry:
-                first_batch = self._convert_batch_to_geoarrow(
-                    first_batch, geometry_column, geoarrow_type, schema_with_meta
+            for batch in itertools.chain([first_batch], reader):
+                rows, groups = self._write_batch(
+                    writer,
+                    batch,
+                    schema_with_meta,
+                    geometry_column,
+                    geoarrow_type,
+                    use_native_geometry,
+                    geoarrow_target_type,
                 )
-            elif geoarrow_target_type is not None:
-                first_batch = self._convert_batch_to_native_geoarrow(
-                    first_batch, geometry_column, geoarrow_target_type, schema_with_meta
-                )
-            table_batch = pa.Table.from_batches([first_batch], schema=schema_with_meta)
-            writer.write_table(table_batch)
-            rows_written += first_batch.num_rows
-            batches_written += 1
-
-            # Write remaining batches
-            for batch in reader:
-                if use_native_geometry:
-                    batch = self._convert_batch_to_geoarrow(
-                        batch, geometry_column, geoarrow_type, schema_with_meta
-                    )
-                elif geoarrow_target_type is not None:
-                    batch = self._convert_batch_to_native_geoarrow(
-                        batch, geometry_column, geoarrow_target_type, schema_with_meta
-                    )
-                table_batch = pa.Table.from_batches([batch], schema=schema_with_meta)
-                writer.write_table(table_batch)
-                rows_written += batch.num_rows
-                batches_written += 1
+                rows_written += rows
+                batches_written += groups
 
                 if verbose and batches_written % 10 == 0:
                     debug(f"Written {rows_written:,} rows in {batches_written} batches...")
 
         return rows_written, batches_written
+
+    def _write_batch(
+        self,
+        writer: pq.ParquetWriter,
+        batch: pa.RecordBatch,
+        schema_with_meta: pa.Schema,
+        geometry_column: str,
+        geoarrow_type,
+        use_native_geometry: bool,
+        geoarrow_target_type,
+    ) -> tuple[int, int]:
+        """Convert one batch to the output schema and write it.
+
+        Returns ``(rows_written, row_groups_written)`` — normally one row group,
+        but a batch holding more than 2 GB of WKB is split so each part fits
+        Arrow's 32-bit binary offsets.
+        """
+        rows_written = 0
+        groups_written = 0
+        for offset, length in _binary_cast_spans(batch, schema_with_meta):
+            part = batch if length == batch.num_rows else batch.slice(offset, length)
+            if use_native_geometry:
+                part = self._convert_batch_to_geoarrow(
+                    part, geometry_column, geoarrow_type, schema_with_meta
+                )
+            elif geoarrow_target_type is not None:
+                part = self._convert_batch_to_native_geoarrow(
+                    part, geometry_column, geoarrow_target_type, schema_with_meta
+                )
+            else:
+                part = self._coerce_batch_to_schema(part, schema_with_meta)
+            writer.write_table(pa.Table.from_batches([part], schema=schema_with_meta))
+            rows_written += part.num_rows
+            groups_written += 1
+        return rows_written, groups_written
+
+    def _coerce_batch_to_schema(self, batch: pa.RecordBatch, schema: pa.Schema) -> pa.RecordBatch:
+        """Rebuild a batch against the canonical output schema (WKB → plain binary)."""
+        columns = [
+            _coerce_column(batch.column(index), field.type) for index, field in enumerate(schema)
+        ]
+        return pa.RecordBatch.from_arrays(columns, schema=schema)
 
     def write_from_table(
         self,
@@ -591,18 +741,17 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
 
         with pq.ParquetWriter(output_path, schema_with_meta, **writer_kwargs) as writer:
             for batch in table.to_batches(max_chunksize=batch_size):
-                if use_native_geometry:
-                    batch = self._convert_batch_to_geoarrow(
-                        batch, geometry_column, geoarrow_type, schema_with_meta
-                    )
-                elif geoarrow_target_type is not None:
-                    batch = self._convert_batch_to_native_geoarrow(
-                        batch, geometry_column, geoarrow_target_type, schema_with_meta
-                    )
-                table_batch = pa.Table.from_batches([batch], schema=schema_with_meta)
-                writer.write_table(table_batch)
-                rows_written += batch.num_rows
-                batches_written += 1
+                rows, groups = self._write_batch(
+                    writer,
+                    batch,
+                    schema_with_meta,
+                    geometry_column,
+                    geoarrow_type,
+                    use_native_geometry,
+                    geoarrow_target_type,
+                )
+                rows_written += rows
+                batches_written += groups
 
         if verbose:
             success(f"Wrote {rows_written:,} rows in {batches_written} row groups")
@@ -651,6 +800,18 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             ]
             schema = pa.schema(new_fields)
 
+        # Every remaining WKB column (the primary for 1.0/1.1, secondary geometry
+        # columns in every version) gets the canonical plain-binary carrier, so the
+        # file no longer depends on whether geoarrow.pyarrow happens to be imported.
+        geometry_columns = set((geo_meta or {}).get("columns", {}))
+        geometry_columns.add(geometry_column)
+        writes_native_primary = use_native_geometry or geoarrow_target_type is not None
+        schema = canonicalize_wkb_fields(
+            schema,
+            geometry_columns,
+            native_column=geometry_column if writes_native_primary else None,
+        )
+
         if geo_meta is not None:
             if "geometry_types" not in geo_meta["columns"].get(geometry_column, {}):
                 geo_meta["columns"][geometry_column]["geometry_types"] = geom_types
@@ -685,12 +846,12 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 geoarrow_arr.buffers(),
             )
 
-        new_columns = []
-        for i in range(batch.num_columns):
-            if i == col_index:
-                new_columns.append(geoarrow_arr)
-            else:
-                new_columns.append(batch.column(i))
+        new_columns = [
+            geoarrow_arr
+            if i == col_index
+            else _coerce_column(batch.column(i), schema_with_geoarrow.field(i).type)
+            for i in range(batch.num_columns)
+        ]
 
         return pa.RecordBatch.from_arrays(new_columns, schema=schema_with_geoarrow)
 
@@ -723,13 +884,19 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         if is_wkb_binary or is_wkb_extension:
             converted = wkb_array_to_geoarrow(geom_col, geoarrow_target_type)
             cols = [
-                converted if i == col_index else batch.column(i) for i in range(batch.num_columns)
+                converted
+                if i == col_index
+                else _coerce_column(batch.column(i), schema_with_meta.field(i).type)
+                for i in range(batch.num_columns)
             ]
             return pa.RecordBatch.from_arrays(cols, schema=schema_with_meta)
 
         # Already native or unexpected type — leave untouched but cast schema
         return pa.RecordBatch.from_arrays(
-            [batch.column(i) for i in range(batch.num_columns)],
+            [
+                _coerce_column(batch.column(i), schema_with_meta.field(i).type)
+                for i in range(batch.num_columns)
+            ],
             schema=schema_with_meta,
         )
 

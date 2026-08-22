@@ -494,6 +494,25 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   for a native GEOMETRY column, so that check fails there for a platform reason
   unrelated to this fix (#721). Every other validator check stays enforced on
   every platform.
+
+- **The arrow-streaming write strategy no longer emits a different file
+  depending on what the process imported.** `geoarrow.pyarrow` registers its
+  extension types process-globally on import, and many ordinary gpio code paths
+  do so; that registration changed what DuckDB's Arrow export handed the
+  streaming writer, and with it the on-disk geometry type. The same call on the
+  same input produced a `LARGE_BINARY` geometry column in a clean interpreter
+  (failing `gpio check spec`'s `geometry_byte_array`) but a *native* Parquet
+  GEOMETRY logical type once anything had imported `geoarrow.pyarrow` (failing
+  `version_features_match`, since native types require GeoParquet 2.0). Both
+  variants were invalid GeoParquet 1.1, and which one you got was decided by
+  unrelated import order. Streaming writes now normalize every WKB geometry
+  column — the primary column for 1.0/1.1 plus secondary geometry columns in
+  every version — to plain `BYTE_ARRAY` WKB, matching what the `duckdb-kv`,
+  `in-memory` and `disk-rewrite` strategies already produced. Output is now a
+  function of the inputs alone. The 2.0, `parquet-geo-only` and `1.1-geoarrow`
+  versions keep writing their native geometry types. Batches holding more than
+  2 GB of WKB are split so narrowing to Arrow's 32-bit `binary` offsets cannot
+  overflow. (#688)
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
