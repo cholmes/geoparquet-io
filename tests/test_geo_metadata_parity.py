@@ -30,14 +30,28 @@ Two things are deliberately *not* asserted equal:
 - The CRS-equality trio (``_crs_equals`` / ``_is_crs84_equivalent`` /
   ``_crs_are_equivalent``). Cells where the three disagree are flagged in
   ``CRS_DECISIONS`` as input to the consolidation decision list.
+
+Divergence versus *spec violation*. A cell where the helpers merely disagree
+with each other is pinned green — the consolidation gets to pick a winner. A
+cell where the current answer contradicts the GeoParquet specification is NOT
+pinned green: it is an ``xfail(strict=True)`` asserting the spec-correct
+verdict, with the governing rule quoted in the reason and the follow-up issue
+referenced. There are three such cells today, all tracked by #699 ("CRS helpers
+can't distinguish absent ``crs`` from explicit ``crs: null``, and resolve the
+ambiguity in opposite directions"). ``strict=True`` is load-bearing: when #699
+is fixed these turn into XPASS and fail the run, which is the signal to delete
+the marks rather than let a fix land unnoticed.
 """
 
 import json
+from itertools import product
 from pathlib import Path
+from unittest import mock
 
 import pyarrow.parquet as pq
 import pytest
 
+from geoparquet_io.core.add import quadkey as quadkey_module
 from geoparquet_io.core.add.quadkey import (
     _parse_geo_metadata_from_schema as read_quadkey,
 )
@@ -53,6 +67,7 @@ from geoparquet_io.core.validate import (
     _check_crs_valid,
     _crs_equals,
     _is_crs84_equivalent,
+    _version_at_least,
 )
 
 DATA = Path(__file__).parent / "data"
@@ -96,8 +111,39 @@ def _schema_metadata(path: Path) -> dict | None:
     return pq.ParquetFile(path).schema_arrow.metadata
 
 
+def _assert_geo_key_sources_agree(path: Path) -> None:
+    """Guard: the harness's two metadata *sources* must carry the same ``geo``.
+
+    This suite feeds readers 1, 2 and 5 from ``schema_arrow.metadata`` while
+    readers 3 and 4 go to the parquet footer key-value block themselves. Those
+    are not the same dict. When a file carries an ``ARROW:schema`` footer key,
+    pyarrow rebuilds ``schema_arrow.metadata`` by deserializing that key rather
+    than by reading the footer kv, so a footer entry written *after*
+    ``ARROW:schema`` is invisible to ``schema_arrow.metadata``. Most local
+    fixtures carry ``ARROW:schema``.
+
+    Without this guard a mismatch between the two sources would surface as a
+    "readers disagree" failure and send the reader implementations, not the
+    file, to the debugger. It also protects ``_has_geo_key`` (which asks only
+    ``schema_arrow.metadata``): a file whose ``geo`` lives solely in the footer
+    would be misfiled into ``NON_GEO_FIXTURES`` and fail there with an equally
+    misleading message.
+    """
+    pf = pq.ParquetFile(path)
+    from_schema = (pf.schema_arrow.metadata or {}).get(b"geo")
+    from_footer = (pf.metadata.metadata or {}).get(b"geo")
+    assert from_schema == from_footer, (
+        f"{path.name}: the two metadata sources this harness uses disagree, so any "
+        f"reader disagreement below would be a harness artifact, not a reader bug. "
+        f"schema_arrow.metadata[geo]={from_schema!r} "
+        f"footer kv[geo]={from_footer!r} "
+        f"(ARROW:schema present: {b'ARROW:schema' in (pf.metadata.metadata or {})})"
+    )
+
+
 def _assert_readers_agree(path: Path) -> None:
     """Every reader must produce the same parsed ``geo`` dict for ``path``."""
+    _assert_geo_key_sources_agree(path)
     metadata = _schema_metadata(path)
     results = {name: _normalize(reader(path, metadata)) for name, reader in READERS.items()}
     distinct = set(results.values())
@@ -199,6 +245,10 @@ def test_readers_agree_on_non_geo_fixtures(fixture):
     file-backed half of the "absent geo key" edge case, and it is the only place
     readers 3 and 4 (path-based) can be exercised against absence at all.
     """
+    # Run first: if the file actually has a footer ``geo`` that
+    # ``schema_arrow.metadata`` hides, it was misfiled into this list and the
+    # source guard says so instead of "reader X returned non-None".
+    _assert_geo_key_sources_agree(fixture)
     metadata = _schema_metadata(fixture)
     for name, reader in READERS.items():
         assert reader(fixture, metadata) is None, f"{name} returned non-None for {fixture.name}"
@@ -222,10 +272,27 @@ def test_quadkey_reader_delegates_to_crs_utils():
     #664 inventoried it as a "private duplicate"; it has since been reduced to a
     one-line delegation. Pinned so the consolidation's inventory stays accurate
     and so a future re-divergence is caught.
+
+    Asserting ``read_quadkey(md) == read_crs_utils(md)`` would be ``f(x) == f(x)``
+    while the delegation holds — it can never fail, so it would not detect the
+    re-divergence it claims to guard. Patching the name that reader 5 delegates
+    *through* does: if someone reimplements the parse inline, the patched
+    delegate is not called and this fails.
     """
     assert read_quadkey.__module__ == "geoparquet_io.core.add.quadkey"
     metadata = {"geo": '{"version": "1.1.0", "columns": {}}'}
-    assert read_quadkey(metadata) == read_crs_utils(metadata)
+    sentinel = {"version": "sentinel-not-a-real-parse"}
+
+    # patch.object, never a dotted string target: geoparquet_io/__init__.py
+    # rebinds geoparquet_io.cli to a Click Group, and dotted-string patching
+    # under that package breaks on Python 3.10 only. Use the idiom everywhere.
+    with mock.patch.object(
+        quadkey_module, "parse_geo_metadata_from_schema", return_value=sentinel
+    ) as delegate:
+        result = read_quadkey(metadata)
+
+    delegate.assert_called_once_with(metadata)
+    assert result is sentinel, "reader 5 must return reader 2's result unmodified"
 
 
 # =============================================================================
@@ -503,23 +570,77 @@ def crs_value(name: str):
     return CRS_COLUMN_META[name].get("crs")
 
 
+# IMPORTANT — "absent" and "null" are the SAME CALL in both binary matrices and
+# in the unary vector. ``crs_value`` returns None for each, and the helpers take
+# CRS *values*, not column-metadata dicts, so no helper can tell them apart.
+# Every ("absent", x) cell below is therefore byte-identical to the ("null", x)
+# cell that follows it; they are kept as two rows because the *spec* gives them
+# different required answers, and holding both rows is what makes the conflict
+# visible. Where the two rows demand opposite verdicts (see the xfail cells) the
+# helper signature cannot satisfy both — that is precisely the defect #699
+# tracks, and fixing it means giving the helpers a way to distinguish the two.
+#
 # Generated by running each helper over the matrix once and hardcoding the
-# result (2026-08-22, pyproj as pinned in uv.lock). To regenerate after an
-# intentional change, print `{a: {b: fn(crs_value(a), crs_value(b))}}` for each
-# helper and paste the result back here — do not relax an assertion to make a
-# surprise pass.
+# result (2026-08-22, pyproj as pinned in uv.lock), EXCEPT for the cells listed
+# in SPEC_XFAIL_* below, which hold the spec-correct answer that production does
+# not yet give. To regenerate after an intentional change, print
+# `{a: {b: fn(crs_value(a), crs_value(b))}}` for each helper and paste the
+# result back here — do not relax an assertion to make a surprise pass, and do
+# not overwrite an xfail cell with the observed value.
+
+# Cells asserting the spec-correct verdict that production currently gets wrong.
+# Each is run as xfail(strict=True) so that fixing #699 reports XPASS and fails.
+SPEC_XFAIL_IS_CRS84 = {
+    "null": (
+        "#699 — spec rule: an omitted `crs` defaults to OGC:CRS84, while a `crs` "
+        "explicitly present as null means the CRS is unknown/undefined. So an "
+        "explicit null is NOT CRS84, and _is_crs84_equivalent(None) returning True "
+        "for it is wrong. It returns True only because the value-level signature "
+        "already collapsed absent and null into the same None. gpio already shipped "
+        "this distinction elsewhere (root CHANGELOG, `Distinguish an explicit "
+        "crs: null (CRS *unknown*) from an omitted crs key`, #471, and "
+        "`gpio convert reproject --assume-crs84`), so this is a violation, not an "
+        "open design question."
+    ),
+}
+
+SPEC_XFAIL_CRS_EQUALS = {
+    ("absent", "crs84"): (
+        "#699 — spec rule: an omitted `crs` defaults to OGC:CRS84, so an absent CRS "
+        "and an explicit OGC:CRS84 are the same CRS and must compare equal. "
+        "_crs_equals never resolves the default: `crs1 is None or crs2 is None` "
+        "returns False before any comparison happens."
+    ),
+    ("crs84", "epsg4326"): (
+        "#699 — spec rule: GeoParquet fixes the stored coordinate order to (x, y) "
+        "regardless of the CRS's own axis definition, so OGC:CRS84 and EPSG:4326 "
+        "describe the same coordinates and must compare equal. _crs_equals "
+        "documents exactly that intent (it passes `ignore_axis_order=True`, and its "
+        "own comment reads 'Axis order is ignored because GeoParquet fixes "
+        "coordinate order to (x, y)') but the `id1 and id2 -> id1 == id2` fast path "
+        "returns first and defeats it for the single most common equivalent pair. "
+        "inspect_utils._crs_are_equivalent has the identical fast-path defect."
+    ),
+}
+
 IS_CRS84_EQUIVALENT = {
     "absent": True,
-    "null": True,
+    "null": False,  # SPEC value, xfail: production returns True
     "crs84": True,
     "epsg4326": True,
     "epsg5070": False,
 }
 
+# NOTE on the mirror cells. ("crs84", "absent") and ("epsg4326", "crs84") are the
+# same two bugs seen from the other side; _crs_equals is symmetric, so they are
+# equally wrong. They stay pinned at the observed False so that #699 gets exactly
+# one xfail per distinct violation rather than one per ordered pair. When #699
+# lands, the two xfails XPASS *and* these two mirrors fail — both signals point
+# at the same edit.
 CRS_EQUALS = {
-    "absent": {"absent": True, "null": True, "crs84": False, "epsg4326": False, "epsg5070": False},
+    "absent": {"absent": True, "null": True, "crs84": True, "epsg4326": False, "epsg5070": False},
     "null": {"absent": True, "null": True, "crs84": False, "epsg4326": False, "epsg5070": False},
-    "crs84": {"absent": False, "null": False, "crs84": True, "epsg4326": False, "epsg5070": False},
+    "crs84": {"absent": False, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
     "epsg4326": {
         "absent": False,
         "null": False,
@@ -566,7 +687,9 @@ CRS_ARE_EQUIVALENT = {
 # Each entry is (crs_a, crs_b, why it matters). Kept as data so
 # ``test_crs_helper_disagreement_inventory_is_exact`` fails if the set of
 # disagreements changes in either direction: a newly-agreeing cell means someone
-# fixed one silently, a new disagreement means a fresh inconsistency.
+# fixed one silently, a new disagreement means a fresh inconsistency. That guard
+# recomputes the observed set by CALLING both helpers — it must never derive it
+# from the pinned matrices above, or it degrades into a tautology over constants.
 CRS_DECISIONS = {
     ("absent", "absent"): (
         "_crs_equals says two missing CRSs are equal (None == None); "
@@ -592,8 +715,10 @@ CRS_DECISIONS = {
 # the unary helper and both binaries. ``_is_crs84_equivalent(x)`` asks "is x the
 # CRS84 default?" while ``_crs_equals(x, crs84)`` / ``_crs_are_equivalent(x, crs84)``
 # ask "is x equal to the CRS84 value?" Those should be the same question, and for
-# three of five inputs they give opposite answers. Derived from the literals above:
-# unary True vs both binaries False.
+# three of five inputs they give opposite answers (unary True, both binaries
+# False). ``test_unary_vs_binary_disagreement_inventory_is_exact`` recomputes this
+# set by CALLING the helpers, so this dict is documentation of the observed split,
+# never the source the guard checks itself against.
 UNARY_DECISIONS = {
     "absent": (
         "_is_crs84_equivalent(None) is True (absent CRS defaults to OGC:CRS84 per "
@@ -616,52 +741,108 @@ UNARY_DECISIONS = {
     ),
 }
 
-# DECISION (fallback contract asymmetry, found by source reading — deliberately
-# NOT covered by an executable case here; deferred to the consolidation PR):
-# the two binary helpers disagree on what pyproj equality MEANS when they fall
-# back to semantic comparison.
+# The two binary helpers also disagree on what pyproj equality MEANS when they
+# fall back to semantic comparison:
 #
 #   validate._crs_equals (~:2735):
 #       PyprojCRS.from_json_dict(crs1).equals(..., ignore_axis_order=True)
 #   inspect_utils._crs_are_equivalent (~:155):
 #       CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2))   # default: axis order MATTERS
 #
-# So for PROJJSON that carries no complete ``id`` — exactly when the fallback
-# runs — a lat/lon vs lon/lat pair is EQUAL to _crs_equals and NOT EQUAL to
-# _crs_are_equivalent. Since GeoParquet fixes coordinate order to (x, y)
-# regardless of the CRS's own axis definition, ``ignore_axis_order=True`` is the
-# spec-correct reading and _crs_are_equivalent's default ``.equals()`` is the
-# likely bug. The 5x5 matrix above cannot catch this: every value carries an
-# ``id``, so the fast path short-circuits before the fallback. Pinning it would
-# need id-less PROJJSON, whose verdicts churn with the pyproj version — hence a
-# recorded decision rather than a test.
+# The 5x5 matrix cannot reach this: every value in it carries a complete ``id``,
+# so both helpers short-circuit on the fast path and pyproj is never called at
+# all. ``test_id_less_projjson_axis_order_split_is_exact`` covers it with id-less
+# PROJJSON, pinning only that the two helpers DISAGREE rather than either
+# absolute verdict, so it does not churn with the pyproj/PROJ version.
 
 
-@pytest.mark.parametrize("name", CRS_NAMES)
+def _param_id_pair(name_a: str, name_b: str) -> str:
+    return f"{name_a}-{name_b}"
+
+
+# Unmarked product, for the helper whose cells are all pinned as observed.
+CRS_PAIRS = [
+    pytest.param(name_a, name_b, id=_param_id_pair(name_a, name_b))
+    for name_a, name_b in product(CRS_NAMES, repeat=2)
+]
+
+# Same product, with the two _crs_equals spec violations marked xfail.
+CRS_EQUALS_PAIRS = [
+    pytest.param(
+        name_a,
+        name_b,
+        id=_param_id_pair(name_a, name_b),
+        marks=(
+            [
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason=SPEC_XFAIL_CRS_EQUALS[(name_a, name_b)],
+                )
+            ]
+            if (name_a, name_b) in SPEC_XFAIL_CRS_EQUALS
+            else []
+        ),
+    )
+    for name_a, name_b in product(CRS_NAMES, repeat=2)
+]
+
+CRS_UNARY_PARAMS = [
+    pytest.param(
+        name,
+        id=name,
+        marks=(
+            [
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason=SPEC_XFAIL_IS_CRS84[name],
+                )
+            ]
+            if name in SPEC_XFAIL_IS_CRS84
+            else []
+        ),
+    )
+    for name in CRS_NAMES
+]
+
+
+@pytest.mark.parametrize("name", CRS_UNARY_PARAMS)
 def test_is_crs84_equivalent_matrix(name):
     """Pin ``validate._is_crs84_equivalent`` (unary) over the five CRS values.
 
     Note this helper takes ONE argument, so it contributes a 5-cell vector to the
-    matrix rather than a 5x5 grid.
+    matrix rather than a 5x5 grid. The "absent" and "null" cells make the very
+    same call, ``_is_crs84_equivalent(None)``, and demand opposite answers — the
+    "null" cell is the xfail, and its existence next to a passing "absent" cell
+    is the clearest statement of what #699 has to change.
     """
     assert _is_crs84_equivalent(crs_value(name)) is IS_CRS84_EQUIVALENT[name]
 
 
-@pytest.mark.parametrize("name_b", CRS_NAMES)
-@pytest.mark.parametrize("name_a", CRS_NAMES)
+@pytest.mark.parametrize(("name_a", "name_b"), CRS_EQUALS_PAIRS)
 def test_crs_equals_matrix(name_a, name_b):
-    """Pin ``validate._crs_equals`` over the full 5x5 matrix."""
+    """Pin ``validate._crs_equals`` over the full 5x5 matrix.
+
+    Rows "absent" and "null" issue identical calls (both reduce to None); they
+    are held separately because the spec requires different answers of them.
+    """
     assert _crs_equals(crs_value(name_a), crs_value(name_b)) is CRS_EQUALS[name_a][name_b]
 
 
-@pytest.mark.parametrize("name_b", CRS_NAMES)
-@pytest.mark.parametrize("name_a", CRS_NAMES)
+@pytest.mark.parametrize(("name_a", "name_b"), CRS_PAIRS)
 def test_crs_are_equivalent_matrix(name_a, name_b):
     """Pin ``inspect_utils._crs_are_equivalent`` over the full 5x5 matrix.
 
     Where this disagrees with ``_crs_equals`` the cell is listed in
     ``CRS_DECISIONS``; that disagreement is expected today, not a bug being
     pinned as correct.
+
+    No xfail marks here even though this helper shares both #699 defects
+    (absent != CRS84, CRS84 != EPSG:4326): the xfails live on the ``_crs_equals``
+    matrix so #699 carries one xfail per distinct violation rather than one per
+    helper. Fixing #699 turns those into XPASS and makes the mirror cells here
+    fail — the same edit resolves both signals.
     """
     assert (
         _crs_are_equivalent(crs_value(name_a), crs_value(name_b))
@@ -670,12 +851,22 @@ def test_crs_are_equivalent_matrix(name_a, name_b):
 
 
 def test_crs_helper_disagreement_inventory_is_exact():
-    """The set of cells where the two binary helpers disagree must not drift."""
+    """The set of cells where the two binary helpers disagree must not drift.
+
+    ``observed`` is built by CALLING both helpers, never by reading the pinned
+    matrices. Deriving it from the literals would make this a tautology over
+    constants that stays green through any production change — the exact
+    failure mode it exists to catch.
+
+    Scope: this covers the id fast path only, because every value in the matrix
+    carries a complete ``id``. The pyproj-fallback half of the split is pinned
+    by ``test_id_less_projjson_axis_order_split_is_exact``.
+    """
     observed = {
         (a, b)
-        for a in CRS_NAMES
-        for b in CRS_NAMES
-        if CRS_EQUALS[a][b] is not CRS_ARE_EQUIVALENT[a][b]
+        for a, b in product(CRS_NAMES, repeat=2)
+        if _crs_equals(crs_value(a), crs_value(b))
+        is not _crs_are_equivalent(crs_value(a), crs_value(b))
     }
     assert observed == set(CRS_DECISIONS), (
         "CRS helper disagreements changed.\n"
@@ -688,14 +879,16 @@ def test_unary_vs_binary_disagreement_inventory_is_exact():
     """ "Is x CRS84?" and "does x equal CRS84?" must not silently start agreeing.
 
     Guards the unary-vs-binary split the same way the binary-vs-binary guard
-    works: derived from the pinned literals, so consolidating the trio forces an
-    explicit update to UNARY_DECISIONS rather than a quiet behavior change.
+    does, and with the same rule: ``observed`` comes from CALLING the three
+    helpers, so consolidating the trio forces an explicit update to
+    UNARY_DECISIONS instead of passing silently over stale literals.
     """
+    crs84 = crs_value("crs84")
     observed = {
         name
         for name in CRS_NAMES
-        if IS_CRS84_EQUIVALENT[name] is not CRS_EQUALS[name]["crs84"]
-        or IS_CRS84_EQUIVALENT[name] is not CRS_ARE_EQUIVALENT[name]["crs84"]
+        if _is_crs84_equivalent(crs_value(name)) is not _crs_equals(crs_value(name), crs84)
+        or _is_crs84_equivalent(crs_value(name)) is not _crs_are_equivalent(crs_value(name), crs84)
     }
     assert observed == set(UNARY_DECISIONS), (
         "unary-vs-binary CRS84 disagreements changed.\n"
@@ -739,3 +932,88 @@ def test_absent_and_explicit_null_collapse_at_helper_boundary():
     )
     assert absent_col.get("crs") is None
     assert null_col.get("crs") is None
+
+
+def test_id_less_projjson_axis_order_split_is_exact():
+    """The binaries' pyproj fallbacks disagree about axis order. Pin the split.
+
+    This is the only material behavioral difference between the two binary
+    helpers that the 5x5 matrix cannot reach: every matrix value carries a
+    complete ``id``, so both helpers return from their fast path and pyproj is
+    never called. Strip the ``id`` and the fallbacks run, revealing::
+
+        validate._crs_equals             -> .equals(..., ignore_axis_order=True)
+        inspect_utils._crs_are_equivalent -> .equals(...)   # axis order MATTERS
+
+    What is pinned is only that the two helpers DISAGREE on this pair, not
+    either absolute verdict: the absolute answers come out of PROJ and would
+    make this test churn with the pyproj/PROJ version, whereas the disagreement
+    is a property of the two call sites. When the consolidation picks one
+    fallback contract, this test fails and should be deleted.
+
+    The PROJJSON is generated by pyproj rather than hand-written because a
+    hand-trimmed datum ensemble is not parseable ("ensemble should have at least
+    2 datums"), which would send BOTH helpers down their ``except -> False``
+    path and hide the split behind spurious agreement.
+    """
+    from pyproj import CRS as PyprojCRS
+
+    lon_lat = PyprojCRS.from_user_input("OGC:CRS84").to_json_dict()
+    lat_lon = PyprojCRS.from_epsg(4326).to_json_dict()
+    for projjson in (lon_lat, lat_lon):
+        projjson.pop("id", None)
+
+    # Preconditions, or the assertion below could pass through the fast path.
+    assert "id" not in lon_lat and "id" not in lat_lon
+    assert [axis["abbreviation"] for axis in lon_lat["coordinate_system"]["axis"]] == ["Lon", "Lat"]
+    assert [axis["abbreviation"] for axis in lat_lon["coordinate_system"]["axis"]] == ["Lat", "Lon"]
+    # Both must be pyproj-parseable, else both helpers fail closed and "agree".
+    assert PyprojCRS.from_json_dict(lon_lat) and PyprojCRS.from_json_dict(lat_lon)
+
+    assert _crs_equals(lon_lat, lat_lon) is not _crs_are_equivalent(lon_lat, lat_lon), (
+        "the two binary helpers now agree on an id-less lon/lat vs lat/lon pair. "
+        "Either the fallback contracts were unified (delete this test and record "
+        "the winner) or a pyproj change made .equals() axis-order-agnostic."
+    )
+
+
+# =============================================================================
+# 4. Version gating
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("version", "major", "minor", "expected"),
+    [
+        # The boundary itself: >= must include the equal case. An off-by-one
+        # (">=" turned into ">") is invisible to every other test in the repo.
+        ("1.1.0", 1, 1, True),
+        ("1.1", 1, 1, True),
+        ("2.0.0", 2, 0, True),
+        ("1.0.0", 1, 0, True),
+        # Just below the boundary.
+        ("1.0.0", 1, 1, False),
+        ("1.9.0", 2, 0, False),
+        # Parsed numerically, not lexicographically: "1.10.0" > "1.2.0".
+        ("1.10.0", 1, 2, True),
+        ("1.2.0", 1, 10, False),
+        # Missing minor defaults to 0; pre-release/build tags are stripped.
+        ("2", 2, 0, True),
+        ("1.0.0-beta.1", 1, 0, True),
+        ("1.1.0-beta.1", 1, 1, True),
+        ("1.0.0+build.5", 1, 0, True),
+        # Unparsable or non-string input fails closed.
+        ("not-a-version", 1, 0, False),
+        ("", 1, 0, False),
+        (None, 1, 0, False),
+        (1.1, 1, 1, False),
+    ],
+)
+def test_version_at_least_boundary(version, major, minor, expected):
+    """Pin ``validate._version_at_least``, which gates version-specific geo checks.
+
+    It decides which ``geo`` metadata rules apply (covering requires >= 1.1,
+    the 2.0 branch changes the encoding vocabulary), so an off-by-one here
+    silently applies the wrong spec version to a file's metadata.
+    """
+    assert _version_at_least(version, major, minor) is expected
