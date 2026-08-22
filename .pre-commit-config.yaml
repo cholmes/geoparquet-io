@@ -323,7 +323,7 @@ repos:
             # Only run if explicitly enabled via environment variable
             if [ "$ENABLE_PRE_PUSH_TESTS" = "1" ]; then
               echo "Running fast tests..."
-              uv run pytest -n auto -m "not slow and not network" --tb=short
+              uv run pytest -n auto -m "not slow and not network and not meta" --tb=short
             else
               # Silent pass - tests not enabled
               exit 0

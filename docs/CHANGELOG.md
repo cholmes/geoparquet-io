@@ -258,6 +258,28 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   (`tests/test_coverage_job.py` asserts the flag names a combination the matrix
   actually schedules).
 
+- **Repo-tooling tests moved to a `meta` lane, out of the fast suite (#665).**
+  The codespell, commitizen, doc-sync, mutmut, mypy, validate-CLAUDE.md and
+  security-tool-availability checks now carry `@pytest.mark.meta`. They spawn
+  `uv run` subprocesses and were the fast suite's only source of contention
+  flakes. Most of them re-run something CI checks elsewhere — codespell,
+  doc-sync, mypy and validate-claude-md are pre-commit hooks the lint job runs,
+  and the bandit/pip-audit availability checks are covered for real by the
+  `security` job — while the commitizen and mutmut tests validate configuration
+  that no hook in the lint job touches (commitizen is a `commit-msg`-stage hook,
+  mutmut has no hook at all), which is why the lane still runs in CI rather than
+  being deleted. The fast selection is now
+  `-m "not slow and not network and not meta"` and the slow/nightly job runs
+  `-m "(slow or meta) and not network"` with no file-level exclusions, so
+  nothing stops being checked in CI. Run them locally with
+  `uv run pytest -m meta`. `tests/test_validate_claude_md.py` also drops five of
+  its seven `uv run` spawns in favour of calling the validator's `main()` in
+  process, keeping the happy path and one detected-error path as real
+  subprocesses. The nightly mutation run picks the lane up too: mutmut's
+  per-mutant selection is now `not slow and not network and not meta`, which
+  replaces the per-file `--ignore` list it needed to keep those subprocesses
+  from resolving the *mutated* package out of mutmut's `mutants/` tree.
+
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
   within ±180/±90) under a projected CRS now reports a WARNING instead of

@@ -13,6 +13,12 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+# Repo tooling checks: mutation-testing and nightly-workflow configuration, not
+# library behaviour. Runs in the meta lane, not the fast suite. mutmut has no
+# pre-commit hook, so unlike most of the lane this is not duplicated by the
+# lint job -- the meta lane is the only place it is checked.
+pytestmark = pytest.mark.meta
+
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
@@ -96,11 +102,13 @@ class TestMutmutConfig:
         mutmut 3 runs pytest in-process and ignores a `runner` string, so the
         marker filter must live in pytest_add_cli_args. Without it, every
         mutant would run slow/network tests (nondeterministic and far too
-        slow).
+        slow) and the meta lane, whose `uv run ...` subprocesses would
+        resolve the mutated package from mutmut's mutants/ cwd.
         """
         args = mutmut_config.get("pytest_add_cli_args", [])
-        assert "not slow and not network" in args, (
-            "mutmut pytest_add_cli_args must filter to fast tests"
+        assert "not slow and not network and not meta" in args, (
+            "mutmut pytest_add_cli_args must filter to the fast suite: the same "
+            "selection CI runs, minus the meta lane"
         )
         assert "--no-cov" in args, (
             "mutmut pytest_add_cli_args must disable coverage (per-mutant "

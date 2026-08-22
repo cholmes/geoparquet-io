@@ -147,7 +147,8 @@ Additional patterns (not yet enforced):
 Config in `pyproject.toml [tool.pytest.ini_options]`.
 
 ```bash
-uv run pytest -n auto -m "not slow and not network"  # Fast tests (no coverage)
+uv run pytest -n auto -m "not slow and not network and not meta"  # Fast tests (no coverage)
+uv run pytest -m meta                                             # Repo tooling checks
 uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0  # opt into coverage
 ```
 
@@ -159,6 +160,12 @@ is fast and a partial run can't fail a whole-suite gate. The 67% floor and the 9
 diff-cover gate on changed lines are enforced in CI (the ubuntu/3.11 job in
 `.github/workflows/tests.yml`), which passes the coverage flags explicitly.
 
+The `meta` lane (codespell, commitizen, doc-sync, mutmut, mypy,
+validate-claude-md, security tool checks) is excluded from the fast suite and
+runs in the slow/nightly job instead. Pre-commit covers most of it locally, but
+not all: commitizen is a `commit-msg`-stage hook and mutmut has no hook, so
+`uv run pytest -m meta` is the only local way to check those two.
+
 <!-- BEGIN GENERATED: test-markers -->
 ### Test Markers
 
@@ -168,6 +175,7 @@ diff-cover gate on changed lines are enforced in CI (the ubuntu/3.11 job in
 | `@pytest.mark.network` | marks tests requiring network access (deselect with '-m "not network"') |
 | `@pytest.mark.integration` | marks end-to-end integration tests |
 | `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
+| `@pytest.mark.meta` | repo tooling checks, excluded from the fast suite |
 <!-- END GENERATED: test-markers -->
 
 ---

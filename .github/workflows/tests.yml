@@ -199,11 +199,11 @@ jobs:
           # shellcheck disable=SC2086
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 4 --dist=loadfile -m "not slow and not network and not meta" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 3 -m "not slow and not network and not meta" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 4 -m "not slow and not network and not meta" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload coverage to Codecov
@@ -339,11 +339,19 @@ jobs:
             && '--cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0'
             || '--no-cov' }}
         run: |
-          # Security tests (the live pip-audit) are owned by the dedicated
-          # `security` job, which handles CVE ignores and PR blocking. Never run
-          # them here too — that duplication broke main whenever the two pip-audit
-          # ignore lists drifted apart.
-          IGNORE_SECURITY="--ignore=tests/test_security.py"
+          # The selection is "(slow or meta) and not network". `meta` is the
+          # repo-tooling lane (codespell, commitizen, doc-sync, mutmut, mypy,
+          # validate-claude-md, the security-tool availability checks). Those
+          # are excluded from the fast suite -- they spawn subprocesses and
+          # caused its only flakes -- so this job is where they still run.
+          #
+          # tests/test_security.py is NOT excluded here: the marker selection
+          # already skips everything in it except the two `meta`-marked tool
+          # availability checks, and excluding the file outright would leave
+          # those running in no CI job at all. The live pip-audit that used to
+          # justify a file-level ignore no longer lives there -- see the NOTE
+          # in tests/test_security.py, which records why it must stay owned by
+          # the dedicated `security` job and never come back as a pytest test.
 
           # word-splitting intended: COV_ARGS is a flag list (or --no-cov).
           # The directive binds to the NEXT command, so it has to sit here and
@@ -352,11 +360,11 @@ jobs:
           # shellcheck disable=SC2086
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 4 --dist=loadfile -m "(slow or meta) and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 3 -m "(slow or meta) and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
+            uv run pytest -n 4 -m "(slow or meta) and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload slow test coverage to Codecov
