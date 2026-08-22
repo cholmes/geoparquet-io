@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Module-level imports for WFS functions (avoids per-test imports)
+from geoparquet_io.core import wfs as wfs_module
 from geoparquet_io.core.wfs import (
     EmptyLayerError,
     LayerNotFoundError,
@@ -30,6 +31,57 @@ from geoparquet_io.core.wfs import (
     get_wfs_capabilities,
     list_available_layers,
 )
+
+
+@pytest.fixture
+def offline_wfs_probes():
+    """Complete the mock for the WFS entry points so they stop reaching the network.
+
+    Mocking ``negotiate_wfs_version`` / ``get_layer_info`` /
+    ``fetch_all_features_duckdb`` is *not* enough to take ``wfs_to_table``
+    offline. Before it reaches the mocked fetch, its auto-tiling logic calls
+    ``_get_feature_count`` twice (once for WFS 2.0.0, then for the requested
+    version), and those calls are unmocked. Against a fake host they resolve to
+    real DNS lookups that fail, and ``_get_feature_count`` swallows every
+    exception -- so the tests still passed while quietly burning the 1s+2s
+    retry backoff twice, ~6s per test.
+
+    ``_probe_startindex_limit`` is the same trap one level down, and it is
+    load-bearing for a different caller: ``fetch_all_features_duckdb`` probes
+    the server's startIndex support before paging, so tests that call it
+    directly (``TestAutoPageSingleWorker``) leak even though they mock the page
+    fetcher. It swallows ``httpx.HTTPError`` the same way.
+
+    Stubbing both probes to ``None`` reproduces exactly what the failed requests
+    already returned, so no assertion changes meaning. ``_make_request`` is
+    additionally replaced with a tripwire, and the recorded calls are asserted
+    on teardown so a *future* unmocked network path fails loudly instead of
+    silently sleeping.
+
+    Scope note: the tripwire covers only ``_make_request``-mediated traffic.
+    ``_fetch_wfs_page`` and ``_probe_startindex_limit`` drive httpx directly and
+    bypass it; they are covered by the explicit stubs above, not by the
+    tripwire. A new httpx-driven helper would therefore escape silently -- add
+    it to this fixture rather than assuming the tripwire caught it.
+    """
+    escaped_requests: list[str] = []
+
+    def _blocked_request(url, *args, **kwargs):
+        escaped_requests.append(url)
+        raise AssertionError(f"unmocked WFS HTTP request to {url}")
+
+    with (
+        patch.object(wfs_module, "_get_feature_count", return_value=None),
+        patch.object(wfs_module, "_probe_startindex_limit", return_value=None),
+        patch.object(wfs_module, "_make_request", side_effect=_blocked_request),
+    ):
+        yield
+
+    assert not escaped_requests, (
+        f"wfs_to_table made unmocked HTTP request(s): {escaped_requests}. "
+        "Extend the offline_wfs_probes fixture to cover the new call."
+    )
+
 
 # =============================================================================
 # Mock WFS Response Data
@@ -1713,8 +1765,17 @@ class TestEmptyProperties:
         assert result.column_names == ["geometry"]
 
 
+@pytest.mark.usefixtures("offline_wfs_probes")
 class TestAutoPageSingleWorker:
-    """Test that single-worker mode auto-paginates for large datasets."""
+    """Test that single-worker mode auto-paginates for large datasets.
+
+    These call ``fetch_all_features_duckdb`` directly, which probes the server's
+    startIndex support before paging. That probe drives httpx itself, so mocking
+    the page fetcher does not cover it -- the three tests here reached
+    ``mock.wfs:443`` on every run. Stubbing the probe to ``None`` reproduces what
+    the failed request already returned (``_probe_startindex_limit`` swallows
+    ``httpx.HTTPError``), so no assertion changes meaning.
+    """
 
     def test_single_worker_paginates_when_count_exceeds_page_size(self):
         """With max_workers=1 and total > page_size, should paginate sequentially."""
@@ -2435,6 +2496,7 @@ class TestCRSValidation:
         assert 0 < x < 10, f"Expected longitude ~4-6, got {x}"
         assert 45 < y < 55, f"Expected latitude ~50, got {y}"
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_reprojects_on_mismatch(self):
         """wfs_to_table should reproject when output_crs set and server returns different CRS."""
         from unittest.mock import MagicMock, patch
@@ -2493,6 +2555,7 @@ class TestCRSValidation:
         assert -180 <= x <= 180, f"X {x} not in WGS84 range"
         assert -90 <= y <= 90, f"Y {y} not in WGS84 range"
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_reproject_error_wrapped_in_wfs_error(self):
         """Reprojection errors should be wrapped in WFSError with context."""
         from unittest.mock import MagicMock, patch
@@ -2780,6 +2843,7 @@ class TestResolveCRSForOutput:
         # The fallback to coordinate inference is announced (visible under --verbose).
         assert any("declared no CRS" in str(call.args[0]) for call in mock_debug.call_args_list)
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_trusts_server_crs_end_to_end(self):
         """End-to-end #499 regression: declared EPSG:22174 stays EPSG:22174."""
         import json
@@ -2818,6 +2882,7 @@ class TestResolveCRSForOutput:
         expected = parse_crs_string_to_projjson("EPSG:22174")
         assert geo["columns"]["geometry"]["crs"] == expected
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self):
         """Issue #499: local bbox filtering must not drop the server CRS.
 
@@ -2863,6 +2928,7 @@ class TestResolveCRSForOutput:
         geo = json.loads(result.schema.metadata[b"geo"])
         assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_local_bbox_filter_reprojects_bbox_to_server_crs(self):
         """Issue #499: a bbox in the requested CRS must be aligned to the CRS the
         server actually returned, or local filtering drops valid rows.
@@ -2904,6 +2970,7 @@ class TestResolveCRSForOutput:
         # The point is retained because the bbox was reprojected to EPSG:22174.
         assert result.num_rows == 1
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
         """The internal server-CRS marker never leaks into the output schema.
 
