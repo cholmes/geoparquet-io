@@ -157,7 +157,11 @@ DISK_REWRITE_IGNORES_ROW_GROUP_ROWS = Divergence(
         "with PyArrow defaults, so a caller's row-group sizing is silently "
         "dropped. The other three strategies honour it. See gpio #689."
     ),
-    assertion_contains="row groups",
+    # Deliberately narrower than "row groups": that also matches the
+    # row-conservation assert ("row groups hold N rows but the file claims M"),
+    # so a genuine row-loss regression in this one cell would have been
+    # absorbed as an xfail instead of failing.
+    assertion_contains="row groups, got",
 )
 
 AUTO_VERSION_NATIVE_DOWNGRADE = Divergence(
