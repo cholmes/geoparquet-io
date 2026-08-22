@@ -1,0 +1,298 @@
+"""Validation of GeoArrow-encoded GeoParquet 1.1 files (gpio #691).
+
+GeoParquet 1.1 permits the single-geometry-type GeoArrow encodings
+("point", "linestring", "polygon", "multipoint", "multilinestring",
+"multipolygon") alongside "WKB". 1.0 and 2.0 are WKB-only per their spec
+text. gpio's own ``--geoparquet-version 1.1-geoarrow`` output must therefore
+pass ``validate_geoparquet`` end-to-end, and no check may crash (DuckDB binder
+error) on a nested GeoArrow column.
+"""
+
+import json
+
+import pyarrow.parquet as pq
+import pytest
+import shapely
+from shapely import wkt
+
+from geoparquet_io.core.common import (
+    get_duckdb_connection,
+    get_parquet_metadata,
+    write_parquet_with_metadata,
+)
+from geoparquet_io.core.validate import (
+    CheckStatus,
+    _check_encoding_valid,
+    validate_geoparquet,
+)
+
+# encoding -> (WKTs, declared geometry_types)
+GEOARROW_CASES = {
+    "point": (["POINT (1 2)", "POINT (3 4)"], ["Point"]),
+    "linestring": (["LINESTRING (0 0, 1 1, 2 0)"], ["LineString"]),
+    "polygon": (["POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"], ["Polygon"]),
+    "multipoint": (["MULTIPOINT ((0 0), (1 1))"], ["MultiPoint"]),
+    "multilinestring": (["MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))"], ["MultiLineString"]),
+    "multipolygon": (
+        ["MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((2 2, 3 2, 3 3, 2 2)))"],
+        ["MultiPolygon"],
+    ),
+}
+
+
+def _write_wkb_source(path, wkts, geometry_types, version="1.1.0"):
+    """Write a plain WKB GeoParquet file (the input the writer converts from)."""
+    import pyarrow as pa
+
+    geo = {
+        "version": version,
+        "primary_column": "geometry",
+        "columns": {"geometry": {"encoding": "WKB", "geometry_types": geometry_types}},
+    }
+    geoms = [None if w is None else shapely.to_wkb(wkt.loads(w), flavor="iso") for w in wkts]
+    table = pa.table({"id": list(range(len(geoms))), "geometry": geoms})
+    pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), path)
+    return path
+
+
+def _write_geoarrow(tmp_path, name, wkts, geometry_types):
+    """Produce a 1.1-geoarrow file through gpio's own write path."""
+    src = _write_wkb_source(tmp_path / f"{name}_src.parquet", wkts, geometry_types)
+    out = tmp_path / f"{name}.parquet"
+    con = get_duckdb_connection()
+    try:
+        metadata, _ = get_parquet_metadata(str(src))
+        write_parquet_with_metadata(
+            con,
+            f"SELECT * FROM read_parquet('{src.as_posix()}')",
+            str(out),
+            original_metadata=metadata,
+            geoparquet_version="1.1-geoarrow",
+            input_file=str(src),
+        )
+    finally:
+        con.close()
+    return out
+
+
+def _rewrite_geo_metadata(path, out_path, mutate):
+    """Copy a parquet file, mutating only its 'geo' schema metadata."""
+    table = pq.read_table(path)
+    geo = json.loads(table.schema.metadata[b"geo"])
+    mutate(geo)
+    other = {k: v for k, v in (table.schema.metadata or {}).items() if k != b"geo"}
+    other[b"geo"] = json.dumps(geo).encode()
+    pq.write_table(table.replace_schema_metadata(other), out_path)
+    return out_path
+
+
+def _checks_by_name(result):
+    return {c.name: c for c in result.checks}
+
+
+def _binder_errors(result):
+    return [c.name for c in result.checks if "Binder Error" in (c.message or "")]
+
+
+@pytest.fixture(scope="module")
+def geoarrow_files(tmp_path_factory):
+    """One 1.1-geoarrow file per permitted GeoArrow encoding."""
+    base = tmp_path_factory.mktemp("geoarrow")
+    return {
+        encoding: _write_geoarrow(base, encoding, wkts, types)
+        for encoding, (wkts, types) in GEOARROW_CASES.items()
+    }
+
+
+class TestGeoArrowFilesValidate:
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_geoarrow_file_passes_validation(self, geoarrow_files, encoding):
+        path = geoarrow_files[encoding]
+        written = json.loads(pq.read_schema(path).metadata[b"geo"])
+        assert written["columns"]["geometry"]["encoding"] == encoding
+
+        result = validate_geoparquet(str(path), validate_data=True, sample_size=0)
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
+        assert result.is_valid
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_no_check_hits_a_duckdb_binder_error(self, geoarrow_files, encoding):
+        result = validate_geoparquet(
+            str(geoarrow_files[encoding]), validate_data=True, sample_size=0
+        )
+        assert _binder_errors(result) == []
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_data_checks_actually_run(self, geoarrow_files, encoding):
+        """The data scans must report on the column, not silently vanish."""
+        result = validate_geoparquet(
+            str(geoarrow_files[encoding]), validate_data=True, sample_size=0
+        )
+        checks = _checks_by_name(result)
+        for name in (
+            "encoding_matches_data_geometry",
+            "geometry_types_match_data_geometry",
+            "bbox_contains_data_geometry",
+            "coordinates_valid_for_crs_geometry",
+        ):
+            assert name in checks, sorted(checks)
+            assert checks[name].status != CheckStatus.FAILED, checks[name].message
+
+
+class TestEncodingVersionGating:
+    """1.1 permits GeoArrow encodings; 1.0 and 2.0 are WKB-only per spec text."""
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_geoarrow_accepted_for_1_1(self, encoding):
+        check = _check_encoding_valid({"encoding": encoding}, "geometry", "1.1.0")
+        assert check.status == CheckStatus.PASSED, check.message
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_geoarrow_rejected_for_1_0(self, encoding):
+        check = _check_encoding_valid({"encoding": encoding}, "geometry", "1.0.0")
+        assert check.status == CheckStatus.FAILED
+        assert "1.1" in check.message
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_geoarrow_rejected_for_2_0(self, encoding):
+        check = _check_encoding_valid({"encoding": encoding}, "geometry", "2.0.0")
+        assert check.status == CheckStatus.FAILED
+
+    @pytest.mark.parametrize("version", ["1.0.0", "1.1.0", "2.0.0"])
+    def test_wkb_always_accepted(self, version):
+        check = _check_encoding_valid({"encoding": "WKB"}, "geometry", version)
+        assert check.status == CheckStatus.PASSED, check.message
+
+    @pytest.mark.parametrize("encoding", ["WKT", "geoarrow.point", "Point", "", None])
+    def test_unknown_encodings_still_rejected(self, encoding):
+        check = _check_encoding_valid({"encoding": encoding}, "geometry", "1.1.0")
+        assert check.status == CheckStatus.FAILED
+
+    def test_1_0_file_claiming_geoarrow_encoding_fails_end_to_end(self, tmp_path):
+        """A 1.0 file may not claim a GeoArrow encoding, even with matching data."""
+        src = _write_wkb_source(
+            tmp_path / "v10_src.parquet", ["POINT (1 2)"], ["Point"], version="1.0.0"
+        )
+        out = _rewrite_geo_metadata(
+            src,
+            tmp_path / "v10_geoarrow_claim.parquet",
+            lambda geo: geo["columns"]["geometry"].update({"encoding": "point"}),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        check = _checks_by_name(result)["encoding_valid_geometry"]
+        assert check.status == CheckStatus.FAILED
+        assert not result.is_valid
+
+
+class TestWkbBehaviorUnchanged:
+    def test_wkb_file_still_validates(self, tmp_path):
+        src = _write_wkb_source(tmp_path / "wkb.parquet", ["POINT (1 2)", "POINT (3 4)"], ["Point"])
+        result = validate_geoparquet(str(src), validate_data=True, sample_size=0)
+        checks = _checks_by_name(result)
+        assert checks["encoding_valid_geometry"].status == CheckStatus.PASSED
+        assert checks["geometry_byte_array_geometry"].status == CheckStatus.PASSED
+        assert checks["encoding_matches_data_geometry"].status == CheckStatus.PASSED
+        assert checks["geometry_types_match_data_geometry"].status == CheckStatus.PASSED
+
+    def test_byte_array_column_may_not_claim_a_geoarrow_encoding(self, tmp_path):
+        """encoding "point" over a BYTE_ARRAY column contradicts the spec layout."""
+        src = _write_wkb_source(tmp_path / "wkb_src.parquet", ["POINT (1 2)"], ["Point"])
+        out = _rewrite_geo_metadata(
+            src,
+            tmp_path / "wkb_claiming_point.parquet",
+            lambda geo: geo["columns"]["geometry"].update({"encoding": "point"}),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        checks = _checks_by_name(result)
+        assert checks["geometry_byte_array_geometry"].status == CheckStatus.FAILED
+        assert not result.is_valid
+        assert _binder_errors(result) == []
+
+
+class TestGeoArrowDataChecksStillCatchErrors:
+    def test_undeclared_geometry_type_is_detected(self, geoarrow_files, tmp_path):
+        out = _rewrite_geo_metadata(
+            geoarrow_files["polygon"],
+            tmp_path / "polygon_wrong_types.parquet",
+            lambda geo: geo["columns"]["geometry"].update({"geometry_types": ["Point"]}),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        check = _checks_by_name(result)["geometry_types_match_data_geometry"]
+        assert check.status == CheckStatus.FAILED, check.message
+
+    def test_bbox_not_containing_data_is_detected(self, geoarrow_files, tmp_path):
+        out = _rewrite_geo_metadata(
+            geoarrow_files["polygon"],
+            tmp_path / "polygon_wrong_bbox.parquet",
+            lambda geo: geo["columns"]["geometry"].update({"bbox": [10.0, 10.0, 11.0, 11.0]}),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        check = _checks_by_name(result)["bbox_contains_data_geometry"]
+        assert check.status == CheckStatus.FAILED, check.message
+
+    def test_encoding_not_matching_the_stored_layout_is_detected(self, geoarrow_files, tmp_path):
+        """A struct-of-points column may not claim the "polygon" nesting."""
+        out = _rewrite_geo_metadata(
+            geoarrow_files["point"],
+            tmp_path / "point_claiming_polygon.parquet",
+            lambda geo: geo["columns"]["geometry"].update(
+                {"encoding": "polygon", "geometry_types": ["Polygon"]}
+            ),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        check = _checks_by_name(result)["encoding_matches_data_geometry"]
+        assert check.status == CheckStatus.FAILED, check.message
+        assert "Binder Error" not in check.message
+
+
+class TestGeoArrowEdgeCases:
+    def test_z_dimension_is_reported_in_geometry_types(self, tmp_path):
+        out = _write_geoarrow(tmp_path, "pointz", ["POINT Z (1 2 3)"], ["Point Z"])
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
+
+    def test_z_dimension_missing_from_declaration_is_detected(self, tmp_path):
+        src = _write_geoarrow(tmp_path, "pointz2", ["POINT Z (1 2 3)"], ["Point Z"])
+        out = _rewrite_geo_metadata(
+            src,
+            tmp_path / "pointz_flat_claim.parquet",
+            lambda geo: geo["columns"]["geometry"].update({"geometry_types": ["Point"]}),
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        check = _checks_by_name(result)["geometry_types_match_data_geometry"]
+        assert check.status == CheckStatus.FAILED, check.message
+
+    def test_empty_and_null_geometries_do_not_break_checks(self, tmp_path):
+        out = _write_geoarrow(
+            tmp_path,
+            "empties",
+            ["POLYGON EMPTY", "POLYGON ((0 0, 1 0, 1 1, 0 0))"],
+            ["Polygon"],
+        )
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
+
+    def test_empty_point_nan_coordinates_do_not_break_checks(self, tmp_path):
+        out = _write_geoarrow(tmp_path, "emptypoint", ["POINT EMPTY", "POINT (1 2)"], ["Point"])
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
+
+    def test_null_geometry_rows_do_not_break_checks(self, tmp_path):
+        out = _write_geoarrow(tmp_path, "nullgeom", [None, "POINT (1 2)"], ["Point"])
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
