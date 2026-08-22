@@ -5,6 +5,7 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
@@ -3661,6 +3662,111 @@ class TestGetFeatureCountWithBbox:
         assert result == 100
         call_params = mock_req.call_args[1]["params"]
         assert "bbox" not in call_params
+
+
+class TestGetFeatureCountErrorVisibility:
+    """A failed count probe must be visible, not silently degrade auto-tiling (#678)."""
+
+    def test_wfs_error_returns_none_and_warns(self, caplog):
+        """A WFSError from the probe returns None but logs a warning naming the cause."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=WFSError("Request failed after 3 attempts: connection refused"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("connection refused" in m for m in warnings), warnings
+        assert any("count" in m.lower() for m in warnings), warnings
+
+    def test_transport_error_returns_none_and_warns(self, caplog):
+        """An httpx transport error is expected — warn and degrade, do not raise."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=httpx.ConnectError("nodename nor servname provided"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("nodename nor servname provided" in m for m in warnings), warnings
+
+    def test_programming_error_propagates(self):
+        """A TypeError is a bug in gpio, not a server problem — it must surface."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=TypeError("_make_request() got an unexpected keyword argument"),
+            ),
+            pytest.raises(TypeError),
+        ):
+            _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+    def test_successful_probe_does_not_warn(self, caplog):
+        """The happy path is unchanged and silent."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", return_value=b'numberMatched="7"'),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0")
+
+        assert result == 7
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_server_without_count_returns_none_without_warning(self, caplog):
+        """ "Server reports no count" is a normal answer, distinct from a failed probe."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", return_value=b"<wfs:FeatureCollection/>"),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+        assert result is None
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_auto_tiling_still_engages_when_probe_succeeds(self):
+        """Regression guard: a working probe still drives the auto-tiling decision."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        seen = []
+
+        def fake_request(url, params=None, **kwargs):
+            # Root tile is over the limit; every quadrant is under it.
+            seen.append(params.get("bbox", ""))
+            n = 500 if len(seen) == 1 else 10
+            return f'numberOfFeatures="{n}"'.encode()
+
+        with patch("geoparquet_io.core.wfs._make_request", side_effect=fake_request):
+            tiles = _refine_tiles_adaptive(
+                [(0.0, 0.0, 4.0, 4.0)],
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                "EPSG:4326",
+                "xy",
+                max_per_tile=100,
+            )
+
+        assert len(tiles) == 4
 
 
 class TestDeduplicateTiles:

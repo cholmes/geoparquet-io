@@ -404,6 +404,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   encodings. A type string that does not carry geoarrow's names — the generic
   `list<element: ...>`, or the typeless group node `parquet_schema()` reports
   for remote files — is not evidence of a wrong encoding and is not failed on.
+
+- **`gpio extract wfs` no longer hides a failed feature-count probe.** The
+  `resultType=hits` probe that drives auto-tiling wrapped its whole body in a
+  bare `except Exception: pass`, so any server hiccup, unreachable host, or bug
+  inside the probe returned "no count" indistinguishably from a server that
+  genuinely does not report one — silently disabling auto-tiling and
+  pagination, the exact path that yields a **silently truncated** table plus a
+  success message. Expected failures (`WFSError`, transport, and OS errors) now
+  log a warning naming the cause and the consequence; programming errors are no
+  longer swallowed and surface as the bugs they are. The "count unavailable"
+  return contract is unchanged, so extraction still degrades rather than
+  aborting.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

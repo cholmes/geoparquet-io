@@ -55,6 +55,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
 )
+from geoparquet_io.core.exceptions import RemoteAccessError
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
@@ -1188,10 +1189,14 @@ def _get_feature_count(
         axis_order: Bbox axis order ("auto", "xy", "latlon")
 
     Returns:
-        Feature count or None if not supported
+        Feature count, or None if the server does not report one *or* the probe
+        failed. A failed probe is logged as a warning (see below) so the
+        resulting loss of auto-tiling / pagination is visible in the logs.
     """
     if version == "1.0.0":
         return None  # resultType=hits not supported in WFS 1.0.0
+
+    import httpx
 
     clean_url = _clean_service_url(service_url)
     params = {
@@ -1207,22 +1212,32 @@ def _get_feature_count(
 
     try:
         content = _make_request(clean_url, params=params)
+    except (WFSError, RemoteAccessError, httpx.HTTPError, OSError) as e:
+        # Expected failure modes: the service is down, unreachable, rejecting us,
+        # or timing out. Degrade to "count unknown" rather than aborting the
+        # extraction, but say so — a silent None disables auto-tiling and
+        # pagination, which is how servers return silently truncated results
+        # (issue #678). Programming errors are not caught: they must surface.
+        warn(
+            f"Feature count probe (resultType=hits) failed for '{typename}' "
+            f"at WFS {version}: {type(e).__name__}: {e}. Continuing without a "
+            "server feature count — auto-tiling and pagination cannot engage, "
+            "so results from a server that caps responses may be incomplete."
+        )
+        return None
 
-        # Parse XML response to find numberOfFeatures
-        import re
+    # Parse XML response to find numberOfFeatures
+    match = re.search(rb'numberOfFeatures="(\d+)"', content)
+    if match:
+        return int(match.group(1))
 
-        match = re.search(rb'numberOfFeatures="(\d+)"', content)
-        if match:
-            return int(match.group(1))
+    # Try alternative attribute name
+    match = re.search(rb'numberMatched="(\d+)"', content)
+    if match:
+        return int(match.group(1))
 
-        # Try alternative attribute name
-        match = re.search(rb'numberMatched="(\d+)"', content)
-        if match:
-            return int(match.group(1))
-
-    except Exception:
-        pass
-
+    # Server answered but reported no count — a normal outcome, not a failure.
+    debug(f"WFS {version} hits response for '{typename}' carried no feature count")
     return None
 
 
