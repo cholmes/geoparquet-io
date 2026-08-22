@@ -39,7 +39,8 @@ def _bbox_metadata_advice(parquet_file: str) -> str:
     if covering_supported(version):
         return "Run 'gpio add bbox-metadata' to add metadata, or use --force to replace."
     return (
-        f"'covering' requires GeoParquet 1.1+ (this file is {version}). Convert first: "
+        f"'covering' requires GeoParquet 1.1+ (this file is {version}). Use --force to "
+        "rewrite the bbox column at 1.1 with covering, or convert first: "
         "gpio convert geoparquet IN.parquet OUT.parquet --geoparquet-version 1.1"
     )
 
@@ -205,7 +206,9 @@ def add_bbox_column(
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
 
     Note:
-        Bbox covering metadata is automatically added when the file is written.
+        Bbox covering metadata is automatically added when the file is written,
+        except for GeoParquet 1.0 output: 'covering' was introduced in 1.1, so a
+        1.0 file gets the bbox column without the covering key.
     """
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
