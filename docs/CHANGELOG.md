@@ -86,6 +86,17 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   default from an explicit `None`, and skips below that; the help-render cases
   still run.
 
+- **Spatial-index golden-value tests (#664)**: `tests/test_spatial_index_golden.py`
+  pins the cell values every index family (h3, s2, a5, quadkey, kdtree) assigns to
+  a fixed eight-geometry fixture — both hemispheres, both sides of the
+  antimeridian, a point a hair off a cell corner, and a polygon wide enough that
+  centroid keying is distinguishable from bbox-corner keying. The suite asserts
+  that `add_*_table`, `partition_by_*`, the streaming `add_*_column` path,
+  `sort quadkey`, and the `gpio add h3` CLI all agree on those same values, so an
+  index-registry refactor that silently moves a geometry into a different cell
+  fails a test that names the index and the point. a5 cases carry `network`
+  (community extension download); the rest run offline.
+
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
   tippecanoe, pinned to the zoom band where its worst tile fits the
