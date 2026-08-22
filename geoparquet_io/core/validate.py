@@ -773,16 +773,29 @@ def _check_geometry_not_grouped(
 
 # GeoArrow encoding -> number of LIST levels wrapping the coordinate struct.
 #
-# Depth is not a unique key: two pairs share a level and are therefore
-# structurally identical in Parquet, storing exactly the same bytes —
-#   linestring <-> multipoint      (depth 1, STRUCT(x,y)[])
-#   polygon    <-> multilinestring (depth 2, STRUCT(x,y)[][])
-# so a column mislabeled as its twin cannot be caught from the layout alone.
-# That is a *missed detection*, never a false positive: a correctly labeled
-# file always passes. Only the extension name in the Arrow field metadata
-# ("geoarrow.multipoint") distinguishes them, and reading it would mean a
-# pq.read_schema() call (pyarrow.parquet is already imported in this module's
-# callers) — a possible future strengthening, not a correctness gap today.
+# Depth is not a unique key. Two pairs share a level and hold identical
+# coordinate data, so depth alone cannot tell them apart:
+#   linestring <-> multipoint      (depth 1)
+#   polygon    <-> multilinestring (depth 2)
+# A column mislabeled as its twin is therefore not caught here. That is a
+# *missed detection*, never a false rejection: a correctly labeled file always
+# passes.
+#
+# They are distinguishable, though, and cheaply. The nested list fields are
+# named per encoding, and those names are already inside the type string this
+# module reads via get_schema_info():
+#   linestring       list<vertices: struct<x,y>>
+#   multipoint       list<points:   struct<x,y>>
+#   polygon          list<vertices: list<rings:       struct<x,y>>>
+#   multilinestring  list<vertices: list<linestrings: struct<x,y>>>
+# Matching those names would be the zero-cost strengthening.
+#
+# Note the names are not stored in the Parquet file (its fields are the
+# generic "element"); they are how geoarrow.pyarrow renders the extension
+# type, which it resolves from the ARROW:extension:name field metadata that
+# gpio's writer does emit ("geoarrow.linestring"). So the names are available
+# on the pyarrow schema path only — on the DuckDB path the type is None and
+# neither signal is present.
 _GEOARROW_LIST_DEPTH = {
     "point": 0,
     "linestring": 1,
@@ -1153,8 +1166,9 @@ def _check_geoarrow_geometry_types(
     The type therefore comes from the *declared* encoding, which check 15 has
     already reconciled against the stored nesting depth. Since depth does not
     separate linestring from multipoint (nor polygon from multilinestring, see
-    _GEOARROW_LIST_DEPTH), a column mislabeled as its structural twin is
-    reported here as that twin — a missed detection, not a false positive.
+    _GEOARROW_LIST_DEPTH for both the limitation and the way to close it), a
+    column mislabeled as its structural twin is reported here as that twin — a
+    missed detection, never a false rejection.
     """
     quoted_geom = quote_identifier(geom_col)
     found = _GEOARROW_ENCODING_TYPE[encoding] + _geoarrow_zm_suffix(
@@ -1625,7 +1639,9 @@ def _check_covering_bbox_field_types(
             num_children = col.get("num_children") or 0
             for j in range(1, min(num_children + 1, 5)):  # Check first 4 children
                 if i + j < len(schema_info):
-                    child_type = schema_info[i + j].get("type", "").upper()
+                    # Same trap as _check_geometry_byte_array: a group child's
+                    # type is an explicit None, so `or ""` is the guard here too.
+                    child_type = (schema_info[i + j].get("type") or "").upper()
                     field_types.add(child_type)
             break
 

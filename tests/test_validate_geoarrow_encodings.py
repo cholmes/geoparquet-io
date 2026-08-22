@@ -22,6 +22,7 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.validate import (
     CheckStatus,
+    _check_covering_bbox_field_types,
     _check_encoding_valid,
     _check_geometry_byte_array,
     _check_geometry_not_grouped,
@@ -360,6 +361,53 @@ class TestDuckDBSchemaPath:
         check = _check_geometry_byte_array(schema_info, "geometry", "WKB")
         assert check.status == CheckStatus.FAILED
         assert "BYTE_ARRAY" in check.message
+
+    def test_covering_bbox_field_types_survives_typeless_children(self):
+        """Same bug class: a covering.bbox naming a group column, DuckDB path.
+
+        The child rows of a group are themselves groups with type=None, so the
+        field-type scan hit the same `.get("type", "")` trap.
+        """
+        schema_info = [
+            {"name": "geometry", "type": None, "num_children": 1},
+            {"name": "list", "type": None, "num_children": 1},
+            {"name": "element", "type": None, "num_children": 2},
+            {"name": "x", "type": "DOUBLE", "num_children": None},
+            {"name": "y", "type": "DOUBLE", "num_children": None},
+        ]
+        col_meta = {
+            "covering": {
+                "bbox": {
+                    "xmin": ["geometry", "xmin"],
+                    "ymin": ["geometry", "ymin"],
+                    "xmax": ["geometry", "xmax"],
+                    "ymax": ["geometry", "ymax"],
+                }
+            }
+        }
+        check = _check_covering_bbox_field_types(col_meta, "geometry", schema_info)
+        assert check.status == CheckStatus.FAILED, check.message
+
+    def test_covering_bbox_field_types_still_accepts_a_real_bbox_column(self):
+        schema_info = [
+            {"name": "bbox", "type": None, "num_children": 4},
+            {"name": "xmin", "type": "DOUBLE", "num_children": None},
+            {"name": "ymin", "type": "DOUBLE", "num_children": None},
+            {"name": "xmax", "type": "DOUBLE", "num_children": None},
+            {"name": "ymax", "type": "DOUBLE", "num_children": None},
+        ]
+        col_meta = {
+            "covering": {
+                "bbox": {
+                    "xmin": ["bbox", "xmin"],
+                    "ymin": ["bbox", "ymin"],
+                    "xmax": ["bbox", "xmax"],
+                    "ymax": ["bbox", "ymax"],
+                }
+            }
+        }
+        check = _check_covering_bbox_field_types(col_meta, "geometry", schema_info)
+        assert check.status == CheckStatus.PASSED, check.message
 
     @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
     def test_real_duckdb_schema_of_a_geoarrow_file(self, geoarrow_files, encoding):
