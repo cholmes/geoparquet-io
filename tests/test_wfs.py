@@ -3768,6 +3768,92 @@ class TestGetFeatureCountErrorVisibility:
 
         assert len(tiles) == 4
 
+    def test_warn_on_failure_false_stays_silent(self):
+        """Speculative callers can opt out of the warning but still get None."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=WFSError("HTTP error 400: version not supported"),
+            ),
+            patch("geoparquet_io.core.wfs.warn") as mock_warn,
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0", warn_on_failure=False)
+
+        assert result is None
+        mock_warn.assert_not_called()
+
+
+def _mock_layer_info():
+    """Minimal layer info for driving wfs_to_table in tests."""
+    return MagicMock(
+        typename="layer",
+        title="Layer",
+        crs_list=["EPSG:4326"],
+        default_crs="EPSG:4326",
+        available_formats=["application/json"],
+        bbox=(3.0, 50.0, 7.0, 54.0),
+    )
+
+
+class TestSpeculativeCountProbeIsQuiet:
+    """wfs_to_table probes at 2.0.0 first and falls back to the negotiated
+    version by construction. A 1.1.0-only server rejecting the 2.0.0 probe is a
+    healthy extraction, not a degradation — it must not warn (#678 review)."""
+
+    def _run_wfs_to_table(self, fake_request, caplog):
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", side_effect=fake_request),
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info", return_value=_mock_layer_info()),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=mock_table),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        return [
+            r.message
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "Feature count probe" in r.message
+        ]
+
+    def test_healthy_2_0_0_fallback_does_not_warn(self, caplog):
+        """2.0.0 rejected, negotiated 1.1.0 answers: no probe warning at all."""
+
+        def fake_request(url, params=None, **kwargs):
+            if params.get("version") == "2.0.0":
+                raise WFSError("HTTP error 400: version 2.0.0 not supported")
+            return b'numberOfFeatures="42"'
+
+        assert self._run_wfs_to_table(fake_request, caplog) == []
+
+    def test_real_probe_failure_still_warns(self, caplog):
+        """When the negotiated-version probe fails too, the count is genuinely
+        lost — that one must still be loud."""
+
+        def fake_request(url, params=None, **kwargs):
+            raise WFSError("Request failed after 3 attempts: connection refused")
+
+        warnings = self._run_wfs_to_table(fake_request, caplog)
+        assert len(warnings) == 1, warnings
+        assert "connection refused" in warnings[0]
+        assert "1.1.0" in warnings[0]
+
 
 class TestDeduplicateTiles:
     """Test deduplication of features across tile boundaries."""

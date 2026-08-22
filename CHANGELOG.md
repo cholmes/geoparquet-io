@@ -415,7 +415,9 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   log a warning naming the cause and the consequence; programming errors are no
   longer swallowed and surface as the bugs they are. The "count unavailable"
   return contract is unchanged, so extraction still degrades rather than
-  aborting.
+  aborting. The speculative WFS 2.0.0 count attempt — which falls back to the
+  negotiated version by construction — stays quiet, so a 1.1.0-only server
+  rejecting it does not warn on an otherwise healthy extraction.
 
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,

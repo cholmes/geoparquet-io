@@ -55,7 +55,6 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
 )
-from geoparquet_io.core.exceptions import RemoteAccessError
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
@@ -1174,6 +1173,7 @@ def _get_feature_count(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     axis_order: str = "auto",
+    warn_on_failure: bool = True,
 ) -> int | None:
     """
     Try to get feature count using resultType=hits.
@@ -1187,11 +1187,16 @@ def _get_feature_count(
         bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
         crs: CRS for bbox parameter
         axis_order: Bbox axis order ("auto", "xy", "latlon")
+        warn_on_failure: Log a warning when the probe fails. Pass False for
+            speculative probes that have a fallback by construction (see the
+            2.0.0-then-negotiated-version probe in ``wfs_to_table``), where a
+            failure is an expected answer rather than a loss of capability.
 
     Returns:
         Feature count, or None if the server does not report one *or* the probe
-        failed. A failed probe is logged as a warning (see below) so the
-        resulting loss of auto-tiling / pagination is visible in the logs.
+        failed. A failed probe is logged as a warning (unless suppressed via
+        ``warn_on_failure``) so the resulting loss of auto-tiling / pagination
+        is visible in the logs.
     """
     if version == "1.0.0":
         return None  # resultType=hits not supported in WFS 1.0.0
@@ -1212,15 +1217,22 @@ def _get_feature_count(
 
     try:
         content = _make_request(clean_url, params=params)
-    except (WFSError, RemoteAccessError, httpx.HTTPError, OSError) as e:
+    except (WFSError, httpx.HTTPError, OSError) as e:
         # Expected failure modes: the service is down, unreachable, rejecting us,
         # or timing out. Degrade to "count unknown" rather than aborting the
         # extraction, but say so — a silent None disables auto-tiling and
         # pagination, which is how servers return silently truncated results
         # (issue #678). Programming errors are not caught: they must surface.
+        detail = f"{type(e).__name__}: {e}"
+        if not warn_on_failure:
+            debug(
+                f"Speculative feature count probe failed for '{typename}' "
+                f"at WFS {version}: {detail}"
+            )
+            return None
         warn(
             f"Feature count probe (resultType=hits) failed for '{typename}' "
-            f"at WFS {version}: {type(e).__name__}: {e}. Continuing without a "
+            f"at WFS {version}: {detail}. Continuing without a "
             "server feature count — auto-tiling and pagination cannot engage, "
             "so results from a server that caps responses may be incomplete."
         )
@@ -2429,8 +2441,14 @@ def wfs_to_table(
     # Try WFS 2.0.0 first for count query since it often has higher/no limits
     expected_count = None
     if auto_tile and version != "1.0.0":
-        # Try WFS 2.0.0 count first (higher limits), fall back to requested version
-        expected_count = _get_feature_count(service_url, layer_info.typename, "2.0.0")
+        # Try WFS 2.0.0 count first (higher limits), fall back to requested
+        # version. The 2.0.0 attempt is speculative — a 1.1.0-only server
+        # rejecting it is an expected answer, not a degradation, so it stays
+        # quiet; the fallback below is the probe whose failure actually costs
+        # us auto-tiling, and it warns.
+        expected_count = _get_feature_count(
+            service_url, layer_info.typename, "2.0.0", warn_on_failure=False
+        )
         if not expected_count:
             expected_count = _get_feature_count(service_url, layer_info.typename, version)
         if expected_count:
