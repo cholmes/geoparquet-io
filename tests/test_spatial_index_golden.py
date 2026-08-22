@@ -202,9 +202,10 @@ QUADKEY_PARTITION_RESOLUTION = 6
 KDTREE_ITERATIONS = 2
 
 # `add/kdtree.py` draws boundaries from `USING SAMPLE {n} ROWS`. A sample size far
-# above the 7-row fixture makes the sample the whole table, so the medians -- and
-# therefore every cell assignment below -- are exact and reproducible rather than
-# reservoir-sampled.
+# above the eight-row fixture makes the sample the whole table, so the medians --
+# and therefore every cell assignment below -- are exact and reproducible rather
+# than reservoir-sampled. Verified by running the kdtree cases five times over:
+# same assignments every run.
 KDTREE_SAMPLE_SIZE = 1000
 
 GOLDEN: dict[str, dict[int, list]] = {
@@ -455,6 +456,9 @@ def test_streaming_path_matches_golden_cells(
     This is a second implementation, not a second call site: h3/s2/a5 stream via
     `_make_add_*_query` and quadkey builds its own expression inside
     `_add_quadkey_streaming`, all separate from the builders test 1 exercises.
+    Demonstrated by mutation: changing the resolution argument in
+    `core/add/h3.py`'s `_make_add_h3_query` moves every cell here while test 1
+    and test 4 stay green, because those go through a different builder.
     Dispatch is purely path-shaped -- `should_stream_output("-")` is True
     regardless of input size -- so piping any file at all takes this route, and an
     unnoticed drift here would silently give piped users different cells.
