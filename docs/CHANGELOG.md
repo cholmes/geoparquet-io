@@ -97,18 +97,30 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   fails a test that names the index and the point. a5 cases carry `network`
   (community extension download); the rest run offline.
 
-- **CLI↔API parity harness (#664)**: `tests/test_cli_api_parity.py` invokes
-  `gpio <cmd>`, `ops.<fn>` and `Table.<method>` with nothing but defaults for
-  the 13 commands the planned refactors touch (`add bbox/h3/s2/a5/quadkey/
-  kdtree`, `sort hilbert/column/quadkey`, `convert geoparquet`, `extract
-  geoparquet`, `partition h3/quadkey`), records the values each front end hands
-  to core, and diffs them through a documented per-command normalization map.
-  Six existing divergences are recorded as justified entries in
-  `KNOWN_PARITY_GAPS` — including `gpio add kdtree` auto-sizing the tree from
-  the row count while `ops.add_kdtree`/`Table.add_kdtree` pin `iterations=9` —
-  each re-asserted by its own test so a fix cannot leave a stale allowlist
-  entry behind. Marked as scaffolding: it is to be rewritten against the write
-  facade once write-path unification lands.
+- **CLI↔API parity harness (#664)**:
+  `tests/test_cli_api_call_parity_scaffold.py` invokes `gpio <cmd>`, `ops.<fn>`
+  and `Table.<method>` with nothing but defaults for the 13 commands the planned
+  refactors touch (`add bbox/h3/s2/a5/quadkey/kdtree`, `sort
+  hilbert/column/quadkey`, `convert geoparquet`, `extract geoparquet`,
+  `partition h3/quadkey`), records the values each front end hands to core, and
+  diffs them through a documented per-command normalization map. Six existing
+  divergences are recorded as justified entries in `KNOWN_PARITY_GAPS` —
+  including `gpio add kdtree` auto-sizing the tree from the row count while
+  `ops.add_kdtree`/`Table.add_kdtree` pin `iterations=9` — each re-asserted by
+  its own test so a fix cannot leave a stale allowlist entry behind. The
+  filename says `scaffold` because it deliberately asserts on call structure
+  rather than behavior: there is no single seam where the three front doors
+  meet yet, so it is to be rewritten against the write facade once write-path
+  unification lands.
+
+- **Every CLI command must have a Python API twin (#664)**: CLAUDE.md states the
+  rule but the `check-api-for-cli` pre-commit hook only prints a reminder, so
+  `tests/test_cli_api_default_parity.py` now enforces it. Commands resolving to
+  no `ops` function and no `Table` method must appear in the `NO_API_TWIN`
+  allowlist with a written justification; the seven that ship without one today
+  (`benchmark compare/report/suite`, `check stac`, `publish stac`, `inspect
+  layers`, `skills`) are recorded there, and the test fails both on a new
+  twin-less command and on an entry that has since grown an API.
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
