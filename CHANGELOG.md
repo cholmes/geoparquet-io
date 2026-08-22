@@ -426,6 +426,16 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   pages — the same silently-wrong-output failure mode reached by a different
   route.
 
+- **`--row-group-rows` / `--row-group-size-mb` now apply to the `disk-rewrite`
+  write strategy.** `DiskRewriteStrategy` accepted both sizing options and used
+  neither, so anything routed through it (including the fallback path) got
+  default row groups no matter what the caller asked for — a silent divergence
+  from the other three strategies that showed up later as `gpio check row-group`
+  failures. The strategy now sizes both its DuckDB `COPY` and the PyArrow
+  metadata rewrite from the request, converting an MB target to a row count with
+  the same sampling logic `duckdb-kv` uses (now shared in
+  `core/write_strategies/row_group_sizing.py` instead of living in `duckdb_kv`).
+  Non-geo writes through the strategy honour the options too.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

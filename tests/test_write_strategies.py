@@ -8,6 +8,7 @@ Tests the Strategy Pattern for GeoParquet writes including:
 """
 
 import json
+import struct
 import tempfile
 import uuid
 from pathlib import Path
@@ -217,7 +218,7 @@ class TestStripTrailingOrderBy:
     """Sampling for --row-group-size-mb must not re-run the ordered query."""
 
     def test_strips_top_level_hilbert_order_by(self):
-        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
 
         query = "SELECT * FROM t\n        ORDER BY ST_Hilbert(geometry, ST_Extent(x))\n    "
         stripped = _strip_trailing_order_by(query)
@@ -225,26 +226,26 @@ class TestStripTrailingOrderBy:
         assert stripped.strip() == "SELECT * FROM t"
 
     def test_leaves_query_without_order_by(self):
-        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
 
         query = "SELECT * FROM t WHERE id > 5"
         assert _strip_trailing_order_by(query) == query
 
     def test_ignores_order_by_inside_subquery(self):
-        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
 
         query = "SELECT * FROM (SELECT a FROM t ORDER BY a) sub"
         assert _strip_trailing_order_by(query) == query
 
     def test_keeps_order_by_when_limit_follows(self):
-        from geoparquet_io.core.write_strategies.duckdb_kv import _strip_trailing_order_by
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
 
         query = "SELECT * FROM t ORDER BY a LIMIT 10"
         assert _strip_trailing_order_by(query) == query
 
     def test_stripped_sample_matches_ordered_row_size(self):
         """The estimate must be unaffected by dropping the ordering."""
-        from geoparquet_io.core.write_strategies.duckdb_kv import (
+        from geoparquet_io.core.write_strategies.row_group_sizing import (
             _resolve_row_group_rows,
             _strip_trailing_order_by,
         )
@@ -659,3 +660,196 @@ class TestWriteStrategiesNoGeometry:
         )
 
         self._assert_valid_empty_plain_parquet(output_file)
+
+
+def _write_points_geoparquet(path: Path, num_rows: int) -> str:
+    """Write a small WKB-point GeoParquet file used as a multi-row-group source."""
+    geo_meta = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+    }
+    points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(num_rows)]
+    table = pa.table({"id": list(range(num_rows)), "geometry": points})
+    table = table.replace_schema_metadata({b"geo": json.dumps(geo_meta).encode()})
+    pq.write_table(table, path)
+    return str(path)
+
+
+class TestDiskRewriteRowGroupSizing:
+    """disk-rewrite must honour row-group sizing requests (issue #689).
+
+    The strategy accepted ``row_group_rows``/``row_group_size_mb`` and used
+    neither, so callers silently got DuckDB/PyArrow defaults.
+    """
+
+    def _row_group_sizes(self, path: str) -> list[int]:
+        pf = pq.ParquetFile(path)
+        return [pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups)]
+
+    def test_row_group_rows_honored_from_query(self, duckdb_connection, tmp_path, output_file):
+        """An explicit rows-per-group request shapes the written row groups."""
+        src = _write_points_geoparquet(tmp_path / "src.parquet", 40)
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=f"SELECT * FROM read_parquet('{src}')",
+            output_path=output_file,
+            geometry_column="geometry",
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=10,
+            input_crs=None,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 40
+        assert len(sizes) == 4, f"expected 4 row groups of 10 rows, got {sizes}"
+        assert max(sizes) <= 10
+
+    def test_no_row_group_settings_leaves_default_shape(
+        self, duckdb_connection, tmp_path, output_file
+    ):
+        """Without sizing options the default single-row-group shape is unchanged."""
+        src = _write_points_geoparquet(tmp_path / "src.parquet", 40)
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=f"SELECT * FROM read_parquet('{src}')",
+            output_path=output_file,
+            geometry_column="geometry",
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        assert self._row_group_sizes(output_file) == [40]
+
+    def test_row_group_size_mb_splits_row_groups(self, duckdb_connection, tmp_path, output_file):
+        """A small MB target produces more, smaller row groups than the default."""
+        src = _write_points_geoparquet(tmp_path / "src.parquet", 2000)
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query=f"SELECT * FROM read_parquet('{src}')",
+            output_path=output_file,
+            geometry_column="geometry",
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=0.01,
+            row_group_rows=None,
+            input_crs=None,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 2000
+        assert len(sizes) > 1, f"MB target should split row groups, got {sizes}"
+        assert max(sizes) < 2000
+
+    def test_write_from_table_honors_row_group_rows(self, tmp_path, output_file):
+        """write_from_table forwards sizing through to the written file."""
+        src = _write_points_geoparquet(tmp_path / "src.parquet", 40)
+        table = pq.read_table(src)
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_table(
+            table=table,
+            output_path=output_file,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=10,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 40
+        assert len(sizes) == 4, f"expected 4 row groups of 10 rows, got {sizes}"
+
+    def test_plain_parquet_query_honors_row_group_rows(self, duckdb_connection, output_file):
+        """Non-geo writes honour sizing too (they take a separate COPY path).
+
+        This path is a bare DuckDB COPY, which flushes at 2048-row vector
+        granularity, so the request is asserted at that scale (same granularity
+        the duckdb-kv strategy gives for non-geo writes).
+        """
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        strategy.write_from_query(
+            con=duckdb_connection,
+            query="SELECT i AS id, i * 2 AS v FROM range(10000) t(i)",
+            output_path=output_file,
+            geometry_column=None,
+            original_metadata=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=2048,
+            input_crs=None,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 10000
+        assert max(sizes) <= 2048, f"expected <=2048 rows per group, got {sizes}"
+        assert len(sizes) == 5, f"expected 5 row groups, got {sizes}"
+
+    def test_plain_parquet_table_honors_row_group_size_mb(self, output_file):
+        """Non-geo Arrow-table writes convert an MB target to rows per group."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+        table = pa.table({"id": list(range(5000)), "v": [float(i) for i in range(5000)]})
+
+        strategy.write_from_table(
+            table=table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=0.01,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 5000
+        assert len(sizes) > 1, f"MB target should split row groups, got {sizes}"
+
+    def test_plain_parquet_table_honors_row_group_rows(self, output_file):
+        """Non-geo Arrow-table writes honour sizing too."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+        table = pa.table({"id": list(range(40)), "v": [float(i) for i in range(40)]})
+
+        strategy.write_from_table(
+            table=table,
+            output_path=output_file,
+            geometry_column=None,
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=10,
+            verbose=False,
+        )
+
+        sizes = self._row_group_sizes(output_file)
+        assert sum(sizes) == 40
+        assert len(sizes) == 4, f"expected 4 row groups of 10 rows, got {sizes}"
