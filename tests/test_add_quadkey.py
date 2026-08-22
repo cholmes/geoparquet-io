@@ -170,8 +170,8 @@ class TestQuadkeyColumnNameQuoting:
 
         from geoparquet_io.core.add.quadkey import add_quadkey_column
 
-        default_out = tmp_path / f"centroid_default_{abs(hash(name))}.parquet"
-        hostile_out = tmp_path / f"centroid_hostile_{abs(hash(name))}.parquet"
+        default_out = tmp_path / "centroid_default.parquet"
+        hostile_out = tmp_path / "centroid_hostile.parquet"
         add_quadkey_column(places_file, str(default_out), resolution=13, use_centroid=True)
         add_quadkey_column(
             places_file,
@@ -216,8 +216,15 @@ class TestQuadkeyColumnNameQuoting:
         assert table[name].to_pylist() == _expected_bbox_quadkeys(pq.read_table(places_file), 13)
 
     @pytest.mark.parametrize("name", ["weird name", 'has"quote'])
-    def test_geo_metadata_survives_hostile_name(self, places_file, tmp_path, name):
-        """Writing a hostile-named quadkey column must not corrupt geo metadata."""
+    def test_geo_metadata_primary_column_survives_hostile_name(self, places_file, tmp_path, name):
+        """Writing a hostile-named quadkey column must not corrupt geo metadata.
+
+        This deliberately does NOT assert that the quadkey `covering` entry
+        survives: on inputs that carry a bbox column the quadkey/h3/s2/a5
+        covering is dropped before the file is written, for every column name
+        including the default. That is a separate pre-existing bug (see issue
+        #694); pin covering survival there once it is fixed.
+        """
         import json
 
         import pyarrow.parquet as pq
