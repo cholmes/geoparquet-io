@@ -23,6 +23,7 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.validate import (
     CheckStatus,
     _check_encoding_valid,
+    _geoarrow_zm_suffix,
     validate_geoparquet,
 )
 
@@ -296,3 +297,33 @@ class TestGeoArrowEdgeCases:
             f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
         ]
         assert failures == [], failures
+
+    def test_all_empty_geometries_skip_the_coordinate_scans(self, tmp_path):
+        """With no extent anywhere, the scans must skip rather than claim a pass."""
+        out = _write_geoarrow(tmp_path, "allempty", ["POLYGON EMPTY"], ["Polygon"])
+        result = validate_geoparquet(str(out), validate_data=True, sample_size=0)
+        checks = _checks_by_name(result)
+        assert checks["coordinates_valid_for_crs_geometry"].status == CheckStatus.SKIPPED
+        failures = [
+            f"{c.name}: {c.message}" for c in result.checks if c.status == CheckStatus.FAILED
+        ]
+        assert failures == [], failures
+
+
+class TestGeoArrowDimensionSuffix:
+    """GeoArrow keeps dimensionality in the coordinate struct, not per value."""
+
+    @pytest.mark.parametrize(
+        ("col_type", "expected"),
+        [
+            ("STRUCT(x DOUBLE, y DOUBLE)", ""),
+            ("STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)", " Z"),
+            ("STRUCT(x DOUBLE, y DOUBLE, m DOUBLE)", " M"),
+            ("STRUCT(x DOUBLE, y DOUBLE, z DOUBLE, m DOUBLE)", " ZM"),
+            ("STRUCT(x DOUBLE, y DOUBLE, z DOUBLE)[][]", " Z"),
+            ("BLOB", ""),
+            ("", ""),
+        ],
+    )
+    def test_suffix_from_column_type(self, col_type, expected):
+        assert _geoarrow_zm_suffix(col_type) == expected
