@@ -25,7 +25,7 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
-from geoparquet_io.core.geo_metadata import parse_geo_metadata
+from geoparquet_io.core.geo_metadata import covering_supported, parse_geo_metadata
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, error, success
 
@@ -169,6 +169,19 @@ def add_bbox_metadata(
 
     if not geo_meta:
         geo_meta = {"version": "1.1.0", "primary_column": "geometry", "columns": {}}
+
+    # 'covering' was introduced in GeoParquet 1.1. Unlike the write paths — where
+    # covering is an implicit side effect of writing a bbox column and is simply
+    # omitted — this command exists solely to write that key, so a 1.0 file gets a
+    # clear error naming the conflict rather than a silent no-op reporting success.
+    file_version = geo_meta.get("version", "")
+    if not covering_supported(file_version):
+        raise GeoParquetError(
+            f"Cannot add bbox covering metadata: this file declares GeoParquet "
+            f"{file_version}, and the 'covering' key requires GeoParquet 1.1 or later.\n"
+            f"Convert the file first: gpio convert geoparquet {parquet_file} out.parquet "
+            f"--geoparquet-version 1.1"
+        )
 
     # Find primary geometry column
     primary_col = find_primary_geometry_column(safe_url, verbose)

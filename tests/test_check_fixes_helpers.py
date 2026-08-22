@@ -180,8 +180,12 @@ class TestFixBboxAll:
         assert fix_result["success"] is True
         assert os.path.exists(output_file)
 
-    def test_metadata_only_fix(self, places_test_file, temp_output_dir):
-        """Test fixing only bbox metadata."""
+    def test_metadata_only_fix(self, places_v11_file, temp_output_dir):
+        """Test fixing only bbox metadata.
+
+        Uses the 1.1 places fixture: covering is a 1.1-only key, so adding it to
+        the 1.0 original is now refused outright (gpio #686).
+        """
         import os
         import shutil
 
@@ -189,7 +193,7 @@ class TestFixBboxAll:
 
         # Copy file first
         input_file = os.path.join(temp_output_dir, "input.parquet")
-        shutil.copy2(places_test_file, input_file)
+        shutil.copy2(places_v11_file, input_file)
         output_file = os.path.join(temp_output_dir, "fixed.parquet")
 
         fix_result = fix_bbox_all(

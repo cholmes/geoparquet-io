@@ -47,6 +47,64 @@ def _covering(parquet_file) -> dict | None:
     return geo["columns"][primary].get("covering")
 
 
+@pytest.fixture
+def v10_with_bbox_column(points_input, tmp_path):
+    """A valid 1.0 file: bbox column present, no covering key."""
+    path = tmp_path / "v10_bbox.parquet"
+    convert_to_geoparquet(str(points_input), str(path), skip_hilbert=True, geoparquet_version="1.0")
+    assert _covering(path) is None
+    assert validate_geoparquet(str(path)).is_valid
+    return path
+
+
+@pytest.fixture
+def v11_with_bbox_column(tmp_path):
+    """A 1.1 file with a bbox column but no covering — what `add bbox-metadata` is for.
+
+    Written straight through DuckDB rather than by rewriting a converted file with
+    pyarrow: pyarrow adds an ``ARROW:schema`` KV key, and `add bbox-metadata`'s
+    KV_METADATA clause does not quote key names, so a key containing ':' makes
+    DuckDB's parser reject the rewrite. That is a separate pre-existing defect;
+    this fixture keeps the test aimed at the version gate.
+    """
+    path = tmp_path / "v11_bbox.parquet"
+    geo = json.dumps(
+        {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {
+                    "encoding": "WKB",
+                    "geometry_types": ["Point"],
+                    "bbox": [30.0, 10.0, 40.0, 40.0],
+                }
+            },
+        }
+    )
+    con = get_duckdb_connection(load_spatial=True)
+    con.execute(f"""
+        COPY (
+          SELECT
+            id,
+            ST_AsWKB(geom)::BLOB AS geometry,
+            {{
+              'xmin': ST_XMin(geom), 'ymin': ST_YMin(geom),
+              'xmax': ST_XMax(geom), 'ymax': ST_YMax(geom)
+            }} AS bbox
+          FROM (VALUES
+            (1, ST_GeomFromText('POINT (30 10)')),
+            (2, ST_GeomFromText('POINT (40 40)'))
+          ) t(id, geom)
+        ) TO '{path.as_posix()}'
+        (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE', KV_METADATA {{geo: '{geo}'}})
+    """)
+    con.close()
+
+    assert get_geoparquet_version(str(path)) == "1.1.0"
+    assert _covering(path) is None
+    return path
+
+
 def test_convert_v10_omits_covering_but_keeps_bbox_column(points_input, tmp_path):
     """1.0 output: no covering key, bbox column still written, validator clean."""
     out = tmp_path / "out_10.parquet"
@@ -191,3 +249,146 @@ def test_create_geo_metadata_drops_custom_covering_for_v10():
 
     v11 = create_geo_metadata(None, "geometry", None, custom, version="1.1.0")
     assert "h3" in v11["columns"]["geometry"]["covering"]
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: the explicit "add the covering" entry points.
+#
+# These differ from the write paths above. There, covering is an *implicit*
+# side effect of writing a bbox column, so silently omitting it at 1.0 is the
+# right call. Here the user has explicitly asked for the covering key, and at
+# 1.0 that request cannot be honored — so these raise rather than quietly
+# doing nothing while reporting success.
+# ---------------------------------------------------------------------------
+
+
+def test_add_bbox_metadata_rejects_v10_file(v10_with_bbox_column):
+    """`add bbox-metadata` on a 1.0 file errors instead of writing an invalid key."""
+    from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    with pytest.raises(GeoParquetError, match="1.1"):
+        add_bbox_metadata(str(v10_with_bbox_column))
+
+    # The file must be left exactly as valid as it was.
+    assert _covering(v10_with_bbox_column) is None
+    assert validate_geoparquet(str(v10_with_bbox_column)).is_valid
+
+
+def test_add_bbox_metadata_cli_rejects_v10_file(v10_with_bbox_column):
+    """CLI surfaces the conflict as a clean error, not a silent success."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["add", "bbox-metadata", str(v10_with_bbox_column)])
+
+    assert result.exit_code != 0
+    assert "1.1" in result.output
+    assert _covering(v10_with_bbox_column) is None
+    assert validate_geoparquet(str(v10_with_bbox_column)).is_valid
+
+
+def test_add_bbox_metadata_still_works_on_v11_file(v11_with_bbox_column):
+    """The 1.1 path is untouched: the covering key is written as before.
+
+    Deliberately not asserting overall file validity here: `add bbox-metadata`'s
+    DuckDB rewrite re-materializes a v1.x WKB column as a native Parquet GEOMETRY
+    type while leaving the version at 1.1.0, which its own validator rejects. That
+    defect predates this branch (bbox_metadata.py is unchanged from main) and is
+    reported separately rather than pinned here.
+    """
+    from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
+
+    add_bbox_metadata(str(v11_with_bbox_column))
+
+    covering = _covering(v11_with_bbox_column)
+    assert covering is not None and covering["bbox"]["xmin"] == ["bbox", "xmin"]
+
+
+def test_api_add_bbox_metadata_rejects_v10_table(v10_with_bbox_column):
+    """Table.add_bbox_metadata() applies the same gate as the CLI path."""
+    from geoparquet_io.api import read
+
+    table = read(str(v10_with_bbox_column))
+    with pytest.raises(ValueError, match="1.1"):
+        table.add_bbox_metadata()
+
+
+def test_api_add_bbox_metadata_still_works_on_v11_table(v11_with_bbox_column):
+    """The 1.1 Python API path is untouched."""
+    from geoparquet_io.api import read
+
+    table = read(str(v11_with_bbox_column))
+    with_meta = table.add_bbox_metadata()
+
+    geo_meta = with_meta.metadata().get("geo_metadata", {})
+    columns = geo_meta.get("columns", {})
+    assert columns[with_meta.geometry_column]["covering"]["bbox"]["xmin"] == ["bbox", "xmin"]
+
+
+def test_build_geo_metadata_does_not_mutate_caller_metadata():
+    """The 1.0 gate must not strip covering out of the caller's own dict.
+
+    Partition loops reuse one ``original_metadata`` dict across many writes
+    (see the aliasing note at common.py:2362); popping through the shallow copy
+    in ``_initialize_geo_metadata`` would strip the shared dict permanently and
+    silently cost later 1.1 writes their covering.
+    """
+    covering = {
+        "bbox": {
+            "xmin": ["bbox", "xmin"],
+            "ymin": ["bbox", "ymin"],
+            "xmax": ["bbox", "xmax"],
+            "ymax": ["bbox", "ymax"],
+        }
+    }
+    geo = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": {"encoding": "WKB", "covering": covering}},
+    }
+    source = {"geo": geo}
+
+    built = build_geo_metadata("geometry", "1.0", original_metadata=source)
+    assert "covering" not in built["columns"]["geometry"]
+    assert "covering" in geo["columns"]["geometry"], "caller's metadata dict was mutated"
+
+    # A later write from the same shared dict must still get its covering.
+    again = build_geo_metadata("geometry", "1.1", original_metadata=source)
+    assert again["columns"]["geometry"]["covering"] == covering
+
+
+def test_check_bbox_flags_v10_file_that_carries_covering(v10_with_bbox_column):
+    """A pre-existing 1.0+covering file is reported as a problem, not affirmed."""
+    from geoparquet_io.core.check_parquet_structure import check_metadata_and_bbox
+
+    # Hand-build the invalid combination this branch no longer produces.
+    table = pq.read_table(str(v10_with_bbox_column))
+    meta = dict(table.schema.metadata)
+    geo = json.loads(meta[b"geo"].decode())
+    geo["columns"][geo["primary_column"]]["covering"] = {
+        "bbox": {
+            "xmin": ["bbox", "xmin"],
+            "ymin": ["bbox", "ymin"],
+            "xmax": ["bbox", "xmax"],
+            "ymax": ["bbox", "ymax"],
+        }
+    }
+    meta[b"geo"] = json.dumps(geo).encode()
+    pq.write_table(table.replace_schema_metadata(meta), str(v10_with_bbox_column))
+    assert not validate_geoparquet(str(v10_with_bbox_column)).is_valid
+
+    results = check_metadata_and_bbox(str(v10_with_bbox_column), return_results=True, quiet=True)
+    assert not results["passed"]
+    assert any("covering" in issue for issue in results["issues"]), (
+        f"check bbox affirmed an invalid 1.0+covering file: {results['issues']}"
+    )
+
+    # The printed report must not show a ✓ for this file either.
+    check_metadata_and_bbox(str(v10_with_bbox_column), return_results=True, quiet=False)
+
+
+def test_strip_unsupported_covering_tolerates_malformed_columns():
+    """Malformed third-party geo metadata must not crash the gate."""
+    from geoparquet_io.core.geo_metadata import strip_unsupported_covering
+
+    malformed = {"version": "1.0.0", "columns": "not-a-dict"}
+    assert strip_unsupported_covering(malformed, "1.0") is malformed

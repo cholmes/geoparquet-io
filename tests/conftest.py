@@ -100,6 +100,29 @@ def places_test_file():
 
 
 @pytest.fixture
+def places_v11_file(tmp_path):
+    """A GeoParquet 1.1 copy of the places file: bbox column, no covering key.
+
+    ``places_test.parquet`` declares 1.0.0, which cannot carry the 1.1-only
+    ``covering`` key (gpio #686). Tests that exercise *adding* a covering need a
+    1.1 input. Written with ``store_schema=False`` so no ``ARROW:schema`` key is
+    added — ``add bbox-metadata``'s KV_METADATA clause does not quote key names,
+    so a key containing ':' would make DuckDB's parser reject the rewrite.
+    """
+    import json
+
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "places_v11.parquet"
+    table = pq.read_table(str(PLACES_TEST_FILE))
+    geo = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+    geo["version"] = "1.1.0"
+    table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+    pq.write_table(table, str(path), store_schema=False)
+    return str(path)
+
+
+@pytest.fixture
 def buildings_test_file():
     """Return the path to the buildings test parquet file."""
     return str(BUILDINGS_TEST_FILE)

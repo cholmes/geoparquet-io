@@ -458,9 +458,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   write strategy inherits the gate, including coverings carried in from a 1.1
   source file or supplied as `custom_metadata` (h3/s2/a5/quadkey). The bbox
   **column** is still written and remains fully functional for 1.0 output —
-  only the metadata key is 1.1+. Relatedly, `gpio check bbox` no longer reports
-  a 1.0 file's bbox column as "missing metadata covering"; for those files the
-  actionable advice is the version upgrade it already recommends.
+  only the metadata key is 1.1+.
+  The two entry points that exist *solely* to write that key —
+  `gpio add bbox-metadata` and `Table.add_bbox_metadata()` — now fail with a
+  clear error naming the conflict when the file or table declares 1.0, instead
+  of silently producing a file their own validator rejects. **This is a
+  behavior change**: those calls previously "succeeded" on a 1.0 input.
+  Convert to 1.1 first (`gpio convert geoparquet in.parquet out.parquet
+  --geoparquet-version 1.1`). Note that `gpio add bbox` with the default
+  version is unaffected — it writes 1.1 output, covering included.
+  Relatedly, `gpio check bbox` no longer reports a 1.0 file's bbox column as
+  "missing metadata covering" (for those files the actionable advice is the
+  version upgrade it already recommends), and it now flags — rather than
+  affirming with a ✓ — a pre-1.1 file that carries a covering key anyway.
 
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,

@@ -81,6 +81,12 @@ If your file already has a bbox column but lacks covering metadata (e.g., from e
 
     This modifies the file in-place to add only the metadata, without creating a new file.
 
+    !!! note "Requires GeoParquet 1.1+"
+
+        The `covering` key was introduced in GeoParquet 1.1, so this command fails on a
+        file declaring 1.0 rather than writing metadata that version cannot carry.
+        Convert it first: `gpio convert geoparquet in.parquet out.parquet --geoparquet-version 1.1`.
+
 === "Python"
 
     ```python

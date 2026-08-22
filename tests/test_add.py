@@ -156,8 +156,14 @@ class TestAddCommands:
         assert "covering" in geo_meta["columns"]["geometry"]
         assert "bbox" in geo_meta["columns"]["geometry"]["covering"]
 
-    def test_add_bbox_metadata_to_existing_bbox(self, temp_output_dir):
-        """Test add bbox-metadata command for files with bbox column."""
+    def test_add_bbox_metadata_on_v10_file_with_bbox_errors(self, temp_output_dir):
+        """add bbox-metadata refuses a 1.0 file, whose version cannot carry covering.
+
+        places_test.parquet declares GeoParquet 1.0.0 and has a bbox column but no
+        covering. This used to "succeed" by writing the 1.1-only covering key into a
+        1.0 file, producing output that `gpio check spec` rejects (gpio #686). The
+        1.1 success path is covered by tests/test_v10_covering_gate.py.
+        """
         import shutil
 
         # Use places file which has a bbox column
@@ -169,11 +175,12 @@ class TestAddCommands:
 
         runner = CliRunner()
         result = runner.invoke(add, ["bbox-metadata", temp_file])
-        assert result.exit_code == 0, (
-            f"Command failed: {result.output}\nException: {result.exception}"
-        )
-        # Should either add metadata or report it already exists
-        assert "Added bbox covering metadata" in result.output or "already exists" in result.output
+        assert result.exit_code != 0
+        assert "1.1" in result.output
+
+        # The file must be left untouched, not half-updated.
+        with open(temp_file, "rb") as fh, open(places_path, "rb") as original:
+            assert fh.read() == original.read()
 
     def test_add_bbox_metadata_no_bbox_column(self, buildings_test_file):
         """Test add bbox-metadata when there's no bbox column."""
@@ -721,6 +728,14 @@ class TestAddBboxMetadataPreservesFileProperties:
             f"SELECT value FROM parquet_kv_metadata('{test_file}') WHERE key = 'geo'"
         ).fetchone()
         geo_meta_value = geo_meta_row[0].decode("utf-8") if geo_meta_row else "{}"
+
+        # DuckDB's 'V1' declares GeoParquet 1.0.0, which cannot carry the 1.1-only
+        # covering key (gpio #686). This test is about KV preservation during the
+        # rewrite, so declare 1.1.0 to keep the rewrite reachable.
+        geo_meta_value = geo_meta_value.replace('"version":"1.0.0"', '"version":"1.1.0"').replace(
+            '"version": "1.0.0"', '"version": "1.1.0"'
+        )
+        assert '"1.1.0"' in geo_meta_value
 
         # Now rewrite with additional custom metadata
         temp_file = str(tmp_path / "temp_with_meta.parquet")

@@ -206,19 +206,41 @@ def covering_supported(version: str | None) -> bool:
 
 
 def strip_unsupported_covering(geo_meta: dict, version: str | None, verbose: bool = False) -> dict:
-    """Drop ``covering`` from every column when ``version`` predates 1.1.
+    """Return ``geo_meta`` without ``covering`` on any column when ``version`` predates 1.1.
 
     Single gate shared by every write path, applied after metadata assembly so it
     also catches coverings carried in from a 1.1 source file or supplied through
     ``custom_metadata`` (h3/s2/a5/quadkey).
+
+    Never mutates its input. The assembled metadata still aliases the caller's
+    column dicts through the shallow copy in ``_initialize_geo_metadata``, and
+    partition loops reuse one ``original_metadata`` dict across many writes, so
+    popping in place would strip the shared dict permanently and silently cost a
+    later 1.1 write its covering.
     """
     if covering_supported(version):
         return geo_meta
 
-    for col_name, col_meta in geo_meta.get("columns", {}).items():
-        if isinstance(col_meta, dict) and col_meta.pop("covering", None) is not None and verbose:
-            debug(f"Dropped 1.1-only covering metadata for column '{col_name}' (version {version})")
-    return geo_meta
+    columns = geo_meta.get("columns")
+    if not isinstance(columns, dict):
+        return geo_meta
+    if not any(isinstance(col, dict) and "covering" in col for col in columns.values()):
+        return geo_meta
+
+    stripped = {}
+    for col_name, col_meta in columns.items():
+        if isinstance(col_meta, dict) and "covering" in col_meta:
+            col_meta = {k: v for k, v in col_meta.items() if k != "covering"}
+            if verbose:
+                debug(
+                    f"Dropped 1.1-only covering metadata for column '{col_name}' "
+                    f"(version {version})"
+                )
+        stripped[col_name] = col_meta
+
+    result = dict(geo_meta)
+    result["columns"] = stripped
+    return result
 
 
 def _add_custom_covering(
