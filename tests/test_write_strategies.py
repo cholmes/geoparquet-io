@@ -786,9 +786,11 @@ class TestDiskRewriteRowGroupSizing:
     def test_plain_parquet_query_honors_row_group_rows(self, duckdb_connection, output_file):
         """Non-geo writes honour sizing too (they take a separate COPY path).
 
-        This path is a bare DuckDB COPY, which flushes at 2048-row vector
-        granularity, so the request is asserted at that scale (same granularity
-        the duckdb-kv strategy gives for non-geo writes).
+        This path is a bare DuckDB COPY, which flushes a row group per input
+        chunk (chunk size capped at 2048 rows), so a request finer than the
+        incoming chunks cannot be honoured exactly. The assertion is therefore
+        made at chunk scale — the same resolution the duckdb-kv strategy gives
+        for non-geo writes.
         """
         strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
 
