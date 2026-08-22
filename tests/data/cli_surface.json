@@ -21,6 +21,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -35,6 +36,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -49,6 +51,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -63,6 +66,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -77,6 +81,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -91,6 +96,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -105,6 +111,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -119,6 +126,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -133,6 +141,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -147,6 +156,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=30,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -161,6 +171,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -175,6 +186,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -189,6 +201,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -204,6 +217,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -218,6 +232,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -239,6 +254,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -253,6 +269,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -267,6 +284,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -281,6 +299,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -295,6 +314,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -309,6 +329,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[gaul|overture,case_sensitive=False]"
       },
       {
@@ -323,6 +344,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -337,6 +359,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -351,6 +374,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -365,6 +389,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -379,6 +404,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -393,6 +419,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -407,6 +434,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -421,6 +449,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -435,6 +464,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -449,6 +479,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -463,6 +494,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -477,6 +509,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -492,6 +525,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -506,6 +540,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -527,6 +562,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -541,6 +577,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -555,6 +592,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -569,6 +607,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -583,6 +622,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -597,6 +637,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -611,6 +652,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -625,6 +667,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -639,6 +682,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -653,6 +697,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -667,6 +712,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -681,6 +727,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -695,6 +742,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -710,6 +758,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -724,6 +773,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -745,6 +795,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -760,6 +811,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -781,6 +833,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -795,6 +848,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -809,6 +863,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -823,6 +878,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -837,6 +893,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -851,6 +908,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -865,6 +923,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -879,6 +938,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -893,6 +953,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -907,6 +968,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -921,6 +983,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -935,6 +998,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -950,6 +1014,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -964,6 +1029,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -985,6 +1051,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -999,6 +1066,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -1013,6 +1081,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1027,6 +1096,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1041,6 +1111,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -1055,6 +1126,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1069,6 +1141,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1083,6 +1156,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1097,6 +1171,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1111,6 +1186,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=15,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1125,6 +1201,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1139,6 +1216,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1153,6 +1231,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1168,6 +1247,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1182,6 +1262,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -1203,6 +1284,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1217,6 +1299,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1231,6 +1314,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1245,6 +1329,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -1259,6 +1344,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1273,6 +1359,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1287,6 +1374,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1301,6 +1389,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1315,6 +1404,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -1329,6 +1419,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1343,6 +1434,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1357,6 +1449,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1371,6 +1464,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1385,6 +1479,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1399,6 +1494,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1413,6 +1509,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1427,6 +1524,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1442,6 +1540,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1456,6 +1555,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -1477,6 +1577,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1491,6 +1592,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -1505,6 +1607,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1519,6 +1622,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1533,6 +1637,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -1547,6 +1652,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1561,6 +1667,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1575,6 +1682,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1589,6 +1697,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1603,6 +1712,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=23,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1617,6 +1727,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1631,6 +1742,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1645,6 +1757,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1659,6 +1772,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1674,6 +1788,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1688,6 +1803,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -1709,6 +1825,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1723,6 +1840,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -1737,6 +1855,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1751,6 +1870,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1765,6 +1885,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -1779,6 +1900,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1793,6 +1915,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=30,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -1807,6 +1930,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1821,6 +1945,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1835,6 +1960,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1849,6 +1975,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1863,6 +1990,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1877,6 +2005,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1892,6 +2021,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -1906,12 +2036,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -1937,6 +2069,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -1951,6 +2084,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -1966,6 +2100,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -1980,6 +2115,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -1994,6 +2130,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[table|json,case_sensitive=True]"
       },
       {
@@ -2009,6 +2146,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2024,6 +2162,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2039,6 +2178,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2049,11 +2189,13 @@
        "name": "warmup",
        "nargs": 1,
        "opts": [
-        "--warmup",
-        "--no-warmup"
+        "--warmup"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-warmup"
+       ],
        "type": "boolean"
       }
      ]
@@ -2075,6 +2217,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2090,6 +2233,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2104,6 +2248,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[table|json,case_sensitive=True]"
       },
       {
@@ -2119,6 +2264,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2134,6 +2280,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2155,6 +2302,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[table|json,case_sensitive=True]"
       },
       {
@@ -2169,6 +2317,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2184,6 +2333,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2205,6 +2355,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2220,6 +2371,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2234,6 +2386,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[core|full,case_sensitive=True]"
       },
       {
@@ -2249,6 +2402,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2263,6 +2417,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2277,6 +2432,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2292,12 +2448,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -2322,6 +2480,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2336,6 +2495,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2350,6 +2510,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2364,6 +2525,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2378,6 +2540,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2392,6 +2555,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2406,6 +2570,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2420,6 +2585,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2434,6 +2600,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2448,6 +2615,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[web,case_sensitive=False]"
       },
       {
@@ -2462,6 +2630,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2476,6 +2645,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2490,6 +2660,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2511,6 +2682,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2525,6 +2697,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2539,6 +2712,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2553,6 +2727,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2567,6 +2742,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2581,6 +2757,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2595,6 +2772,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2609,6 +2787,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2630,6 +2809,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2644,6 +2824,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2658,6 +2839,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2672,6 +2854,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2686,6 +2869,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2700,6 +2884,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2714,6 +2899,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2728,6 +2914,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2749,6 +2936,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2763,6 +2951,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2777,6 +2966,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2791,6 +2981,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2812,6 +3003,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2826,6 +3018,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2840,6 +3033,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2854,6 +3048,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -2868,6 +3063,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2882,6 +3078,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2896,6 +3093,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -2910,6 +3108,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[web,case_sensitive=False]"
       },
       {
@@ -2924,6 +3123,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -2945,6 +3145,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2959,6 +3160,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -2973,6 +3175,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -2987,6 +3190,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3001,6 +3205,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -3015,6 +3220,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3029,6 +3235,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3043,6 +3250,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -3057,6 +3265,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3078,6 +3287,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -3092,6 +3302,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3106,6 +3317,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3120,6 +3332,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -3134,6 +3347,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3149,6 +3363,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3170,6 +3385,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3185,12 +3401,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": "all",
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -3215,6 +3433,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3229,6 +3448,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3243,6 +3463,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3257,6 +3478,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3271,6 +3493,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3285,6 +3508,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3299,6 +3523,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3314,6 +3539,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3335,6 +3561,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3349,6 +3576,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3363,6 +3591,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3377,6 +3606,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3391,6 +3621,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3406,6 +3637,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3427,6 +3659,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3441,6 +3674,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3455,6 +3689,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3469,6 +3704,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3483,6 +3719,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3497,6 +3734,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3511,6 +3749,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3525,6 +3764,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3539,6 +3779,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3553,6 +3794,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -3567,6 +3809,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3577,11 +3820,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -3596,6 +3841,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3611,6 +3857,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3625,6 +3872,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3646,6 +3894,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3660,6 +3909,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3674,6 +3924,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3688,6 +3939,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3702,6 +3954,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3716,6 +3969,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3731,6 +3985,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -3752,6 +4007,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3766,6 +4022,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -3780,6 +4037,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3794,6 +4052,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -3808,6 +4067,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -3822,6 +4082,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3836,6 +4097,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -3850,6 +4112,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3864,6 +4127,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -3878,6 +4142,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3892,6 +4157,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3906,6 +4172,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3916,11 +4183,13 @@
        "name": "linearize_curves",
        "nargs": 1,
        "opts": [
-        "--linearize-curves",
-        "--no-linearize-curves"
+        "--linearize-curves"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-linearize-curves"
+       ],
        "type": "boolean"
       },
       {
@@ -3935,6 +4204,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -3949,6 +4219,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "float range[min=0,max=None,min_open=True,max_open=False,clamp=False]"
       },
       {
@@ -3963,6 +4234,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -3973,11 +4245,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -3992,6 +4266,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -4006,6 +4281,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4020,6 +4296,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4034,6 +4311,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4048,6 +4326,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4063,6 +4342,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4077,6 +4357,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4091,6 +4372,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -4112,6 +4394,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4126,6 +4409,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4140,6 +4424,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4154,6 +4439,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -4168,6 +4454,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -4183,6 +4470,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4197,6 +4485,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -4211,6 +4500,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4225,6 +4515,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -4239,6 +4530,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4253,6 +4545,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -4267,6 +4560,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4281,6 +4575,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4296,6 +4591,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4311,6 +4607,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4325,6 +4622,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -4346,6 +4644,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4360,6 +4659,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4374,6 +4674,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4388,6 +4689,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -4402,6 +4704,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4416,6 +4719,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4431,12 +4735,21 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": "geoparquet",
+   "extension_dispatch": {
+    ".csv": "csv",
+    ".fgb": "flatgeobuf",
+    ".geojson": "geojson",
+    ".gpkg": "geopackage",
+    ".json": "geojson",
+    ".shp": "shapefile"
+   },
    "hidden": false,
    "kind": "group",
    "params": []
@@ -4461,6 +4774,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4475,6 +4789,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4489,6 +4804,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=5000,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -4503,6 +4819,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4517,6 +4834,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -4531,6 +4849,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -4545,6 +4864,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4559,6 +4879,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -4573,6 +4894,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4587,6 +4909,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -4601,6 +4924,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "float"
       },
       {
@@ -4615,6 +4939,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4629,6 +4954,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -4643,6 +4969,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4657,6 +4984,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4671,6 +4999,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4681,11 +5010,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -4700,6 +5031,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -4714,6 +5046,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4728,6 +5061,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4742,6 +5076,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4756,6 +5091,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4770,6 +5106,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4784,6 +5121,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "float range[min=0,max=None,min_open=True,max_open=False,clamp=False]"
       },
       {
@@ -4798,6 +5136,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4812,6 +5151,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -4826,6 +5166,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4841,6 +5182,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4855,6 +5197,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4869,6 +5212,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=10,min_open=False,max_open=False,clamp=False]"
       }
      ]
@@ -4890,6 +5234,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -4904,6 +5249,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -4918,6 +5264,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[auto|server|local,case_sensitive=True]"
       },
       {
@@ -4932,6 +5279,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -4946,6 +5294,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -4960,6 +5309,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -4974,6 +5324,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -4988,6 +5339,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5002,6 +5354,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[spherical|planar,case_sensitive=False]"
       },
       {
@@ -5016,6 +5369,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5030,6 +5384,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5044,6 +5399,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[wkt|geojson,case_sensitive=False]"
       },
       {
@@ -5058,6 +5414,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -5072,6 +5429,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5086,6 +5444,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -5100,6 +5459,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -5114,6 +5474,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5128,6 +5489,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5138,11 +5500,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -5157,6 +5521,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -5171,6 +5536,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5185,6 +5551,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5199,6 +5566,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5214,6 +5582,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5228,6 +5597,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5242,6 +5612,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -5263,6 +5634,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5277,6 +5649,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5291,6 +5664,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5305,6 +5679,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -5319,6 +5694,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -5333,6 +5709,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5343,11 +5720,13 @@
        "name": "geometry",
        "nargs": 1,
        "opts": [
-        "--geometry",
-        "--no-geometry"
+        "--geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -5362,6 +5741,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -5376,6 +5756,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5390,6 +5771,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -5404,6 +5786,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -5418,6 +5801,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5428,11 +5812,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -5447,6 +5833,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -5461,6 +5848,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5475,6 +5863,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5489,6 +5878,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5503,6 +5893,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5517,6 +5908,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=3600,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -5531,6 +5923,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5546,6 +5939,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5560,6 +5954,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -5581,6 +5976,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5595,6 +5991,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5609,6 +6006,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5623,6 +6021,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5637,6 +6036,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -5651,6 +6051,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -5665,6 +6066,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5679,6 +6081,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5693,6 +6096,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5707,6 +6111,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -5721,6 +6126,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5735,6 +6141,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5749,6 +6156,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5763,6 +6171,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -5777,6 +6186,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -5791,6 +6201,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5801,11 +6212,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -5820,6 +6233,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -5834,6 +6248,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5848,6 +6263,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5862,6 +6278,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5876,6 +6293,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5891,6 +6309,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5905,6 +6324,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5919,6 +6339,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -5933,6 +6354,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[duckdb-kv|in-memory|streaming|disk-rewrite,case_sensitive=True]"
       }
      ]
@@ -5954,6 +6376,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -5964,11 +6387,13 @@
        "name": "auto_tile",
        "nargs": 1,
        "opts": [
-        "--auto-tile",
-        "--no-auto-tile"
+        "--auto-tile"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-auto-tile"
+       ],
        "type": "boolean"
       },
       {
@@ -5983,6 +6408,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[auto|xy|latlon,case_sensitive=True]"
       },
       {
@@ -5997,6 +6423,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6011,6 +6438,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[auto|server|local,case_sensitive=True]"
       },
       {
@@ -6025,6 +6453,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -6039,6 +6468,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6053,6 +6483,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[auto|2.0.0|1.1.0|1.0.0,case_sensitive=True]"
       },
       {
@@ -6067,6 +6498,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -6081,6 +6513,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6095,6 +6528,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6109,6 +6543,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -6123,6 +6558,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6137,6 +6573,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1000,max=500000,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6151,6 +6588,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=10,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6161,11 +6599,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -6180,6 +6620,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -6194,6 +6635,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6208,6 +6650,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6222,6 +6665,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6236,6 +6680,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6250,6 +6695,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6264,6 +6710,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6278,6 +6725,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6293,6 +6741,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6307,6 +6756,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[auto|2.0.0|1.1.0|1.0.0,case_sensitive=True]"
       },
       {
@@ -6321,12 +6771,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=10,min_open=False,max_open=False,clamp=False]"
       }
      ]
     }
    },
    "default_subcommand": "geoparquet",
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -6351,6 +6803,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -6365,6 +6818,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6379,6 +6833,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6393,6 +6848,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6407,6 +6863,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6421,6 +6878,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6436,6 +6894,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -6457,6 +6916,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6471,6 +6931,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6486,6 +6947,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -6507,6 +6969,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6521,6 +6984,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6535,6 +6999,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6549,6 +7014,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6563,6 +7029,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6577,6 +7044,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -6591,6 +7059,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6606,6 +7075,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -6627,6 +7097,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6641,6 +7112,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6655,6 +7127,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6670,6 +7143,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -6691,6 +7165,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6705,6 +7180,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6719,6 +7195,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6733,6 +7210,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6748,6 +7226,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -6769,6 +7248,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -6783,6 +7263,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6797,6 +7278,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6811,6 +7293,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=None,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6825,6 +7308,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6839,6 +7323,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6854,12 +7339,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": "summary",
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -6884,6 +7371,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6898,6 +7386,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6912,6 +7401,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -6926,6 +7416,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -6940,6 +7431,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6954,6 +7446,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -6968,6 +7461,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -6982,6 +7476,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -6996,6 +7491,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7010,6 +7506,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7024,6 +7521,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7038,6 +7536,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7052,6 +7551,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7066,6 +7566,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7080,6 +7581,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7094,6 +7596,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=30,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -7108,6 +7611,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7122,6 +7626,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7136,6 +7641,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7150,6 +7656,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7164,6 +7671,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7179,6 +7687,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7193,6 +7702,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -7214,6 +7724,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -7228,6 +7739,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -7242,6 +7754,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[gaul|overture,case_sensitive=False]"
       },
       {
@@ -7256,6 +7769,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7270,6 +7784,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -7284,6 +7799,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7298,6 +7814,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7312,6 +7829,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7326,6 +7844,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7340,6 +7859,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7354,6 +7874,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7368,6 +7889,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7382,6 +7904,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7396,6 +7919,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7410,6 +7934,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7424,6 +7949,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7438,6 +7964,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7452,6 +7979,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7467,6 +7995,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7481,6 +8010,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -7502,6 +8032,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7516,6 +8047,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -7530,6 +8062,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -7544,6 +8077,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7558,6 +8092,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -7572,6 +8107,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7586,6 +8122,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7600,6 +8137,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7614,6 +8152,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7628,6 +8167,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7642,6 +8182,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7656,6 +8197,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7670,6 +8212,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7684,6 +8227,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7698,6 +8242,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7712,6 +8257,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7726,6 +8272,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7740,6 +8287,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=15,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -7754,6 +8302,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7768,6 +8317,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7782,6 +8332,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7796,6 +8347,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7810,6 +8362,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7825,6 +8378,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7839,6 +8393,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -7860,6 +8415,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7874,6 +8430,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -7888,6 +8445,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -7902,6 +8460,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -7916,6 +8475,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7930,6 +8490,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7944,6 +8505,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -7958,6 +8520,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -7972,6 +8535,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -7986,6 +8550,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8000,6 +8565,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8014,6 +8580,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8028,6 +8595,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8042,6 +8610,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8056,6 +8625,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8070,6 +8640,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8084,6 +8655,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8098,6 +8670,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8112,6 +8685,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8126,6 +8700,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8140,6 +8715,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8155,6 +8731,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8169,6 +8746,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -8190,6 +8768,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8204,6 +8783,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -8218,6 +8798,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8232,6 +8813,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8246,6 +8828,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -8260,6 +8843,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8274,6 +8858,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8288,6 +8873,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8302,6 +8888,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8316,6 +8903,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8330,6 +8918,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8344,6 +8933,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8358,6 +8948,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8372,6 +8963,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=23,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8386,6 +8978,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8400,6 +8993,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8414,6 +9008,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8428,6 +9023,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8442,6 +9038,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=23,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8456,6 +9053,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8470,6 +9068,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8484,6 +9083,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8498,6 +9098,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8512,6 +9113,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8526,6 +9128,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8541,6 +9144,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8555,6 +9159,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -8576,6 +9181,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8590,6 +9196,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -8604,6 +9211,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8618,6 +9226,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8632,6 +9241,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -8646,6 +9256,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8660,6 +9271,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8674,6 +9286,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8688,6 +9301,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8702,6 +9316,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=30,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8716,6 +9331,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8730,6 +9346,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8744,6 +9361,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8758,6 +9376,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8772,6 +9391,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8786,6 +9406,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8800,6 +9421,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8814,6 +9436,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8828,6 +9451,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8842,6 +9466,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8856,6 +9481,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8870,6 +9496,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8884,6 +9511,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8899,6 +9527,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -8913,6 +9542,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -8934,6 +9564,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -8948,6 +9579,7 @@
        ],
        "param_type": "Option",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -8962,6 +9594,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -8976,6 +9609,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -8990,6 +9624,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9004,6 +9639,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -9018,6 +9654,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9032,6 +9669,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9046,6 +9684,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9060,6 +9699,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9074,6 +9714,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9088,6 +9729,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9102,6 +9744,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9116,6 +9759,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9130,6 +9774,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9144,6 +9789,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9158,6 +9804,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9173,6 +9820,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9187,12 +9835,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -9217,6 +9867,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9231,6 +9882,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9245,6 +9897,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9255,11 +9908,13 @@
        "name": "drop_densest_as_needed",
        "nargs": 1,
        "opts": [
-        "--drop-densest-as-needed",
-        "--no-drop-densest-as-needed"
+        "--drop-densest-as-needed"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-drop-densest-as-needed"
+       ],
        "type": "boolean"
       },
       {
@@ -9275,6 +9930,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9289,6 +9945,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9303,6 +9960,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -9318,6 +9976,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9332,6 +9991,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9346,6 +10006,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9360,6 +10021,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9374,6 +10036,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9384,11 +10047,13 @@
        "name": "no_simplification_of_shared_nodes",
        "nargs": 1,
        "opts": [
-        "--no-simplification-of-shared-nodes",
-        "--simplification-of-shared-nodes"
+        "--no-simplification-of-shared-nodes"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--simplification-of-shared-nodes"
+       ],
        "type": "boolean"
       },
       {
@@ -9399,11 +10064,13 @@
        "name": "no_tile_size_limit",
        "nargs": 1,
        "opts": [
-        "--no-tile-size-limit",
-        "--tile-size-limit"
+        "--no-tile-size-limit"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--tile-size-limit"
+       ],
        "type": "boolean"
       },
       {
@@ -9418,6 +10085,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -9432,6 +10100,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9442,11 +10111,13 @@
        "name": "repair_geometry",
        "nargs": 1,
        "opts": [
-        "--repair-geometry",
-        "--no-repair-geometry"
+        "--repair-geometry"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-repair-geometry"
+       ],
        "type": "boolean"
       },
       {
@@ -9457,11 +10128,13 @@
        "name": "simplify_only_low_zooms",
        "nargs": 1,
        "opts": [
-        "--simplify-only-low-zooms",
-        "--no-simplify-only-low-zooms"
+        "--simplify-only-low-zooms"
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [
+        "--no-simplify-only-low-zooms"
+       ],
        "type": "boolean"
       },
       {
@@ -9476,6 +10149,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9491,6 +10165,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9505,6 +10180,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -9526,6 +10202,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9540,6 +10217,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "float"
       },
       {
@@ -9554,6 +10232,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9568,6 +10247,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -9583,6 +10263,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9597,6 +10278,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -9611,6 +10293,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -9625,6 +10308,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[single|grouped|per-level,case_sensitive=True]"
       },
       {
@@ -9639,6 +10323,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -9653,6 +10338,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9667,6 +10353,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -9681,6 +10368,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -9696,12 +10384,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -9729,6 +10419,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -9743,6 +10434,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9757,6 +10449,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9771,6 +10464,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -9785,6 +10479,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9799,6 +10494,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
@@ -9813,6 +10509,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
         },
         {
@@ -9827,6 +10524,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
@@ -9841,6 +10539,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9855,6 +10554,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -9869,6 +10569,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9883,6 +10584,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9897,6 +10599,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
@@ -9911,6 +10614,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -9925,6 +10629,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer range[min=0,max=30,min_open=False,max_open=False,clamp=False]"
         },
         {
@@ -9939,6 +10644,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -9953,6 +10659,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -9968,6 +10675,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -9982,6 +10690,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         }
        ]
@@ -10003,6 +10712,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10017,6 +10727,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10031,6 +10742,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -10045,6 +10757,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10059,6 +10772,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
@@ -10073,6 +10787,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
         },
         {
@@ -10087,6 +10802,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
@@ -10101,6 +10817,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10115,6 +10832,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[country|region,case_sensitive=True]"
         },
         {
@@ -10129,6 +10847,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10143,6 +10862,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10157,6 +10877,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
@@ -10171,6 +10892,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10185,6 +10907,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -10200,6 +10923,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -10214,6 +10938,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         }
        ]
@@ -10235,6 +10960,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -10249,6 +10975,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10263,6 +10990,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10277,6 +11005,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -10291,6 +11020,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10305,6 +11035,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
         },
         {
@@ -10319,6 +11050,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
         },
         {
@@ -10333,6 +11065,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
         },
         {
@@ -10347,6 +11080,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10361,6 +11095,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -10375,6 +11110,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10389,6 +11125,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10403,6 +11140,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "choice[polygon|centroid|both|none,case_sensitive=True]"
         },
         {
@@ -10417,6 +11155,7 @@
          ],
          "param_type": "Argument",
          "required": true,
+         "secondary_opts": [],
          "type": "text"
         },
         {
@@ -10431,6 +11170,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer range[min=0,max=15,min_open=False,max_open=False,clamp=False]"
         },
         {
@@ -10445,6 +11185,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -10459,6 +11200,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "integer"
         },
         {
@@ -10474,6 +11216,7 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "boolean"
         },
         {
@@ -10488,12 +11231,14 @@
          ],
          "param_type": "Option",
          "required": false,
+         "secondary_opts": [],
          "type": "text"
         }
        ]
       }
      },
      "default_subcommand": null,
+     "extension_dispatch": {},
      "hidden": false,
      "kind": "group",
      "params": []
@@ -10515,6 +11260,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "float"
       },
       {
@@ -10529,6 +11275,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10543,6 +11290,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -10557,6 +11305,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -10572,6 +11321,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10586,6 +11336,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -10600,6 +11351,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10614,6 +11366,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10628,6 +11381,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -10642,6 +11396,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -10656,6 +11411,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[a5|h3|admin,case_sensitive=True]"
       },
       {
@@ -10670,6 +11426,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10685,12 +11442,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -10715,6 +11474,7 @@
        ],
        "param_type": "Option",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10729,6 +11489,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10743,6 +11504,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10757,6 +11519,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10771,6 +11534,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -10785,6 +11549,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10799,6 +11564,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10814,6 +11580,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
@@ -10835,6 +11602,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10849,6 +11617,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -10863,6 +11632,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -10877,6 +11647,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10891,6 +11662,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10905,6 +11677,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10919,6 +11692,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -10933,6 +11707,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10947,6 +11722,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10961,6 +11737,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -10975,6 +11752,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -10989,6 +11767,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=True,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -11004,12 +11783,14 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
@@ -11031,6 +11812,7 @@
      ],
      "param_type": "Option",
      "required": false,
+     "secondary_opts": [],
      "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
     },
     {
@@ -11045,6 +11827,7 @@
      ],
      "param_type": "Option",
      "required": false,
+     "secondary_opts": [],
      "type": "text"
     },
     {
@@ -11059,6 +11842,7 @@
      ],
      "param_type": "Option",
      "required": false,
+     "secondary_opts": [],
      "type": "boolean"
     }
    ]
@@ -11083,6 +11867,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11097,6 +11882,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11111,6 +11897,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -11125,6 +11912,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -11139,6 +11927,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11153,6 +11942,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -11167,6 +11957,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11181,6 +11972,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -11195,6 +11987,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11209,6 +12002,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -11223,6 +12017,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11237,6 +12032,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11252,6 +12048,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11266,6 +12063,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -11287,6 +12085,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11301,6 +12100,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11315,6 +12115,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -11329,6 +12130,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -11344,6 +12146,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11358,6 +12161,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -11372,6 +12176,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11386,6 +12191,7 @@
        ],
        "param_type": "Argument",
        "required": false,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -11400,6 +12206,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11414,6 +12221,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -11428,6 +12236,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11442,6 +12251,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11457,6 +12267,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11471,6 +12282,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
@@ -11492,6 +12304,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11506,6 +12319,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
       },
       {
@@ -11520,6 +12334,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -11534,6 +12349,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
       },
       {
@@ -11548,6 +12364,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11562,6 +12379,7 @@
        ],
        "param_type": "Argument",
        "required": true,
+       "secondary_opts": [],
        "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
       },
       {
@@ -11576,6 +12394,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11590,6 +12409,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11604,6 +12424,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11618,6 +12439,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer range[min=0,max=23,min_open=False,max_open=False,clamp=False]"
       },
       {
@@ -11632,6 +12454,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "integer"
       },
       {
@@ -11646,6 +12469,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       },
       {
@@ -11660,6 +12484,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11674,6 +12499,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11689,6 +12515,7 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "boolean"
       },
       {
@@ -11703,18 +12530,21 @@
        ],
        "param_type": "Option",
        "required": false,
+       "secondary_opts": [],
        "type": "text"
       }
      ]
     }
    },
    "default_subcommand": null,
+   "extension_dispatch": {},
    "hidden": false,
    "kind": "group",
    "params": []
   }
  },
  "default_subcommand": null,
+ "extension_dispatch": {},
  "hidden": false,
  "kind": "group",
  "params": [
@@ -11730,6 +12560,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "text"
   },
   {
@@ -11744,6 +12575,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "text"
   },
   {
@@ -11758,6 +12590,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "boolean"
   },
   {
@@ -11772,6 +12605,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "text"
   },
   {
@@ -11786,6 +12620,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "boolean"
   },
   {
@@ -11800,6 +12635,7 @@
    ],
    "param_type": "Option",
    "required": false,
+   "secondary_opts": [],
    "type": "boolean"
   }
  ]

@@ -29,11 +29,10 @@ from geoparquet_io.api.table import Table
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
-try:  # click >= 8.4 marks "no default given" with a sentinel object
-    from click.core import UNSET
-except ImportError:  # pragma: no cover - older click
-    UNSET = object()
-
+# click >= 8.2 marks "no default given" with a sentinel object; the shim that
+# keeps this working on click 8.1 lives in conftest so both introspection
+# suites share one copy.
+from tests.conftest import UNSET
 
 # --------------------------------------------------------------------------
 # CLI command -> API twin resolution

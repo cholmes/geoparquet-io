@@ -66,16 +66,25 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
   whole Click command tree into a structural snapshot at
   `tests/data/cli_surface.json` — every group, command, option and argument
-  with its opts, type, default, `required`, `is_flag` and `multiple` — and
-  fails naming the exact field that drifted. Help prose is deliberately not
+  with its opts, its *secondary* opts, type, default, `required`, `is_flag` and
+  `multiple` — and fails naming the exact field that drifted. Recording
+  `--warmup` and `--no-warmup` in separate fields matters: concatenated, a
+  boolean flag pair is indistinguishable from two aliases for the same switch,
+  which is a user-visible behavior change. Help prose is deliberately not
   pinned. Plugin-contributed commands are excluded, so an installed plugin
   cannot break the test. Intentional changes are accepted by re-recording with
-  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py` (refused
-  when `CI` is set, so a stray env var cannot rewrite the baseline green). The
-  snapshot also pins which subcommand each default-dispatch group falls back to
-  (`check` → `all`, `inspect` → `summary`), which lived only in a closure and
-  was previously unobservable. Companion parametrized tests render `--help` for
-  every built-in leaf command and every group.
+  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py` — honored
+  only for an affirmative value, so `GPIO_UPDATE_SNAPSHOT=0` means no, and
+  refused outright when `CI` is set so a stray env var cannot rewrite the
+  baseline green. The snapshot also pins each group's argv rewriting: the
+  subcommand a default-dispatch group falls back to (`check` → `all`, `inspect`
+  → `summary`) and the output-extension map `gpio convert` dispatches on
+  (`.gpkg` → `geopackage`, `.fgb` → `flatgeobuf`, ...). Both lived only in a
+  closure and were previously unobservable. Companion parametrized tests render
+  `--help` for every built-in leaf command and every group. The snapshot
+  comparison needs click >= 8.2's `UNSET` sentinel to distinguish an undeclared
+  default from an explicit `None`, and skips below that; the help-render cases
+  still run.
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with

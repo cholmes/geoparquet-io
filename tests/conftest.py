@@ -48,6 +48,21 @@ from pathlib import Path  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import pytest  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Click "no default declared" sentinel
+# ---------------------------------------------------------------------------
+# Click 8.2 added ``click.core.UNSET`` to distinguish "no default was declared"
+# from an explicitly declared ``None``. On click 8.1 the two are
+# indistinguishable and ``param.default`` is plain ``None``. Tests that
+# introspect Click defaults share this shim instead of each carrying a copy.
+try:
+    from click.core import UNSET  # noqa: E402
+
+    CLICK_HAS_UNSET = True
+except ImportError:  # pragma: no cover - click < 8.2
+    UNSET = object()
+    CLICK_HAS_UNSET = False
+
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_TEST_FILE = TEST_DATA_DIR / "places_test.parquet"

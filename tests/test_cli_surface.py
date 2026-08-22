@@ -9,7 +9,9 @@ To accept an intentional change::
 
     GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py
 
-then review the diff of ``tests/data/cli_surface.json`` before committing.
+then review the diff of ``tests/data/cli_surface.json`` before committing. The
+variable is honored only for an affirmative value (``1``/``true``/``yes``/``on``)
+and is refused outright when ``CI`` is set.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
+from tests.conftest import CLICK_HAS_UNSET
+from tests.conftest import UNSET as _UNSET
 
 SNAPSHOT_PATH = Path(__file__).parent / "data" / "cli_surface.json"
 UPDATE_ENV_VAR = "GPIO_UPDATE_SNAPSHOT"
@@ -31,8 +35,18 @@ UPDATE_ENV_VAR = "GPIO_UPDATE_SNAPSHOT"
 # explicitly declared ``None``. Its ``repr`` is a click implementation detail,
 # so it is recorded as a stable token instead; ``None`` still records as
 # ``'None'``, keeping the unset-vs-explicit-None distinction visible.
-_UNSET = getattr(click.core, "UNSET", object())
+#
+# On click 8.1 that distinction does not exist -- every unset default reads back
+# as plain ``None`` -- so the committed snapshot is simply not representable
+# there and the comparison is skipped. The help-render cases below still run.
 UNSET_TOKEN = "<unset>"
+requires_click_unset = pytest.mark.skipif(
+    not CLICK_HAS_UNSET,
+    reason=(
+        "click < 8.2 has no click.core.UNSET sentinel, so every unset default "
+        "reads back as None and cannot match the recorded '<unset>' token"
+    ),
+)
 
 # Commands contributed by third-party plugins (loaded through the
 # ``gpio.plugins`` entry point group) are excluded from the snapshot so an
@@ -103,11 +117,18 @@ def _default_repr(param: click.Parameter) -> str:
 
 
 def describe_param(param: click.Parameter) -> dict:
-    """Describe one Click parameter as a JSON-serializable dict."""
+    """Describe one Click parameter as a JSON-serializable dict.
+
+    ``opts`` and ``secondary_opts`` are recorded separately: concatenating them
+    makes ``--warmup/--no-warmup`` (a boolean flag whose off-switch clears the
+    value) indistinguishable from ``--warmup``/``--no-warmup`` declared as two
+    aliases for the *same* switch, which is a user-visible behavior change.
+    """
     return {
         "name": param.name,
         "param_type": type(param).__name__,
-        "opts": sorted(param.opts) + sorted(param.secondary_opts),
+        "opts": sorted(param.opts),
+        "secondary_opts": sorted(param.secondary_opts),
         "type": _type_repr(param.type),
         "required": bool(param.required),
         "default": _default_repr(param),
@@ -118,33 +139,107 @@ def describe_param(param: click.Parameter) -> dict:
     }
 
 
-def _probe_default_subcommand(group: click.Group) -> str | None:
-    """Return the subcommand a group dispatches to when given no arguments.
+def _dispatch_target(ctx: click.Context, group: click.Group) -> str | None:
+    """Return the subcommand name ``parse_args`` left on a context, if any.
+
+    Click 8.2 renamed ``Context.protected_args`` to ``_protected_args`` and left
+    the old name as a deprecated property, so the private name is preferred when
+    present to avoid emitting ``DeprecationWarning`` during collection.
+
+    The result is only reported when it names a real subcommand: a plain
+    ``click.Group`` handed ``["in.parquet", "out.gpkg"]`` leaves the *filename*
+    in this slot, which is a parse failure waiting to happen at invoke time, not
+    a dispatch decision.
+    """
+    attrs = (
+        ("_protected_args", "args")
+        if hasattr(ctx, "_protected_args")
+        else ("protected_args", "args")
+    )
+    for attr in attrs:
+        found = getattr(ctx, attr, None)
+        if found and str(found[0]) in group.commands:
+            return str(found[0])
+    return None
+
+
+def _probe_dispatch(group: click.Group, argv: list[str]) -> str | None:
+    """Return the subcommand a group rewrites ``argv`` to, or ``None``.
 
     ``create_default_group`` in ``cli/main.py`` builds its groups from a
     factory, so every generated class is named ``_DefaultGroup`` and the
     configured subcommand lives only in a closure. Rather than reaching into
     ``__closure__`` cells, this asks the group what it actually does with an
-    empty argv through the public ``parse_args`` API: a default-dispatch group
-    rewrites argv to its default subcommand, while a plain ``click.Group``
-    raises ``NoArgsIsHelpError`` and records ``None``.
+    argv through the public ``parse_args`` API.
+
+    ``resilient_parsing=True`` is load-bearing twice over. Without it, click 8.1
+    answers an empty argv by echoing the group's help to stdout and raising
+    ``click.exceptions.Exit`` -- not a ``UsageError``, so it would escape the
+    handler below and fail collection of this whole module.
+
+    It also stops click from *enforcing* the group's own parameters: a group
+    that later grows a required option would otherwise raise
+    ``MissingParameter`` (a ``UsageError``) here and be recorded as a bogus
+    ``None`` default rather than its real dispatch target.
+
+    Note it does not stop eager callbacks from running -- click's convention is
+    that a callback checks ``ctx.resilient_parsing`` and returns early, which
+    the only eager option in the tree (``--version`` on the root group) does.
+    """
+    ctx = click.Context(group, resilient_parsing=True)
+    try:
+        group.parse_args(ctx, list(argv))
+    except click.UsageError:
+        # Defensive: resilient parsing suppresses click's own usage errors, but
+        # a future click answering "no subcommand" this way must not turn into a
+        # collection-time error for the entire module.
+        return None
+    return _dispatch_target(ctx, group)
+
+
+def _probe_default_subcommand(group: click.Group) -> str | None:
+    """Return the subcommand a group dispatches to when given no arguments.
 
     Note this pins the *dispatch target* only. Full behavioral coverage of bare
     default dispatch (``gpio check <file>`` running ``check all``) is deferred
     to the test-consolidation issue, #666.
     """
-    ctx = click.Context(group)
-    try:
-        group.parse_args(ctx, [])
-    except click.UsageError:
-        # NoArgsIsHelpError (a UsageError) is how a plain click.Group answers an
-        # empty argv. Anything else is a genuine failure and is left to surface.
-        return None
-    for attr in ("_protected_args", "protected_args", "args"):
-        found = getattr(ctx, attr, None)
-        if found:
-            return str(found[0])
-    return None
+    return _probe_dispatch(group, [])
+
+
+# Output extensions probed against each group's argv rewriting. ``gpio convert``
+# picks its subcommand from the output file's extension, and that map -- not the
+# empty-argv fallback -- is the user-visible behavior of the group. The probe set
+# is the union of a fixed baseline (so *dropping* a mapping is caught) and
+# whatever a group declares for itself (so *adding* one is discovered rather
+# than silently missed).
+BASELINE_PROBE_EXTENSIONS = (
+    ".csv",
+    ".fgb",
+    ".geojson",
+    ".gpkg",
+    ".json",
+    ".parquet",
+    ".shp",
+    ".unrecognized",
+)
+
+
+def _probe_extension_dispatch(group: click.Group, default_subcommand: str | None) -> dict:
+    """Map output-file extension -> subcommand, for extensions that change it.
+
+    Extensions that dispatch to the same place as a bare argv are omitted: they
+    are behaviorally indistinguishable from the fallback, so recording them
+    would bulk up every group in the tree with a copy of the same answer.
+    """
+    declared = getattr(type(group), "EXTENSION_TO_SUBCOMMAND", None) or {}
+    extensions = sorted({*BASELINE_PROBE_EXTENSIONS, *declared})
+    dispatch = {}
+    for ext in extensions:
+        target = _probe_dispatch(group, ["in.parquet", f"out{ext}"])
+        if target != default_subcommand:
+            dispatch[ext] = target
+    return dispatch
 
 
 def describe_command(command: click.Command) -> dict:
@@ -159,7 +254,9 @@ def describe_command(command: click.Command) -> dict:
         ),
     }
     if isinstance(command, click.Group):
-        described["default_subcommand"] = _probe_default_subcommand(command)
+        default_subcommand = _probe_default_subcommand(command)
+        described["default_subcommand"] = default_subcommand
+        described["extension_dispatch"] = _probe_extension_dispatch(command, default_subcommand)
         described["commands"] = {
             name: describe_command(sub)
             for name, sub in sorted(command.commands.items())
@@ -197,6 +294,39 @@ def _serialize(surface: dict) -> str:
     return json.dumps(surface, indent=1, sort_keys=True) + "\n"
 
 
+def _is_name_keyed_list(value) -> bool:
+    """True for a list of dicts that each carry a ``name`` (i.e. a params list)."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, dict) and "name" in item for item in value)
+    )
+
+
+def _describe_subtree(value, prefix: str, verb: str) -> list[str]:
+    """Render a wholly added/removed value as readable, path-addressed lines.
+
+    A single ``repr`` of an added or removed *group* is one 18k-character line
+    that no line cap can help with, so containers are walked and each branch
+    reported at its own path. Recursion stops at the first level with nothing
+    nested below it -- a params list is summarized by name, and one parameter's
+    field bag is reported whole -- which keeps a deleted group to a few dozen
+    lines instead of several hundred.
+    """
+    if _is_name_keyed_list(value):
+        names = ", ".join(sorted(str(item["name"]) for item in value))
+        return [f"{prefix}: {verb} ({len(value)} entries: {names})"]
+    if isinstance(value, dict) and any(
+        isinstance(v, dict) or _is_name_keyed_list(v) for v in value.values()
+    ):
+        lines = []
+        for key in sorted(value):
+            lines.extend(_describe_subtree(value[key], f"{prefix}/{key}", verb))
+        if lines:
+            return lines
+    return [f"{prefix}: {verb} ({value!r})"]
+
+
 def _diff_paths(expected, actual, prefix: str = "") -> list[str]:
     """Return human-readable descriptions of every difference between two trees."""
     where = prefix or "<root>"
@@ -205,9 +335,9 @@ def _diff_paths(expected, actual, prefix: str = "") -> list[str]:
     if isinstance(expected, dict):
         diffs = []
         for key in sorted(set(expected) - set(actual)):
-            diffs.append(f"{prefix}/{key}: removed (was {expected[key]!r})")
+            diffs.extend(_describe_subtree(expected[key], f"{prefix}/{key}", "removed, was"))
         for key in sorted(set(actual) - set(expected)):
-            diffs.append(f"{prefix}/{key}: added ({actual[key]!r})")
+            diffs.extend(_describe_subtree(actual[key], f"{prefix}/{key}", "added"))
         for key in sorted(set(expected) & set(actual)):
             diffs.extend(_diff_paths(expected[key], actual[key], f"{prefix}/{key}"))
         return diffs
@@ -225,18 +355,34 @@ def _diff_paths(expected, actual, prefix: str = "") -> list[str]:
     return []
 
 
+TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_flag(name: str) -> bool:
+    """True only for an explicitly affirmative value.
+
+    Plain truthiness would treat ``GPIO_UPDATE_SNAPSHOT=0`` -- the obvious way
+    to say "no" -- as a request to rewrite the baseline.
+    """
+    return os.environ.get(name, "").strip().lower() in TRUTHY_ENV_VALUES
+
+
+@requires_click_unset
 def test_cli_surface_matches_snapshot():
     """The Click command tree matches the committed structural snapshot."""
     surface = build_surface()
 
-    if os.environ.get(UPDATE_ENV_VAR):
+    if _env_flag(UPDATE_ENV_VAR):
         # Never let a stray env var turn CI green by rewriting the baseline.
         assert not os.environ.get("CI"), (
             f"{UPDATE_ENV_VAR} must not be set in CI: it would rewrite the "
             "baseline instead of checking against it. Re-record the snapshot "
             "locally and commit the diff."
         )
-        SNAPSHOT_PATH.write_text(_serialize(surface), encoding="utf-8")
+        # newline="\n" keeps a re-record on Windows from rewriting all 11k lines
+        # with CRLF. The read side deliberately keeps universal newlines, so a
+        # snapshot that arrives with CRLF still compares clean.
+        SNAPSHOT_PATH.write_text(_serialize(surface), encoding="utf-8", newline="\n")
         pytest.skip(f"{UPDATE_ENV_VAR} set: refreshed {SNAPSHOT_PATH.name}")
 
     assert SNAPSHOT_PATH.exists(), (
