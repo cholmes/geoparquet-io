@@ -51,6 +51,29 @@ GEO_1_1 = {
 }
 
 
+# A second geometry column, which GeoParquet allows and gpio carries through
+# ``geometry_info["secondary"]``. Validation treats every column in
+# ``geo["columns"]`` alike, so a secondary must satisfy the same per-version
+# requirements as the primary.
+GEO_MULTI = {
+    "version": "1.1.0",
+    "primary_column": "geometry",
+    "columns": {
+        "geometry": {"encoding": "WKB", "geometry_types": ["Point"]},
+        "geom2": {"encoding": "WKB", "geometry_types": ["Point"]},
+    },
+}
+
+MULTI_GEOMETRY_INFO = {
+    "primary": "geometry",
+    "secondary": ["geom2"],
+    "metadata": {
+        "geometry": {"encoding": "WKB", "geometry_types": ["Point"]},
+        "geom2": {"encoding": "WKB", "geometry_types": ["Point"]},
+    },
+}
+
+
 def _write_source(path) -> str:
     """Write a tiny WKB GeoParquet 1.1 input file and return its path."""
     table = pa.table({"id": [1, 2], "geometry": POINT_WKB})
@@ -59,7 +82,21 @@ def _write_source(path) -> str:
     return str(path)
 
 
-def _stream_write(src: str, out, version: str = "1.1") -> str:
+def _write_multi_source(path) -> str:
+    """Write an input file carrying a primary *and* a secondary geometry column."""
+    table = pa.table({"id": [1, 2], "geometry": POINT_WKB, "geom2": POINT_WKB})
+    table = table.replace_schema_metadata({b"geo": json.dumps(GEO_MULTI).encode("utf-8")})
+    pq.write_table(table, path)
+    return str(path)
+
+
+def _stream_write(
+    src: str,
+    out,
+    version: str = "1.1",
+    geometry_info: dict | None = None,
+    input_crs: dict | None = None,
+) -> str:
     """Run the arrow-streaming write strategy over ``src``."""
     con = get_duckdb_connection()
     try:
@@ -72,20 +109,40 @@ def _stream_write(src: str, out, version: str = "1.1") -> str:
             geoparquet_version=version,
             write_strategy="streaming",
             input_file=src,
+            geometry_info=geometry_info,
+            input_crs=input_crs,
         )
     finally:
         con.close()
     return str(out)
 
 
-def _geometry_field(path: str) -> pa.Field:
-    return pq.ParquetFile(path).schema_arrow.field("geometry")
+def _geometry_field(path: str, column: str = "geometry") -> pa.Field:
+    return pq.ParquetFile(path).schema_arrow.field(column)
 
 
-def _parquet_logical_type(path: str) -> str:
+def _parquet_logical_type(path: str, column: str = "geometry") -> str:
     pf = pq.ParquetFile(path)
-    index = pf.schema_arrow.names.index("geometry")
+    index = pf.schema_arrow.names.index(column)
     return str(pf.metadata.schema.column(index).logical_type)
+
+
+# A non-default CRS, so the native-type path actually applies `with_crs`.
+EPSG_3857 = {
+    "type": "ProjectedCRS",
+    "name": "WGS 84 / Pseudo-Mercator",
+    "id": {"authority": "EPSG", "code": 3857},
+}
+
+
+def _wkb_values(table: pa.Table, column: str) -> list[bytes]:
+    """Raw WKB values, whether the column came back as binary or as an extension type."""
+    chunked = table.column(column)
+    values = []
+    for chunk in chunked.chunks:
+        storage = chunk.storage if isinstance(chunk, pa.ExtensionArray) else chunk
+        values.extend(storage.to_pylist())
+    return values
 
 
 def _failed_checks(path: str) -> list[str]:
@@ -314,6 +371,77 @@ def test_wkb_versions_write_plain_binary(tmp_path, version):
     assert _geometry_field(out).type == pa.binary()
 
 
+class TestSecondaryGeometryColumns:
+    """A secondary geometry column must follow the same rules as the primary.
+
+    ``validate_geoparquet`` runs ``native_geo_type_present`` and
+    ``v2_uses_native_types`` over *every* column in ``geo["columns"]``, so
+    demoting a secondary to plain binary makes a 2.0 file invalid — and on
+    parquet-geo-only, where the geo metadata is dropped entirely, the native
+    logical type is the column's only remaining geometry identity.
+    """
+
+    def test_20_writes_both_columns_native(self, tmp_path):
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="2.0", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        assert "Geometry" in _parquet_logical_type(out, "geometry")
+        assert "Geometry" in _parquet_logical_type(out, "geom2")
+
+    def test_20_multi_geometry_validates_clean(self, tmp_path):
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="2.0", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        assert _failed_checks(out) == []
+
+    def test_20_multi_geometry_validates_clean_with_geoarrow_imported(self, tmp_path):
+        import geoarrow.pyarrow  # noqa: F401
+
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="2.0", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        assert _failed_checks(out) == []
+
+    def test_parquet_geo_only_keeps_both_columns_native(self, tmp_path):
+        """With no geo metadata, the logical type is the only geometry identity left."""
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src,
+            tmp_path / "out.parquet",
+            version="parquet-geo-only",
+            geometry_info=MULTI_GEOMETRY_INFO,
+        )
+        assert "Geometry" in _parquet_logical_type(out, "geometry")
+        assert "Geometry" in _parquet_logical_type(out, "geom2")
+
+    def test_11_demotes_both_columns_to_plain_binary(self, tmp_path):
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="1.1", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        assert _geometry_field(out, "geometry").type == pa.binary()
+        assert _geometry_field(out, "geom2").type == pa.binary()
+
+    def test_11_multi_geometry_validates_clean(self, tmp_path):
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="1.1", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        assert _failed_checks(out) == []
+
+    def test_multi_geometry_values_survive(self, tmp_path):
+        src = _write_multi_source(tmp_path / "src.parquet")
+        out = _stream_write(
+            src, tmp_path / "out.parquet", version="1.1", geometry_info=MULTI_GEOMETRY_INFO
+        )
+        written = pq.read_table(out)
+        assert written.column("geometry").to_pylist() == POINT_WKB
+        assert written.column("geom2").to_pylist() == POINT_WKB
+
+
 class TestCarrierGuards:
     """The normalization must recognise what is *not* a WKB column."""
 
@@ -393,7 +521,12 @@ class TestOversizedBatchSplit:
         from geoparquet_io.core import streaming
         from geoparquet_io.core.write_strategies.arrow_streaming import _binary_cast_spans
 
-        geometry = ga.as_wkb(pa.array(POINT_WKB * 2, pa.binary()))
+        # geoarrow.large_wkb is exactly what DuckDB's 64-bit Arrow export resolves
+        # to once the extension types are registered: extension name geoarrow.wkb
+        # over large_binary storage. That is the shape that actually gets narrowed.
+        geometry = pa.ExtensionArray.from_storage(
+            ga.large_wkb(), pa.array(POINT_WKB * 2, pa.large_binary())
+        )
         batch = pa.RecordBatch.from_arrays(
             [pa.array([1, 2, 3, 4], pa.int64()), geometry],
             schema=pa.schema([pa.field("id", pa.int64()), pa.field("geometry", geometry.type)]),
@@ -403,6 +536,36 @@ class TestOversizedBatchSplit:
         spans = _binary_cast_spans(batch, self._target_schema())
         assert len(spans) > 1
         assert sum(length for _, length in spans) == 4
+
+    def test_split_write_20_with_crs_and_secondary_column(self, tmp_path, monkeypatch):
+        """The hardest combination through the split path.
+
+        Native 2.0 conversion goes through ``pa.ExtensionArray``, which cannot
+        carry a slice offset — and the split path hands it *sliced* batches. If
+        the offset were dropped, every part after the first would silently repeat
+        the parent's leading rows, so pin the row values, not just the types.
+        """
+        from geoparquet_io.core import streaming
+
+        src = _write_multi_source(tmp_path / "src.parquet")
+        monkeypatch.setattr(streaming, "_MAX_WKB_CHUNK_BYTES", 1)
+        out = _stream_write(
+            src,
+            tmp_path / "out.parquet",
+            version="2.0",
+            geometry_info=MULTI_GEOMETRY_INFO,
+            input_crs=EPSG_3857,
+        )
+
+        # Guard: the budget must actually have forced a split, or this proves nothing.
+        assert pq.ParquetFile(out).num_row_groups > 1
+
+        written = pq.read_table(out)
+        assert written.num_rows == 2
+        assert _wkb_values(written, "geometry") == POINT_WKB
+        assert _wkb_values(written, "geom2") == POINT_WKB
+        assert "Geometry" in _parquet_logical_type(out, "geometry")
+        assert "Geometry" in _parquet_logical_type(out, "geom2")
 
     def test_uncastable_column_raises_actionable_error(self):
         """If several columns overflow at once the cast can still fail — say why."""

@@ -505,14 +505,19 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   GEOMETRY logical type once anything had imported `geoarrow.pyarrow` (failing
   `version_features_match`, since native types require GeoParquet 2.0). Both
   variants were invalid GeoParquet 1.1, and which one you got was decided by
-  unrelated import order. Streaming writes now normalize every WKB geometry
-  column — the primary column for 1.0/1.1 plus secondary geometry columns in
-  every version — to plain `BYTE_ARRAY` WKB, matching what the `duckdb-kv`,
-  `in-memory` and `disk-rewrite` strategies already produced. Output is now a
-  function of the inputs alone. The 2.0, `parquet-geo-only` and `1.1-geoarrow`
-  versions keep writing their native geometry types. Batches holding more than
+  unrelated import order. Streaming writes are now normalized per target
+  version, so the output is a function of the inputs alone: GeoParquet 1.0 and
+  1.1 write **every** geometry column — primary and secondary alike — as plain
+  `BYTE_ARRAY` WKB, matching what the `duckdb-kv` and `in-memory` strategies
+  already produced for the primary column; GeoParquet 2.0 and
+  `parquet-geo-only` write **every** geometry column as a native Parquet
+  GEOMETRY type, which 2.0 validation requires of each column in
+  `geo["columns"]` and which is a secondary column's only geometry identity
+  once `parquet-geo-only` drops the geo metadata; `1.1-geoarrow` keeps its
+  native GeoArrow encoding on the primary column. Batches holding more than
   2 GB of WKB are split so narrowing to Arrow's 32-bit `binary` offsets cannot
-  overflow. (#688)
+  overflow — this now also covers the native 2.0 path, whose `geoarrow.wkb`
+  storage is 32-bit too. (#688)
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
