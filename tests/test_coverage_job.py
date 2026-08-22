@@ -35,7 +35,9 @@ def tests_workflow() -> dict[str, Any]:
     """Load and return the parsed tests.yml workflow."""
     workflow_path = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
     assert workflow_path.exists(), "tests.yml workflow missing"
-    with open(workflow_path) as f:
+    # encoding is explicit: tests.yml contains em-dashes, and Windows defaults to
+    # cp1252, which raises UnicodeDecodeError on the first non-ASCII byte.
+    with open(workflow_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
