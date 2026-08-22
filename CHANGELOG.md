@@ -275,7 +275,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `uv run pytest -m meta`. `tests/test_validate_claude_md.py` also drops five of
   its seven `uv run` spawns in favour of calling the validator's `main()` in
   process, keeping the happy path and one detected-error path as real
-  subprocesses.
+  subprocesses. The nightly mutation run picks the lane up too: mutmut's
+  per-mutant selection is now `not slow and not network and not meta`, which
+  replaces the per-file `--ignore` list it needed to keep those subprocesses
+  from resolving the *mutated* package out of mutmut's `mutants/` tree.
 
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
