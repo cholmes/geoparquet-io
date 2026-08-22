@@ -233,20 +233,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
-- **WFS tests no longer reach the network.** Six `tests/test_wfs.py` tests that
-  exercise `wfs_to_table` mocked the version negotiation, layer lookup and
-  feature fetch, but not `_get_feature_count` — which `wfs_to_table` calls twice
-  before the mocked fetch as part of its auto-tiling probe. Against the fake
-  host those calls were real HTTP GETs that failed DNS resolution and burned the
-  full 1s+2s retry backoff twice, ~6.15s per test. `_get_feature_count` swallows
-  every exception, so the tests passed while silently making live network
-  requests, contrary to the module's stated "mocked HTTP responses to avoid
-  network dependencies". A shared `offline_wfs_probes` fixture now completes the
-  mock and installs a tripwire on `_make_request` that fails the test if a
-  future unmocked request escapes through that path. No assertion changed
-  meaning — the stubs
-  return the `None` the failed requests already produced — and the file's serial
-  runtime drops from 67.6s to 45.4s.
+- **`tests/test_wfs.py` no longer reaches the network.** Nine tests made live
+  requests against the fake host. Six exercise `wfs_to_table` and mocked the
+  version negotiation, layer lookup and feature fetch, but not
+  `_get_feature_count` — which `wfs_to_table` calls twice before the mocked
+  fetch as part of its auto-tiling probe. Three more, in
+  `TestAutoPageSingleWorker`, call `fetch_all_features_duckdb` directly, which
+  probes the server's startIndex support before paging; that probe drives httpx
+  itself, so mocking the page fetcher never covered it. Both `_get_feature_count`
+  and `_probe_startindex_limit` swallow every exception, so all nine passed
+  while silently making live requests, contrary to the module's stated "mocked
+  HTTP responses to avoid network dependencies". A shared `offline_wfs_probes`
+  fixture now completes the mock and installs a tripwire on `_make_request` that
+  fails the test if a future unmocked request escapes through that path. No
+  assertion changed meaning — the stubs return the `None` the failed requests
+  already produced. Measured over the file's fast lane: 12 outbound connection
+  attempts and 24 `time.sleep` calls totalling 36.00s of retry backoff both drop
+  to zero, and serial runtime goes from 43.4s to 6.3s.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
