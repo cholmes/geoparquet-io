@@ -45,6 +45,7 @@ import time  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+import click  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import pytest  # noqa: E402
 
@@ -62,6 +63,22 @@ try:
 except ImportError:  # pragma: no cover - click < 8.2
     UNSET = object()
     CLICK_HAS_UNSET = False
+
+
+def walk_cli_commands(cmd, path: tuple[str, ...] = ()):
+    """Yield ``(path, command)`` for every leaf command in a Click tree.
+
+    Shared by the two CLI/API parity modules
+    (``test_cli_api_default_parity.py`` and
+    ``test_cli_api_call_parity_scaffold.py``), which both derive their coverage
+    from the live command tree rather than a hand-maintained list of names.
+    """
+    if isinstance(cmd, click.Group):
+        for sub_name, sub in cmd.commands.items():
+            yield from walk_cli_commands(sub, (*path, sub_name))
+    else:
+        yield path, cmd
+
 
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "data"

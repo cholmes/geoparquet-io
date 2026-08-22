@@ -13,6 +13,18 @@ that the parameters somebody already fixed are still fixed), this module walks
 are a subset of `KNOWN_DIVERGENCES`, an explicit allowlist where every entry
 carries a justification. Any newly introduced mismatch fails the suite.
 
+A command with no API twin at all is a different failure of the same rule, so
+`TestEveryCommandHasAnApiTwin` pins the twin-less commands to the `NO_API_TWIN`
+allowlist -- the `check-api-for-cli` pre-commit hook only prints a reminder.
+
+This module compares *declared* defaults. Its sibling,
+`tests/test_cli_api_call_parity_scaffold.py`, compares the values each front end
+actually hands to core for a sample of commands, and catches what introspection
+cannot (a CLI deriving one option from another, or a parameter the API omits
+entirely so the core default silently applies). Several entries in
+`KNOWN_DIVERGENCES` have a counterpart in that module's `KNOWN_PARITY_GAPS`;
+closing a gap means deleting from both.
+
 No network access is required -- this is pure introspection over Click command
 definitions and Python function signatures.
 """
@@ -33,6 +45,7 @@ from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 # keeps this working on click 8.1 lives in conftest so both introspection
 # suites share one copy.
 from tests.conftest import UNSET
+from tests.conftest import walk_cli_commands as _walk
 
 # --------------------------------------------------------------------------
 # CLI command -> API twin resolution
@@ -117,14 +130,6 @@ def _api_twins(path: tuple[str, ...]) -> list[tuple[str, object]]:
     return found
 
 
-def _walk(cmd, path: tuple[str, ...] = ()):
-    if isinstance(cmd, click.Group):
-        for sub_name, sub in cmd.commands.items():
-            yield from _walk(sub, (*path, sub_name))
-    else:
-        yield path, cmd
-
-
 def _normalize(value):
     """Collapse the many spellings of "not specified" to a single value.
 
@@ -186,6 +191,8 @@ def collect_divergences() -> list[tuple[str, str, str, str, str]]:
     for path, cmd in _walk(cli):
         twins = _api_twins(path)
         if not twins:
+            # Enforced separately by `TestEveryCommandHasAnApiTwin`; a command with
+            # no twin has nothing to diff, but it is not silently acceptable.
             continue
         cli_defaults = _cli_defaults(cmd)
         for label, fn in twins:
@@ -278,6 +285,76 @@ KNOWN_DIVERGENCES: dict[tuple[str, str, str, str, str], str] = {
         "'<unset>'",
     ): _KEEP_TRISTATE,
 }
+
+
+# --------------------------------------------------------------------------
+# "Every CLI command needs a Python API" -- allowlisted exceptions
+# --------------------------------------------------------------------------
+
+# CLAUDE.md states the rule; the `check-api-for-cli` pre-commit hook only prints a
+# reminder and never fails. These are the commands that ship without an API twin
+# today. Adding a CLI command without an API now fails here until someone either
+# writes the API or consciously adds a line to this dict.
+NO_API_TWIN: dict[str, str] = {
+    "benchmark compare": (
+        "Benchmarking is a CLI reporting workflow, not a data operation: `compare` "
+        "diffs two benchmark runs and renders a table for a human. There is no "
+        "GeoParquet input/output to hang a Table method or ops function off."
+    ),
+    "benchmark report": (
+        "Renders previously collected benchmark results as a human-readable report. "
+        "Same reason as `benchmark compare` -- presentation, not a table operation."
+    ),
+    "benchmark suite": (
+        "Orchestrates a multi-command benchmark run and prints timings. An API caller "
+        "would compose the individual operations directly instead."
+    ),
+    "check stac": (
+        "Validates a STAC catalog/item document rather than a GeoParquet table, so it "
+        "has no `Table` receiver. Worth an `ops.check_stac` eventually."
+    ),
+    "publish stac": (
+        "Writes STAC metadata for a dataset or directory of datasets; the unit of work "
+        "is a collection on disk, not the in-memory table a `Table` method operates on. "
+        "Worth an `ops.publish_stac` eventually."
+    ),
+    "inspect layers": (
+        "Lists the layers of a multi-layer source (GeoPackage, FlatGeobuf) *before* a "
+        "single-layer Table can exist, so it cannot be a Table method. Worth an "
+        "`ops.list_layers` eventually."
+    ),
+    "skills": (
+        "Lists and prints the bundled LLM skill documents. A CLI affordance with no "
+        "data operation behind it."
+    ),
+}
+
+
+def commands_without_api_twin() -> set[str]:
+    """Every CLI command path that resolves to no `ops` function and no `Table` method."""
+    return {" ".join(path) for path, _cmd in _walk(cli) if not _api_twins(path)}
+
+
+class TestEveryCommandHasAnApiTwin:
+    """The project rule is "every CLI command needs a Python API"; enforce it."""
+
+    def test_twin_less_commands_are_exactly_the_allowlist(self):
+        actual = commands_without_api_twin()
+        missing = actual - set(NO_API_TWIN)
+        stale = set(NO_API_TWIN) - actual
+        assert not missing, (
+            "CLI command(s) with no `ops` function and no `Table` method. CLAUDE.md "
+            "requires a Python API for every CLI command -- add one, or add an entry "
+            "to NO_API_TWIN with a justification:\n" + "\n".join(f"  {c}" for c in sorted(missing))
+        )
+        assert not stale, (
+            "NO_API_TWIN lists command(s) that now have a Python API (or no longer "
+            "exist); delete the entries:\n" + "\n".join(f"  {c}" for c in sorted(stale))
+        )
+
+    def test_every_allowlist_entry_has_a_reason(self):
+        for command, reason in NO_API_TWIN.items():
+            assert reason and reason.strip(), f"No justification recorded for {command!r}"
 
 
 class TestNoNewDefaultDrift:
