@@ -134,13 +134,21 @@ pythonpath = ["."]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# Coverage flags deliberately absent: a plain `uv run pytest` should be fast and
+# green. Instrumenting every run (including every spawned subprocess) cost 39-49%
+# on single-file dev runs, and a partial run can never clear the 67% floor, so the
+# default local invocation always exited 1 on a gate that measured nothing.
+# The floor is enforced where it is meaningful — the ubuntu/3.11 job in
+# .github/workflows/tests.yml passes --cov=geoparquet_io --cov-report=term-missing
+# --cov-report=xml --cov-fail-under=67 over the whole fast suite, and feeds
+# Codecov plus the 90% diff-cover gate. Locally, opt in with:
+#   uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0
+# (--cov-fail-under=0 is required on a subset: [tool.coverage.report].fail_under
+# re-arms the 67% floor on any --cov run, which a partial run can never clear.)
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--cov=geoparquet_io",
-    "--cov-report=term-missing",
-    "--cov-fail-under=67",
     # The geoparquet-testing submodule ships its own pytest suite; never collect it.
     "--ignore=tests/data/geoparquet-testing",
 ]
@@ -265,8 +273,8 @@ ignore_errors = true
 [tool.mutmut]
 source_paths = ["geoparquet_io/"]
 # Fast tests only: slow/network tests are nondeterministic (live third-party
-# servers) and far too slow to run once per mutant. --no-cov drops the
-# coverage overhead and the global --cov-fail-under gate from addopts.
+# servers) and far too slow to run once per mutant. --no-cov drops the coverage
+# overhead and stops [tool.coverage.report].fail_under from failing every mutant.
 # NOTE: mutmut 3 runs pytest in-process and IGNORES a `runner` setting;
 # extra args must go in pytest_add_cli_args.
 # The --ignore'd files are tooling meta-tests that spawn `uv run ...`

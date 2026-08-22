@@ -95,6 +95,22 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      # THE single place that decides which matrix leg reports coverage.
+      # Four things key off it (fetch-depth, COV_ARGS, the Codecov upload, the
+      # diff-cover gate); when each re-derived `os == ... && python-version ==
+      # ...` for itself, moving the baseline (drop 3.11, add 3.14) would have
+      # turned all four false at once — no coverage measured, nothing uploaded,
+      # and BOTH the 67% floor and the 90% diff-cover gate silently gone with
+      # every check green. Change the baseline HERE and everything follows.
+      # (Deliberately not a `matrix.coverage` flag added via `include:`: an
+      # include-contributed key is appended to the generated job name, so the
+      # leg would be reported as `test (ubuntu-latest, 3.11, true)` and the
+      # required status check would never arrive.)
+      # tests/test_coverage_job.py asserts this names a combination that
+      # actually survives the excludes below, and that nobody re-derives it.
+      COVERAGE_JOB: >-
+        ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11' }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,8 +125,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Full history so diff-cover can diff against the PR base branch.
-          fetch-depth: 0
+          # Full history ONLY for the coverage leg, which runs diff-cover; the
+          # other nine cloned the entire history for nothing.
+          # Written inverted on purpose: `cond && 0 || 1` always yields 1
+          # because 0 is falsy in GitHub expressions, so the depth-1 branch
+          # has to be the truthy one.
+          fetch-depth: ${{ env.COVERAGE_JOB != 'true' && 1 || 0 }}
           # geoparquet-testing corpus for the corpus conformance tests
           submodules: true
 
@@ -155,18 +175,39 @@ jobs:
 
       - name: Run fast tests with pytest (parallel)
         shell: bash
+        env:
+          # Only the COVERAGE_JOB leg consumes coverage (Codecov upload and the
+          # diff-cover gate below). The other nine matrix jobs instrumented
+          # every line and every spawned subprocess, then threw the result away.
+          #
+          # On the speed claim, precisely: the 39-49% figure quoted in
+          # CHANGELOG/pyproject is a LOCAL single-file run, where interpreter
+          # start-up and collection dominate. It does not describe these jobs.
+          # Total CI matrix wall time did NOT measurably improve — 5926s before
+          # vs 5980s after, n=1, well inside run-to-run noise. The reason to do
+          # this is that instrumenting nine jobs to discard the result is waste
+          # and obscures where the gate lives, not a matrix speedup.
+          #
+          # The reporting job passes every flag explicitly because `addopts` no
+          # longer carries them: the 67% floor is enforced HERE.
+          COV_ARGS: >-
+            ${{ env.COVERAGE_JOB == 'true'
+            && '--cov=geoparquet_io --cov-report=term-missing --cov-report=xml --cov-fail-under=67'
+            || '--no-cov' }}
         run: |
+          # word-splitting intended: COV_ARGS is a flag list (or --no-cov)
+          # shellcheck disable=SC2086
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 --dist=loadfile -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 3 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=term-missing --cov-report=xml
+            uv run pytest -n 4 -m "not slow and not network" -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        if: env.COVERAGE_JOB == 'true'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage.xml
@@ -176,8 +217,7 @@ jobs:
 
       - name: Diff coverage gate (changed lines >= 90% covered)
         if: >-
-          github.event_name == 'pull_request' &&
-          matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+          github.event_name == 'pull_request' && env.COVERAGE_JOB == 'true'
         env:
           BASE_REF: ${{ github.base_ref }}
         # Coverage comes from the fast suite, so changed lines must be covered
@@ -289,6 +329,15 @@ jobs:
 
       - name: Run slow tests (parallel)
         shell: bash
+        env:
+          # Only ubuntu uploads slow-suite coverage to Codecov (step below);
+          # macOS and Windows discarded theirs. --cov-fail-under=0 stays on the
+          # reporting job because the slow suite alone never reaches the 67%
+          # floor that [tool.coverage.report] would otherwise apply.
+          COV_ARGS: >-
+            ${{ matrix.os == 'ubuntu-latest'
+            && '--cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0'
+            || '--no-cov' }}
         run: |
           # Security tests (the live pip-audit) are owned by the dedicated
           # `security` job, which handles CVE ignores and PR blocking. Never run
@@ -296,13 +345,18 @@ jobs:
           # ignore lists drifted apart.
           IGNORE_SECURITY="--ignore=tests/test_security.py"
 
+          # word-splitting intended: COV_ARGS is a flag list (or --no-cov).
+          # The directive binds to the NEXT command, so it has to sit here and
+          # not at the top of the block (where it would bind to the assignment
+          # above and leave all three invocations unsuppressed).
+          # shellcheck disable=SC2086
           if [ "$RUNNER_OS" == "Windows" ]; then
             # Use loadfile distribution on Windows to reduce DuckDB extension conflicts
-            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 --dist=loadfile -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 3 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           else
-            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 --cov=geoparquet_io --cov-report=xml --cov-report=term-missing --cov-fail-under=0
+            uv run pytest -n 4 -m "slow and not network" $IGNORE_SECURITY -v --tb=short --durations=25 --durations-min=0.5 $COV_ARGS
           fi
 
       - name: Upload slow test coverage to Codecov

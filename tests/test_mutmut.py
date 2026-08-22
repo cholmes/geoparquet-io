@@ -104,7 +104,8 @@ class TestMutmutConfig:
         )
         assert "--no-cov" in args, (
             "mutmut pytest_add_cli_args must disable coverage (per-mutant "
-            "overhead, and the global --cov-fail-under gate would misfire)"
+            "overhead, and [tool.coverage.report].fail_under would misfire on "
+            "a per-mutant subset)"
         )
 
     def test_mutmut_also_copies_test_prerequisites(self, mutmut_config: dict[str, Any]):
