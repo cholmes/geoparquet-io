@@ -1377,6 +1377,46 @@ def _assemble_and_apply_geo_metadata(
     return table
 
 
+# Schema-metadata keys that describe the *input's* schema rather than the
+# output's, so they must not ride along into a parquet-geo-only write. Mirrors
+# the exclusion set in write_parquet_with_metadata.
+_CARRIED_SCHEMA_METADATA_KEYS = frozenset({b"geo", b"ARROW:schema", b"pandas"})
+
+
+def _strip_geo_metadata_key(table, verbose: bool = False):
+    """Drop the input's ``geo``/``ARROW:schema``/``pandas`` keys, keeping other KV.
+
+    Used for parquet-geo-only output, which carries its geometry typing in the
+    Parquet schema and must not also declare a GeoParquet version.
+
+    The exclusion set matches ``write_parquet_with_metadata``'s (see the
+    preserved-keys loop in that function): besides ``geo``, a carried
+    ``ARROW:schema``/``pandas`` describes the *input's* schema and is written
+    through verbatim, leaving the output with a serialized descriptor naming
+    columns and a CRS the file does not have.
+
+    Args:
+        table: PyArrow Table whose schema metadata to clean
+        verbose: Whether to print verbose output
+
+    Returns:
+        pa.Table: Table without carried geo/schema-descriptor metadata keys
+    """
+    existing_metadata = table.schema.metadata
+    if not existing_metadata:
+        return table
+
+    dropped = [k for k in existing_metadata if k in _CARRIED_SCHEMA_METADATA_KEYS]
+    if not dropped:
+        return table
+
+    new_metadata = {k: v for k, v in existing_metadata.items() if k not in dropped}
+    if verbose:
+        names = ", ".join(sorted(k.decode("utf-8") for k in dropped))
+        debug(f"parquet-geo-only: dropped the input's {names} metadata key(s)")
+    return table.replace_schema_metadata(new_metadata)
+
+
 def _apply_geoparquet_metadata(
     table,
     geometry_column: str,
@@ -1446,7 +1486,12 @@ def _apply_geoparquet_metadata(
 
     # Step 2: Build and apply geo metadata (unless parquet-geo-only)
     if not should_add_geo_metadata:
-        return table
+        # parquet-geo-only means no GeoParquet metadata at all. Step 1 has just
+        # given the column a native Parquet GEOMETRY logical type, so a 'geo'
+        # key carried in from the input would declare a version whose spec
+        # forbids that type (issue #687). Drop it, keeping unrelated KV
+        # metadata, to match the other write paths.
+        return _strip_geo_metadata_key(table, verbose)
 
     # Detect bbox column from table schema
     bbox_column = _detect_bbox_column_from_table(table, verbose)

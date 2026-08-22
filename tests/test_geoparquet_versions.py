@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.common import DEFAULT_GEOPARQUET_VERSION, GEOPARQUET_VERSIONS
 from geoparquet_io.core.convert import convert_to_geoparquet
+from geoparquet_io.core.validate import CheckStatus
 from tests.conftest import (
     get_geo_metadata,
     get_geoparquet_version,
@@ -1629,3 +1630,179 @@ class TestGeoParquet11GeoArrow:
         crs_out = geo_out["columns"]["geometry"].get("crs")
         assert crs_out is not None, "non-default CRS was dropped"
         assert crs_out.get("id", {}).get("code") == 3857
+
+
+class TestWriteGeoParquetTableParquetGeoOnly:
+    """write_geoparquet_table must honor an explicit parquet-geo-only request (#687).
+
+    The table writer converts the geometry column to a native Parquet GEOMETRY
+    logical type for parquet-geo-only, so any ``geo`` key carried in from the
+    input declares a version whose spec forbids native geo types. The other
+    write paths omit the key entirely; this one must too.
+    """
+
+    @staticmethod
+    def _table_with_geo(version):
+        """Build an in-memory table carrying a ``geo`` key of the given version."""
+        import json
+
+        import pyarrow as pa
+        import shapely.wkb
+        from shapely.geometry import Point
+
+        geo = {
+            "version": version,
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        tbl = pa.table(
+            {
+                "id": pa.array([1, 2]),
+                "geometry": pa.array(
+                    [shapely.wkb.dumps(Point(1, 2)), shapely.wkb.dumps(Point(3, 4))],
+                    type=pa.binary(),
+                ),
+            }
+        )
+        return tbl.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+
+    @pytest.mark.parametrize("input_version", ["1.0.0", "1.1.0", "2.0.0"])
+    def test_pgo_strips_carried_geo_key(self, input_version, tmp_path):
+        """An explicit parquet-geo-only request must drop the input's geo key."""
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / f"pgo_{input_version}.parquet")
+        write_geoparquet_table(
+            self._table_with_geo(input_version),
+            output_file,
+            geoparquet_version="parquet-geo-only",
+        )
+
+        assert not has_geoparquet_metadata(output_file), (
+            f"geo key from input version {input_version} survived a parquet-geo-only write"
+        )
+        assert has_native_geo_types(output_file)
+
+    def test_pgo_on_plain_input_unchanged(self, tmp_path):
+        """parquet-geo-only on an input without geo metadata still writes no geo key."""
+        import pyarrow as pa
+        import shapely.wkb
+        from shapely.geometry import Point
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        tbl = pa.table(
+            {
+                "id": pa.array([1]),
+                "geometry": pa.array([shapely.wkb.dumps(Point(5, 6))], type=pa.binary()),
+            }
+        )
+        output_file = str(tmp_path / "pgo_plain.parquet")
+        write_geoparquet_table(tbl, output_file, geoparquet_version="parquet-geo-only")
+
+        assert not has_geoparquet_metadata(output_file)
+        assert has_native_geo_types(output_file)
+
+    def test_pgo_preserves_non_geo_kv_metadata(self, tmp_path):
+        """Stripping the geo key must not take unrelated KV metadata with it."""
+        import json
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        tbl = self._table_with_geo("1.1.0")
+        metadata = dict(tbl.schema.metadata or {})
+        metadata[b"vecorel"] = json.dumps({"collection": "test"}).encode("utf-8")
+        tbl = tbl.replace_schema_metadata(metadata)
+
+        output_file = str(tmp_path / "pgo_kv.parquet")
+        write_geoparquet_table(
+            tbl, output_file, geoparquet_version="parquet-geo-only", verbose=True
+        )
+
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" not in out_metadata
+        assert b"vecorel" in out_metadata
+
+    def test_pgo_validates_against_target_version_oracle(self, tmp_path):
+        """The real validator, told to expect pgo, must find no failures."""
+        from geoparquet_io.core.common import write_geoparquet_table
+        from geoparquet_io.core.validate import validate_geoparquet
+
+        output_file = str(tmp_path / "pgo_oracle.parquet")
+        write_geoparquet_table(
+            self._table_with_geo("1.0.0"),
+            output_file,
+            geoparquet_version="parquet-geo-only",
+        )
+
+        result = validate_geoparquet(output_file, target_version="parquet-geo-only")
+        failed = [c.name for c in result.checks if c.status == CheckStatus.FAILED]
+        assert result.is_valid, f"validator failures: {failed}"
+        assert result.detected_version == "parquet-geo-only"
+
+    def test_pgo_drops_stale_arrow_schema_descriptor(self, tmp_path):
+        """A carried ARROW:schema/pandas describes the input, not the output.
+
+        pyarrow writes such a carried blob through verbatim rather than
+        replacing it with a fresh one, so the output would otherwise ship a
+        serialized schema naming a column the file does not have. Read-back
+        typing must still be the native geoarrow extension type.
+        """
+        import geoarrow.pyarrow  # noqa: F401  (registers the extension types)
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import shapely.wkb
+        from shapely.geometry import Point
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        # Build a stale descriptor from a table with an extra "ghost" column.
+        stale_src = tmp_path / "stale_src.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "id": pa.array([1]),
+                    "ghost": pa.array(["gone"]),
+                    "geometry": pa.array([shapely.wkb.dumps(Point(1, 2))], type=pa.binary()),
+                }
+            ),
+            stale_src,
+        )
+        stale_blob = pq.ParquetFile(stale_src).metadata.metadata[b"ARROW:schema"]
+
+        tbl = self._table_with_geo("1.1.0")
+        metadata = dict(tbl.schema.metadata or {})
+        metadata[b"ARROW:schema"] = stale_blob
+        metadata[b"pandas"] = b'{"index_columns": ["ghost"]}'
+        tbl = tbl.replace_schema_metadata(metadata)
+
+        output_file = str(tmp_path / "pgo_stale.parquet")
+        write_geoparquet_table(tbl, output_file, geoparquet_version="parquet-geo-only")
+
+        raw_kv = pq.ParquetFile(output_file).metadata.metadata or {}
+        assert raw_kv.get(b"ARROW:schema") != stale_blob, (
+            "stale ARROW:schema descriptor was carried into the output verbatim"
+        )
+        assert b"pandas" not in raw_kv or b"ghost" not in raw_kv[b"pandas"]
+
+        read_back = pq.read_table(output_file)
+        assert read_back.column_names == ["id", "geometry"]
+        assert (
+            getattr(read_back.schema.field("geometry").type, "extension_name", None)
+            == "geoarrow.wkb"
+        )
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1", "2.0"])
+    def test_other_versions_still_write_geo_key(self, version, tmp_path):
+        """Non-pgo versions are unaffected: the geo key is written as before."""
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / f"v{version}.parquet")
+        write_geoparquet_table(
+            self._table_with_geo("1.0.0"), output_file, geoparquet_version=version
+        )
+
+        assert has_geoparquet_metadata(output_file)
+        assert get_geoparquet_version(output_file).startswith(version)
