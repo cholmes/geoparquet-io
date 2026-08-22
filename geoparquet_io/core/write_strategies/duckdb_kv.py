@@ -388,7 +388,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         col_meta = geo_meta["columns"][geometry_column]
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
-        self._add_bbox_covering_if_present(con, query, col_meta, verbose)
+        self._add_bbox_covering_if_present(con, query, col_meta, verbose, geoparquet_version)
 
         # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB.
         # For v2.0: Keep native GEOMETRY type with CRS — DuckDB writes native
@@ -454,8 +454,19 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         query: str,
         col_meta: dict,
         verbose: bool,
+        geoparquet_version: str,
     ) -> None:
-        """Add bbox covering metadata if bbox column is present."""
+        """Add bbox covering metadata if a bbox column is present and the version allows it.
+
+        The bbox column is still written for 1.0 — only the 'covering' key is 1.1+.
+        """
+        from geoparquet_io.core.geo_metadata import covering_supported
+
+        if not covering_supported(geoparquet_version):
+            if verbose:
+                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+            return
+
         schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
         bbox_col_name = _detect_bbox_column_name(schema_result.schema.names)
 

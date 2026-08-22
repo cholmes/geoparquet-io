@@ -56,7 +56,7 @@ def build_geo_metadata(
         dict: Complete geo metadata structure ready for embedding in Parquet
     """
     from geoparquet_io.core.crs_utils import apply_output_crs
-    from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS
+    from geoparquet_io.core.geo_metadata import GEOPARQUET_VERSIONS, strip_unsupported_covering
 
     version_config = GEOPARQUET_VERSIONS.get(geoparquet_version, GEOPARQUET_VERSIONS["1.1"])
     metadata_version = version_config.get("metadata_version", "1.1.0")
@@ -120,7 +120,8 @@ def build_geo_metadata(
             if "encoding" not in sec_meta:
                 sec_meta["encoding"] = "WKB"
 
-    return geo_meta
+    # 'covering' is 1.1-only: drop whatever the source file or custom_metadata carried
+    return strip_unsupported_covering(geo_meta, geoparquet_version)
 
 
 def _parse_existing_geo_metadata(original_metadata: dict | None) -> dict | None:

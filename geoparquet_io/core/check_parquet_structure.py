@@ -373,6 +373,7 @@ def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, 
 def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, quiet=False):
     """Check GeoParquet 1.x file (existing logic, bbox IS recommended)."""
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+    from geoparquet_io.core.geo_metadata import covering_supported
 
     geo_meta = get_geo_metadata(parquet_file)
     version = geo_meta.get("version", "0.0.0") if geo_meta else "0.0.0"
@@ -387,7 +388,13 @@ def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, 
         recommendations.append("Upgrade to version 1.1.0+")
 
     needs_bbox_column = not bbox_info["has_bbox_column"]
-    needs_bbox_metadata = bbox_info["has_bbox_column"] and not bbox_info["has_bbox_metadata"]
+    # 'covering' is 1.1-only, so a 1.0 file with a bbox column is not missing anything
+    # it is allowed to have — the "outdated version" issue above is the actionable one.
+    needs_bbox_metadata = (
+        covering_supported(version)
+        and bbox_info["has_bbox_column"]
+        and not bbox_info["has_bbox_metadata"]
+    )
 
     if needs_bbox_column:
         issues.append("No bbox column found")
@@ -420,10 +427,15 @@ def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, 
                     f"✓ Found bbox column '{bbox_info['bbox_column_name']}' "
                     "with proper metadata covering"
                 )
-            else:
+            elif needs_bbox_metadata:
                 warn(
                     f"⚠️  Found bbox column '{bbox_info['bbox_column_name']}' but missing "
                     "bbox covering metadata (add to metadata to help inform clients)"
+                )
+            else:
+                info(
+                    f"ℹ️  Found bbox column '{bbox_info['bbox_column_name']}'; the 'covering' "
+                    f"key that advertises it needs GeoParquet 1.1+ (this file is {version})"
                 )
         else:
             error("❌ No bbox column found (recommended for better performance)")

@@ -447,6 +447,21 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   the MB target); the `E''` case produced SQL that still parsed but with a
   different `WHERE` clause, estimating from a different row set. Skipping the
   speed-up is always safe; guessing is not.
+
+- **GeoParquet 1.0 output no longer carries the 1.1-only `covering` key.**
+  `gpio convert geoparquet --geoparquet-version 1.0` keyed the covering
+  metadata off bbox-column presence alone, so it wrote a file declaring version
+  1.0.0 with a `covering` entry — a field that does not exist in the GeoParquet
+  1.0.0 specification (it was introduced in 1.1) — which gpio's own
+  `gpio check spec` then rejected while `convert` still exited 0. The covering
+  metadata is now version-gated at the shared metadata-assembly points, so every
+  write strategy inherits the gate, including coverings carried in from a 1.1
+  source file or supplied as `custom_metadata` (h3/s2/a5/quadkey). The bbox
+  **column** is still written and remains fully functional for 1.0 output —
+  only the metadata key is 1.1+. Relatedly, `gpio check bbox` no longer reports
+  a 1.0 file's bbox column as "missing metadata covering"; for those files the
+  actionable advice is the version upgrade it already recommends.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
