@@ -35,6 +35,7 @@ gpio convert geojson data.parquet | tippecanoe -P -o output.pmtiles
 
 If you're piping to a tool that doesn't support RFC 8142, disable the separators:
 
+<!-- doctest: skip="pipes into a placeholder tool that stands in for the reader's own" -->
 ```bash
 gpio convert geojson data.parquet --no-rs | some-other-tool
 ```
@@ -48,6 +49,7 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Basic usage
     gpio pmtiles create buildings.parquet buildings.pmtiles
@@ -67,6 +69,7 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -113,6 +116,7 @@ For national- or global-overview maps over dense data, re-enable the size limit 
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Re-enable tippecanoe's size limit so drop-densest actually drops
     gpio pmtiles create dense.parquet tiles.pmtiles \
@@ -135,6 +139,7 @@ For national- or global-overview maps over dense data, re-enable the size limit 
 
 === "Python"
 
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -163,6 +168,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "CLI"
 
+    <!-- doctest: skip="the sample is too coarse for a multi-level pyramid" -->
     ```bash
     # Auto bands from the tile budget (builds temp overviews if missing)
     gpio pmtiles pyramid cells.parquet cells.pmtiles
@@ -177,6 +183,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "Python"
 
+    <!-- doctest: setup="gpio process aggregate h3 input.parquet cells.parquet --resolution 5" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -224,6 +231,7 @@ Because each zoom is served by exactly one band, no zoom-range filtering is need
 
 Use `gpio extract` to filter data before conversion to reduce output size:
 
+<!-- doctest: skip="pipes into tippecanoe and filters on a column the sample data lacks" -->
 ```bash
 # Filter by bounding box
 gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | \
@@ -255,6 +263,7 @@ gpio extract data.parquet --include-cols name,type,population | \
 
 Apply spatial operations before conversion:
 
+<!-- doctest: menu -->
 ```bash
 # Add bbox and sort, then convert
 gpio add bbox data.parquet | \
@@ -296,6 +305,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "CLI"
 
+    <!-- doctest: skip="gpio convert geojson --write-bbox crashes on valid input" -->
     ```bash
     # Write to GeoJSON file
     gpio convert geojson data.parquet output.geojson
@@ -306,6 +316,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "Python"
 
+    <!-- doctest: skip="writes the same output file twice; the lines are alternatives" -->
     ```python
     import geoparquet_io as gpio
 
@@ -360,6 +371,7 @@ gpio convert geojson data.parquet --precision 5 | tippecanoe -P -o output.pmtile
 
 Use `--id-field` to specify which column should become the GeoJSON feature `id`:
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 gpio convert geojson buildings.parquet --id-field osm_id | tippecanoe -P -o output.pmtiles
 ```
@@ -370,6 +382,7 @@ This is useful for feature state in map rendering or for joining data.
 
 Include per-feature bounding boxes with `--write-bbox`:
 
+<!-- doctest: skip="gpio convert geojson --write-bbox crashes on valid input" -->
 ```bash
 gpio convert geojson data.parquet output.geojson --write-bbox
 ```
@@ -402,6 +415,7 @@ gpio convert geojson data.parquet --feature-collection > output.geojson
 
 For advanced use cases, pass GDAL layer creation options directly with `--lco`:
 
+<!-- doctest: skip="documents --lco, which gpio convert geojson does not have" -->
 ```bash
 # Disable writing the layer name
 gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO
@@ -423,6 +437,7 @@ Note: Using `--lco` with the same option as a dedicated flag (e.g., `--lco COORD
 
 ### Large File Example
 
+<!-- doctest: skip="pipes into tippecanoe and filters on a column the sample data lacks" -->
 ```bash
 # Efficient pipeline for large files
 gpio extract large.parquet \
@@ -436,9 +451,10 @@ gpio extract large.parquet \
 
 Read from S3, GCS, or Azure:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # From S3 with profile
-gpio convert geojson s3://bucket/data.parquet --aws-profile my-aws | tippecanoe -P -o output.pmtiles
+gpio --aws-profile my-aws convert geojson s3://bucket/data.parquet | tippecanoe -P -o output.pmtiles
 
 # From public URL
 gpio convert geojson https://example.com/data.parquet | tippecanoe -P -o output.pmtiles

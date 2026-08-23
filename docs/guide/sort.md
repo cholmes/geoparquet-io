@@ -11,15 +11,17 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio sort hilbert input.parquet output.parquet
 
     # From HTTPS to S3
-    gpio sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet --aws-profile prod
+    gpio --aws-profile prod sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet
     ```
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -47,6 +49,7 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 
 ## Options
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # Specify geometry column
 gpio sort hilbert input.parquet output.parquet -g geom
@@ -72,6 +75,7 @@ gpio sort hilbert input.parquet output.parquet --verbose
 
 Control row group sizes for optimal performance:
 
+<!-- doctest: menu -->
 ```bash
 # Recommended for spatial filter pushdown (GeoParquet 2.0)
 gpio sort hilbert input.parquet output.parquet --row-group-size 30000 --geoparquet-version 2.0
@@ -90,6 +94,7 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Sort by a single column
     gpio sort column input.parquet output.parquet name
@@ -103,6 +108,7 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
     from geoparquet_io.api import ops

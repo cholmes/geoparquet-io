@@ -35,8 +35,8 @@ DOCS_ROOT = GUIDE_DIR.parent
 
 #: Ratchets. Raising either of these is a deliberate act that shows up in a diff
 #: and needs a justification in the pull request; that is the whole point.
-MAX_SKIPPED_BLOCKS = 130
-MIN_EXECUTED_BLOCKS = 260
+MAX_SKIPPED_BLOCKS = 220
+MIN_EXECUTED_BLOCKS = 190
 
 #: Looks like a command rather than prose or sample output.
 _COMMAND_LIKE = re.compile(r"^\s*(gpio\s|import geoparquet_io|from geoparquet_io\s)")

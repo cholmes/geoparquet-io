@@ -10,7 +10,7 @@ gpio uses different libraries for reads and writes:
 
 - **Writes**: All commands write to remote destinations using obstore. When you specify a remote output path, gpio writes to a local temp file first, then uploads via obstore automatically.
 
-The `--aws-profile` global flag is available on all commands for AWS authentication. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
+`--aws-profile` is a global flag: pass it before the subcommand, as in `gpio --aws-profile prod sort hilbert in.parquet out.parquet`. Some subcommands also accept it in the trailing position, but the global position works everywhere. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
 
 ### gpio publish upload
 
@@ -39,6 +39,7 @@ Credentials are automatically discovered in this order:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Use default credentials (from ~/.aws/credentials [default] or IAM role)
     gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet
@@ -58,6 +59,7 @@ Credentials are automatically discovered in this order:
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import os
     import geoparquet_io as gpio
@@ -82,6 +84,7 @@ Credentials are automatically discovered in this order:
 
 Azure credentials are discovered automatically when reading files:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Set account credentials via environment variables
 export AZURE_STORAGE_ACCOUNT_NAME=myaccount
@@ -100,6 +103,7 @@ gpio add bbox az://container/input.parquet az://container/output.parquet
 
 GCS support requires HMAC keys (not service account JSON):
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Generate HMAC keys at: https://console.cloud.google.com/storage/settings
 export GCS_ACCESS_KEY_ID=your_access_key
@@ -116,6 +120,7 @@ All commands support S3-compatible endpoints (MinIO, Cloudflare R2, source.coop,
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Read from source.coop
     gpio --s3-endpoint data.source.coop inspect summary s3://bucket/file.parquet
@@ -131,6 +136,7 @@ All commands support S3-compatible endpoints (MinIO, Cloudflare R2, source.coop,
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -158,6 +164,7 @@ Instead of flags, you can set standard AWS environment variables:
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | `--s3-region` |
 | `AWS_PROFILE` | `--aws-profile` |
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 export AWS_ENDPOINT_URL=https://data.source.coop
 gpio inspect summary s3://bucket/file.parquet
@@ -175,6 +182,7 @@ SSL is auto-detected from the endpoint URL:
 
 For efficient workflows, process data locally and pipe to upload. This uses Arrow IPC streaming with minimal overhead:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Process and upload in one pipeline
 gpio extract --bbox "-122.5,37.5,-122.0,38.0" input.parquet | \
@@ -185,6 +193,7 @@ gpio extract --bbox "-122.5,37.5,-122.0,38.0" input.parquet | \
 
 Or use the Python API for zero-copy streaming:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```python
 import geoparquet_io as gpio
 

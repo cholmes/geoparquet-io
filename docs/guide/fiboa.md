@@ -5,6 +5,7 @@ The `gpio-fiboa` plugin adds commands for working with field boundary datasets a
 ## Installation
 
 === "uv"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```bash
     uv tool install geoparquet-io --with gpio-fiboa
     ```
@@ -15,12 +16,14 @@ The `gpio-fiboa` plugin adds commands for working with field boundary datasets a
     ```
 
 === "Python project"
+    <!-- doctest: skip="runs inside a plugin project the reader creates" -->
     ```bash
     uv add geoparquet-io gpio-fiboa
     ```
 
 Verify the plugin is loaded:
 
+<!-- doctest: skip="requires the gpio-fiboa plugin" -->
 ```bash
 gpio fiboa --help
 ```
@@ -30,6 +33,7 @@ gpio fiboa --help
 Apply fiboa enhancements to a GeoParquet file. Each flag enables a specific improvement, applied in sequence.
 
 === "CLI"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```bash
     # Add geometry metrics (area + perimeter)
     gpio fiboa improve input.parquet output.parquet -sz
@@ -55,6 +59,7 @@ Apply fiboa enhancements to a GeoParquet file. Each flag enables a specific impr
     ```
 
 === "Python"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```python
     from gpio_fiboa import improve_fiboa
 
@@ -93,6 +98,7 @@ If the input file uses GeoParquet 2.0 or native Parquet geo types, `improve` aut
 Show fiboa column coverage, Vecorel extension metadata, and summary statistics.
 
 === "CLI"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```bash
     gpio fiboa describe fields.parquet
 
@@ -101,6 +107,7 @@ Show fiboa column coverage, Vecorel extension metadata, and summary statistics.
     ```
 
 === "Python"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```python
     from gpio_fiboa import describe_fiboa
 
@@ -118,6 +125,7 @@ The describe command shows:
 
 ### Full compliance from raw data
 
+<!-- doctest: skip="requires the gpio-fiboa plugin" -->
 ```bash
 gpio fiboa improve raw.parquet compliant.parquet -sz -a -s \
     --determination-datetime acquisition_date \
@@ -129,6 +137,7 @@ gpio fiboa describe compliant.parquet
 
 ### Add schemas to an already-enriched file
 
+<!-- doctest: skip="requires the gpio-fiboa plugin" -->
 ```bash
 gpio fiboa improve enriched.parquet output.parquet -s --skip-hilbert
 ```

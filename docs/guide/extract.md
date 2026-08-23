@@ -6,6 +6,7 @@ The `extract` command allows you to filter and subset GeoParquet files by column
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Extract all data (useful for format conversion or compression change)
     gpio extract input.parquet output.parquet
@@ -34,6 +35,7 @@ Select only the columns you need. The geometry column and bbox column (if presen
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract only id and name columns (plus geometry and bbox)
     gpio extract places.parquet subset.parquet --include-cols id,name
@@ -60,6 +62,7 @@ Remove unwanted columns from the output:
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Exclude large or unnecessary columns
     gpio extract data.parquet output.parquet --exclude-cols raw_data,metadata_json
@@ -86,6 +89,7 @@ You can combine both to control exactly which columns appear, including removing
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Include specific columns but exclude geometry (for non-spatial export)
     gpio extract data.parquet output.parquet \
@@ -100,6 +104,7 @@ You can combine both to control exactly which columns appear, including removing
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -124,6 +129,7 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Extract features in San Francisco area (WGS84 coordinates)
     gpio extract places.parquet sf_places.parquet \
@@ -140,6 +146,7 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
 
 === "Python"
 
+    <!-- doctest: skip="reads an example URL that is an illustration, not a live file" -->
     ```python
     import geoparquet_io as gpio
 
@@ -190,6 +197,7 @@ Filter features by intersection with any geometry, not just rectangles.
     Geometry filtering with arbitrary shapes is currently only available via the CLI.
     For rectangular regions, use the `bbox` parameter in Python.
 
+<!-- doctest: skip="needs a boundary polygon file to clip against" -->
 ```bash
 # Filter by inline WKT polygon
 gpio extract data.parquet subset.parquet \
@@ -212,6 +220,7 @@ gpio extract buildings.parquet city_buildings.parquet \
 
 **FeatureCollection Handling**: If your GeoJSON file contains multiple features, use `--use-first-geometry`:
 
+<!-- doctest: skip="needs a boundary polygon file to clip against" -->
 ```bash
 gpio extract data.parquet subset.parquet \
   --geometry @regions.geojson \
@@ -226,6 +235,7 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Filter by numeric value
     gpio extract data.parquet output.parquet --where "population > 10000"
@@ -255,6 +265,7 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -277,6 +288,7 @@ Column names containing special characters (like `:`, `-`, `.`) need to be quote
 
 **Simple approach (works in bash/zsh):**
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # Column name with colon - use single quotes around the whole WHERE clause
 gpio extract data.parquet output.parquet \
@@ -293,6 +305,7 @@ gpio extract data.parquet output.parquet \
 
 **Alternative escaping (more portable):**
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # Use backslash escaping
 gpio extract data.parquet output.parquet \
@@ -305,6 +318,7 @@ gpio extract data.parquet output.parquet \
 
 **Real-world examples with the FIBOA dataset:**
 
+<!-- doctest: network -->
 ```bash
 # Extract wheat fields from Slovenia FIBOA data
 gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet wheat_fields.parquet \
@@ -329,6 +343,7 @@ gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet crop_subset.
 
 ### WHERE with Numeric and Boolean Columns
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # Numeric comparisons
 gpio extract data.parquet output.parquet --where "area > 1000"
@@ -345,6 +360,7 @@ gpio extract data.parquet output.parquet --where "updated_at IS NOT NULL"
 
 ### Complex WHERE Examples
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # Combine multiple conditions
 gpio extract data.parquet output.parquet \
@@ -369,6 +385,7 @@ Combine column selection, spatial filtering, and WHERE clauses:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Extract specific columns in a bbox with attribute filter
     gpio extract places.parquet hotels.parquet \
@@ -390,6 +407,7 @@ Combine column selection, spatial filtering, and WHERE clauses:
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -414,6 +432,7 @@ Limit the number of rows extracted, useful for testing or sampling:
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract first 1000 matching rows
     gpio extract data.parquet sample.parquet --limit 1000
@@ -427,6 +446,7 @@ Limit the number of rows extracted, useful for testing or sampling:
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -445,6 +465,7 @@ Limit the number of rows extracted, useful for testing or sampling:
 
 Extract supports remote files over HTTP/HTTPS and S3:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Extract from HTTP URL
 gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet subset.parquet \
@@ -468,6 +489,7 @@ Extract data directly from BigQuery tables to GeoParquet. BigQuery `GEOGRAPHY` c
 
 === "CLI"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```bash
     # Extract entire table
     gpio extract bigquery myproject.geodata.buildings output.parquet
@@ -478,6 +500,7 @@ Extract data directly from BigQuery tables to GeoParquet. BigQuery `GEOGRAPHY` c
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -495,6 +518,7 @@ Apply filters that are pushed down to BigQuery for efficient querying:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # WHERE filter (BigQuery SQL syntax)
     gpio extract bigquery myproject.geodata.buildings output.parquet \
@@ -513,6 +537,7 @@ Apply filters that are pushed down to BigQuery for efficient querying:
 
 === "Python"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```python
     import geoparquet_io as gpio
 
@@ -531,6 +556,7 @@ Filter data spatially using a bounding box:
 
 === "CLI"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```bash
     # Filter to San Francisco area
     gpio extract bigquery myproject.geodata.buildings output.parquet \
@@ -539,6 +565,7 @@ Filter data spatially using a bounding box:
 
 === "Python"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```python
     import geoparquet_io as gpio
 
@@ -596,6 +623,7 @@ This heuristic balances the overhead of spatial function execution against data 
 
 === "CLI"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```bash
     # Force server-side filtering (good for very large tables)
     gpio extract bigquery myproject.geodata.global_buildings output.parquet \
@@ -620,6 +648,7 @@ This heuristic balances the overhead of spatial function execution against data 
 
 === "Python"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```python
     import geoparquet_io as gpio
 
@@ -673,6 +702,7 @@ The command uses Google Cloud credentials in this order:
 2. **GOOGLE_APPLICATION_CREDENTIALS**: Environment variable pointing to JSON file
 3. **gcloud auth**: Application default credentials from `gcloud auth application-default login`
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Using service account file
 gpio extract bigquery myproject.geodata.table output.parquet \
@@ -697,6 +727,7 @@ BigQuery `GEOGRAPHY` columns (native spatial type) are automatically detected an
 - Only native GEOGRAPHY-typed columns are auto-detected
 - Use `--geography-column` to specify explicitly if the column has an unusual name
 
+<!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
 ```bash
 # Explicit geography column
 gpio extract bigquery myproject.geodata.parcels output.parquet \
@@ -709,6 +740,7 @@ If your geometry is stored as text in a VARCHAR column (WKT or GeoJSON format), 
 
 === "CLI"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```bash
     # Parse WKT geometry from VARCHAR column
     gpio extract bigquery myproject.dataset.table output.parquet \
@@ -721,6 +753,7 @@ If your geometry is stored as text in a VARCHAR column (WKT or GeoJSON format), 
 
 === "Python"
 
+    <!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
     ```python
     import geoparquet_io as gpio
 
@@ -737,6 +770,7 @@ If your geometry is stored as text in a VARCHAR column (WKT or GeoJSON format), 
 
 If no geometry column is found, the output is plain Parquet (not GeoParquet):
 
+<!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
 ```bash
 # Extract table without geometry - outputs plain Parquet
 gpio extract bigquery myproject.dataset.plain_table output.parquet
@@ -766,6 +800,7 @@ BigQuery GEOGRAPHY uses **spherical geodesic edges** (S2-based), meaning lines b
 
 You can override the default with `--edges`:
 
+<!-- doctest: skip="queries a table that exists only in the reader's own warehouse" -->
 ```bash
 # Force spherical edges for VARCHAR geometry
 gpio extract bigquery myproject.dataset.table output.parquet \
@@ -810,6 +845,7 @@ Extract data directly from ArcGIS REST Feature Services to GeoParquet. Features 
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Extract from public ArcGIS Feature Service
     gpio extract arcgis https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Counties/FeatureServer/0 counties.parquet
@@ -820,6 +856,7 @@ Extract data directly from ArcGIS REST Feature Services to GeoParquet. Features 
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -836,6 +873,7 @@ Filters are pushed to the ArcGIS server for efficient querying—only matching d
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # WHERE filter (server-side)
     gpio extract arcgis https://services.arcgis.com/.../FeatureServer/0 output.parquet \
@@ -859,6 +897,7 @@ Filters are pushed to the ArcGIS server for efficient querying—only matching d
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -900,6 +939,7 @@ For protected services, provide credentials:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Using direct token
     gpio extract arcgis https://services.arcgis.com/.../FeatureServer/0 output.parquet \
@@ -923,6 +963,7 @@ For protected services, provide credentials:
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -964,6 +1005,7 @@ By default, ArcGIS extracts include bbox metadata and Hilbert spatial ordering f
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Skip Hilbert ordering (faster extraction, less optimal queries)
     gpio extract arcgis https://services.arcgis.com/.../FeatureServer/0 output.parquet \
@@ -981,6 +1023,7 @@ By default, ArcGIS extracts include bbox metadata and Hilbert spatial ordering f
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1016,6 +1059,7 @@ By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WG
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Preserve the layer's native CRS (fetches EsriJSON with the layer's advertised SR)
     gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
@@ -1028,6 +1072,7 @@ By default, `gpio extract arcgis` fetches GeoJSON from the server and outputs WG
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1062,6 +1107,7 @@ Some layers have very large or vertex-dense polygons that are slow to download o
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Generalize heavy polygons to a 0.005 unit tolerance in the output CRS
     gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
@@ -1070,6 +1116,7 @@ Some layers have very large or vertex-dense polygons that are slow to download o
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1089,6 +1136,7 @@ Each HTTP request defaults to a 60-second timeout. FeatureServer layers with ver
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Allow up to 5 minutes per request for heavy polygon layers
     gpio extract arcgis "https://services.arcgis.com/.../FeatureServer/0" out.parquet \
@@ -1097,6 +1145,7 @@ Each HTTP request defaults to a 60-second timeout. FeatureServer layers with ver
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1132,6 +1181,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
 ### Basic Usage
 
 === "CLI"
+    <!-- doctest: network -->
     ```bash
     # List available layers
     gpio extract wfs https://geo.example.com/wfs
@@ -1147,6 +1197,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
     ```
 
 === "Python"
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1162,6 +1213,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
 Spatial filtering can be applied server-side (pushed to WFS) or locally (after download):
 
 === "CLI"
+    <!-- doctest: network -->
     ```bash
     # Server-side bbox filter (default for WFS)
     gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1177,6 +1229,7 @@ Spatial filtering can be applied server-side (pushed to WFS) or locally (after d
     ```
 
 === "Python"
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1192,6 +1245,7 @@ Spatial filtering can be applied server-side (pushed to WFS) or locally (after d
 For datasets with 1 million+ features, use parallel pagination to avoid server timeouts:
 
 === "CLI"
+    <!-- doctest: network -->
     ```bash
     # Parallel extraction with 4 workers
     gpio extract wfs https://geo.example.com/wfs large_layer output.parquet \
@@ -1206,6 +1260,7 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     ```
 
 === "Python"
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1247,6 +1302,7 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
 
 By default, WFS extracts include Hilbert spatial ordering and bbox columns:
 
+<!-- doctest: network -->
 ```bash
 # Skip optimizations for faster extraction
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1263,6 +1319,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 gpio supports WFS 1.0.0, 1.1.0, and 2.0.0. By default, auto-negotiation tries the newest version first:
 
+<!-- doctest: network -->
 ```bash
 # Auto-negotiate (default) - tries 2.0.0, then 1.1.0, then 1.0.0
 gpio extract wfs https://geo.example.com/wfs cities output.parquet
@@ -1276,6 +1333,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 WFS 1.1.0+ with URN-format CRS (e.g., `urn:ogc:def:crs:EPSG::4326`) uses lat,lon axis order per OGC spec. gpio auto-detects this, but you can override:
 
+<!-- doctest: network -->
 ```bash
 # Force lon,lat (XY) axis order
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1291,6 +1349,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 gpio automatically negotiates the coordinate reference system with the WFS server:
 
+<!-- doctest: network -->
 ```bash
 # Request specific CRS from server
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1311,6 +1370,7 @@ gpio honors the real CRS rather than the one you asked for:
 - without `--output-crs`, it labels the output with the server's actual CRS and warns;
 - with `--strict-crs`, it fails instead of proceeding.
 
+<!-- doctest: network -->
 ```bash
 # Fail instead of warn when the server returns a different CRS than requested
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1332,6 +1392,7 @@ Extract data from Carto SQL API endpoints directly to GeoParquet. Carto's SQL AP
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Extract entire table
     gpio extract carto https://phl.carto.com/api/v2/sql \
@@ -1361,6 +1422,7 @@ Filters are pushed to the Carto server for efficient querying:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # WHERE filter (PostgreSQL syntax)
     gpio extract carto https://phl.carto.com/api/v2/sql \
@@ -1408,6 +1470,7 @@ The Carto SQL API URL follows this pattern:
 
 You can provide either the full API URL or just the base domain:
 
+<!-- doctest: network -->
 ```bash
 # Full URL (explicit)
 gpio extract carto https://phl.carto.com/api/v2/sql opa_properties_public output.parquet
@@ -1431,6 +1494,7 @@ Use `--geometry` / `--no-geometry` to override auto-detection:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Auto-detect (default): plain Parquet if the table has no geometry
     gpio extract carto https://phl.carto.com/api/v2/sql \
@@ -1449,6 +1513,7 @@ Use `--geometry` / `--no-geometry` to override auto-detection:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import ops
 
@@ -1470,6 +1535,7 @@ Use `--geometry` / `--no-geometry` to override auto-detection:
 
 By default, Carto extracts include Hilbert spatial ordering and bbox columns:
 
+<!-- doctest: network -->
 ```bash
 # Skip optimizations for faster extraction
 gpio extract carto https://phl.carto.com/api/v2/sql \
@@ -1487,6 +1553,7 @@ gpio extract carto https://phl.carto.com/api/v2/sql \
 
 For large tables, Carto's SQL API may time out or return errors. Use filters to reduce the result set:
 
+<!-- doctest: network -->
 ```bash
 # Use --limit for sampling or testing
 gpio extract carto https://phl.carto.com/api/v2/sql \
@@ -1514,6 +1581,7 @@ gpio extract carto https://phl.carto.com/api/v2/sql \
 
 For private Carto tables or enterprise endpoints, set the `CARTO_API_KEY` environment variable:
 
+<!-- doctest: network -->
 ```bash
 export CARTO_API_KEY="your_api_key_here"
 gpio extract carto https://your-org.carto.com/api/v2/sql \
@@ -1522,6 +1590,7 @@ gpio extract carto https://your-org.carto.com/api/v2/sql \
 
 Or in Python:
 
+<!-- doctest: skip="continues a Python session an earlier block started" -->
 ```python
 import os
 os.environ["CARTO_API_KEY"] = "your_api_key_here"
@@ -1556,6 +1625,7 @@ The `extract` command can read from partitioned GeoParquet datasets, including d
 
 ### Reading from Directories
 
+<!-- doctest: skip="the lines are alternatives that write the same output file" -->
 ```bash
 # Read all parquet files in a directory
 gpio extract partitions/ merged.parquet
@@ -1571,6 +1641,7 @@ gpio extract "data/**/*.parquet" merged.parquet
 
 Files organized with `key=value` directory structures are automatically detected:
 
+<!-- doctest: skip="needs an admin-partitioned directory the sample cannot produce" -->
 ```bash
 # Read hive-style partitions (auto-detected)
 gpio extract country_partitions/ merged.parquet
@@ -1583,6 +1654,7 @@ gpio extract partitions/ merged.parquet --hive-input
 
 When combining files with different schemas, use `--allow-schema-diff`:
 
+<!-- doctest: setup="gpio partition quadkey input.parquet partitions/ --resolution 6 --partition-resolution 2" -->
 ```bash
 # Merge files with different columns (fills NULL for missing columns)
 gpio extract partitions/ merged.parquet --allow-schema-diff
@@ -1592,6 +1664,7 @@ gpio extract partitions/ merged.parquet --allow-schema-diff
 
 All filters work with partitioned input:
 
+<!-- doctest: skip="the lines are alternatives that write the same output file" -->
 ```bash
 # Spatial filter across partitioned dataset
 gpio extract partitions/ filtered.parquet --bbox -122.5,37.5,-122.0,38.0
@@ -1610,6 +1683,7 @@ gpio extract partitions/ subset.parquet \
 
 Preview the SQL query that will be executed:
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 # See the SQL query without executing
 gpio extract data.parquet output.parquet \
@@ -1633,6 +1707,7 @@ Control output file compression:
 
 --8<-- "_includes/compression-options.md"
 
+<!-- doctest: menu -->
 ```bash
 # Use GZIP for wider compatibility
 gpio extract data.parquet output.parquet \
@@ -1653,6 +1728,7 @@ gpio extract data.parquet output.parquet \
 
 Control row group size for optimal query performance:
 
+<!-- doctest: menu -->
 ```bash
 # Target row groups of 256MB
 gpio extract data.parquet output.parquet --row-group-size-mb 256
@@ -1675,6 +1751,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Get a small sample for testing
     gpio extract large_file.parquet sample.parquet --limit 1000
@@ -1701,6 +1778,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract all features of a specific type
     gpio extract data.parquet restaurants.parquet \
@@ -1713,6 +1791,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1727,6 +1806,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract data updated this year
     gpio extract data.parquet recent.parquet \
@@ -1739,6 +1819,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1755,6 +1836,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract as attribute table (no geometry)
     gpio extract data.parquet attributes.parquet \
@@ -1764,6 +1846,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1790,6 +1873,7 @@ gpio extract data.parquet output.parquet --bbox 1000,1000,1001,1001
 
 If you specify a non-existent column, you'll get a clear error:
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 gpio extract data.parquet output.parquet --include-cols invalid_column
 # Error: Columns not found in schema (--include-cols): invalid_column
@@ -1800,6 +1884,7 @@ gpio extract data.parquet output.parquet --include-cols invalid_column
 
 SQL syntax errors are reported with details:
 
+<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose" -->
 ```bash
 gpio extract data.parquet output.parquet --where "invalid syntax here"
 # Error: Parser Error: syntax error at or near "here"
@@ -1809,6 +1894,7 @@ gpio extract data.parquet output.parquet --where "invalid syntax here"
 
 For safety, certain SQL keywords are blocked in WHERE clauses:
 
+<!-- doctest: skip="demonstrates the SQL-injection guard rejecting a --where on purpose" -->
 ```bash
 gpio extract data.parquet output.parquet --where "population > 1000; DROP TABLE users"
 # Error: WHERE clause contains potentially dangerous SQL keywords: DROP
@@ -1816,6 +1902,7 @@ gpio extract data.parquet output.parquet --where "population > 1000; DROP TABLE 
 
 A `;` statement separator is rejected on its own, even when no blocked keyword follows it, because DuckDB executes multi-statement strings:
 
+<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose" -->
 ```bash
 gpio extract data.parquet output.parquet --where "1=1; COPY (SELECT 42) TO 'x.csv'"
 # Error: WHERE clause contains a ';' statement separator outside a quoted string
@@ -1855,6 +1942,7 @@ For containerized environments or when you need explicit control:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Limit memory usage for Docker/Kubernetes
     gpio extract input.parquet output.parquet --write-memory 512MB

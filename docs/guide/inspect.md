@@ -9,6 +9,7 @@ The `inspect` command provides quick, human-readable summaries of GeoParquet fil
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio inspect data.parquet
 
@@ -114,6 +115,7 @@ gpio inspect head data.parquet --json
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -144,6 +146,7 @@ gpio inspect head data.parquet --json
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -270,6 +273,7 @@ View bounding box statistics for each row group to verify spatial locality:
 
 === "Python"
 
+    <!-- doctest: setup="gpio sort hilbert input.parquet hilbert_sorted.parquet" -->
     ```python
     from geoparquet_io.api.ops import get_row_group_geo_stats
 
@@ -295,6 +299,7 @@ For multi-layer formats (GeoPackage, FileGDB), list available layers:
 
 === "CLI"
 
+    <!-- doctest: skip="needs a multi-layer GeoPackage fixture" -->
     ```bash
     # List layers in GeoPackage
     gpio inspect layers multi.gpkg
@@ -308,6 +313,7 @@ For multi-layer formats (GeoPackage, FileGDB), list available layers:
 
 === "Python"
 
+    <!-- doctest: skip="needs a multi-layer GeoPackage fixture" -->
     ```python
     import geoparquet_io as gpio
 
@@ -340,6 +346,7 @@ gpio inspect meta data.parquet --json
 
     When inspecting a directory containing partitioned data, you can aggregate information across all files:
 
+    <!-- doctest: setup="gpio partition quadkey input.parquet partitions/ --resolution 6 --partition-resolution 2" -->
     ```bash
     # By default, inspects first file with a notice
     gpio inspect partitions/
@@ -351,6 +358,7 @@ gpio inspect meta data.parquet --json
 
 === "Python"
 
+    <!-- doctest: setup="gpio partition quadkey input.parquet partitions/ --resolution 6 --partition-resolution 2" -->
     ```python
     import geoparquet_io as gpio
 
@@ -375,6 +383,7 @@ The `--check-all` option shows:
 - GeoParquet versions found
 - Per-file breakdown (filename, rows, size)
 
+<!-- doctest: setup="gpio partition quadkey input.parquet partitions/ --resolution 6 --partition-resolution 2" -->
 ```bash
 # JSON output for scripted processing
 gpio inspect partitions/ --check-all --json

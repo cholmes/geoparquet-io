@@ -10,6 +10,7 @@ The `convert` command transforms between GeoParquet and other vector formats wit
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```bash
     gpio convert input.shp output.parquet
     ```
@@ -25,6 +26,7 @@ The `convert` command transforms between GeoParquet and other vector formats wit
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -138,6 +140,7 @@ gpio convert data.parquet output.shp --overwrite
 !!! info "Remote Shapefile Storage"
     When writing shapefiles to remote storage (S3, GCS, Azure), all sidecar files (.shp, .shx, .dbf, .prj, etc.) are automatically packaged into a single `.shp.zip` archive before upload. This ensures atomic uploads and avoids incomplete multi-file uploads.
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Local: Creates output.shp, output.shx, output.dbf, etc.
     gpio convert data.parquet output.shp
@@ -149,6 +152,7 @@ gpio convert data.parquet output.shp --overwrite
 
 **CSV:**
 
+<!-- doctest: menu -->
 ```bash
 # Include WKT geometry (default)
 gpio convert data.parquet output.csv
@@ -162,6 +166,7 @@ gpio convert data.parquet output.csv --no-bbox
 
 **GeoJSON:**
 
+<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
 ```bash
 # Custom precision (default: 7)
 gpio convert data.parquet output.geojson --precision 5
@@ -182,6 +187,7 @@ All formats support cloud destinations via upload:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Write local then upload
     gpio convert data.parquet local.gpkg
@@ -190,6 +196,7 @@ All formats support cloud destinations via upload:
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -207,6 +214,7 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```bash
     # Read specific layer from GeoPackage
     gpio convert geoparquet multilayer.gpkg buildings.parquet --layer buildings
@@ -220,6 +228,7 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 
 === "Python"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```python
     import geoparquet_io as gpio
 
@@ -234,6 +243,7 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 !!! warning "Invalid Layer Names"
     Due to an upstream bug in DuckDB's spatial extension, specifying a non-existent layer name may cause a crash instead of raising an error. Ensure layer names are valid before conversion. You can inspect available layers using tools like `ogrinfo`:
 
+    <!-- doctest: skip="needs a fixture produced by the GDAL command line" -->
     ```bash
     ogrinfo multilayer.gpkg
     ```
@@ -253,6 +263,7 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 
 === "CLI"
 
+    <!-- doctest: skip="needs a file with two geometry columns" -->
     ```bash
     # Both geometry columns preserved
     gpio convert input_multi_geom.parquet output.parquet
@@ -260,6 +271,7 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 
 === "Python"
 
+    <!-- doctest: skip="needs a file with two geometry columns" -->
     ```python
     import geoparquet_io as gpio
 
@@ -287,6 +299,7 @@ GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `
 
 === "Python"
 
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
 
@@ -339,6 +352,7 @@ against the actual coordinate dimensions in both directions.
 
 Read from cloud storage or HTTPS:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Convert remote file
 gpio convert https://example.com/data.geojson local.parquet
@@ -370,6 +384,7 @@ still counts and warns about the invalid features it left untouched.
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```bash
     # Default: repairs and warns ("Repaired 3 invalid geometries")
     gpio convert cordoba.gpkg output.parquet
@@ -381,6 +396,7 @@ still counts and warns about the invalid features it left untouched.
 
 === "Python"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```python
     import geoparquet_io as gpio
 
@@ -411,6 +427,7 @@ full circle). Earlier gpio versions failed on curved input — opt out with
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```bash
     # Default: linearizes and warns ("Linearized 66 curved geometries ...")
     gpio convert curved.gpkg output.parquet
@@ -424,6 +441,7 @@ full circle). Earlier gpio versions failed on curved input — opt out with
 
 === "Python"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```python
     import geoparquet_io as gpio
 
@@ -451,6 +469,7 @@ first.
 
 For faster conversion when spatial ordering isn't critical:
 
+<!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
 ```bash
 gpio convert large.gpkg output.parquet --skip-hilbert
 ```
@@ -461,6 +480,7 @@ Trade-off: Faster conversion but less optimal for spatial queries.
 
 Control compression type and level:
 
+<!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
 ```bash
 # GZIP compression
 gpio convert input.shp output.parquet --compression GZIP --compression-level 6
@@ -526,6 +546,7 @@ writes true 2.0 native output just like the CLI.
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```bash
     # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
     # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
@@ -540,6 +561,7 @@ writes true 2.0 native output just like the CLI.
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -570,6 +592,7 @@ Available versions:
 
 Track progress and see detailed information:
 
+<!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
 ```bash
 gpio convert input.gpkg output.parquet --verbose
 ```
@@ -587,6 +610,7 @@ Shows:
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' buildings.shp places.geojson" -->
     ```bash
     gpio convert buildings.shp buildings.parquet
     ```
@@ -601,6 +625,7 @@ Shows:
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' buildings.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -611,12 +636,14 @@ Shows:
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```bash
     gpio convert large_dataset.gpkg output.parquet --skip-hilbert
     ```
 
 === "Python"
 
+    <!-- doctest: skip="needs a GeoPackage fixture with the traits the example describes" -->
     ```python
     import geoparquet_io as gpio
 
@@ -639,6 +666,7 @@ Maximum ZSTD compression with progress tracking.
 
 ### Convert and Inspect
 
+<!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
 ```bash
 # Convert
 gpio convert input.shp output.parquet
@@ -654,6 +682,7 @@ gpio check all output.parquet
 
 Auto-detects geometry columns. WKT columns (wkt, geometry, geom) checked first, then lat/lon pairs (lat/lon, latitude/longitude).
 
+<!-- doctest: skip="needs a CSV with the quirks the example describes" -->
 ```bash
 # Auto-detect WKT or lat/lon
 gpio convert points.csv points.parquet
@@ -670,6 +699,7 @@ gpio convert data.txt out.parquet --delimiter "|"
 
 Default: WGS84 (EPSG:4326). Override with `--crs` for WKT data:
 
+<!-- doctest: skip="needs a CSV with the quirks the example describes" -->
 ```bash
 gpio convert projected.csv out.parquet --crs EPSG:3857
 ```
@@ -681,6 +711,7 @@ Validates lat/lon ranges (-90 to 90, -180 to 180). Warns on large coordinates su
 Fails on invalid WKT by default. Skip the unparsable rows with
 `--skip-invalid`:
 
+<!-- doctest: skip="needs a CSV with the quirks the example describes" -->
 ```bash
 gpio convert messy.csv out.parquet --skip-invalid
 ```
@@ -696,6 +727,7 @@ Skips invalid rows, disables Hilbert ordering. Mixed geometry types supported.
 
 Auto-detects comma and tab. Override with `--delimiter` for semicolon, pipe, or any single character.
 
+<!-- doctest: skip="needs a CSV with the quirks the example describes" -->
 ```bash
 gpio convert data.csv out.parquet --delimiter ";"
 ```

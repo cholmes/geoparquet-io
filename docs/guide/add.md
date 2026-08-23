@@ -17,6 +17,7 @@ Add precomputed bounding boxes for faster spatial queries:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add bbox input.parquet output.parquet
 
@@ -55,6 +56,7 @@ gpio add bbox input.parquet output.parquet --force
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom column name
 gpio add bbox input.parquet output.parquet --bbox-name bounds
@@ -89,6 +91,7 @@ If your file already has a bbox column but lacks covering metadata (e.g., from e
 
 === "Python"
 
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```python
     import geoparquet_io as gpio
 
@@ -114,6 +117,7 @@ Add [H3](https://h3geo.org/) hexagonal cell IDs based on geometry centroids:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add h3 input.parquet output.parquet --resolution 9
 
@@ -138,6 +142,7 @@ Add [H3](https://h3geo.org/) hexagonal cell IDs based on geometry centroids:
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom column name
 gpio add h3 input.parquet output.parquet --h3-name h3_index
@@ -155,6 +160,7 @@ Add [S2](https://s2geometry.io/) spherical cell IDs based on geometry centroids:
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add s2 input.parquet output.parquet --level 13
 
@@ -181,6 +187,7 @@ S2 uses Google's Spherical Geometry library which divides the Earth's surface in
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom column name
 gpio add s2 input.parquet output.parquet --s2-name s2_index
@@ -229,6 +236,7 @@ Add [A5](https://a5geo.org/) spatial cell IDs based on geometry centroids.
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add a5 input.parquet output.parquet --resolution 15
 
@@ -249,6 +257,7 @@ Add [A5](https://a5geo.org/) spatial cell IDs based on geometry centroids.
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom column name
 gpio add a5 input.parquet output.parquet --a5-name a5_index
@@ -266,6 +275,7 @@ Add balanced spatial partition IDs using KD-tree:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Auto-select partitions (default: ~120k rows each)
     gpio add kdtree input.parquet output.parquet
@@ -279,6 +289,7 @@ Add balanced spatial partition IDs using KD-tree:
 
 === "Python"
 
+    <!-- doctest: skip="Table.add_kdtree() raises a DuckDB binder error on a valid file" -->
     ```python
     import geoparquet_io as gpio
 
@@ -307,6 +318,7 @@ Add balanced spatial partition IDs using KD-tree:
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom target rows per partition
 gpio add kdtree input.parquet output.parquet --auto 200000
@@ -324,6 +336,7 @@ Add geodesic area and perimeter measurements to each feature:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     gpio add geometry-metrics input.parquet output.parquet
 
@@ -336,6 +349,7 @@ Add geodesic area and perimeter measurements to each feature:
 
 === "Python"
 
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```python
     import geoparquet_io as gpio
     from geoparquet_io.core.add.geometry_metrics import add_geometry_metrics
@@ -356,6 +370,7 @@ By default, the output follows the [Vecorel geometry-metrics extension](https://
 
 **Options:**
 
+<!-- doctest: menu -->
 ```bash
 # With compression settings
 gpio add geometry-metrics input.parquet output.parquet --compression ZSTD --compression-level 15
@@ -388,6 +403,7 @@ The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds 
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Add all GAUL levels (continent, country, department)
     gpio add admin-divisions input.parquet output.parquet --dataset gaul
@@ -398,6 +414,7 @@ The join is a streaming `LEFT JOIN` so it scales to very large inputs (hundreds 
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -418,6 +435,7 @@ Add multiple hierarchical administrative levels:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Add all GAUL levels (adds admin:continent, admin:country, admin:department)
     gpio add admin-divisions buildings.parquet output.parquet --dataset gaul
@@ -433,6 +451,7 @@ Add multiple hierarchical administrative levels:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -458,6 +477,7 @@ Use `--vecorel` for output that follows the [Vecorel administrative division ext
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Vecorel-compliant admin columns (uses Overture dataset automatically)
     gpio add admin-divisions input.parquet output.parquet --vecorel
@@ -469,6 +489,7 @@ Use `--vecorel` for output that follows the [Vecorel administrative division ext
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -520,6 +541,7 @@ Admin datasets (GAUL, Overture) are automatically cached locally on first use:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Skip cache and use remote directly
     gpio add admin-divisions input.parquet output.parquet --dataset gaul --no-cache
@@ -530,6 +552,7 @@ Admin datasets (GAUL, Overture) are automatically cached locally on first use:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
     from geoparquet_io.core.admin_datasets import get_cache_dir, clear_cache
@@ -560,7 +583,7 @@ All `add` commands support:
 
 --8<-- "_includes/common-cli-options.md"
 
-```bash
+```text
 --add-bbox         # Auto-add bbox if missing (some commands)
 ```
 

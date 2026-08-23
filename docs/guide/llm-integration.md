@@ -27,11 +27,13 @@ Copy the skill content to your clipboard and paste it at the start of a conversa
     ```
 
 === "Linux (X11)"
+    <!-- doctest: skip="uses xclip, which is not a gpio dependency" -->
     ```bash
     gpio skills --show | xclip -selection clipboard
     ```
 
 === "Windows (PowerShell)"
+    <!-- doctest: skip="the PowerShell variant of the bash example above, which is the one executed" -->
     ```powershell
     gpio skills --show | Set-Clipboard
     ```

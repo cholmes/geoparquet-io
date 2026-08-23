@@ -12,6 +12,7 @@ The input's scheme (`a5_cell` / `h3_cell` / `admin_code`) and base level are det
 
 === "CLI"
 
+    <!-- doctest: skip="needs both an aggregated cells file and an admin-partitioned input" -->
     ```bash
     # Auto-select levels against a 500 KB tile budget
     gpio process overview cells.parquet
@@ -28,6 +29,7 @@ The input's scheme (`a5_cell` / `h3_cell` / `admin_code`) and base level are det
 
 === "Python"
 
+    <!-- doctest: skip="needs both an aggregated cells file and an admin-partitioned input" -->
     ```python
     from geoparquet_io.api import ops
 

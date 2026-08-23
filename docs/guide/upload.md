@@ -6,6 +6,7 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Upload single file to S3
     gpio publish upload data.parquet s3://bucket/path/data.parquet
@@ -19,6 +20,7 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 
 === "Python"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
@@ -41,6 +43,7 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 
 When uploading directories, gpio preserves the directory structure and uploads files in parallel:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Upload all files
 gpio publish upload output/ s3://bucket/dataset/
@@ -56,6 +59,7 @@ gpio publish upload output/ s3://bucket/dataset/ --max-files 8
 
 ### Using AWS Profiles
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish upload data.parquet s3://bucket/data.parquet --aws-profile source-coop
 ```
@@ -64,6 +68,7 @@ gpio publish upload data.parquet s3://bucket/data.parquet --aws-profile source-c
 
 For MinIO, Wasabi, or other S3-compatible storage:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish upload data.parquet s3://bucket/data.parquet \
   --s3-endpoint minio.example.com:9000 \
@@ -74,6 +79,7 @@ gpio publish upload data.parquet s3://bucket/data.parquet \
 
 For local development or non-SSL endpoints:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish upload data.parquet s3://bucket/data.parquet \
   --s3-endpoint localhost:9000 \
@@ -84,6 +90,7 @@ gpio publish upload data.parquet s3://bucket/data.parquet \
 
 Large files are automatically uploaded using multipart uploads:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Customize chunk settings
 gpio publish upload large.parquet s3://bucket/large.parquet \
@@ -95,6 +102,7 @@ gpio publish upload large.parquet s3://bucket/large.parquet \
 
 By default, directory uploads continue on errors. Use `--fail-fast` to stop on first error:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish upload output/ s3://bucket/dataset/ --fail-fast
 ```
@@ -103,6 +111,7 @@ gpio publish upload output/ s3://bucket/dataset/ --fail-fast
 
 Preview what would be uploaded without actually uploading:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish upload output/ s3://bucket/dataset/ --dry-run
 ```

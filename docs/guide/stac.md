@@ -6,6 +6,7 @@ The `gpio publish stac` command generates [STAC (SpatioTemporal Asset Catalog)](
 
 === "CLI"
 
+    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Single file -> STAC Item
     gpio publish stac data.parquet output.json --bucket s3://my-bucket/data/
@@ -46,6 +47,7 @@ This creates a STAC Item JSON with:
 
 For partitioned directories, gpio generates a STAC Collection with Items:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish stac partitions/ . --bucket s3://my-bucket/dataset/
 ```
@@ -100,6 +102,7 @@ gpio publish stac data.parquet output.json \
 
 ### Collection ID
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 gpio publish stac partitions/ . \
   --bucket s3://bucket/dataset/ \

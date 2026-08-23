@@ -6,6 +6,7 @@ gpio includes a benchmark suite for measuring performance and detecting regressi
 
 Run benchmarks comparing current version against a previous release:
 
+<!-- doctest: skip="runs a script that ships outside the guide" -->
 ```bash
 # Run benchmarks on current version
 python scripts/version_benchmark.py --version-label "current" -o results_current.json
@@ -118,6 +119,7 @@ Files are automatically downloaded and cached locally in `/tmp/gpio-benchmark-ca
 
 The `scripts/version_benchmark.py` script works with any gpio version:
 
+<!-- doctest: skip="runs a script that ships outside the guide" -->
 ```bash
 # Run full benchmarks (all files, all operations)
 python scripts/version_benchmark.py --version-label "v0.9.0" -o results.json
@@ -148,6 +150,7 @@ python scripts/version_benchmark.py --version-label "remote-test" --no-cache
 
 Use the `scripts/manage_baselines.py` tool to work with baselines stored in GitHub artifacts:
 
+<!-- doctest: skip="runs a script that ships outside the guide" -->
 ```bash
 # List available baselines
 uv run python scripts/manage_baselines.py list
@@ -236,6 +239,7 @@ When benchmarks identify performance regressions, profiling helps diagnose which
 Add the `--profile` flag to enable cProfile integration:
 
 === "CLI"
+    <!-- doctest: skip="reads a benchmark result file the reader produces" -->
     ```bash
     # Run benchmarks with profiling enabled
     gpio benchmark suite \
@@ -252,6 +256,7 @@ Add the `--profile` flag to enable cProfile integration:
     ```
 
 === "Python"
+    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     from geoparquet_io.core.benchmark_suite import run_benchmark_suite
     from pathlib import Path
@@ -286,6 +291,7 @@ This generates `.prof` files in the specified directory (default: `./profiles/`)
     ```
 
 === "Python"
+    <!-- doctest: skip="reads a benchmark result file the reader produces" -->
     ```python
     from geoparquet_io.benchmarks.profile_report import format_profile_stats
 
@@ -426,6 +432,7 @@ Trend analysis helps detect gradual performance drift that might be missed when 
 Before releasing a new version:
 
 1. **Run benchmarks locally** against the previous release:
+   <!-- doctest: skip="runs a script that ships outside the guide" -->
    ```bash
    # Install previous version
    git checkout v0.9.0 && pip install -e .
