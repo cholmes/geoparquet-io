@@ -482,9 +482,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `ARROW:schema`/`pandas` descriptor — pyarrow writes a carried blob through
   verbatim rather than replacing it, so the output otherwise shipped a
   serialized schema naming the *input's* columns and CRS. Unrelated file-level
-  KV metadata (e.g. `vecorel`) is still preserved. The exclusion set now
-  matches `write_parquet_with_metadata`, `api.Table.write` and `gpio convert
-  geoparquet`.
+  KV metadata (e.g. `vecorel`) is still preserved. The exclusion set is now a
+  single `_CARRIED_SCHEMA_METADATA_KEYS` constant shared with
+  `write_parquet_with_metadata` — which `api.Table.write` and `gpio convert
+  geoparquet` both route through — rather than a second hand-maintained
+  literal that could drift from it. A test pins that there is exactly one
+  spelling of the set and that both write paths reference it.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

@@ -1806,3 +1806,53 @@ class TestWriteGeoParquetTableParquetGeoOnly:
 
         assert has_geoparquet_metadata(output_file)
         assert get_geoparquet_version(output_file).startswith(version)
+
+
+class TestCarriedSchemaMetadataKeysHasOneDefinition:
+    """The two write paths must exclude the same keys, structurally.
+
+    `_strip_geo_metadata_key` (parquet-geo-only, sees `bytes` keys off a
+    pyarrow schema) and `write_parquet_with_metadata`'s preserved-keys loop
+    (sees them decoded) were two hand-maintained literals of the same set.
+    A key added to one and not the other is a silent metadata leak: the
+    descriptor rides into the output naming the input's columns and CRS.
+    """
+
+    def test_bytes_form_is_derived_from_the_string_form(self):
+        from geoparquet_io.core.common import (
+            _CARRIED_SCHEMA_METADATA_KEYS,
+            _CARRIED_SCHEMA_METADATA_KEYS_BYTES,
+        )
+
+        assert _CARRIED_SCHEMA_METADATA_KEYS_BYTES == {
+            key.encode("utf-8") for key in _CARRIED_SCHEMA_METADATA_KEYS
+        }
+
+    def test_no_second_literal_copy_of_the_set(self):
+        """Guard against the literal being reintroduced next to the constant."""
+        import inspect
+        import re
+
+        from geoparquet_io.core import common
+
+        source = inspect.getsource(common)
+        # The keys spelled out as a literal tuple/set/list. Exactly one such
+        # spelling is legitimate -- the constant's own definition; a second is
+        # the duplicate this guards against.
+        literals = re.findall(r"""[\(\[\{]\s*["']geo["']\s*,\s*["']ARROW:schema["']""", source)
+        assert len(literals) == 1, (
+            f"the carried-metadata key set is spelled out {len(literals)} times; it must "
+            "appear only in the _CARRIED_SCHEMA_METADATA_KEYS definition, so the two "
+            "write paths cannot drift"
+        )
+
+    def test_both_write_paths_reference_the_constant(self):
+        import inspect
+
+        from geoparquet_io.core.common import (
+            _strip_geo_metadata_key,
+            write_parquet_with_metadata,
+        )
+
+        assert "_CARRIED_SCHEMA_METADATA_KEYS_BYTES" in inspect.getsource(_strip_geo_metadata_key)
+        assert "_CARRIED_SCHEMA_METADATA_KEYS" in inspect.getsource(write_parquet_with_metadata)
