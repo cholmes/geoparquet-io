@@ -150,7 +150,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   loudly instead of being absorbed. Two out-of-batch divergences remain
   xfailed: auto-version resolution splitting four ways on a native-geo input
   (#600), and the validator's `crs_valid` check flipping with geoarrow
-  registration (the #603 family).
+  registration (the #603 family). The oracle also excuses
+  `native_geo_stats_contains_data` on Windows only, where pyarrow's wheel
+  writes all-zero geospatial statistics for native GEOMETRY columns (#721);
+  every other oracle check stays enforced on every platform.
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
