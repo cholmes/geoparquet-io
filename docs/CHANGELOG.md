@@ -472,6 +472,28 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   version upgrade it already recommends), and it now flags — rather than
   affirming with a ✓ — a pre-1.1 file that carries a covering key anyway.
 
+- **`write_geoparquet_table` now honors an explicit
+  `geoparquet_version="parquet-geo-only"`.** The table write path converted the
+  geometry column to a native Parquet GEOMETRY logical type but returned
+  without removing the input table's carried `geo` key, so the output declared
+  whatever version the *input* had — a 1.x file using a feature only
+  GeoParquet 2.0 permits, which `gpio check spec` failed on
+  `version_features_match`. The key is now dropped, along with any carried
+  `ARROW:schema`/`pandas` descriptor — pyarrow writes a carried blob through
+  verbatim rather than replacing it, so the output otherwise shipped a
+  serialized schema naming the *input's* columns and CRS. Unrelated file-level
+  KV metadata (e.g. `vecorel`) is still preserved. The exclusion set is now a
+  single `_CARRIED_SCHEMA_METADATA_KEYS` constant shared with
+  `write_parquet_with_metadata` — which `api.Table.write` and `gpio convert
+  geoparquet` both route through — rather than a second hand-maintained
+  literal that could drift from it. A test pins that there is exactly one
+  spelling of the set and that both write paths reference it.
+
+  The new validator-oracle test excludes `native_geo_stats_contains_data` on
+  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
+  for a native GEOMETRY column, so that check fails there for a platform reason
+  unrelated to this fix (#721). Every other validator check stays enforced on
+  every platform.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

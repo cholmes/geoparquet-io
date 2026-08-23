@@ -1377,6 +1377,59 @@ def _assemble_and_apply_geo_metadata(
     return table
 
 
+# Schema-metadata keys that describe the *input's* schema rather than the
+# output's, so they must never ride along into a write.
+#
+# `geo` would declare the input's GeoParquet version over output the writer has
+# just given a different shape; `ARROW:schema` and `pandas` are serialized
+# descriptors that pyarrow writes through verbatim rather than regenerating,
+# leaving the output naming the input's columns and CRS.
+#
+# One definition, used by both places that need it -- the parquet-geo-only path
+# below (which sees `bytes` keys, straight off a pyarrow schema) and
+# write_parquet_with_metadata's preserved-keys loop (which sees them decoded).
+# They were separate literals; a key added to one and not the other is a silent
+# metadata leak, so the bytes form is derived rather than written out again.
+_CARRIED_SCHEMA_METADATA_KEYS = frozenset({"geo", "ARROW:schema", "pandas"})
+_CARRIED_SCHEMA_METADATA_KEYS_BYTES = frozenset(
+    key.encode("utf-8") for key in _CARRIED_SCHEMA_METADATA_KEYS
+)
+
+
+def _strip_geo_metadata_key(table, verbose: bool = False):
+    """Drop the input's ``geo``/``ARROW:schema``/``pandas`` keys, keeping other KV.
+
+    Used for parquet-geo-only output, which carries its geometry typing in the
+    Parquet schema and must not also declare a GeoParquet version.
+
+    The exclusion set matches ``write_parquet_with_metadata``'s (see the
+    preserved-keys loop in that function): besides ``geo``, a carried
+    ``ARROW:schema``/``pandas`` describes the *input's* schema and is written
+    through verbatim, leaving the output with a serialized descriptor naming
+    columns and a CRS the file does not have.
+
+    Args:
+        table: PyArrow Table whose schema metadata to clean
+        verbose: Whether to print verbose output
+
+    Returns:
+        pa.Table: Table without carried geo/schema-descriptor metadata keys
+    """
+    existing_metadata = table.schema.metadata
+    if not existing_metadata:
+        return table
+
+    dropped = [k for k in existing_metadata if k in _CARRIED_SCHEMA_METADATA_KEYS_BYTES]
+    if not dropped:
+        return table
+
+    new_metadata = {k: v for k, v in existing_metadata.items() if k not in dropped}
+    if verbose:
+        names = ", ".join(sorted(k.decode("utf-8") for k in dropped))
+        debug(f"parquet-geo-only: dropped the input's {names} metadata key(s)")
+    return table.replace_schema_metadata(new_metadata)
+
+
 def _apply_geoparquet_metadata(
     table,
     geometry_column: str,
@@ -1446,7 +1499,12 @@ def _apply_geoparquet_metadata(
 
     # Step 2: Build and apply geo metadata (unless parquet-geo-only)
     if not should_add_geo_metadata:
-        return table
+        # parquet-geo-only means no GeoParquet metadata at all. Step 1 has just
+        # given the column a native Parquet GEOMETRY logical type, so a 'geo'
+        # key carried in from the input would declare a version whose spec
+        # forbids that type (issue #687). Drop it, keeping unrelated KV
+        # metadata, to match the other write paths.
+        return _strip_geo_metadata_key(table, verbose)
 
     # Detect bbox column from table schema
     bbox_column = _detect_bbox_column_from_table(table, verbose)
@@ -2366,7 +2424,7 @@ def write_parquet_with_metadata(
         preserved_keys = {}
         for key, value in original_metadata.items():
             key_str = key.decode("utf-8") if isinstance(key, bytes) else key
-            if key_str in ("geo", "ARROW:schema", "pandas"):
+            if key_str in _CARRIED_SCHEMA_METADATA_KEYS:
                 continue
             val_str = value.decode("utf-8") if isinstance(value, bytes) else value
             preserved_keys[key_str] = val_str
