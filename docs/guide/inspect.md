@@ -9,10 +9,12 @@ The `inspect` command provides quick, human-readable summaries of GeoParquet fil
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio inspect data.parquet
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # Or inspect remote file
     gpio inspect s3://bucket/data.parquet
     ```
@@ -115,7 +117,7 @@ gpio inspect head data.parquet --json
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="reads a 'population' key the sample data does not produce" -->
     ```python
     import geoparquet_io as gpio
 
@@ -146,7 +148,7 @@ gpio inspect head data.parquet --json
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="reads col['column'], but ops.compression_stats() returns 'column_name'" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -299,7 +301,7 @@ For multi-layer formats (GeoPackage, FileGDB), list available layers:
 
 === "CLI"
 
-    <!-- doctest: skip="needs a multi-layer GeoPackage fixture" -->
+    <!-- doctest: skip="needs multi.gpkg, which the harness does not seed" -->
     ```bash
     # List layers in GeoPackage
     gpio inspect layers multi.gpkg
@@ -313,7 +315,7 @@ For multi-layer formats (GeoPackage, FileGDB), list available layers:
 
 === "Python"
 
-    <!-- doctest: skip="needs a multi-layer GeoPackage fixture" -->
+    <!-- doctest: skip="needs GeoPackage, which the harness does not seed" -->
     ```python
     import geoparquet_io as gpio
 

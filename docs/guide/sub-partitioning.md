@@ -50,28 +50,28 @@ by_country/
 
 === "H3"
 
-    <!-- doctest: skip="sub-partitioning needs an already-partitioned directory bigger than --min-size" -->
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
     gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
     ```
 
 === "A5"
 
-    <!-- doctest: skip="documents --in-place for partition a5, which only partition h3 has" -->
+    <!-- doctest: skip="documents --min-size, which that command does not accept" -->
     ```bash
     gpio partition a5 by_country/ --min-size 100MB --resolution 12 --in-place
     ```
 
 === "S2"
 
-    <!-- doctest: skip="sub-partitioning needs an already-partitioned directory bigger than --min-size" -->
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
     gpio partition s2 by_country/ --min-size 100MB --level 10 --in-place
     ```
 
 === "Quadkey"
 
-    <!-- doctest: skip="sub-partitioning needs an already-partitioned directory bigger than --min-size" -->
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
     gpio partition quadkey by_country/ --min-size 100MB --auto --in-place
     ```
@@ -80,7 +80,7 @@ by_country/
 
 Preview what would be processed without making changes:
 
-<!-- doctest: skip="sub-partitioning needs an already-partitioned directory bigger than --min-size" -->
+<!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
 ```bash
 # See which files would be sub-partitioned (no --in-place)
 gpio partition h3 by_country/ --min-size 100MB --resolution 7

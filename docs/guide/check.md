@@ -295,7 +295,7 @@ Validates file structure and metadata against the GeoParquet specification:
 
 === "CLI"
 
-    <!-- doctest: skip="validates a STAC catalog the reader supplies" -->
+    <!-- doctest: skip="needs output.json, which the harness does not seed" -->
     ```bash
     gpio check stac output.json
     ```
@@ -341,7 +341,7 @@ Validates STAC Item or Collection JSON:
 
 When checking a directory containing partitioned data, you can control how many files are checked:
 
-<!-- doctest: skip="documents --check-all/--check-sample, which gpio check all does not have" -->
+<!-- doctest: skip="needs partitions/, which the harness does not seed" -->
 ```bash
 # By default, checks only the first file
 gpio check all partitions/

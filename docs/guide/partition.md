@@ -67,7 +67,7 @@ Partition by string column values or prefixes:
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
+    <!-- doctest: skip="partitions on 'region', a column the sample data does not have" -->
     ```bash
     # Preview partitions
     gpio partition string input.parquet --column region --preview
@@ -80,14 +80,17 @@ Partition by string column values or prefixes:
 
     # Hive-style partitioning
     gpio partition string input.parquet output/ --column region --hive
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # To cloud storage
     gpio --aws-profile prod partition string s3://bucket/input.parquet s3://bucket/output/ --column region
     ```
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="partitions on 'category', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -303,7 +306,7 @@ Partition by A5 spatial cells:
 
     !!! note "CLI-Only"
         A5 partitioning is currently CLI-only. Use S2 partitioning in Python as an alternative:
-        <!-- doctest: skip="continues a Python session an earlier block started" -->
+        <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
         ```python
         gpio.read('input.parquet').partition_by_s2('output/', level=10)
         ```
@@ -707,7 +710,7 @@ gpio partition h3 large.parquet output/ --resolution 8
 
 After partitioning by admin boundaries or string columns, some files may still be too large. Use `--min-size` with directory input to sub-partition only the oversized files:
 
-<!-- doctest: skip="sub-partitioning needs an already-partitioned directory bigger than --min-size" -->
+<!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
 ```bash
 # Sub-partition files >100MB with H3
 gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place

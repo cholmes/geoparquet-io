@@ -58,7 +58,7 @@ Rules of thumb:
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'height', a column the sample data does not have" -->
     ```bash
     gpio process aggregate a5 buildings.parquet cells.parquet --auto \
         --metric "avg:height,max:height" --metric-nodata "-999"
@@ -66,7 +66,7 @@ Rules of thumb:
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'height', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -129,7 +129,7 @@ Aggregate numeric columns with `--metric` (`func:column`, comma-separated; bare 
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     # Sum one column
     gpio process aggregate a5 fields.parquet cells.parquet \
@@ -142,7 +142,7 @@ Aggregate numeric columns with `--metric` (`func:column`, comma-separated; bare 
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -159,7 +159,7 @@ Use `--breakdown` to pivot a categorical column into per-category count columns 
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="breaks down by 'crop_type', a column the sample data does not have" -->
     ```bash
     # Breakdown by crop type (up to 20 categories, default)
     gpio process aggregate a5 fields.parquet cells.parquet \
@@ -172,7 +172,7 @@ Use `--breakdown` to pivot a categorical column into per-category count columns 
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -191,7 +191,7 @@ Use `--where` to aggregate only a subset of rows — a year, a category, a confi
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'determination:datetime', a column the sample data does not have" -->
     ```bash
     # Only 2025 rows (column names with special characters need
     # double quotes in SQL; shell escaping varies)
@@ -211,7 +211,7 @@ Use `--where` to aggregate only a subset of rows — a year, a category, a confi
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'determination:datetime', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -249,7 +249,7 @@ resolutions, where keying by centroid is already an approximation.
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'height', a column the sample data does not have" -->
     ```bash
     # 225 GB of building polygons, but only the bbox + height columns are read
     gpio process aggregate a5 buildings.parquet cells.parquet --auto \
@@ -267,7 +267,7 @@ resolutions, where keying by centroid is already an approximation.
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'height', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -337,7 +337,7 @@ When `--out-geometry none` is used, the output is a plain (non-geo) Parquet file
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     # Step 1: aggregate without geometry
     gpio process aggregate a5 fields.parquet cells_stats.parquet \
@@ -350,7 +350,7 @@ When `--out-geometry none` is used, the output is a plain (non-geo) Parquet file
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -367,7 +367,7 @@ Combining all three kinds of statistics. The output cell carries `count`, `sum_a
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     gpio process aggregate a5 fields.parquet cells.parquet \
         --auto \
@@ -379,10 +379,12 @@ Combining all three kinds of statistics. The output cell carries `count`, `sum_a
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
+    ```python
     gpio.read('fields.parquet') \
         .aggregate_a5(
             resolution=8,
@@ -405,7 +407,7 @@ The differences are that H3 uses Uber's hexagonal grid, its resolution range is
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     gpio process aggregate h3 fields.parquet cells.parquet \
         --resolution 8 \
@@ -415,10 +417,12 @@ The differences are that H3 uses Uber's hexagonal grid, its resolution range is
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
+    ```python
     gpio.read('fields.parquet') \
         .aggregate_h3(
             resolution=8,
@@ -473,7 +477,7 @@ The same `--metric` and `--breakdown` options are available for admin aggregatio
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     gpio process aggregate admin fields.parquet by_country.parquet \
         --level country \
@@ -483,10 +487,12 @@ The same `--metric` and `--breakdown` options are available for admin aggregatio
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
+    ```python
     gpio.read('fields.parquet') \
         .aggregate_admin(
             level="country",
@@ -502,7 +508,7 @@ The same `--out-geometry polygon|centroid|both|none` options apply. With `none`,
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```bash
     # Stats only — no geometry
     gpio process aggregate admin fields.parquet country_stats.parquet \
@@ -511,7 +517,7 @@ The same `--out-geometry polygon|centroid|both|none` options apply. With `none`,
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="aggregates 'area_ha', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 

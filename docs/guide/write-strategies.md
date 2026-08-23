@@ -16,11 +16,13 @@ For most users, the default just works. No configuration is needed:
 
 === "CLI"
 
-    <!-- doctest: skip="needs a shapefile large enough for the strategy to matter" -->
     ```bash
     # Process a 50GB file on a machine with 4GB RAM
     gpio extract huge_dataset.parquet filtered.parquet --bbox -122.5,37.5,-122.0,38.0
+    ```
 
+    <!-- doctest: skip="needs large_file.shp, which the harness does not seed" -->
+    ```bash
     # Convert a massive shapefile to GeoParquet
     gpio convert large_file.shp output.parquet
     ```
@@ -234,7 +236,7 @@ For serverless environments with tight memory constraints:
 
 === "CLI"
 
-    <!-- doctest: skip="needs a dataset large enough for the strategy to matter" -->
+    <!-- doctest: skip="needs large_dataset.parquet, which the harness does not seed" -->
     ```bash
     # 100GB dataset on a 16GB machine - just works
     gpio extract large_dataset.parquet filtered.parquet \
@@ -244,7 +246,7 @@ For serverless environments with tight memory constraints:
 
 === "Python"
 
-    <!-- doctest: skip="needs a dataset large enough for the strategy to matter" -->
+    <!-- doctest: skip="needs large_dataset.parquet, which the harness does not seed" -->
     ```python
     import geoparquet_io as gpio
 

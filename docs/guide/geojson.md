@@ -13,6 +13,7 @@ The `gpio convert geojson` command supports two modes:
 
 The primary use case is generating PMTiles or MBTiles from GeoParquet data by piping to [tippecanoe](https://github.com/felt/tippecanoe):
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # Basic PMTiles generation
 gpio convert geojson buildings.parquet | tippecanoe -P -o buildings.pmtiles
@@ -28,6 +29,7 @@ gpio convert geojson data.parquet | tippecanoe -P -o tiles.mbtiles
 
 The streaming output includes RFC 8142 record separators by default. These special characters (`\x1e`) enable tippecanoe's **parallel mode** (`-P` flag), which significantly speeds up tile generation by allowing tippecanoe to process features in parallel.
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # The -P flag tells tippecanoe to read in parallel mode
 gpio convert geojson data.parquet | tippecanoe -P -o output.pmtiles
@@ -49,7 +51,7 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
     ```bash
     # Basic usage
     gpio pmtiles create buildings.parquet buildings.pmtiles
@@ -69,7 +71,7 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -116,7 +118,7 @@ For national- or global-overview maps over dense data, re-enable the size limit 
 
 === "CLI"
 
-    <!-- doctest: menu -->
+    <!-- doctest: needs-tippecanoe, menu -->
     ```bash
     # Re-enable tippecanoe's size limit so drop-densest actually drops
     gpio pmtiles create dense.parquet tiles.pmtiles \
@@ -168,7 +170,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "CLI"
 
-    <!-- doctest: skip="the sample is too coarse for a multi-level pyramid" -->
+    <!-- doctest: skip="needs cells.parquet, which the harness does not seed" -->
     ```bash
     # Auto bands from the tile budget (builds temp overviews if missing)
     gpio pmtiles pyramid cells.parquet cells.pmtiles
@@ -253,6 +255,7 @@ gpio extract data.parquet --limit 1000 | \
 
 Reduce output size by selecting only needed columns:
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 gpio extract data.parquet --include-cols name,type,population | \
   gpio convert geojson - | \
@@ -263,7 +266,7 @@ gpio extract data.parquet --include-cols name,type,population | \
 
 Apply spatial operations before conversion:
 
-<!-- doctest: menu -->
+<!-- doctest: needs-tippecanoe, menu -->
 ```bash
 # Add bbox and sort, then convert
 gpio add bbox data.parquet | \
@@ -281,6 +284,7 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
 
 === "CLI"
 
+    <!-- doctest: needs-tippecanoe -->
     ```bash
     # Automatically reproject from EPSG:3857 to WGS84
     gpio pmtiles create data.parquet tiles.pmtiles --src-crs EPSG:3857
@@ -305,7 +309,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "CLI"
 
-    <!-- doctest: skip="gpio convert geojson --write-bbox crashes on valid input" -->
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```bash
     # Write to GeoJSON file
     gpio convert geojson data.parquet output.geojson
@@ -316,7 +320,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "Python"
 
-    <!-- doctest: skip="writes the same output file twice; the lines are alternatives" -->
+    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
     ```python
     import geoparquet_io as gpio
 
@@ -362,6 +366,7 @@ The `--precision` option controls decimal places for coordinates. Lower precisio
 | 5 | ~1m | City-level visualization |
 | 4 | ~10m | Regional maps |
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # Reduce precision for smaller output
 gpio convert geojson data.parquet --precision 5 | tippecanoe -P -o output.pmtiles
@@ -382,7 +387,7 @@ This is useful for feature state in map rendering or for joining data.
 
 Include per-feature bounding boxes with `--write-bbox`:
 
-<!-- doctest: skip="gpio convert geojson --write-bbox crashes on valid input" -->
+<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
 ```bash
 gpio convert geojson data.parquet output.geojson --write-bbox
 ```
@@ -415,7 +420,7 @@ gpio convert geojson data.parquet --feature-collection > output.geojson
 
 For advanced use cases, pass GDAL layer creation options directly with `--lco`:
 
-<!-- doctest: skip="documents --lco, which gpio convert geojson does not have" -->
+<!-- doctest: skip="documents --lco, which that command does not accept" -->
 ```bash
 # Disable writing the layer name
 gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO
@@ -454,7 +459,7 @@ Read from S3, GCS, or Azure:
 <!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # From S3 with profile
-gpio --aws-profile my-aws convert geojson s3://bucket/data.parquet | tippecanoe -P -o output.pmtiles
+gpio convert geojson s3://bucket/data.parquet --aws-profile my-aws | tippecanoe -P -o output.pmtiles
 
 # From public URL
 gpio convert geojson https://example.com/data.parquet | tippecanoe -P -o output.pmtiles

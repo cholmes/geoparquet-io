@@ -10,7 +10,7 @@ gpio uses different libraries for reads and writes:
 
 - **Writes**: All commands write to remote destinations using obstore. When you specify a remote output path, gpio writes to a local temp file first, then uploads via obstore automatically.
 
-`--aws-profile` is a global flag: pass it before the subcommand, as in `gpio --aws-profile prod sort hilbert in.parquet out.parquet`. Some subcommands also accept it in the trailing position, but the global position works everywhere. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
+The `--aws-profile` global flag is available on all commands for AWS authentication. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
 
 ### gpio publish upload
 
@@ -50,7 +50,7 @@ Credentials are automatically discovered in this order:
     gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet
 
     # Use a named AWS profile (convenient CLI flag)
-    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --aws-profile production
+    gpio --aws-profile production add bbox s3://bucket/input.parquet s3://bucket/output.parquet
 
     # Or set AWS_PROFILE environment variable (equivalent to --aws-profile)
     export AWS_PROFILE=production
@@ -84,7 +84,6 @@ Credentials are automatically discovered in this order:
 
 Azure credentials are discovered automatically when reading files:
 
-<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Set account credentials via environment variables
 export AZURE_STORAGE_ACCOUNT_NAME=myaccount
@@ -92,7 +91,10 @@ export AZURE_STORAGE_ACCOUNT_KEY=mykey
 
 # Or use SAS token
 export AZURE_STORAGE_SAS_TOKEN=mytoken
+```
 
+<!-- doctest: skip="needs cloud credentials" -->
+```bash
 # Then use Azure URLs
 gpio add bbox az://container/input.parquet az://container/output.parquet
 ```
@@ -193,7 +195,6 @@ gpio extract --bbox "-122.5,37.5,-122.0,38.0" input.parquet | \
 
 Or use the Python API for zero-copy streaming:
 
-<!-- doctest: skip="needs cloud credentials" -->
 ```python
 import geoparquet_io as gpio
 
@@ -202,7 +203,10 @@ table = gpio.read('input.parquet') \
     .extract(bbox=(-122.5, 37.5, -122.0, 38.0)) \
     .add_bbox() \
     .sort_hilbert()
+```
 
+<!-- doctest: skip="needs cloud credentials" -->
+```python
 # Upload directly (writes temp file, uploads, cleans up)
 table.upload('s3://bucket/output.parquet', profile='prod')
 ```

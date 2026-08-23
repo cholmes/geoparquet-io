@@ -11,22 +11,26 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio sort hilbert input.parquet output.parquet
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # From HTTPS to S3
     gpio --aws-profile prod sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet
     ```
 
 === "Python"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
     gpio.read('input.parquet').sort_hilbert().write('output.parquet')
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```python
     # With upload to S3
     gpio.read('https://example.com/data.parquet') \
         .sort_hilbert() \
@@ -49,7 +53,7 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 
 ## Options
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'geom', a column the sample data does not have" -->
 ```bash
 # Specify geometry column
 gpio sort hilbert input.parquet output.parquet -g geom
@@ -94,7 +98,7 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```bash
     # Sort by a single column
     gpio sort column input.parquet output.parquet name
@@ -108,7 +112,7 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="sorts on 'date', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
     from geoparquet_io.api import ops

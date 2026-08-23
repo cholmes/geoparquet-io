@@ -17,12 +17,14 @@ Add precomputed bounding boxes for faster spatial queries:
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add bbox input.parquet output.parquet
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # Works with remote files
-    gpio add bbox s3://bucket/input.parquet s3://bucket/output.parquet --aws-profile prod
+    gpio --aws-profile prod add bbox s3://bucket/input.parquet s3://bucket/output.parquet
     ```
 
 === "Python"
@@ -91,7 +93,7 @@ If your file already has a bbox column but lacks covering metadata (e.g., from e
 
 === "Python"
 
-    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
+    <!-- doctest: skip="needs file_with_bbox.parquet, which the harness does not seed" -->
     ```python
     import geoparquet_io as gpio
 
@@ -117,10 +119,12 @@ Add [H3](https://h3geo.org/) hexagonal cell IDs based on geometry centroids:
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add h3 input.parquet output.parquet --resolution 9
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # From HTTPS to S3
     gpio add h3 https://example.com/data.parquet s3://bucket/indexed.parquet --resolution 9
     ```
@@ -160,10 +164,12 @@ Add [S2](https://s2geometry.io/) spherical cell IDs based on geometry centroids:
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add s2 input.parquet output.parquet --level 13
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # From HTTPS to S3
     gpio add s2 https://example.com/data.parquet s3://bucket/indexed.parquet --level 13
     ```
@@ -236,10 +242,12 @@ Add [A5](https://a5geo.org/) spatial cell IDs based on geometry centroids.
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     gpio add a5 input.parquet output.parquet --resolution 15
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # From HTTPS to S3
     gpio add a5 https://example.com/data.parquet s3://bucket/indexed.parquet --resolution 15
     ```

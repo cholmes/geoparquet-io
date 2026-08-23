@@ -20,12 +20,14 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 
 === "Python"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```python
     import geoparquet_io as gpio
 
     table = gpio.read("data.parquet")
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```python
     # Upload to S3
     table.upload("s3://bucket/path/data.parquet", profile="my-profile")
     ```

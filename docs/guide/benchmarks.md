@@ -172,7 +172,6 @@ uv run python scripts/manage_baselines.py trends v0.7.0 v0.8.0 v0.9.0 --threshol
 - Requires GitHub token: set `GITHUB_TOKEN` or authenticate with `gh auth login`
 - Auto-detects repository from git remote
 - Downloads baselines to `baselines/` directory by default
-```
 
 ### Sample Output
 
@@ -222,6 +221,7 @@ Overall Statistics:
 
 gpio also includes built-in benchmark commands:
 
+<!-- doctest: skip="needs path/to/file.parquet, which the harness does not seed" -->
 ```bash
 # Run benchmark suite on specific files
 gpio benchmark suite --files path/to/file.parquet --operations core
@@ -239,7 +239,7 @@ When benchmarks identify performance regressions, profiling helps diagnose which
 Add the `--profile` flag to enable cProfile integration:
 
 === "CLI"
-    <!-- doctest: skip="reads a benchmark result file the reader produces" -->
+    <!-- doctest: skip="needs path/to/file.parquet, which the harness does not seed" -->
     ```bash
     # Run benchmarks with profiling enabled
     gpio benchmark suite \
@@ -256,7 +256,7 @@ Add the `--profile` flag to enable cProfile integration:
     ```
 
 === "Python"
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names a benchmark operation ('extract') the suite does not define" -->
     ```python
     from geoparquet_io.core.benchmark_suite import run_benchmark_suite
     from pathlib import Path
@@ -291,7 +291,7 @@ This generates `.prof` files in the specified directory (default: `./profiles/`)
     ```
 
 === "Python"
-    <!-- doctest: skip="reads a benchmark result file the reader produces" -->
+    <!-- doctest: skip="passes a str where the benchmark API expects a Path" -->
     ```python
     from geoparquet_io.benchmarks.profile_report import format_profile_stats
 

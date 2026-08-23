@@ -35,11 +35,14 @@ Select only the columns you need. The geometry column and bbox column (if presen
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names columns the sample data does not have (id)" -->
     ```bash
     # Extract only id and name columns (plus geometry and bbox)
     gpio extract places.parquet subset.parquet --include-cols id,name
+    ```
 
+    <!-- doctest: skip="names columns the sample data does not have (address, building_type, height)" -->
+    ```bash
     # Extract multiple attribute columns
     gpio extract buildings.parquet subset.parquet --include-cols height,building_type,address
     ```
@@ -62,7 +65,7 @@ Remove unwanted columns from the output:
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names columns the sample data does not have (metadata_json, raw_data)" -->
     ```bash
     # Exclude large or unnecessary columns
     gpio extract data.parquet output.parquet --exclude-cols raw_data,metadata_json
@@ -89,7 +92,7 @@ You can combine both to control exactly which columns appear, including removing
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names columns the sample data does not have (id, population)" -->
     ```bash
     # Include specific columns but exclude geometry (for non-spatial export)
     gpio extract data.parquet output.parquet \
@@ -104,7 +107,7 @@ You can combine both to control exactly which columns appear, including removing
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names 'geometry', a geometry column the sample data does not use" -->
     ```python
     import geoparquet_io as gpio
 
@@ -129,12 +132,14 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
     ```bash
     # Extract features in San Francisco area (WGS84 coordinates)
     gpio extract places.parquet sf_places.parquet \
       --bbox -122.5,37.7,-122.3,37.8
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # Extract from remote FIBOA dataset (projected coordinates)
     gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet slovenia_subset.parquet \
       --bbox 450000,50000,500000,100000
@@ -197,7 +202,7 @@ Filter features by intersection with any geometry, not just rectangles.
     Geometry filtering with arbitrary shapes is currently only available via the CLI.
     For rectangular regions, use the `bbox` parameter in Python.
 
-<!-- doctest: skip="needs a boundary polygon file to clip against" -->
+<!-- doctest: skip="the lines are alternatives that write the same output file" -->
 ```bash
 # Filter by inline WKT polygon
 gpio extract data.parquet subset.parquet \
@@ -220,7 +225,7 @@ gpio extract buildings.parquet city_buildings.parquet \
 
 **FeatureCollection Handling**: If your GeoJSON file contains multiple features, use `--use-first-geometry`:
 
-<!-- doctest: skip="needs a boundary polygon file to clip against" -->
+<!-- doctest: skip="needs regions.geojson, which the harness does not seed" -->
 ```bash
 gpio extract data.parquet subset.parquet \
   --geometry @regions.geojson \
@@ -235,7 +240,7 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
     ```bash
     # Filter by numeric value
     gpio extract data.parquet output.parquet --where "population > 10000"
@@ -265,10 +270,12 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+    ```python
     # Filter by numeric value
     gpio.read('data.parquet').extract(where="population > 10000").write('output.parquet')
 
@@ -288,12 +295,15 @@ Column names containing special characters (like `:`, `-`, `.`) need to be quote
 
 **Simple approach (works in bash/zsh):**
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'crop:name', a column the sample data does not have" -->
 ```bash
 # Column name with colon - use single quotes around the whole WHERE clause
 gpio extract data.parquet output.parquet \
   --where '"crop:name" = '\''wheat'\'''
+```
 
+<!-- doctest: skip="filters on 'building-type', a column the sample data does not have" -->
+```bash
 # Column name with dash
 gpio extract data.parquet output.parquet \
   --where '"building-type" = '\''residential'\'''
@@ -305,7 +315,7 @@ gpio extract data.parquet output.parquet \
 
 **Alternative escaping (more portable):**
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'crop:name', a column the sample data does not have" -->
 ```bash
 # Use backslash escaping
 gpio extract data.parquet output.parquet \
@@ -343,7 +353,7 @@ gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet crop_subset.
 
 ### WHERE with Numeric and Boolean Columns
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'area', a column the sample data does not have" -->
 ```bash
 # Numeric comparisons
 gpio extract data.parquet output.parquet --where "area > 1000"
@@ -360,7 +370,7 @@ gpio extract data.parquet output.parquet --where "updated_at IS NOT NULL"
 
 ### Complex WHERE Examples
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
 ```bash
 # Combine multiple conditions
 gpio extract data.parquet output.parquet \
@@ -385,14 +395,17 @@ Combine column selection, spatial filtering, and WHERE clauses:
 
 === "CLI"
 
-    <!-- doctest: skip="needs cloud credentials" -->
+    <!-- doctest: skip="names columns the sample data does not have (rating)" -->
     ```bash
     # Extract specific columns in a bbox with attribute filter
     gpio extract places.parquet hotels.parquet \
       --include-cols name,address,rating \
       --bbox -122.5,37.7,-122.3,37.8 \
       --where "category = 'hotel' AND rating >= 4"
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # Extract from remote file with all filter types
     gpio extract https://data.source.coop/fiboa/data/si/si-2024.parquet wheat_subset.parquet \
       --bbox 450000,50000,500000,100000 \
@@ -432,11 +445,13 @@ Limit the number of rows extracted, useful for testing or sampling:
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```bash
     # Extract first 1000 matching rows
     gpio extract data.parquet sample.parquet --limit 1000
+    ```
 
+    <!-- doctest: skip="filters on 'category', a column the sample data does not have" -->
+    ```bash
     # Extract first 100 hotels in bbox
     gpio extract places.parquet hotels_sample.parquet \
       --bbox -122.5,37.7,-122.3,37.8 \
@@ -446,7 +461,7 @@ Limit the number of rows extracted, useful for testing or sampling:
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'category', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1625,7 +1640,7 @@ The `extract` command can read from partitioned GeoParquet datasets, including d
 
 ### Reading from Directories
 
-<!-- doctest: skip="the lines are alternatives that write the same output file" -->
+<!-- doctest: skip="needs partitions/, which the harness does not seed" -->
 ```bash
 # Read all parquet files in a directory
 gpio extract partitions/ merged.parquet
@@ -1641,7 +1656,7 @@ gpio extract "data/**/*.parquet" merged.parquet
 
 Files organized with `key=value` directory structures are automatically detected:
 
-<!-- doctest: skip="needs an admin-partitioned directory the sample cannot produce" -->
+<!-- doctest: skip="needs country_partitions/, which the harness does not seed" -->
 ```bash
 # Read hive-style partitions (auto-detected)
 gpio extract country_partitions/ merged.parquet
@@ -1664,7 +1679,7 @@ gpio extract partitions/ merged.parquet --allow-schema-diff
 
 All filters work with partitioned input:
 
-<!-- doctest: skip="the lines are alternatives that write the same output file" -->
+<!-- doctest: skip="needs partitions/, which the harness does not seed" -->
 ```bash
 # Spatial filter across partitioned dataset
 gpio extract partitions/ filtered.parquet --bbox -122.5,37.5,-122.0,38.0
@@ -1683,7 +1698,7 @@ gpio extract partitions/ subset.parquet \
 
 Preview the SQL query that will be executed:
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
 ```bash
 # See the SQL query without executing
 gpio extract data.parquet output.parquet \
@@ -1751,7 +1766,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```bash
     # Get a small sample for testing
     gpio extract large_file.parquet sample.parquet --limit 1000
@@ -1778,7 +1793,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'category', a column the sample data does not have" -->
     ```bash
     # Extract all features of a specific type
     gpio extract data.parquet restaurants.parquet \
@@ -1791,10 +1806,12 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="filters on 'category', a column the sample data does not have" -->
+    ```python
     # Extract all features of a specific type
     gpio.read('data.parquet').extract(where="category = 'restaurant'").write('restaurants.parquet')
 
@@ -1806,7 +1823,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'updated_at', a column the sample data does not have" -->
     ```bash
     # Extract data updated this year
     gpio extract data.parquet recent.parquet \
@@ -1819,7 +1836,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="filters on 'updated_at', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1836,7 +1853,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names columns the sample data does not have (category, id, population)" -->
     ```bash
     # Extract as attribute table (no geometry)
     gpio extract data.parquet attributes.parquet \
@@ -1846,7 +1863,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
-    <!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+    <!-- doctest: skip="names 'geometry', a geometry column the sample data does not use" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1873,7 +1890,7 @@ gpio extract data.parquet output.parquet --bbox 1000,1000,1001,1001
 
 If you specify a non-existent column, you'll get a clear error:
 
-<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
+<!-- doctest: skip="names columns the sample data does not have (invalid_column)" -->
 ```bash
 gpio extract data.parquet output.parquet --include-cols invalid_column
 # Error: Columns not found in schema (--include-cols): invalid_column
