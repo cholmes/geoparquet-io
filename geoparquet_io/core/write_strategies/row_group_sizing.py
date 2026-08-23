@@ -27,6 +27,24 @@ _MB_ESTIMATE_SAMPLE_ROWS = 20000
 # (they change which/how many rows a LIMIT would return).
 _ORDER_BY_TAIL_STOPWORDS = re.compile(r"(?i)\b(limit|offset|union|except|intersect|fetch)\b")
 
+# Constructs the scanner below cannot reason about. It tracks '' and "" state and
+# nothing else, which is the hand-rolled quote walker #657 replaced on the
+# --where path: line comments, block comments, dollar quoting and E'' escapes all
+# hide (or fake) text from it. Measured against this scanner, each one mangles
+# the query --
+#     SELECT * FROM t -- keep order by x   ->  SELECT * FROM t --
+#     SELECT * FROM t /* order by x */     ->  SELECT * FROM t /*
+#     SELECT $$order by x$$ AS s FROM t    ->  SELECT $$
+#     ... WHERE s = E'\'order by x'         ->  ... WHERE s = E'\'
+# -- and the last is the dangerous one: it stays *valid* SQL with a different
+# WHERE clause, so the estimate would be drawn from a different row set instead
+# of failing loudly.
+#
+# There is no public DuckDB AST to gate this properly (extract_statements only
+# splits statements), so the scanner stays, and any query carrying one of these
+# is left alone: the optimization is skipped and sizing still works.
+_UNSCANNABLE_SQL = re.compile(r"--|/\*|\$\$|\$[A-Za-z_][A-Za-z0-9_]*\$|(?<![A-Za-z0-9_])[eE]'")
+
 
 def _strip_trailing_order_by(query: str) -> str:
     """Drop a trailing top-level ``ORDER BY`` clause for cheap row sampling.
@@ -38,8 +56,13 @@ def _strip_trailing_order_by(query: str) -> str:
     ``LIMIT`` pushes down, so DuckDB stops after a few row groups.
 
     Returns the query unchanged when no strippable top-level trailing ORDER BY is
-    found, so estimation still works — it just skips the speed-up.
+    found, so estimation still works — it just skips the speed-up. The same is
+    true for a query carrying any construct this scanner cannot track (see
+    ``_UNSCANNABLE_SQL``): skipping the speed-up is always safe, guessing is not.
     """
+    if _UNSCANNABLE_SQL.search(query):
+        return query
+
     depth = 0
     in_single = in_double = False
     last_order_by = -1

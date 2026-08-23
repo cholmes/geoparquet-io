@@ -214,6 +214,61 @@ class TestDuckDBKVStrategy:
             strategy._validate_output_path("file;DROP TABLE users;--.parquet")
 
 
+# SQL constructs the ORDER BY scanner cannot track. Each one is a way to hide
+# text from a hand-rolled quote-state walker, and each is named in the #657
+# rationale for replacing exactly this technique on the --where path.
+UNSCANNABLE_QUERIES = [
+    pytest.param("SELECT * FROM t -- keep order by x\n", id="line-comment"),
+    pytest.param("SELECT * FROM t /* order by x */", id="block-comment"),
+    pytest.param("SELECT $$order by x$$ AS s FROM t", id="dollar-quote"),
+    pytest.param("SELECT $tag$order by x$tag$ AS s FROM t", id="tagged-dollar-quote"),
+    pytest.param("SELECT * FROM t WHERE s = E'\\'order by x'", id="e-string-escape"),
+]
+
+
+class TestStripTrailingOrderByLeavesUnscannableQueriesAlone:
+    """The scanner must skip the optimization rather than guess.
+
+    It tracks '' and "" state and nothing else. Before the guard, every query
+    below was truncated mid-construct: three into SQL that no longer parses
+    (recovered by the caller's fallback, losing the MB target), and the
+    E'' case into SQL that still parses but carries a *different* WHERE
+    clause — so the bytes-per-row estimate would silently come from a
+    different row set.
+    """
+
+    @pytest.mark.parametrize("query", UNSCANNABLE_QUERIES)
+    def test_query_is_returned_unchanged(self, query):
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
+
+        assert _strip_trailing_order_by(query) == query, (
+            "the scanner cannot track this construct, so it must leave the query alone"
+        )
+
+    @pytest.mark.parametrize("query", UNSCANNABLE_QUERIES)
+    def test_unstripped_query_still_parses(self, query):
+        """Whatever comes back must be runnable — that is the point of bailing."""
+        import duckdb
+
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
+
+        result = _strip_trailing_order_by(query)
+        duckdb.extract_statements(result)  # raises if the strip broke the SQL
+
+    def test_ordinary_generated_queries_are_still_optimized(self):
+        """The guard must not disable the speed-up for the queries gpio emits."""
+        from geoparquet_io.core.write_strategies.row_group_sizing import _strip_trailing_order_by
+
+        query = (
+            "SELECT * FROM read_parquet('in.parquet') WHERE code = 'abc' "
+            "ORDER BY ST_Hilbert(geometry, ST_Extent(ST_MakeEnvelope(0, 0, 1, 1)))"
+        )
+        stripped = _strip_trailing_order_by(query)
+        assert stripped != query, "a plain generated ORDER BY must still be stripped"
+        assert "ORDER BY" not in stripped.upper()
+        assert stripped.endswith("'abc'")
+
+
 class TestStripTrailingOrderBy:
     """Sampling for --row-group-size-mb must not re-run the ordered query."""
 
