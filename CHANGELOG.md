@@ -63,6 +63,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **The guides' examples now run as tests (#667)**: every fenced `bash` and
+  `python` block in `docs/guide/*.md` is collected as a pytest item with an id
+  like `guide/sort.md:L14[bash]`, executed in a throwaway directory seeded from
+  the canonical dataset under the placeholder names the docs already use
+  (`input.parquet`, `data.parquet`, `buildings.parquet`, ...), so an example
+  runs verbatim and a failure reports the doc file and the fence's line. A
+  block that cannot run says so in the doc source with an HTML comment that is
+  invisible in the rendered page — `<!-- doctest: skip="needs cloud
+  credentials" -->`, `network`, `slow`, `needs-tippecanoe`, `needs-ogr`,
+  `setup="..."`, `prelude="..."`, `menu` — and `tests/test_docs_examples_meta.py`
+  keeps that honest: it rejects fence languages the harness cannot run (```sh,
+  ```py), unparsable or unexplained directives, commands hidden in prose
+  fences, and ratchets the number of opted-out blocks. A curated fast subset
+  (`sort.md`, `piping.md`, `check.md`) runs in the fast suite; the rest carry
+  `slow`. Running the docs found real bugs in them, now fixed: `--aws-profile`
+  documented in the trailing position where only the global position works,
+  and `gpio inspect FILE --stats` for what is really `gpio inspect stats FILE`.
 - **Canonical sample dataset (#667)**: `tests/data/canonical/` holds one small,
   spec-clean dataset that the documentation examples, the end-to-end journey
   tests, and the `examples/` notebooks can all share — `places.parquet` (766

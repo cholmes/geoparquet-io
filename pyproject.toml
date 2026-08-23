@@ -129,7 +129,7 @@ packages = ["geoparquet_io"]
 artifacts = ["geoparquet_io/skills/*.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "docs/guide"]
 pythonpath = ["."]
 python_files = "test_*.py"
 python_classes = "Test*"
@@ -158,6 +158,7 @@ markers = [
     "integration: marks end-to-end integration tests",
     "corpus: tests against the official geoparquet-testing corpus (requires git submodule)",
     "meta: repo tooling checks, excluded from the fast suite",
+    "docs_example: a fenced example block executed out of docs/guide/*.md",
 ]
 
 [tool.ruff]

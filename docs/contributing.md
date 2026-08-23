@@ -117,6 +117,7 @@ Coverage gates (both enforced in CI):
 | `@pytest.mark.integration` | marks end-to-end integration tests |
 | `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
 | `@pytest.mark.meta` | repo tooling checks, excluded from the fast suite |
+| `@pytest.mark.docs_example` | a fenced example block executed out of docs/guide/*.md |
 <!-- END GENERATED: test-markers -->
 
 ## Code Quality
