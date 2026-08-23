@@ -538,7 +538,9 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   them. Both entry points now hand the input's preserved keys to the writer, so
   sidecar metadata survives on every entry point and every write strategy. The
   `geo` key itself is never copied — it is regenerated from the written data —
-  and neither are Arrow's own `ARROW:schema` / `pandas` keys.
+  and neither are Arrow's own `ARROW:schema` / `pandas` keys. Which keys those
+  are is the single `_CARRIED_SCHEMA_METADATA_KEYS` constant the
+  parquet-geo-only path already uses, not a second copy of the same list.
 
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,

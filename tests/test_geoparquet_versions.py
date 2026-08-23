@@ -1867,12 +1867,24 @@ class TestCarriedSchemaMetadataKeysHasOneDefinition:
         )
 
     def test_both_write_paths_reference_the_constant(self):
+        """Both paths must reach the one constant — directly or through the helper.
+
+        The query path no longer names the constant itself: it filters through
+        ``extract_preserved_kv_metadata``, which is where the comparison now
+        lives. Following that indirection keeps the guard honest; asserting the
+        literal name in ``write_parquet_with_metadata`` would only have been
+        satisfiable by inlining the loop back into it.
+        """
         import inspect
 
         from geoparquet_io.core.common import (
             _strip_geo_metadata_key,
+            extract_preserved_kv_metadata,
             write_parquet_with_metadata,
         )
 
+        # parquet-geo-only path: compares bytes keys straight off a pyarrow schema.
         assert "_CARRIED_SCHEMA_METADATA_KEYS_BYTES" in inspect.getsource(_strip_geo_metadata_key)
-        assert "_CARRIED_SCHEMA_METADATA_KEYS" in inspect.getsource(write_parquet_with_metadata)
+        # Query path: delegates to the helper, which owns the comparison.
+        assert "extract_preserved_kv_metadata" in inspect.getsource(write_parquet_with_metadata)
+        assert "_CARRIED_SCHEMA_METADATA_KEYS" in inspect.getsource(extract_preserved_kv_metadata)
