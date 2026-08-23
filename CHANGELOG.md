@@ -488,6 +488,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   geoparquet` both route through — rather than a second hand-maintained
   literal that could drift from it. A test pins that there is exactly one
   spelling of the set and that both write paths reference it.
+
+  The new validator-oracle test excludes `native_geo_stats_contains_data` on
+  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
+  for a native GEOMETRY column, so that check fails there for a platform reason
+  unrelated to this fix (#721). Every other validator check stays enforced on
+  every platform.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
