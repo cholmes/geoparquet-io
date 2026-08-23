@@ -370,6 +370,16 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   already produced. Measured over the file's fast lane: 12 outbound connection
   attempts and 24 `time.sleep` calls totalling 36.00s of retry backoff both drop
   to zero, and serial runtime goes from 43.4s to 6.3s.
+
+- **`gpio add quadkey --quadkey-name` now accepts any column name Parquet
+  accepts.** The file-based code path interpolated the output column name and
+  the bbox column name into its SQL raw, so `--quadkey-name 'weird name'`
+  died with `Parser Error: syntax error at or near "name"` and a name
+  containing a double quote died with `unterminated quoted identifier`. Both
+  names now go through `quote_identifier()`, matching the streaming and
+  Arrow-table paths in the same module, which already quoted them. Computed
+  quadkey values are unchanged for ordinary column names.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

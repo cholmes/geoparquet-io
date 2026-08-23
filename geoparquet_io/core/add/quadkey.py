@@ -627,8 +627,9 @@ def _add_quadkey_file_based(
 
         # Build the SQL expression based on calculation method
         if use_bbox:
-            lat_expr = f"(({bbox_col}.ymin + {bbox_col}.ymax) / 2.0)"
-            lon_expr = f"(({bbox_col}.xmin + {bbox_col}.xmax) / 2.0)"
+            quoted_bbox = quote_identifier(bbox_col)
+            lat_expr = f"(({quoted_bbox}.ymin + {quoted_bbox}.ymax) / 2.0)"
+            lon_expr = f"(({quoted_bbox}.xmin + {quoted_bbox}.xmax) / 2.0)"
         else:
             geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
             lat_expr = f"ST_Y(ST_Centroid({geom_ref}))"
@@ -637,7 +638,7 @@ def _add_quadkey_file_based(
         # Build SELECT query with new column
         query = f"""
             SELECT *,
-                   lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quadkey_column_name}
+                   lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
             FROM '{input_url}'
         """
 
