@@ -100,6 +100,54 @@ def places_test_file():
 
 
 @pytest.fixture
+def places_v11_file(tmp_path):
+    """A real GeoParquet 1.1 copy of the places file: bbox column, no covering key.
+
+    ``places_test.parquet`` declares 1.0.0, which cannot carry the 1.1-only
+    ``covering`` key (gpio #686). Tests that exercise *adding* a covering need a
+    1.1 input.
+
+    Written through DuckDB's KV_METADATA rather than pyarrow: ``write_table``
+    with ``store_schema=False`` drops the whole schema-metadata block (geo key
+    included, leaving plain Parquet that silently exercises the synthetic-metadata
+    fallback), while the default ``store_schema=True`` adds an ``ARROW:schema``
+    key that ``add bbox-metadata``'s unquoted KV_METADATA clause cannot survive.
+    The connection deliberately does not load the spatial extension, so the WKB
+    geometry column is copied as BLOB instead of being auto-converted to a native
+    GEOMETRY type.
+    """
+    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.geo_metadata import parse_geo_metadata
+
+    path = tmp_path / "places_v11.parquet"
+
+    source_meta = pq.read_metadata(str(PLACES_TEST_FILE)).metadata
+    geo = json.loads(source_meta[b"geo"].decode("utf-8"))
+    geo["version"] = "1.1.0"
+    geo["columns"][geo["primary_column"]].pop("covering", None)
+    geo_json = json.dumps(geo).replace("'", "''")
+
+    con = get_duckdb_connection(load_spatial=False)
+    con.execute(f"""
+        COPY (SELECT * FROM '{PLACES_TEST_FILE.as_posix()}')
+        TO '{path.as_posix()}'
+        (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE', KV_METADATA {{geo: '{geo_json}'}})
+    """)
+    con.close()
+
+    # Non-vacuity: this must be a real 1.1 GeoParquet file with a bbox column and
+    # no covering, not plain Parquet that quietly takes a fallback path.
+    written = pq.read_metadata(str(path)).metadata
+    written_geo = parse_geo_metadata(written, False)
+    assert written_geo, "places_v11_file lost its geo metadata"
+    assert written_geo["version"].startswith("1.1"), written_geo["version"]
+    primary = written_geo["primary_column"]
+    assert "covering" not in written_geo["columns"][primary]
+    assert "bbox" in pq.ParquetFile(str(path)).schema_arrow.names
+    return str(path)
+
+
+@pytest.fixture
 def buildings_test_file():
     """Return the path to the buildings test parquet file."""
     return str(BUILDINGS_TEST_FILE)

@@ -191,6 +191,58 @@ def _add_bbox_covering(
         debug(f"Added bbox covering metadata for column '{bbox_info['bbox_column_name']}'")
 
 
+def covering_supported(version: str | None) -> bool:
+    """Whether a GeoParquet version may carry the ``covering`` column key.
+
+    ``covering`` was introduced in GeoParquet 1.1 — the word does not appear
+    anywhere in the v1.0.0 specification — so 1.0 output must omit it. The bbox
+    *column* itself is an ordinary Parquet column and stays legal at 1.0; only
+    the metadata key is gated.
+
+    Accepts both the short option form ("1.0", "1.1") and the metadata form
+    ("1.0.0", "1.1.0"). Unknown/absent versions are treated as supporting it.
+    """
+    return not str(version or "").startswith("1.0")
+
+
+def strip_unsupported_covering(geo_meta: dict, version: str | None, verbose: bool = False) -> dict:
+    """Return ``geo_meta`` without ``covering`` on any column when ``version`` predates 1.1.
+
+    Single gate shared by every write path, applied after metadata assembly so it
+    also catches coverings carried in from a 1.1 source file or supplied through
+    ``custom_metadata`` (h3/s2/a5/quadkey).
+
+    Never mutates its input. The assembled metadata still aliases the caller's
+    column dicts through the shallow copy in ``_initialize_geo_metadata``, and
+    partition loops reuse one ``original_metadata`` dict across many writes, so
+    popping in place would strip the shared dict permanently and silently cost a
+    later 1.1 write its covering.
+    """
+    if covering_supported(version):
+        return geo_meta
+
+    columns = geo_meta.get("columns")
+    if not isinstance(columns, dict):
+        return geo_meta
+    if not any(isinstance(col, dict) and "covering" in col for col in columns.values()):
+        return geo_meta
+
+    stripped = {}
+    for col_name, col_meta in columns.items():
+        if isinstance(col_meta, dict) and "covering" in col_meta:
+            col_meta = {k: v for k, v in col_meta.items() if k != "covering"}
+            if verbose:
+                debug(
+                    f"Dropped 1.1-only covering metadata for column '{col_name}' "
+                    f"(version {version})"
+                )
+        stripped[col_name] = col_meta
+
+    result = dict(geo_meta)
+    result["columns"] = stripped
+    return result
+
+
 def _add_custom_covering(
     geo_meta: dict, geom_col: str, custom_metadata: dict | None, verbose: bool
 ) -> None:
@@ -420,7 +472,7 @@ def create_geo_metadata(
             if key != "covering":
                 geo_meta[key] = value
 
-    return geo_meta
+    return strip_unsupported_covering(geo_meta, version, verbose)
 
 
 # =============================================================================

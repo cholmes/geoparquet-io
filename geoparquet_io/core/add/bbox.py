@@ -25,6 +25,26 @@ from geoparquet_io.core.streaming import (
 )
 
 
+def _bbox_metadata_advice(parquet_file: str) -> str:
+    """Advice for a file that has a bbox column but no covering metadata.
+
+    'covering' is 1.1-only, so a 1.0 file cannot be fixed by 'add bbox-metadata'
+    (which refuses) — it needs a version upgrade first.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+    from geoparquet_io.core.geo_metadata import covering_supported
+
+    geo_meta = get_geo_metadata(parquet_file) or {}
+    version = geo_meta.get("version", "")
+    if covering_supported(version):
+        return "Run 'gpio add bbox-metadata' to add metadata, or use --force to replace."
+    return (
+        f"'covering' requires GeoParquet 1.1+ (this file is {version}). Use --force to "
+        "rewrite the bbox column at 1.1 with covering, or convert first: "
+        "gpio convert geoparquet IN.parquet OUT.parquet --geoparquet-version 1.1"
+    )
+
+
 def add_bbox_table(
     table: pa.Table,
     bbox_column_name: str = "bbox",
@@ -186,7 +206,9 @@ def add_bbox_column(
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
 
     Note:
-        Bbox covering metadata is automatically added when the file is written.
+        Bbox covering metadata is automatically added when the file is written,
+        except for GeoParquet 1.0 output: 'covering' was introduced in 1.1, so a
+        1.0 file gets the bbox column without the covering key.
     """
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -348,7 +370,7 @@ def _add_bbox_file_based(
                 replace_column = _handle_existing_bbox_force(bbox_column_name, existing_bbox_col)
             else:
                 progress(f"File has bbox column '{existing_bbox_col}' but lacks covering metadata.")
-                progress("Run 'gpio add bbox-metadata' to add metadata, or use --force to replace.")
+                progress(_bbox_metadata_advice(input_parquet))
                 return
 
     # Get geometry column for the SQL expression

@@ -1253,10 +1253,16 @@ class TestTableAddBboxMetadata:
         with pytest.raises(ValueError, match="not found"):
             sample_table.add_bbox_metadata(bbox_column="nonexistent_bbox")
 
-    def test_add_bbox_metadata_with_bbox_column(self, sample_table):
+    def test_add_bbox_metadata_with_bbox_column(self, sample_table, tmp_path):
         """Test add_bbox_metadata() works with bbox column."""
+        # The places fixture declares GeoParquet 1.0.0, which cannot carry the
+        # 1.1-only covering key (gpio #686) — restate it at 1.1 first.
+        v11_path = tmp_path / "places_v11.parquet"
+        sample_table.write(str(v11_path), geoparquet_version="1.1")
+        table_v11 = read(str(v11_path))
+
         # First add the bbox column, then add metadata
-        with_bbox = sample_table.add_bbox()
+        with_bbox = table_v11.add_bbox()
         with_meta = with_bbox.add_bbox_metadata()
         assert isinstance(with_meta, Table)
 

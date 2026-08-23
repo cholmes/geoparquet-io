@@ -1151,6 +1151,10 @@ table_with_bbox = table.add_bbox().add_bbox_metadata()
 table_with_meta = table.add_bbox_metadata()
 ```
 
+Raises `ValueError` when the table declares GeoParquet 1.0: the `covering` key was
+introduced in 1.1, so writing it at 1.0 would produce a file that fails validation.
+Write the table at 1.1 first (`table.write(path, geoparquet_version='1.1')`).
+
 #### `check()` / `check_spatial()` / `check_compression()` / `check_bbox()` / `check_row_groups()`
 
 Run best-practice checks on the table.

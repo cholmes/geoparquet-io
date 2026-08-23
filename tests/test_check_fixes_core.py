@@ -96,29 +96,33 @@ class TestFixBboxColumn:
 class TestFixBboxMetadata:
     """Tests for fix_bbox_metadata function."""
 
-    def test_adds_bbox_metadata(self, places_test_file, temp_output_dir):
-        """Test adding bbox metadata to file with bbox column."""
+    def test_adds_bbox_metadata(self, places_v11_file, temp_output_dir):
+        """Test adding bbox metadata to file with bbox column.
+
+        Uses the 1.1 places fixture: covering is a 1.1-only key, so adding it to
+        the 1.0 original is now refused outright (gpio #686).
+        """
         test_file = os.path.join(temp_output_dir, "test.parquet")
-        shutil.copy2(places_test_file, test_file)
+        shutil.copy2(places_v11_file, test_file)
 
         fix_result = fix_bbox_metadata(test_file, test_file, verbose=False)
 
         assert fix_result["success"] is True
         assert "bbox" in fix_result["fix_applied"].lower()
 
-    def test_copies_file_if_output_different(self, places_test_file, temp_output_dir):
+    def test_copies_file_if_output_different(self, places_v11_file, temp_output_dir):
         """Test that file is copied when output differs from input."""
         output_file = os.path.join(temp_output_dir, "output.parquet")
 
-        fix_result = fix_bbox_metadata(places_test_file, output_file, verbose=False)
+        fix_result = fix_bbox_metadata(places_v11_file, output_file, verbose=False)
 
         assert fix_result["success"] is True
         assert os.path.exists(output_file)
 
-    def test_with_verbose(self, places_test_file, temp_output_dir):
+    def test_with_verbose(self, places_v11_file, temp_output_dir):
         """Test fix_bbox_metadata with verbose flag."""
         test_file = os.path.join(temp_output_dir, "test.parquet")
-        shutil.copy2(places_test_file, test_file)
+        shutil.copy2(places_v11_file, test_file)
 
         fix_result = fix_bbox_metadata(test_file, test_file, verbose=True)
         assert fix_result["success"] is True

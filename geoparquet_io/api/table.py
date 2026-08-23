@@ -2822,6 +2822,19 @@ class Table:
                 "columns": {},
             }
 
+        # 'covering' was introduced in GeoParquet 1.1. This method exists solely to
+        # write that key, so a 1.0 table gets a clear error naming the conflict
+        # rather than silently returning a table without the metadata it asked for.
+        from geoparquet_io.core.geo_metadata import covering_supported
+
+        table_version = geo_meta.get("version", "")
+        if not covering_supported(table_version):
+            raise ValueError(
+                f"Cannot add bbox covering metadata: this table declares GeoParquet "
+                f"{table_version}, and the 'covering' key requires GeoParquet 1.1 or later. "
+                f"Write the table at 1.1 first (e.g. write(..., geoparquet_version='1.1'))."
+            )
+
         # Add covering metadata for the geometry column
         if geom_col not in geo_meta["columns"]:
             geo_meta["columns"][geom_col] = {}
