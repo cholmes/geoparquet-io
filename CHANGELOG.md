@@ -524,6 +524,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   for a native GEOMETRY column, so that check fails there for a platform reason
   unrelated to this fix (#721). Every other validator check stays enforced on
   every platform.
+
+- **`gpio convert geoparquet` and `Table.write` keep the input's non-geo
+  key/value metadata.** A GeoParquet file's file-level KV metadata carries
+  sidecar payloads — `fiboa`, `vecorel`, STAC fragments, collection records —
+  and `write_parquet_with_metadata` already merged them into its output. The two
+  highest-level entry points never reached that merge: `convert` hardcoded
+  `original_metadata=None` and passed no KV metadata at all (every strategy
+  dropped the keys), while `Table.write` called the write strategy directly, so
+  preservation depended on the strategy — the Arrow strategies copied the keys
+  off the table schema incidentally, and the DuckDB COPY paths (`duckdb-kv`,
+  the default, and `disk-rewrite`) rebuilt the KV block from scratch and lost
+  them. Both entry points now hand the input's preserved keys to the writer, so
+  sidecar metadata survives on every entry point and every write strategy. The
+  `geo` key itself is never copied — it is regenerated from the written data —
+  and neither are Arrow's own `ARROW:schema` / `pandas` keys. Which keys those
+  are is the single `_CARRIED_SCHEMA_METADATA_KEYS` constant the
+  parquet-geo-only path already uses, not a second copy of the same list.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

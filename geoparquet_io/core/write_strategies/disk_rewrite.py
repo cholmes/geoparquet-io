@@ -199,6 +199,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using temporary file and rewrite."""
         from geoparquet_io.core.common import _detect_version_from_table
@@ -249,6 +250,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 input_crs=input_crs,
                 verbose=verbose,
                 custom_metadata=custom_metadata,
+                extra_kv_metadata=extra_kv_metadata,
             )
         finally:
             con.close()

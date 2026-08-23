@@ -1078,6 +1078,16 @@ class Table:
 
                 input_crs = parse_crs_string_to_projjson(input_crs)
 
+            # Carry the table's non-geo file-level KV metadata (fiboa, vecorel,
+            # STAC fragments) into the write. The Arrow strategies copied it
+            # incidentally off the schema while the DuckDB COPY strategies —
+            # including the default — rebuilt the KV block from scratch and
+            # dropped it, so preservation depended on the strategy (#690).
+            # 'geo' is deliberately excluded: it is regenerated from the table.
+            from geoparquet_io.core.common import extract_preserved_kv_metadata
+
+            preserved_kv = extract_preserved_kv_metadata(self._table.schema.metadata)
+
             strategy.write_from_table(
                 table=self._table,
                 output_path=str(local_path),
@@ -1089,6 +1099,7 @@ class Table:
                 row_group_rows=row_group_rows,
                 verbose=verbose,
                 input_crs=input_crs,
+                extra_kv_metadata=preserved_kv or None,
             )
 
             # Upload to remote if needed

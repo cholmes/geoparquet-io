@@ -2297,6 +2297,70 @@ def _prune_metadata_to_output_columns(
     return pruned
 
 
+def extract_preserved_kv_metadata(metadata: dict | None) -> dict[str, str]:
+    """Return an input's non-geo file-level KV metadata as ``{str: str}``.
+
+    Sidecar payloads (``fiboa``, ``vecorel``, STAC fragments, collection
+    records) live in Parquet's file-level key/value metadata next to ``geo``.
+    Every write path that rebuilds the KV block must carry them over, so this
+    is the single definition of which keys survive a rewrite (#690).
+
+    Keys and values that are not valid UTF-8 are skipped: the write paths pass
+    KV metadata as text (DuckDB ``KV_METADATA`` takes SQL string literals), so a
+    binary payload cannot be round-tripped and dropping it beats failing the
+    write.
+
+    Args:
+        metadata: KV metadata dict from a Parquet file or Arrow schema. Keys
+            and values may be ``bytes`` or ``str``; ``None`` is accepted.
+
+    Returns:
+        Decoded ``{key: value}`` for every key outside
+        ``_CARRIED_SCHEMA_METADATA_KEYS``.
+    """
+    if not metadata:
+        return {}
+
+    preserved: dict[str, str] = {}
+    for key, value in metadata.items():
+        # The key is decoded inside the try as well: Parquet KV keys are
+        # arbitrary bytes, and a non-UTF-8 key must skip like a non-UTF-8
+        # value rather than raise out of a metadata-preservation helper.
+        try:
+            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+            if key_str in _CARRIED_SCHEMA_METADATA_KEYS:
+                continue
+            val_str = value.decode("utf-8") if isinstance(value, bytes) else value
+        except UnicodeDecodeError:
+            debug(f"Skipping non-UTF-8 KV metadata entry {key!r} (cannot be preserved as text)")
+            continue
+        preserved[key_str] = val_str
+    return preserved
+
+
+def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict[str, str]:
+    """Read a Parquet input's preservable non-geo KV metadata.
+
+    Returns an empty dict when the file cannot be inspected (e.g. a remote
+    input without credentials): losing sidecar keys is bad, but failing an
+    otherwise valid conversion because of them would be worse.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_kv_metadata
+
+    try:
+        # Both the read and the decode are guarded: a malformed KV block is an
+        # input-data problem, and losing sidecar keys must never be the reason
+        # an otherwise valid write fails.
+        preserved = extract_preserved_kv_metadata(get_kv_metadata(parquet_file))
+    except Exception as e:  # noqa: BLE001 - any read failure degrades to "nothing to preserve"
+        warn(f"Could not read input KV metadata from {parquet_file}: {e}")
+        return {}
+
+    if verbose and preserved:
+        debug(f"Preserving input KV metadata keys: {sorted(preserved)}")
+    return preserved
+
+
 def write_parquet_with_metadata(
     con,
     query,
@@ -2420,17 +2484,10 @@ def write_parquet_with_metadata(
     # Build a merged local dict rather than mutating the caller-supplied
     # extra_kv_metadata: partition loops reuse one dict across writes, and
     # writing into it in place leaked prior files' keys into later ones.
-    if original_metadata:
-        preserved_keys = {}
-        for key, value in original_metadata.items():
-            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
-            if key_str in _CARRIED_SCHEMA_METADATA_KEYS:
-                continue
-            val_str = value.decode("utf-8") if isinstance(value, bytes) else value
-            preserved_keys[key_str] = val_str
-        if preserved_keys:
-            # Caller-supplied entries win over preserved keys of the same name.
-            extra_kv_metadata = {**preserved_keys, **(extra_kv_metadata or {})}
+    preserved_keys = extract_preserved_kv_metadata(original_metadata)
+    if preserved_keys:
+        # Caller-supplied entries win over preserved keys of the same name.
+        extra_kv_metadata = {**preserved_keys, **(extra_kv_metadata or {})}
 
     if extra_kv_metadata:
         rewrite_needed = True

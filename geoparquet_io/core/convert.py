@@ -7,7 +7,11 @@ from pathlib import Path
 
 import duckdb
 
-from geoparquet_io.core.common import format_size, write_parquet_with_metadata
+from geoparquet_io.core.common import (
+    format_size,
+    read_preserved_kv_metadata,
+    write_parquet_with_metadata,
+)
 from geoparquet_io.core.crs_utils import (
     _format_crs_display,
     detect_crs_from_spatial_file,
@@ -2023,11 +2027,19 @@ def convert_to_geoparquet(
             geom_col = "geometry" if is_csv else geometry_info["primary"]
             query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
+        # Sidecar KV payloads (fiboa, vecorel, STAC fragments) live next to the
+        # 'geo' key and are rebuilt from scratch by every write strategy, so a
+        # parquet→parquet convert has to hand them to the writer explicitly or
+        # they vanish (#690). Only the non-geo keys travel: 'geo' is regenerated
+        # from the converted data, never copied.
+        preserved_kv = read_preserved_kv_metadata(input_file, verbose) if is_parquet else {}
+
         write_parquet_with_metadata(
             con,
             query,
             output_file,
             original_metadata=None,
+            extra_kv_metadata=preserved_kv or None,
             compression=compression,
             compression_level=compression_level,
             row_group_rows=row_group_rows,
