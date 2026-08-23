@@ -26,6 +26,10 @@ from geoparquet_io.core.duckdb_utils import (
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
+from geoparquet_io.core.write_strategies.row_group_sizing import (
+    _resolve_row_group_rows,
+    _resolve_row_group_rows_for_table,
+)
 
 if TYPE_CHECKING:
     import duckdb
@@ -75,10 +79,23 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         configure_verbose(verbose)
         self._validate_output_path(output_path)
 
+        # DuckDB COPY TO sizes row groups by row count, so translate any MB target
+        # into rows before it can take effect on this strategy (fixes #689 — both
+        # sizing options were accepted and then ignored entirely).
+        resolved_row_group_rows = _resolve_row_group_rows(
+            con, query, row_group_size_mb, row_group_rows, verbose
+        )
+
         # Handle non-geo queries: write plain Parquet without geo metadata
         if geometry_column is None:
             self._write_plain_parquet_from_query(
-                con, query, output_path, compression, compression_level, verbose
+                con,
+                query,
+                output_path,
+                compression,
+                compression_level,
+                verbose,
+                resolved_row_group_rows,
             )
             return
 
@@ -115,10 +132,13 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             final_query = _wrap_query_with_wkb_conversion(query, geometry_column, con)
 
             escaped_temp = _escape_sql_string(temp_path)
+            copy_options = ["FORMAT PARQUET", f"COMPRESSION {duckdb_compression}"]
+            if resolved_row_group_rows:
+                copy_options.append(f"ROW_GROUP_SIZE {resolved_row_group_rows}")
             copy_query = f"""
                 COPY ({final_query})
                 TO '{escaped_temp}'
-                (FORMAT PARQUET, COMPRESSION {duckdb_compression})
+                ({", ".join(copy_options)})
             """
 
             if verbose:
@@ -151,6 +171,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 compression_level=validated_level,
                 verbose=verbose,
                 extra_kv_metadata=extra_kv_metadata,
+                row_group_rows=resolved_row_group_rows,
             )
 
             os.unlink(temp_path)
@@ -188,7 +209,14 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         # Handle non-geo tables: write plain Parquet without geo metadata
         if geometry_column is None:
             self._write_plain_parquet_from_table(
-                table, output_path, compression, compression_level, verbose
+                table,
+                output_path,
+                compression,
+                compression_level,
+                verbose,
+                _resolve_row_group_rows_for_table(
+                    table, row_group_size_mb, row_group_rows, verbose
+                ),
             )
             return
 
@@ -232,6 +260,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         compression: str,
         compression_level: int | None,
         verbose: bool,
+        row_group_rows: int | None = None,
     ) -> None:
         """Write plain Parquet (no geo metadata) from an Arrow table."""
         from geoparquet_io.core.common import validate_compression_settings
@@ -245,6 +274,8 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         writer_kwargs = {"compression": pa_compression}
         if validated_level is not None and pa_compression:
             writer_kwargs["compression_level"] = validated_level
+        if row_group_rows:
+            writer_kwargs["row_group_size"] = row_group_rows
 
         is_remote = is_remote_url(output_path)
         work_dir = tempfile.mkdtemp(prefix="gpio_disk_rewrite_") if is_remote else None
@@ -276,6 +307,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         compression: str,
         compression_level: int | None,  # noqa: ARG002 - DuckDB COPY doesn't support compression_level
         verbose: bool,
+        row_group_rows: int | None = None,
     ) -> None:
         """Write plain Parquet (no geo metadata) from a query.
 
@@ -306,10 +338,14 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             local_path = os.path.join(work_dir, "output.parquet") if is_remote else output_path
             escaped_path = _escape_sql_string(local_path)
 
+            copy_options = ["FORMAT PARQUET", f"COMPRESSION {duckdb_compression}"]
+            if row_group_rows:
+                copy_options.append(f"ROW_GROUP_SIZE {row_group_rows}")
+
             copy_query = f"""
                 COPY ({query})
                 TO '{escaped_path}'
-                (FORMAT PARQUET, COMPRESSION {duckdb_compression})
+                ({", ".join(copy_options)})
             """
 
             if verbose:
@@ -337,8 +373,15 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         compression_level: int | None,
         verbose: bool,
         extra_kv_metadata: dict[str, str] | None = None,
+        row_group_rows: int | None = None,
     ) -> None:
-        """Rewrite file with proper geo metadata, row group by row group."""
+        """Rewrite file with proper geo metadata, row group by row group.
+
+        ``row_group_rows`` is the already-resolved rows-per-group request. The
+        DuckDB COPY that produced ``input_path`` was given the same value, so the
+        source groups are normally already the right size; passing it to the
+        writer keeps the requested shape even if DuckDB emitted a larger group.
+        """
         pf = pq.ParquetFile(input_path)
         schema = pf.schema_arrow
 
@@ -361,11 +404,13 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         if compression_level is not None and pa_compression:
             writer_kwargs["compression_level"] = compression_level
 
+        write_table_kwargs = {"row_group_size": row_group_rows} if row_group_rows else {}
+
         with pq.ParquetWriter(output_path, new_schema, **writer_kwargs) as writer:
             for i in range(pf.metadata.num_row_groups):
                 table = pf.read_row_group(i)
                 table = table.replace_schema_metadata(new_meta)
-                writer.write_table(table)
+                writer.write_table(table, **write_table_kwargs)
 
                 if verbose and (i + 1) % 10 == 0:
                     debug(f"Rewrote {i + 1}/{pf.metadata.num_row_groups} row groups...")
