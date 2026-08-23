@@ -129,9 +129,9 @@ def test_journey_03_documented_piping_chains(tmp_path):
     multi_index = tmp_path / "multi_index.parquet"
 
     # DERIVED, not quoted: piping.md has no such example. It documents that
-    # `partition string` can read from stdin but only writes to a directory
-    # ("Command Compatibility" table, and the "Partition commands" bullet under
-    # "How It Works"). This is the smallest chain that exercises that claim, and
+    # `partition string` can read from stdin but only writes to a directory (the
+    # "Supported Commands" table, and the "Partition commands" bullet under
+    # "Limitations"). This is the smallest chain that exercises that claim, and
     # it is the piped half of the broken chain pinned below, which makes the
     # break attributable to `extract` rather than to `partition string`.
     run_pipeline(
@@ -204,7 +204,7 @@ def test_journey_04_stdout_format_bridge(tmp_path):
     bridge = tmp_path / "bridge.geojson"
     round_tripped = tmp_path / "round_tripped.parquet"
 
-    # Shape taken from piping.md's "Command Compatibility" table, which records
+    # Shape taken from piping.md's "Supported Commands" table, which records
     # `convert geojson` as stdin-capable but stdout-only ("No (outputs GeoJSON
     # to stdout)"); the redirect is this test's own, not a quoted example.
     # `convert geojson -` reads stdin only in that streaming mode: passing an
@@ -332,21 +332,24 @@ def test_journey_07_csv_roundtrip(tmp_path):
 # opposed to "gpio is broken". Matched case-insensitively against the failed
 # command's output.
 _BOUNDARIES_UNAVAILABLE = (
-    # Anything that names the machine-global cache: a concurrent gpio process
-    # (another checkout, another agent, the developer's own shell) downloading
-    # the same release holds a DuckDB lock on its temp file, and a partially
-    # written cache errors the same way. Observed verbatim:
+    # A concurrent gpio process (another checkout, another agent, the
+    # developer's own shell) downloading the same release holds a DuckDB lock on
+    # its temp file. Observed verbatim:
     #   IO Error: Could not set lock on file
     #   "~/.geoparquet-io/cache/admin/tmp_overture-2026-07-22.0-country-land.parquet":
     #   Conflicting lock is held in ... (PID 63436)
-    ".geoparquet-io",
-    "conflicting lock",
     "could not set lock",
-    # ... and anything that means the download itself did not happen. Bare "io
-    # error" is deliberately NOT in this list: it would swallow a genuine
-    # read/write bug on the fixture or the output and report it as a skip.
+    "conflicting lock",
+    # ... and anything meaning the download itself did not happen. Observed:
+    #   IO Error: Timeout was reached error for HTTP GET to
+    #   'https://overturemaps-us-west-2.s3.../release/2026-07-22.0/...'
+    #
+    # Deliberately NOT in this list, because each would swallow a real bug and
+    # report it as a skip: bare "io error"; the cache path itself (the SUCCESS
+    # path prints it, so a later genuine failure in the same run would match);
+    # and bare "connection", which is a live DuckDB error prefix
+    # ("Connection Error: ...").
     "could not resolve",
-    "connection",
     "network",
     "timed out",
     "timeout",
@@ -489,7 +492,7 @@ def test_journey_10_sorting_improves_spatial_pushdown(tmp_path):
     point_count = 200_000
 
     random.seed(667)
-    with open(source_csv, "w", newline="") as handle:
+    with open(source_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["id", "wkt"])
         for i in range(point_count):
