@@ -74,8 +74,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   credentials" -->`, `network`, `slow`, `needs-tippecanoe`, `needs-ogr`,
   `setup="..."`, `prelude="..."`, `menu` — and `tests/test_docs_examples_meta.py`
   keeps that honest: it rejects fence languages the harness cannot run (```sh,
-  ```py), unparsable or unexplained directives, commands hidden in prose
-  fences, and ratchets the number of opted-out blocks. A curated fast subset
+  ```py), stray ``` markers that silently swallow the next block, unparsable or
+  unexplained directives, commands hidden in prose fences, and ratchets the
+  number of opted-out blocks. `tests/test_docs_examples_coverage.py` adds the
+  expensive guard in the slow lane: it runs each statement of every skipped,
+  locally-runnable bash fence and fails if one exits 0, so a single justified
+  skip cannot take working commands down with it. A curated fast subset
   (`sort.md`, `piping.md`, `check.md`) runs in the fast suite; the rest carry
   `slow`. Running the docs found real bugs in them, now fixed: `--aws-profile`
   shown after the subcommand on `sort hilbert`, `add bbox` and

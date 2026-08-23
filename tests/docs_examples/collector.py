@@ -76,17 +76,9 @@ class DocExampleItem(pytest.Item):
         if self.block.directives.prelude:
             source = self.block.directives.prelude + "\n" + source
         if self.block.directives.menu:
-            if self.block.lang != "bash":
-                pytest.fail("the menu directive only applies to bash blocks")
-            if self.block.directives.prelude:
-                # prelude exists for Python tabs that continue an earlier
-                # session; menu is bash-only. Combined, the prelude would be
-                # split off as its own "alternative" and run on its own, which
-                # is never what the author meant.
-                pytest.fail("menu and prelude cannot be combined (menu is bash, prelude is Python)")
-            problem = check_menu_is_splittable(source)
-            if problem:
-                pytest.fail(f"menu directive refused: {problem}")
+            refusal = menu_refusal_reason(self.block.lang, source, self.block.directives)
+            if refusal:
+                pytest.fail(refusal)
             for statement in split_statements(source):
                 self._run_in_fresh_dir(statement)
             return
@@ -199,6 +191,25 @@ def split_statements(source: str) -> list[str]:
     if pending and any(not ln.strip().startswith("#") for ln in pending):
         statements.append("\n".join(pending))
     return statements
+
+
+def menu_refusal_reason(lang: str, source: str, directives) -> str | None:
+    """Why this block may not be treated as a menu, or ``None`` if it may.
+
+    Split out of ``runtest`` so the refusals are testable without building a
+    pytest item around them.
+    """
+    if not directives.menu:
+        return None
+    if lang != "bash":
+        return "the menu directive only applies to bash blocks"
+    if directives.prelude:
+        # prelude exists for Python tabs continuing an earlier session; menu is
+        # bash-only. Combined, the prelude line would be split off as its own
+        # "alternative" and run alone, which is never what the author meant.
+        return "menu and prelude cannot be combined (menu is bash, prelude is Python)"
+    problem = check_menu_is_splittable(source)
+    return f"menu directive refused: {problem}" if problem else None
 
 
 def check_menu_is_splittable(source: str) -> str | None:

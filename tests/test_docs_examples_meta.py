@@ -37,12 +37,12 @@ from tests.docs_examples.parser import (
 GUIDE_DIR = Path(__file__).resolve().parent.parent / "docs" / "guide"
 DOCS_ROOT = GUIDE_DIR.parent
 
-#: Ratchets, set ~15 blocks either side of the current counts (212 skipped, 230
+#: Ratchets, set ~15 blocks either side of the current counts (211 skipped, 249
 #: executed). The headroom keeps ordinary doc edits from tripping them while
 #: still catching a drift of any size; moving either number is a deliberate act
 #: that shows up in a diff and needs a justification in the pull request.
-MAX_SKIPPED_BLOCKS = 227
-MIN_EXECUTED_BLOCKS = 215
+MAX_SKIPPED_BLOCKS = 226
+MIN_EXECUTED_BLOCKS = 234
 
 #: Looks like a command rather than prose or sample output.
 _COMMAND_LIKE = re.compile(r"^\s*(gpio\s|import geoparquet_io|from geoparquet_io\s)")
@@ -95,8 +95,11 @@ def test_every_fence_marker_belongs_to_a_block(page: Path):
         paired.add(block.line)
         paired.add(block.end_line)
     stray = sorted(markers - paired)
+    # The first unpaired marker is the one that broke the pairing; the rest are
+    # usually its downstream fallout, so lead with it.
     assert not stray, (
-        f"{page.name}: ``` marker(s) on line(s) {stray} do not open or close any "
+        f"{page.name}: first stray ``` is on line {stray[0]}; unpaired marker(s) "
+        f"on line(s) {stray} do not open or close any "
         "block the parser can pair. A stray marker silently swallows the next "
         "real code block — delete it, or close the fence it belongs to."
     )

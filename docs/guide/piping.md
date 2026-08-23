@@ -162,7 +162,7 @@ When output is omitted and stdout is piped, gpio streams Arrow IPC. When stdout 
 
 If a command in the pipeline fails, the error is propagated:
 
-<!-- doctest: skip="needs nonexistent.parquet, which the harness does not seed" -->
+<!-- doctest: skip="demonstrates a failing pipeline on purpose" -->
 ```bash
 # If the file doesn't exist, the first command fails
 gpio add bbox nonexistent.parquet - | gpio sort hilbert - output.parquet
@@ -171,11 +171,15 @@ gpio add bbox nonexistent.parquet - | gpio sort hilbert - output.parquet
 
 For debugging, you can save intermediate results:
 
-<!-- doctest: skip="needs intermediate.parquet, which the harness does not seed" -->
 ```bash
 # Debug: save intermediate result
 gpio add bbox input.parquet intermediate.parquet
+```
+
+<!-- doctest: skip="needs intermediate.parquet, which the harness does not seed" -->
+```bash
 gpio inspect intermediate.parquet
+
 gpio sort hilbert intermediate.parquet output.parquet
 ```
 

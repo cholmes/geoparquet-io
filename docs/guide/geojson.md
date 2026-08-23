@@ -51,22 +51,25 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "CLI"
 
-    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+    <!-- doctest: menu -->
     ```bash
     # Basic usage
     gpio pmtiles create buildings.parquet buildings.pmtiles
-
-    # With filtering (no manual piping needed)
-    gpio pmtiles create data.parquet tiles.pmtiles \
-      --bbox "-122.5,37.5,-122.0,38.0" \
-      --where "population > 10000" \
-      --include-cols name,type,height
 
     # With CRS override (for incorrect metadata)
     gpio pmtiles create data.parquet tiles.pmtiles --src-crs EPSG:3857
 
     # Add layer metadata to the output PMTiles based on the values of column 'owner'
     gpio pmtiles create --layer-by-column owner data.parquet tiles.pmtiles
+    ```
+
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+    ```bash
+    # With filtering (no manual piping needed)
+    gpio pmtiles create data.parquet tiles.pmtiles \
+      --bbox "-122.5,37.5,-122.0,38.0" \
+      --where "population > 10000" \
+      --include-cols name,type,height
     ```
 
 === "Python"
@@ -233,7 +236,14 @@ Because each zoom is served by exactly one band, no zoom-range filtering is need
 
 Use `gpio extract` to filter data before conversion to reduce output size:
 
-<!-- doctest: skip="pipes into tippecanoe and filters on a column the sample data lacks" -->
+```bash
+# Limit rows for testing
+gpio extract data.parquet --limit 1000 | \
+  gpio convert geojson - | \
+  tippecanoe -P -o sample.pmtiles
+```
+
+<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
 ```bash
 # Filter by bounding box
 gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | \
@@ -244,11 +254,6 @@ gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | \
 gpio extract data.parquet --where "population > 10000" | \
   gpio convert geojson - | \
   tippecanoe -P -o cities.pmtiles
-
-# Limit rows for testing
-gpio extract data.parquet --limit 1000 | \
-  gpio convert geojson - | \
-  tippecanoe -P -o sample.pmtiles
 ```
 
 ### Select Specific Columns
@@ -309,11 +314,13 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "CLI"
 
-    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```bash
     # Write to GeoJSON file
     gpio convert geojson data.parquet output.geojson
+    ```
 
+    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
+    ```bash
     # With options
     gpio convert geojson data.parquet output.geojson --precision 5 --write-bbox
     ```

@@ -51,6 +51,9 @@ DIRECTIVE_KEYWORDS = {
     # runs. For the tabbed guides, where a later Python tab continues the
     # session the first one started: the doc stays uncluttered and the block
     # still executes, with the precondition stated in the source.
+    "demonstrates-error": "no",  # the fence deliberately shows a command failing,
+    # so the commands around it passing is the point, not wasted coverage. Lets a
+    # block out of the no-passing-commands-in-a-skipped-fence check below.
     "menu": "no",  # the lines are alternatives, not a script: run each from a
     # freshly seeded directory. Without it, a fence listing four ways to call
     # one command fails on the second, because the first already wrote the
@@ -78,6 +81,7 @@ class Directives:
     needs_tippecanoe: bool = False
     needs_ogr: bool = False
     menu: bool = False
+    demonstrates_error: bool = False
     setup: tuple[str, ...] = ()
     prelude: str = ""
 
@@ -93,6 +97,7 @@ class Directives:
             or self.needs_tippecanoe
             or self.needs_ogr
             or self.menu
+            or self.demonstrates_error
             or self.setup
             or self.prelude
         )
@@ -165,6 +170,7 @@ def parse_directives(text: str) -> Directives:
         needs_tippecanoe=bool(values.get("needs_tippecanoe")),
         needs_ogr=bool(values.get("needs_ogr")),
         menu=bool(values.get("menu")),
+        demonstrates_error=bool(values.get("demonstrates_error")),
         setup=tuple(values["setup"]),  # type: ignore[arg-type]
         prelude=str(values.get("prelude", "")),
     )

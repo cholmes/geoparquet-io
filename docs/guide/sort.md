@@ -53,11 +53,8 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 
 ## Options
 
-<!-- doctest: skip="filters on 'geom', a column the sample data does not have" -->
+<!-- doctest: menu -->
 ```bash
-# Specify geometry column
-gpio sort hilbert input.parquet output.parquet -g geom
-
 # Add bbox column if missing
 gpio sort hilbert input.parquet output.parquet --add-bbox
 
@@ -69,6 +66,12 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 256
 
 # Verbose output
 gpio sort hilbert input.parquet output.parquet --verbose
+```
+
+<!-- doctest: skip="filters on 'geom', a column the sample data does not have" -->
+```bash
+# Specify geometry column
+gpio sort hilbert input.parquet output.parquet -g geom
 ```
 
 ## Compression Options
@@ -98,11 +101,13 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "CLI"
 
-    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```bash
     # Sort by a single column
     gpio sort column input.parquet output.parquet name
+    ```
 
+    <!-- doctest: skip="sorts on 'country', a column the sample data does not have" -->
+    ```bash
     # Sort by multiple columns (comma-separated)
     gpio sort column input.parquet output.parquet country,city
 

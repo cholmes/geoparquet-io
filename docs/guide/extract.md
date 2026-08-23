@@ -107,7 +107,7 @@ You can combine both to control exactly which columns appear, including removing
 
 === "Python"
 
-    <!-- doctest: skip="names 'geometry', a geometry column the sample data does not use" -->
+    <!-- doctest: skip="excludes the geometry column, and the writer then requires it (KeyError in write_strategies/duckdb_kv.py)" -->
     ```python
     import geoparquet_io as gpio
 
@@ -202,7 +202,7 @@ Filter features by intersection with any geometry, not just rectangles.
     Geometry filtering with arbitrary shapes is currently only available via the CLI.
     For rectangular regions, use the `bbox` parameter in Python.
 
-<!-- doctest: skip="the lines are alternatives that write the same output file" -->
+<!-- doctest: menu -->
 ```bash
 # Filter by inline WKT polygon
 gpio extract data.parquet subset.parquet \
@@ -211,7 +211,10 @@ gpio extract data.parquet subset.parquet \
 # Filter by inline GeoJSON
 gpio extract data.parquet subset.parquet \
   --geometry '{"type":"Polygon","coordinates":[[[0,0],[0,10],[10,10],[10,0],[0,0]]]}'
+```
 
+<!-- doctest: skip="needs boundary.geojson, which the harness does not seed" -->
+```bash
 # Filter by geometry from file
 gpio extract data.parquet subset.parquet --geometry @boundary.geojson
 
@@ -240,6 +243,11 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
 === "CLI"
 
+    ```bash
+    # Filter by string pattern
+    gpio extract data.parquet output.parquet --where "name LIKE '%Hotel%'"
+    ```
+
     <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
     ```bash
     # Filter by numeric value
@@ -247,9 +255,6 @@ Use SQL WHERE clauses to filter by attribute values. This uses DuckDB SQL syntax
 
     # Filter by string equality
     gpio extract data.parquet output.parquet --where "status = 'active'"
-
-    # Filter by string pattern
-    gpio extract data.parquet output.parquet --where "name LIKE '%Hotel%'"
 
     # Filter by multiple conditions
     gpio extract data.parquet output.parquet \
@@ -370,23 +375,26 @@ gpio extract data.parquet output.parquet --where "updated_at IS NOT NULL"
 
 ### Complex WHERE Examples
 
+<!-- doctest: menu -->
+```bash
+# String functions
+gpio extract data.parquet output.parquet \
+  --where "LOWER(name) LIKE '%park%'"
+
+# Case-insensitive search
+gpio extract data.parquet output.parquet \
+  --where "name ILIKE '%hotel%'"
+```
+
 <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
 ```bash
 # Combine multiple conditions
 gpio extract data.parquet output.parquet \
   --where "population > 5000 AND (status = 'active' OR priority = 'high')"
 
-# String functions
-gpio extract data.parquet output.parquet \
-  --where "LOWER(name) LIKE '%park%'"
-
 # Math operations
 gpio extract data.parquet output.parquet \
   --where "area_km2 / population < 0.001"
-
-# Case-insensitive search
-gpio extract data.parquet output.parquet \
-  --where "name ILIKE '%hotel%'"
 ```
 
 ## Combining Filters
@@ -1698,22 +1706,25 @@ gpio extract partitions/ subset.parquet \
 
 Preview the SQL query that will be executed:
 
-<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+<!-- doctest: menu -->
 ```bash
 # See the SQL query without executing
 gpio extract data.parquet output.parquet \
   --where "population > 10000" \
   --dry-run
 
-# Show SQL during execution
-gpio extract data.parquet output.parquet \
-  --where "population > 10000" \
-  --show-sql
-
 # Verbose output with detailed progress
 gpio extract data.parquet output.parquet \
   --bbox -122.5,37.7,-122.3,37.8 \
   --verbose
+```
+
+<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+```bash
+# Show SQL during execution
+gpio extract data.parquet output.parquet \
+  --where "population > 10000" \
+  --show-sql
 ```
 
 ## Compression Options
@@ -1766,7 +1777,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "CLI"
 
-    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
+    <!-- doctest: menu -->
     ```bash
     # Get a small sample for testing
     gpio extract large_file.parquet sample.parquet --limit 1000
@@ -1863,7 +1874,7 @@ gpio extract data.parquet output.parquet --row-group-size 100000
 
 === "Python"
 
-    <!-- doctest: skip="names 'geometry', a geometry column the sample data does not use" -->
+    <!-- doctest: skip="excludes the geometry column, and the writer then requires it (KeyError in write_strategies/duckdb_kv.py)" -->
     ```python
     import geoparquet_io as gpio
 
@@ -1890,7 +1901,7 @@ gpio extract data.parquet output.parquet --bbox 1000,1000,1001,1001
 
 If you specify a non-existent column, you'll get a clear error:
 
-<!-- doctest: skip="names columns the sample data does not have (invalid_column)" -->
+<!-- doctest: skip="demonstrates the error for an unknown --include-cols column on purpose" -->
 ```bash
 gpio extract data.parquet output.parquet --include-cols invalid_column
 # Error: Columns not found in schema (--include-cols): invalid_column

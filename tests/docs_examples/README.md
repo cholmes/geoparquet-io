@@ -38,6 +38,7 @@ gpio add bbox s3://bucket/in.parquet s3://bucket/out.parquet
 | `setup="shell command"` | Runs before the block, in the same directory. Repeatable. Use it to build a precondition rather than skipping. |
 | `prelude="python source"` | Prepended to a Python block. For tabs that continue a session an earlier tab started. |
 | `menu` | The lines are *alternatives*, not a script: each runs from a fresh directory. Use it when several lines write the same output file. |
+| `demonstrates-error` | The fence deliberately shows a command failing. Exempts it from the "no working commands inside a skipped fence" check. |
 
 Combine with commas: `<!-- doctest: network, setup="gpio add bbox in.parquet out.parquet" -->`
 
@@ -53,6 +54,12 @@ Combine with commas: `<!-- doctest: network, setup="gpio add bbox in.parquet out
 - a block is skipped without a reason;
 - a command-shaped snippet hides in a prose fence with no directive;
 - the number of opted-out blocks drifts past the agreed ceiling.
+
+`tests/test_docs_examples_coverage.py` (slow lane) adds the expensive one: it
+runs each statement of every skipped, locally-runnable bash fence in a seeded
+directory and fails if any exits 0. A skip is not allowed to take working
+commands down with it — split the fence, or mark it `demonstrates-error` when
+the failure is the point.
 
 ## Writing a good skip reason
 

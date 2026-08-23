@@ -119,7 +119,7 @@ Partition by H3 hexagonal cells:
 
 === "CLI"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition h3 input.parquet output/ --auto
@@ -129,7 +129,10 @@ Partition by H3 hexagonal cells:
 
     # Preview at resolution 7 (~5km² cells)
     gpio partition h3 input.parquet --resolution 7 --preview
+    ```
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolution 9
     gpio partition h3 input.parquet output/ --resolution 9
 
@@ -200,7 +203,7 @@ Partition by S2 spherical cells:
 
 === "CLI"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal level for ~100K rows per partition
     gpio partition s2 input.parquet output/ --auto
@@ -211,14 +214,17 @@ Partition by S2 spherical cells:
     # Preview at level 10 (~78 km² cells)
     gpio partition s2 input.parquet --level 10 --preview
 
+    # Hive-style (S2 column included by default)
+    gpio partition s2 input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific level 13 (~1.2km² cells)
     gpio partition s2 input.parquet output/ --level 13
 
     # Keep S2 column in output files
     gpio partition s2 input.parquet output/ --level 12 --keep-s2-column
-
-    # Hive-style (S2 column included by default)
-    gpio partition s2 input.parquet output/ --auto --hive
     ```
 
 === "Python"
@@ -281,7 +287,7 @@ Partition by A5 spatial cells:
 
 === "CLI"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition a5 input.parquet output/ --auto
@@ -292,14 +298,17 @@ Partition by A5 spatial cells:
     # Preview at resolution 10 (~41km² cells)
     gpio partition a5 input.parquet --resolution 10 --preview
 
+    # Hive-style (A5 column included by default)
+    gpio partition a5 input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolution 15
     gpio partition a5 input.parquet output/ --resolution 15
 
     # Keep A5 column in output files
     gpio partition a5 input.parquet output/ --resolution 12 --keep-a5-column
-
-    # Hive-style (A5 column included by default)
-    gpio partition a5 input.parquet output/ --auto --hive
     ```
 
 === "Python"
@@ -350,7 +359,7 @@ Partition by Bing Maps quadkey tiles:
 
 === "CLI"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition quadkey input.parquet output/ --auto
@@ -361,14 +370,17 @@ Partition by Bing Maps quadkey tiles:
     # Preview with auto-resolution
     gpio partition quadkey input.parquet --auto --preview
 
+    # Hive-style (quadkey column included by default)
+    gpio partition quadkey input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolutions (column at 13, partition at 9)
     gpio partition quadkey input.parquet output/ --resolution 13 --partition-resolution 9
 
     # Keep quadkey column in output files
     gpio partition quadkey input.parquet output/ --resolution 13 --partition-resolution 9 --keep-quadkey-column
-
-    # Hive-style (quadkey column included by default)
-    gpio partition quadkey input.parquet output/ --auto --hive
     ```
 
 === "Python"
@@ -433,13 +445,15 @@ Partition by balanced spatial partitions:
 
 === "CLI"
 
+    ```bash
+    # Preview auto-selected partitions
+    gpio partition kdtree input.parquet --preview
+    ```
+
     <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```bash
     # Auto-partition (default: ~120k rows each)
     gpio partition kdtree input.parquet output/
-
-    # Preview auto-selected partitions
-    gpio partition kdtree input.parquet --preview
 
     # Explicit partition count (must be power of 2)
     gpio partition kdtree input.parquet output/ --partitions 32
@@ -694,14 +708,17 @@ gpio partition h3 large.parquet output/ --auto --target-rows 50000
 
 ### With Manual Resolution
 
-<!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+<!-- doctest: menu -->
 ```bash
 # 1. Preview to understand partitioning
 gpio partition h3 large.parquet --resolution 7 --preview
 
 # 2. Adjust resolution if needed
 gpio partition h3 large.parquet --resolution 8 --preview
+```
 
+<!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+```bash
 # 3. Execute when satisfied
 gpio partition h3 large.parquet output/ --resolution 8
 ```

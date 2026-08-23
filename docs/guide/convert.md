@@ -168,19 +168,22 @@ gpio convert data.parquet output.csv --no-bbox
 
 **GeoJSON:**
 
-<!-- doctest: skip="the lines are alternatives that write the same output file" -->
+<!-- doctest: menu -->
 ```bash
 # Custom precision (default: 7)
 gpio convert data.parquet output.geojson --precision 5
 
+# Pretty-print JSON
+gpio convert data.parquet output.geojson --pretty
+```
+
+<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
+```bash
 # Include bbox for each feature
 gpio convert data.parquet output.geojson --write-bbox
 
 # Use specific field as feature ID
 gpio convert data.parquet output.geojson --id-field osm_id
-
-# Pretty-print JSON
-gpio convert data.parquet output.geojson --pretty
 ```
 
 ### Cloud Output Support
@@ -697,13 +700,16 @@ gpio check all output.parquet
 
 Auto-detects geometry columns. WKT columns (wkt, geometry, geom) checked first, then lat/lon pairs (lat/lon, latitude/longitude).
 
-<!-- doctest: skip="needs a CSV with a 'geom_wkt' column" -->
 ```bash
 # Auto-detect WKT or lat/lon
 gpio convert points.csv points.parquet
+```
 
+<!-- doctest: skip="needs a CSV with a 'geom_wkt' column" -->
+```bash
 # Explicit columns
 gpio convert data.csv out.parquet --wkt-column geom_wkt
+
 gpio convert data.csv out.parquet --lat-column lat --lon-column lng
 
 # Custom delimiter

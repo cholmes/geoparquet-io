@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from tests.docs_examples.collector import check_menu_is_splittable, split_statements
+from tests.docs_examples.collector import (
+    check_menu_is_splittable,
+    menu_refusal_reason,
+    split_statements,
+)
 from tests.docs_examples.parser import (
     DIRECTIVE_KEYWORDS,
     Directives,
@@ -193,6 +197,26 @@ def test_menu_refuses_anything_that_is_really_a_script(source):
 
 def test_menu_accepts_a_plain_list_of_commands():
     assert check_menu_is_splittable(MENU_BLOCK) is None
+
+
+def test_menu_plus_prelude_is_refused():
+    """Combined, the prelude would be split off and run as its own 'alternative'."""
+    refusal = menu_refusal_reason("bash", MENU_BLOCK, parse_directives('menu, prelude="x = 1"'))
+    assert refusal is not None
+    assert "prelude" in refusal
+
+
+def test_menu_on_a_python_block_is_refused():
+    refusal = menu_refusal_reason("python", "gpio.read('a')", parse_directives("menu"))
+    assert refusal == "the menu directive only applies to bash blocks"
+
+
+def test_menu_on_a_plain_bash_list_is_allowed():
+    assert menu_refusal_reason("bash", MENU_BLOCK, parse_directives("menu")) is None
+
+
+def test_menu_refusal_is_none_without_the_directive():
+    assert menu_refusal_reason("bash", "for f in *; do :; done", parse_directives("slow")) is None
 
 
 def test_end_line_points_at_the_closing_fence(tmp_path):
