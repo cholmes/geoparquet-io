@@ -30,6 +30,7 @@ it belongs in the fast suite where it guards every PR, rather than in the
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
 import subprocess
@@ -51,8 +52,10 @@ DIRECTIVE_RE = re.compile(
     r"<!--\s*nbsignal:\s*illustrative\s+reason=\"([^\"]+)\"\s*-->",
 )
 
-#: A cell counts as exercising the library if it calls into the ``gpio`` API.
-GPIO_CALL_RE = re.compile(r"\bgpio\s*\.\s*\w+\s*\(|\bread\s*\(|\bops\s*\.\s*\w+\s*\(")
+#: The repo's convention for an install cell, which ships commented out on
+#: purpose so nbmake does not pip-install anything. It is idiomatic rather than
+#: dead code, so it does not count towards a notebook's inert cells.
+INSTALL_CELL_RE = re.compile(r"^\s*#?\s*[!%]\s*pip\s+install\b", re.MULTILINE)
 
 
 def _notebook_paths() -> list[Path]:
@@ -94,6 +97,68 @@ def _is_inert(source: str) -> bool:
     """
     lines = [line for line in source.splitlines() if line.strip()]
     return not lines or all(line.lstrip().startswith("#") for line in lines)
+
+
+def _is_install_cell(source: str) -> bool:
+    """True for the commented-out ``!pip install`` cell notebooks conventionally open with."""
+    return bool(INSTALL_CELL_RE.search(source))
+
+
+def _safe_parse(source: str) -> ast.Module | None:
+    """Parse a notebook code cell, tolerating IPython magics and partial snippets."""
+    stripped = "\n".join(
+        "" if line.lstrip().startswith(("!", "%")) else line for line in source.splitlines()
+    )
+    try:
+        return ast.parse(stripped)
+    except SyntaxError:
+        return None
+
+
+def _gpio_bound_names(sources: list[str]) -> set[str]:
+    """Names in this notebook that are bound to ``geoparquet_io``.
+
+    Covers both ``import geoparquet_io as gpio`` and
+    ``from geoparquet_io.api import Table, ops, pipe, read``.
+    """
+    bound: set[str] = set()
+    for source in sources:
+        tree = _safe_parse(source)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "geoparquet_io" or alias.name.startswith("geoparquet_io."):
+                        bound.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module == "geoparquet_io" or module.startswith("geoparquet_io."):
+                    for alias in node.names:
+                        bound.add(alias.asname or alias.name)
+    return bound
+
+
+def _root_name(node: ast.expr) -> str | None:
+    """The leftmost identifier of a (possibly dotted) call target."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _calls_gpio(source: str, bound: set[str]) -> bool:
+    """True when this cell calls something bound to ``geoparquet_io``.
+
+    Resolved through the AST against the notebook's own imports rather than by
+    regex: a bare ``\\bread\\s*\\(`` pattern also matches ``f.read()``, which
+    would let a notebook with zero gpio usage satisfy the invariant.
+    """
+    tree = _safe_parse(source)
+    if tree is None:
+        return False
+    return any(
+        isinstance(node, ast.Call) and _root_name(node.func) in bound for node in ast.walk(tree)
+    )
 
 
 def _directive_reason(path: Path) -> str | None:
@@ -168,15 +233,118 @@ def test_executed_notebook_runs_real_code(path: Path) -> None:
     if path.name in _load_excluded():
         pytest.skip(f"{path.name} is excluded from nbmake; covered by other tests here")
 
-    live = [src for src in _cells(path, "code") if not _is_inert(src)]
+    code = _cells(path, "code")
+    live = [src for src in code if not _is_inert(src)]
     assert live, (
         f"{path.name} has no executable code cells, so its nbmake green check "
         "would be a false positive. Give it runnable content, or add it to "
         "ILLUSTRATIVE_NOTEBOOKS in examples/conftest.py."
     )
-    assert any(GPIO_CALL_RE.search(src) for src in live), (
-        f"{path.name} executes code but never calls the gpio API, so nbmake "
+    bound = _gpio_bound_names(live)
+    assert bound, (
+        f"{path.name} never imports geoparquet_io, so nbmake proves nothing about this project."
+    )
+    assert any(_calls_gpio(src, bound) for src in live), (
+        f"{path.name} imports geoparquet_io but never calls it, so nbmake "
         "proves nothing about this project."
+    )
+
+
+def test_bare_read_call_does_not_count_as_gpio_usage() -> None:
+    """``f.read()`` must not satisfy the "calls the library" invariant.
+
+    The first version of this guard matched a bare ``\\bread\\s*\\(``, which any
+    file handle satisfies -- a notebook with zero gpio usage would have passed.
+    """
+    cells = ["with open('x.txt') as f:\n    data = f.read()\n"]
+    assert _gpio_bound_names(cells) == set()
+    assert not _calls_gpio(cells[0], {"gpio"})
+
+
+def test_gpio_usage_is_resolved_through_the_notebooks_own_imports() -> None:
+    """Both import spellings the example notebooks actually use are recognised."""
+    aliased = "import geoparquet_io as gpio"
+    from_import = "from geoparquet_io.api import Table, ops, pipe, read"
+
+    bound = _gpio_bound_names([aliased])
+    assert bound == {"gpio"}
+    assert _calls_gpio("t = gpio.read('a.parquet').add_bbox()", bound)
+
+    bound = _gpio_bound_names([from_import])
+    assert {"Table", "ops", "pipe", "read"} <= bound
+    # A bare `read(...)` counts only because this notebook imported it from us.
+    assert _calls_gpio("result = read('a.parquet')", bound)
+    assert _calls_gpio("arrow = ops.add_bbox(arrow)", bound)
+
+
+def test_commented_install_cell_is_not_counted_as_inert() -> None:
+    """A short notebook must not be forced to declare itself over the install cell.
+
+    The convention ships commented out on purpose so nbmake never pip-installs.
+    Counting it as inert made a 2-cell notebook (install + one real cell) read as
+    50% inert and demand an `nbsignal` directive it does not deserve.
+    """
+    install = "# Uncomment to install\n# !pip install geoparquet-io"
+    assert _is_inert(install), "still inert: nothing executes"
+    assert _is_install_cell(install), "but exempt from the inert count"
+
+    # The exemption is narrow: an ordinary commented-out cell still counts.
+    stub = "# gpio.read('x.parquet').upload('s3://bucket/x.parquet')"
+    assert _is_inert(stub)
+    assert not _is_install_cell(stub)
+
+
+class _StubItem:
+    """Minimal stand-in for a collected pytest item, for driving the hook."""
+
+    def __init__(self, name: str) -> None:
+        self.path = Path("/examples") / name
+        self.markers: list[object] = []
+
+    def add_marker(self, marker: object) -> None:
+        self.markers.append(marker)
+
+
+def _load_examples_conftest():
+    """Import ``examples/conftest.py`` by path, the way test_doc_sync.py does."""
+    path = EXAMPLES_DIR / "conftest.py"
+    spec = importlib.util.spec_from_file_location("examples_conftest", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_skip_hook_actually_applies_the_skip_marker() -> None:
+    """Drive the real hook body and assert it marks the illustrative notebook.
+
+    The nbmake end-to-end proof below is ``meta``-marked (nightly only), so on
+    its own it leaves a ~24h window in which a neutered hook body -- one that
+    matches the notebook but never calls ``add_marker`` -- passes every PR lane.
+    This test closes that window for a few microseconds, by importing the hook
+    and running it against stub items rather than asserting on its source shape.
+    """
+    conftest = _load_examples_conftest()
+    excluded = sorted(conftest.ILLUSTRATIVE_NOTEBOOKS)
+    assert excluded, "nothing to prove: no notebooks are excluded"
+
+    target = _StubItem(excluded[0])
+    healthy = _StubItem("01_getting_started.ipynb")
+    assert healthy.path.name not in conftest.ILLUSTRATIVE_NOTEBOOKS
+
+    conftest.pytest_collection_modifyitems([target, healthy])
+
+    assert target.markers, (
+        f"the hook matched {target.path.name} but never applied a marker, so "
+        "nbmake would execute it and report a false-positive pass"
+    )
+    marker = target.markers[0]
+    assert marker.name == "skip", f"expected a skip marker, got {marker.name!r}"
+    assert len(marker.kwargs.get("reason", "").strip()) >= 20, (
+        f"skip reason must explain itself in the CI log: {marker.kwargs!r}"
+    )
+    assert not healthy.markers, (
+        f"the hook skipped {healthy.path.name}, which is not illustrative; "
+        "that would silently drop real coverage"
     )
 
 
@@ -225,7 +393,9 @@ def test_mostly_inert_notebook_declares_itself(path: Path) -> None:
     the nbmake job whose cells are mostly commented-out stubs.
     """
     code = _cells(path, "code")
-    inert = sum(1 for src in code if _is_inert(src))
+    # The commented-out install cell is a deliberate convention, not dead code,
+    # so it must not push a short but otherwise healthy notebook over the bar.
+    inert = sum(1 for src in code if _is_inert(src) and not _is_install_cell(src))
     excluded = path.name in _load_excluded()
     mostly_inert = bool(code) and inert / len(code) >= MOSTLY_INERT_THRESHOLD
 
