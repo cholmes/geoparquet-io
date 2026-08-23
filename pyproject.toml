@@ -343,7 +343,12 @@ verbose = false
 # site/ (mkdocs build) and mutants/ (mutmut working tree) are gitignored
 # build artifacts; scanning them made test_codespell_passes fail on any
 # machine that had built docs or run mutation testing locally.
-skip = ".git,*.lock,*.parquet,*.json,tests/data/*,geoparquet-testing,.venv,uv.lock,site,mutants"
+# tests/data/ and examples/data/ hold real-world sample data - place names and
+# addresses carry their own typos, which are data, not spelling mistakes. Both
+# the bare and "*/"-prefixed forms are listed because codespell matches these
+# patterns against the path as given, and pre-commit passes "tests/data/x"
+# while a bare `codespell` run walks the tree as "./tests/data/x".
+skip = ".git,*.lock,*.parquet,*.json,tests/data/*,*/tests/data/*,examples/data/*,*/examples/data/*,geoparquet-testing,.venv,uv.lock,site,mutants"
 ignore-words-list = "nd,ot,crs,inout,hel,bu"
 check-filenames = true
 

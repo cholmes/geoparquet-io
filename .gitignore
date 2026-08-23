@@ -95,6 +95,7 @@ ipython_config.py
 *.parquet
 # But allow test data files and example data
 !tests/data/*.parquet
+!tests/data/canonical/*.parquet
 !examples/data/*.parquet
 
 # DuckDB
