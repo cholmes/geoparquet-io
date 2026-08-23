@@ -518,6 +518,12 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   2 GB of WKB are split so narrowing to Arrow's 32-bit `binary` offsets cannot
   overflow — this now also covers the native 2.0 path, whose `geoarrow.wkb`
   storage is 32-bit too. (#688)
+
+  The validator assertions here exclude `native_geo_stats_contains_data` on
+  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
+  for a native GEOMETRY column, so that check fails there for a platform reason
+  unrelated to this fix (#721). Every other validator check stays enforced on
+  every platform.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
