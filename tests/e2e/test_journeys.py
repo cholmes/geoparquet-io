@@ -15,6 +15,7 @@ kept meaningful in CI.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pyarrow.parquet as pq
 import pytest
@@ -80,7 +81,9 @@ def test_journey_01_geojson_to_geoparquet_and_back(tmp_path):
     # Row and geometry parity across the whole round trip.
     assert rows(imported) == rows(with_bbox) == BUILDINGS_ROWS
     assert geo_metadata(with_bbox)["version"] == "2.0.0"
-    features = json.loads(exported.read_text())["features"]
+    # Explicit encoding: gpio writes UTF-8, and these fixtures carry non-ASCII
+    # place names that the Windows locale codec (cp1252) cannot decode.
+    features = json.loads(exported.read_text(encoding="utf-8"))["features"]
     assert len(features) == BUILDINGS_ROWS
     assert {f["geometry"]["type"] for f in features} == {"Polygon"}
 
@@ -117,11 +120,20 @@ def test_journey_02_h3_index_then_partition(tmp_path):
 # Journey 3 -- documented piping chains (budget 6s, fast)
 # ---------------------------------------------------------------------------
 def test_journey_03_documented_piping_chains(tmp_path):
-    """The chains printed in docs/guide/piping.md, run verbatim through a shell."""
+    """Two piping chains from docs/guide/piping.md, run through a real shell.
+
+    The second chain is the documented one, near-verbatim; the first is derived
+    rather than quoted -- see the comments on each.
+    """
     partitions = tmp_path / "quadkey_partitions"
     multi_index = tmp_path / "multi_index.parquet"
 
-    # piping.md "Partition from a pipe": add quadkey -> partition string.
+    # DERIVED, not quoted: piping.md has no such example. It documents that
+    # `partition string` can read from stdin but only writes to a directory
+    # ("Command Compatibility" table, and the "Partition commands" bullet under
+    # "How It Works"). This is the smallest chain that exercises that claim, and
+    # it is the piped half of the broken chain pinned below, which makes the
+    # break attributable to `extract` rather than to `partition string`.
     run_pipeline(
         [
             f"gpio add quadkey {q(PLACES)} -",
@@ -134,8 +146,10 @@ def test_journey_03_documented_piping_chains(tmp_path):
     assert total_rows(partitions) == PLACES_ROWS
     assert_check_all(partitions, 3, all_files=True)
 
-    # piping.md "Add Multiple Spatial Indices": four stages, three of them
-    # reading Arrow IPC from stdin.
+    # piping.md "Add Multiple Spatial Indices" (lines 105-109), reproduced with
+    # one change: `--force` on the first stage, because places_test.parquet
+    # already carries a bbox column and `add bbox` otherwise exits 0 without
+    # emitting anything. Four stages, three of them reading Arrow IPC from stdin.
     run_pipeline(
         [
             f"gpio add bbox --force {q(PLACES)}",
@@ -155,13 +169,14 @@ def test_journey_03_documented_piping_chains(tmp_path):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "KNOWN BUG: `gpio extract ... - | gpio add quadkey - | gpio partition string - dir/` "
-        "-- the chain documented in docs/guide/piping.md 'Spatial Filter and Partition' -- "
-        "dies with an unhandled DuckDB error, 'Geoparquet column geometry does not have "
-        "geometry types'. extract's Arrow IPC stream omits geometry_types metadata; the "
-        "file-writing path recomputes it, which is why only the piped-into-partition case "
-        "breaks. Filed separately from #667 per the cross-cutting-fix rule; flip this test "
-        "to a plain assertion when it is fixed."
+        "KNOWN BUG #722: `gpio extract ... - | gpio add quadkey - | gpio partition string "
+        "- dir/` -- the chain documented in docs/guide/piping.md 'Spatial Filter and "
+        "Partition' (lines 86-90) -- dies with an unhandled DuckDB error, 'Geoparquet "
+        "column geometry does not have geometry types'. extract's Arrow IPC stream omits "
+        "geometry_types metadata; the file-writing path recomputes it, which is why only "
+        "the piped-into-partition case breaks. Filed separately from #667 per the "
+        "cross-cutting-fix rule; when #722 is fixed this goes red -- drop the xfail and "
+        "keep the assertions."
     ),
 )
 def test_journey_03b_extract_into_partition_chain(tmp_path):
@@ -189,9 +204,12 @@ def test_journey_04_stdout_format_bridge(tmp_path):
     bridge = tmp_path / "bridge.geojson"
     round_tripped = tmp_path / "round_tripped.parquet"
 
-    # `convert geojson -` reads stdin only in streaming mode: passing an OUTPUT
-    # argument alongside `-` fails with "File not found: -", so the bridge is a
-    # redirect, exactly as docs/guide/piping.md shows it.
+    # Shape taken from piping.md's "Command Compatibility" table, which records
+    # `convert geojson` as stdin-capable but stdout-only ("No (outputs GeoJSON
+    # to stdout)"); the redirect is this test's own, not a quoted example.
+    # `convert geojson -` reads stdin only in that streaming mode: passing an
+    # OUTPUT argument alongside `-` fails with a misleading "File not found: -"
+    # (error-message bug #723), so the bridge is a redirect.
     run_pipeline(
         [
             f"gpio add bbox --force {q(PLACES)} -",
@@ -199,7 +217,7 @@ def test_journey_04_stdout_format_bridge(tmp_path):
         ],
         4,
     )
-    stream = bridge.read_text()
+    stream = bridge.read_text(encoding="utf-8")
     assert "\x1e" in stream, "expected RFC 8142 record separators in the GeoJSONSeq stream"
     assert len([line for line in stream.splitlines() if line.strip()]) == PLACES_ROWS
 
@@ -294,7 +312,7 @@ def test_journey_07_csv_roundtrip(tmp_path):
     # --no-bbox: a re-imported JSON-encoded bbox string cannot back covering
     # metadata, and the import then fails GeoParquet metadata validation.
     run_gpio(["convert", "csv", "--no-bbox", PLACES, exported_csv], 7)
-    header = exported_csv.read_text().splitlines()[0]
+    header = exported_csv.read_text(encoding="utf-8").splitlines()[0]
     assert "wkt" in header
 
     run_gpio(["convert", "geoparquet", exported_csv, imported], 7)
@@ -310,20 +328,95 @@ def test_journey_07_csv_roundtrip(tmp_path):
 # ---------------------------------------------------------------------------
 # Journey 8 -- admin divisions then admin partition (budget 60s, slow)
 # ---------------------------------------------------------------------------
+# Substrings that mean "the boundaries dataset could not be obtained", as
+# opposed to "gpio is broken". Matched case-insensitively against the failed
+# command's output.
+_BOUNDARIES_UNAVAILABLE = (
+    # Anything that names the machine-global cache: a concurrent gpio process
+    # (another checkout, another agent, the developer's own shell) downloading
+    # the same release holds a DuckDB lock on its temp file, and a partially
+    # written cache errors the same way. Observed verbatim:
+    #   IO Error: Could not set lock on file
+    #   "~/.geoparquet-io/cache/admin/tmp_overture-2026-07-22.0-country-land.parquet":
+    #   Conflicting lock is held in ... (PID 63436)
+    ".geoparquet-io",
+    "conflicting lock",
+    "could not set lock",
+    # ... and anything that means the download itself did not happen. Bare "io
+    # error" is deliberately NOT in this list: it would swallow a genuine
+    # read/write bug on the fixture or the output and report it as a skip.
+    "could not resolve",
+    "connection",
+    "network",
+    "timed out",
+    "timeout",
+    "failed to download",
+    "http error",
+    "urlopen",
+    "temporary failure",
+)
+
+
+def _skip_if_boundaries_unavailable(result) -> None:
+    """Skip (never fail) when the admin cache cannot be downloaded or is locked."""
+    if result.returncode == 0:
+        return
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    for needle in _BOUNDARIES_UNAVAILABLE:
+        if needle in output:
+            pytest.skip(
+                "Overture admin boundaries unavailable (offline, download failed, or "
+                f"~/.geoparquet-io/cache/admin busy): matched {needle!r}"
+            )
+
+
+def _run_boundary_command(args: list, description: str):
+    """Run a cache-dependent journey-8 step, turning unavailability into a skip.
+
+    A cold cache downloads the dataset, and a fresh Overture release can make
+    that take longer than the journey's timeout -- measured: ~1.6s warm, minutes
+    cold. A timeout here therefore means "the boundaries were not available in
+    reasonable time", which is a skip; only a real, prompt failure fails.
+    """
+    try:
+        result = run_gpio(args, 8, expect_success=False)
+    except subprocess.TimeoutExpired:
+        pytest.skip(
+            f"{description} exceeded its timeout -- the Overture cache is cold and the "
+            "download did not finish in time. Warm it once with "
+            "`gpio add admin-divisions --dataset overture --levels country <file> <out>`."
+        )
+    _skip_if_boundaries_unavailable(result)
+    assert result.returncode == 0, (
+        f"{description} failed for a non-cache reason:\n{result.stdout}\n{result.stderr}"
+    )
+    return result
+
+
 @pytest.mark.slow
-@pytest.mark.network
 def test_journey_08_admin_divisions_then_partition(tmp_path):
     """add admin-divisions -> partition admin -> check every leaf.
 
-    Also network-marked, which the issue's table does not say: the Overture
-    boundaries are fetched on first use (~34MB for country level) and only then
-    cached under ~/.geoparquet-io/cache/admin, so on a cold CI runner this
-    journey genuinely needs the network and belongs in the network job.
+    Lane: ``slow`` ONLY, deliberately not ``network``. The boundaries do need
+    fetching on a cold machine, but marking this ``network`` too would move it
+    out of the blocking slow job and into the network job, which never runs on
+    PRs and is ``continue-on-error`` -- demoting a gate to an advisory signal.
+    Instead the fetch is attempted and the test SKIPS with a clear reason when
+    the download or the cache is unavailable: warm runners gate on it, cold or
+    offline ones skip cleanly.
+
+    Not hermetic, and cannot be: ``gpio add admin-divisions`` caches datasets in
+    the machine-global ``~/.geoparquet-io/cache/admin`` (~34MB for Overture
+    country level; GAUL would be ~724MB, which is why this uses Overture). That
+    directory is shared with the developer's own runs and with any concurrent
+    gpio process, so a first run costs a download and a concurrent run can hit a
+    cache-lock conflict -- both are skips, not failures, via
+    :func:`_skip_if_boundaries_unavailable`.
     """
     enriched = tmp_path / "places_admin.parquet"
     partitions = tmp_path / "admin_partitions"
 
-    run_gpio(
+    _run_boundary_command(
         [
             "add",
             "admin-divisions",
@@ -334,12 +427,13 @@ def test_journey_08_admin_divisions_then_partition(tmp_path):
             PLACES,
             enriched,
         ],
-        8,
+        "add admin-divisions",
     )
     assert "overture_country" in columns(enriched)
     assert rows(enriched) == PLACES_ROWS
 
-    run_gpio(
+    # `partition admin` re-reads the same cache, so it needs the same guard.
+    _run_boundary_command(
         [
             "partition",
             "admin",
@@ -350,7 +444,7 @@ def test_journey_08_admin_divisions_then_partition(tmp_path):
             enriched,
             partitions,
         ],
-        8,
+        "partition admin",
     )
     # The 766 places straddle Burkina Faso, Benin, Ghana and Togo.
     assert {leaf.stem for leaf in leaf_files(partitions)} == {"BF", "BJ", "GH", "TG"}

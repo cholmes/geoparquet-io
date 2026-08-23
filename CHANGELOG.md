@@ -104,9 +104,9 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   own output leaving these files stale and the reproducibility claim false.
 - **End-to-end journey matrix (#667)**: `tests/e2e/test_journeys.py` runs ten
   multi-command user journeys through the *installed* `gpio` binary — GeoJSON
-  round trip via GeoParquet 2.0, H3 index → H3 partition, the piping chains
-  printed in `docs/guide/piping.md` (real shell pipelines, Arrow IPC between
-  stages), the GeoJSONSeq stdout bridge, reproject with CRS assertions, aggregate
+  round trip via GeoParquet 2.0, H3 index → H3 partition, piping chains from
+  `docs/guide/piping.md` (real shell pipelines, Arrow IPC between stages), the
+  GeoJSONSeq stdout bridge, reproject with CRS assertions, aggregate
   → overview → PMTiles pyramid, a CSV round trip, admin-division enrichment →
   admin partition, a remote `extract --limit` over HTTPS, and 200k synthetic
   points whose Hilbert sort must lift the estimated row-group skip rate from
@@ -118,12 +118,14 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `validate_geoparquet`, and `test_oracle_rejects_a_damaged_journey_output` fails
   if that ever stops catching a damaged intermediate. Journeys 1–7 ride the fast
   lane (~12s serial), 8 and 10 are slow-marked, 9 is network-marked; journey 6
-  skips without tippecanoe (which also covers the Windows leg) and journey 8 is
-  additionally network-marked because the Overture boundaries are downloaded on
-  first use. Journey 3b is a strict `xfail` pinning a real break: the documented
+  skips without tippecanoe (which also covers the Windows leg) and journey 8
+  skips with a clear reason when the Overture boundary cache is cold, offline or
+  busy, so it still gates the blocking slow lane when warm. Journey 3b is a
+  strict `xfail` pinning a real break, filed as #722: the documented
   `extract … - | add quadkey - | partition string - dir/` chain dies with an
   unhandled DuckDB error because `extract`'s Arrow IPC stream omits
-  `geometry_types`.
+  `geometry_types`. Journey 4 documents #723 (`convert geojson -` with a named
+  output fails with a misleading "File not found: -").
   `tests/e2e/test_integration_lane.py` gives the `integration` marker enforced
   semantics — every journey must carry it, no `tests.yml` selection may deselect
   it, and each journey must land in exactly one CI job — instead of adding a

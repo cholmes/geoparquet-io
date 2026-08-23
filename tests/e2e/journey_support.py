@@ -61,6 +61,13 @@ requires_tippecanoe = pytest.mark.skipif(
 # flaky); they are enforced as per-command subprocess timeouts with generous
 # slack, so a hung pipeline fails the test instead of hanging the job. Actual
 # durations surface through pytest's --durations flags, which CI already passes.
+#
+# Measured against budget on a 2026 laptop (macOS, warm caches), for anyone
+# retuning these: 1 ~1.6s, 2 ~1.3s, 3 ~2.1s, 4 ~1.0s, 5 ~1.6s, 6 ~1.8s,
+# 7 ~1.4s, 8 ~1.6s warm (the first run also downloads ~34MB of boundaries),
+# 9 ~69s (remote server, over its 30s budget), 10 ~3.6s (far under its 120s
+# budget -- it could be promoted to the fast lane if the slow job ever needs
+# trimming).
 BUDGETS = {
     1: 5,
     2: 8,
@@ -75,10 +82,14 @@ BUDGETS = {
 }
 
 _TIMEOUT_SLACK = 10
+# Cap: 10x journey 10's budget would let a wedged command sit for 20 minutes,
+# which on a hung CI runner is indistinguishable from a hang. Journey 10's real
+# cost is ~4s and journey 9's ~69s, so 180s leaves ample headroom.
+_TIMEOUT_CAP = 180
 
 
 def _timeout(journey: int) -> int:
-    return max(60, BUDGETS[journey] * _TIMEOUT_SLACK)
+    return min(_TIMEOUT_CAP, max(60, BUDGETS[journey] * _TIMEOUT_SLACK))
 
 
 def run_gpio(args: list[str | Path], journey: int, expect_success: bool = True):
@@ -88,6 +99,14 @@ def run_gpio(args: list[str | Path], journey: int, expect_success: bool = True):
         cmd,
         capture_output=True,
         text=True,
+        # gpio's reports contain ✓/✗/📁/❌ and the fixtures carry non-ASCII place
+        # names. Without an explicit encoding, Python decodes child output with
+        # the locale codec -- cp1252 on the Windows CI leg -- and a
+        # UnicodeDecodeError there would fail the blocking fast job. errors are
+        # replaced rather than raised: the oracle reads the report's structure,
+        # not its glyphs.
+        encoding="utf-8",
+        errors="replace",
         timeout=_timeout(journey),
     )
     if expect_success:
@@ -109,6 +128,8 @@ def run_pipeline(stages: list[str], journey: int, expect_success: bool = True):
         shell=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",  # see run_gpio: never decode child output with the locale codec
+        errors="replace",
         timeout=_timeout(journey),
     )
     if expect_success:
@@ -126,8 +147,12 @@ def q(path: Path | str) -> str:
     return f'"{path}"'
 
 
-_SPEC_FAILED = re.compile(r"✗\s+(\d+)\s+failed")
-_SPEC_PASSED = re.compile(r"✓\s+(\d+)\s+checks passed")
+# Glyph-free on purpose: with errors="replace" (and on a console that degrades
+# UTF-8), the ✓/✗ prefixes can arrive as U+FFFD, and an oracle that required them
+# would silently stop matching -- turning the "no spec failures" assertion into a
+# no-op across the eight journeys it backs. The counts are what carry meaning.
+_SPEC_FAILED = re.compile(r"(\d+)\s+failed")
+_SPEC_PASSED = re.compile(r"(\d+)\s+checks passed")
 _SUMMARY = re.compile(r"Summary:\s+(\d+)\s+passed(?:,\s*(\d+)\s+failed)?")
 
 
@@ -143,8 +168,11 @@ def assert_check_all(target: Path, journey: int, *, all_files: bool = False) -> 
     result = run_gpio(args, journey)
     report = result.stdout + result.stderr
 
-    failed = _SPEC_FAILED.search(report)
-    assert failed is None, f"`gpio check all {target}` reports spec failures:\n{report}"
+    # Any non-zero "N failed" anywhere in the report is a failure, whether it
+    # came from spec validation or from the per-file partition summary. A zero
+    # count is tolerated so a future "0 failed" line cannot fail a clean run.
+    failures = [int(count) for count in _SPEC_FAILED.findall(report) if int(count) > 0]
+    assert not failures, f"`gpio check all {target}` reports failures:\n{report}"
 
     if all_files:
         summary = _SUMMARY.search(report)

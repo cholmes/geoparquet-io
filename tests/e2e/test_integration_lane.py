@@ -23,6 +23,7 @@ breaks the wiring, not in the nightly lane.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -36,8 +37,8 @@ PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 
 LANE_MARKERS = {"slow", "network", "meta", "integration", "corpus"}
 
-# `-m "a and not b"` or a bare `-m network`.
-_SELECTION = re.compile(r"-m\s+(?:\"([^\"]+)\"|(?!-)(\S+))")
+# `-m "a and not b"`, `-m 'a and not b'`, or a bare `-m network`.
+_SELECTION = re.compile(r"-m\s+(?:\"([^\"]+)\"|'([^']+)'|(?!-)(\S+))")
 
 
 def _selections() -> list[str]:
@@ -47,19 +48,51 @@ def _selections() -> list[str]:
     flags differ), and those repeats are the same lane.
     """
     text = WORKFLOW.read_text(encoding="utf-8")
-    found = list(dict.fromkeys(quoted or bare for quoted, bare in _SELECTION.findall(text)))
+    found = list(
+        dict.fromkeys(double or single or bare for double, single, bare in _SELECTION.findall(text))
+    )
     assert found, "tests.yml has no `-m` marker selections at all"
     return found
+
+
+_ALLOWED_NODES = (
+    ast.Expression,
+    ast.BoolOp,
+    ast.UnaryOp,
+    ast.And,
+    ast.Or,
+    ast.Not,
+    ast.Name,
+    ast.Load,
+)
 
 
 def selects(expression: str, marks: set[str]) -> bool:
     """Evaluate a pytest ``-m`` expression against a set of marker names.
 
-    ``eval`` is safe here: the expression comes from this repo's own workflow
-    file and every name is bound to a bool in an empty builtins namespace.
+    Walks the parsed expression instead of calling ``eval``: marker expressions
+    are only names combined with and/or/not, so a tiny evaluator covers them,
+    and nothing in this guard can execute whatever a future edit puts in
+    tests.yml. Anything outside that grammar raises rather than being guessed at.
     """
-    names = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", expression)) - {"and", "or", "not"}
-    return bool(eval(expression, {"__builtins__": {}}, {name: name in marks for name in names}))
+    tree = ast.parse(expression, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(f"unsupported marker expression {expression!r}: {type(node).__name__}")
+
+    def evaluate(node: ast.AST) -> bool:
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.Name):
+            return node.id in marks
+        if isinstance(node, ast.UnaryOp):  # only `not`, per _ALLOWED_NODES
+            return not evaluate(node.operand)
+        if isinstance(node, ast.BoolOp):
+            results = [evaluate(value) for value in node.values]
+            return all(results) if isinstance(node.op, ast.And) else any(results)
+        raise ValueError(f"unsupported node {type(node).__name__}")  # pragma: no cover
+
+    return evaluate(tree)
 
 
 def _marks_of(func) -> set[str]:
@@ -103,7 +136,15 @@ def test_no_ci_selection_excludes_integration_tests():
 
 
 def test_each_journey_lands_in_exactly_one_ci_job():
-    """Every journey runs in exactly one of the fast / slow / network jobs."""
+    """Every journey is selected by exactly one of the fast / slow / network jobs.
+
+    Scope caveat: this counts marker SELECTIONS, not whether the job that owns
+    the selection actually gates a PR. The network job is `continue-on-error`
+    and does not run on pull requests, and the slow job runs on merge/schedule
+    or behind the `run-slow-tests` label -- so "selected" is not "blocking".
+    Adding `network` to a journey moves it from a blocking lane to an advisory
+    one while this test stays green (that is why journey 8 is `slow` only).
+    """
     selections = _selections()
     for name, marks in _journeys().items():
         matched = [expression for expression in selections if selects(expression, marks)]
