@@ -537,6 +537,50 @@ class TestOversizedBatchSplit:
         assert len(spans) > 1
         assert sum(length for _, length in spans) == 4
 
+    def test_two_columns_overflowing_at_different_rows_are_merged(self, monkeypatch):
+        """Every narrowed column's boundaries must constrain the same span list.
+
+        The other cases here have one oversized column, or two whose rows are
+        the same size and so split at identical offsets — neither can tell a
+        real merge from an implementation that just keeps the last column's
+        boundaries. Here the two columns carry different per-row sizes, so
+        their natural split points interleave, and each returned span has to
+        satisfy both budgets at once.
+        """
+        from geoparquet_io.core import streaming
+        from geoparquet_io.core.write_strategies.arrow_streaming import _binary_cast_spans
+
+        budget = 10
+        # a: 6 bytes/row  -> wants to break after every row (6 + 6 > 10)
+        # b: 4 bytes/row  -> wants to break after every 2 rows (4 + 4 + 4 > 10)
+        rows = 6
+        a = pa.array([b"x" * 6] * rows, pa.large_binary())
+        b = pa.array([b"y" * 4] * rows, pa.large_binary())
+        batch = pa.RecordBatch.from_arrays(
+            [a, b],
+            schema=pa.schema([pa.field("a", pa.large_binary()), pa.field("b", pa.large_binary())]),
+        )
+        target = pa.schema([pa.field("a", pa.binary()), pa.field("b", pa.binary())])
+        monkeypatch.setattr(streaming, "_MAX_WKB_CHUNK_BYTES", budget)
+
+        spans = _binary_cast_spans(batch, target)
+
+        # Tiling, as the single-column case already requires.
+        assert spans[0][0] == 0
+        assert sum(length for _, length in spans) == rows
+        for (offset, length), (next_offset, _) in zip(spans, spans[1:], strict=False):
+            assert offset + length == next_offset
+
+        # The point of the merge: every span fits *both* columns' budgets.
+        for offset, length in spans:
+            for name in ("a", "b"):
+                nbytes = sum(len(v) for v in batch.column(name).slice(offset, length).to_pylist())
+                assert nbytes <= budget or length == 1, (
+                    f"span ({offset}, {length}) holds {nbytes} bytes of column {name!r}, "
+                    f"over the {budget}-byte budget — the other column's boundaries "
+                    f"were not merged in"
+                )
+
     def test_split_write_20_with_crs_and_secondary_column(self, tmp_path, monkeypatch):
         """The hardest combination through the split path.
 
