@@ -93,10 +93,11 @@ ipython_config.py
 
 # Parquet files generated
 *.parquet
-# But allow test data files and example data
-!tests/data/*.parquet
-!tests/data/canonical/*.parquet
-!examples/data/*.parquet
+# But allow test data files and example data, at any nesting depth - a plain
+# "tests/data/*.parquet" does not reach subdirectories, so a new fixture folder
+# would be silently dropped from commits.
+!tests/data/**/*.parquet
+!examples/data/**/*.parquet
 
 # DuckDB
 .tmp/

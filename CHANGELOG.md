@@ -98,6 +98,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   geo metadata, clean `validate_geoparquet` results, cross-representation
   agreement between the parquet/GeoJSON/CSV views, and the `examples/data/`
   mirror, so the dataset cannot rot silently behind the tests that depend on it.
+  A slow-marked drift guard regenerates into a temp directory (via the
+  generator's `--output-dir`) and compares SHA-256 against the committed files,
+  catching the one failure the rest of the suite cannot see: a change in gpio's
+  own output leaving these files stale and the reproducibility claim false.
 - **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
   whole Click command tree into a structural snapshot at
   `tests/data/cli_surface.json` — every group, command, option and argument

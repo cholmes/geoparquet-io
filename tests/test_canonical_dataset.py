@@ -16,6 +16,8 @@ constants here deliberately if the dataset is ever meant to change.
 from __future__ import annotations
 
 import csv
+import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
@@ -76,10 +78,25 @@ MIRRORED_FILES = (
 MAX_CANONICAL_BYTES = 1_000_000
 
 
+GENERATOR = CANONICAL_DIR / "generate_canonical.py"
+
+
 def _geo_metadata(path: Path) -> dict:
     """Return the parsed ``geo`` key of a parquet file's schema metadata."""
     metadata = pq.ParquetFile(path).schema_arrow.metadata or {}
     return json.loads(metadata[b"geo"])
+
+
+def _load_generator():
+    """Import generate_canonical.py by path - it is a script, not a package."""
+    spec = importlib.util.spec_from_file_location("generate_canonical", GENERATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("path", DATA_FILES, ids=lambda p: p.name)
@@ -226,3 +243,45 @@ def test_canonical_dataset_stays_small():
     """Keep the committed dataset well under a megabyte per copy."""
     total = sum(path.stat().st_size for path in DATA_FILES)
     assert total < MAX_CANONICAL_BYTES, f"canonical dataset grew to {total} bytes"
+
+
+def test_generator_output_dir_defaults_to_the_canonical_directory():
+    """No arguments means "regenerate in place", mirror included."""
+    args = _load_generator().parse_args([])
+
+    assert args.output_dir == CANONICAL_DIR
+    assert args.mirror is True
+
+
+def test_generator_output_dir_elsewhere_skips_the_mirror(tmp_path):
+    """A regeneration aimed at a temp directory must not write into the repo."""
+    args = _load_generator().parse_args(["--output-dir", str(tmp_path)])
+
+    assert args.output_dir == tmp_path.resolve()
+    assert args.mirror is False
+
+
+@pytest.mark.slow
+def test_regeneration_reproduces_the_committed_files(tmp_path):
+    """The committed dataset is still what the generator produces today.
+
+    Without this, a change in gpio's sort, bbox, GeoJSON or compression output
+    would leave the committed files stale and the generator's promise of
+    reproducibility quietly false - discovered only by whoever next reran it.
+    """
+    module = _load_generator()
+    examples_before = {name: (EXAMPLES_DATA_DIR / name).read_bytes() for name in MIRRORED_FILES}
+
+    assert module.main(["--output-dir", str(tmp_path)]) == 0
+
+    drifted = [
+        name for name in MIRRORED_FILES if _sha256(tmp_path / name) != _sha256(CANONICAL_DIR / name)
+    ]
+    assert not drifted, (
+        f"regenerating produced different bytes for {drifted}; gpio's output "
+        f"changed - rerun tests/data/canonical/generate_canonical.py and commit"
+    )
+
+    # --output-dir must leave the repository alone.
+    for name, content in examples_before.items():
+        assert (EXAMPLES_DATA_DIR / name).read_bytes() == content

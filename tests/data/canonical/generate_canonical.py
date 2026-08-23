@@ -17,17 +17,25 @@ and mirrors all four into ``examples/data/`` alongside the pre-existing
 ``sample.parquet`` (which this script never touches).
 
 Everything is produced by gpio itself - the parquet files and the GeoJSON go
-through the real CLI (``python -m geoparquet_io.cli.main``), so regenerating the
-dataset also smoke-tests the tool. Only the lon/lat CSV needs a direct DuckDB
-query, because ``gpio convert csv`` emits WKT rather than coordinate columns.
+through the real CLI, preferring an installed ``gpio`` on PATH and falling back
+to ``python -m geoparquet_io.cli.main`` - so regenerating the dataset also
+smoke-tests the tool. Only the lon/lat CSV needs a direct DuckDB query, because
+``gpio convert csv`` emits WKT rather than coordinate columns.
 
 The output is byte-reproducible: the CLI is deterministic for these inputs and
 the DuckDB query runs single-threaded with insertion order preserved. Rerunning
 this script on unchanged sources produces identical files.
+
+``--output-dir DIR`` writes the dataset somewhere else and skips the
+``examples/data/`` mirror. That is how ``tests/test_canonical_dataset.py``
+regenerates into a temp directory and compares checksums against the committed
+files, which turns "gpio changed and the dataset is no longer reproducible"
+from a silent problem into a failing test.
 """
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -42,12 +50,12 @@ EXAMPLES_DATA_DIR = REPO_ROOT / "examples" / "data"
 PLACES_SOURCE = TEST_DATA_DIR / "places_test.parquet"
 BUILDINGS_SOURCE = TEST_DATA_DIR / "buildings_test.parquet"
 
-PLACES_PARQUET = CANONICAL_DIR / "places.parquet"
-BUILDINGS_PARQUET = CANONICAL_DIR / "buildings.parquet"
-PLACES_GEOJSON = CANONICAL_DIR / "places.geojson"
-PLACES_CSV = CANONICAL_DIR / "places.csv"
+PLACES_PARQUET = "places.parquet"
+BUILDINGS_PARQUET = "buildings.parquet"
+PLACES_GEOJSON = "places.geojson"
+PLACES_CSV = "places.csv"
 
-MIRRORED_FILES = (PLACES_PARQUET, BUILDINGS_PARQUET, PLACES_GEOJSON, PLACES_CSV)
+OUTPUT_FILENAMES = (PLACES_PARQUET, BUILDINGS_PARQUET, PLACES_GEOJSON, PLACES_CSV)
 
 # GeoParquet 1.1 with a bbox covering and ZSTD is what `gpio check all` calls a
 # clean file, and 1.1 (rather than 2.0) keeps the dataset readable by the widest
@@ -70,14 +78,18 @@ def run_gpio(*args: str) -> None:
     subprocess.run([*_gpio_command(), *args], check=True, cwd=REPO_ROOT)
 
 
-def generate_points() -> None:
-    """Hilbert-sort the places extract into a spatially ordered, bbox-covered file."""
-    print("Generating places.parquet (766 POINT features)...")
+def output_paths(output_dir: Path) -> dict[str, Path]:
+    """Map each canonical filename to its destination under ``output_dir``."""
+    return {name: output_dir / name for name in OUTPUT_FILENAMES}
+
+
+def _hilbert_sort(source: Path, destination: Path) -> None:
+    """Sort into a spatially ordered, bbox-covered, ZSTD GeoParquet 1.1 file."""
     run_gpio(
         "sort",
         "hilbert",
-        str(PLACES_SOURCE),
-        str(PLACES_PARQUET),
+        str(source),
+        str(destination),
         "--add-bbox",
         "--geoparquet-version",
         GEOPARQUET_VERSION,
@@ -87,36 +99,31 @@ def generate_points() -> None:
     )
 
 
-def generate_polygons() -> None:
+def generate_points(paths: dict[str, Path]) -> None:
+    """Hilbert-sort the places extract into the canonical point file."""
+    print("Generating places.parquet (766 POINT features)...")
+    _hilbert_sort(PLACES_SOURCE, paths[PLACES_PARQUET])
+
+
+def generate_polygons(paths: dict[str, Path]) -> None:
     """Same treatment for the buildings sample."""
     print("Generating buildings.parquet (42 POLYGON features)...")
-    run_gpio(
-        "sort",
-        "hilbert",
-        str(BUILDINGS_SOURCE),
-        str(BUILDINGS_PARQUET),
-        "--add-bbox",
-        "--geoparquet-version",
-        GEOPARQUET_VERSION,
-        "--compression",
-        COMPRESSION,
-        "--overwrite",
-    )
+    _hilbert_sort(BUILDINGS_SOURCE, paths[BUILDINGS_PARQUET])
 
 
-def generate_geojson() -> None:
+def generate_geojson(paths: dict[str, Path]) -> None:
     """Derive the GeoJSON FeatureCollection from the canonical point file."""
     print("Generating places.geojson...")
     run_gpio(
         "convert",
         "geojson",
-        str(PLACES_PARQUET),
-        str(PLACES_GEOJSON),
+        str(paths[PLACES_PARQUET]),
+        str(paths[PLACES_GEOJSON]),
         "--overwrite",
     )
 
 
-def generate_csv() -> None:
+def generate_csv(paths: dict[str, Path]) -> None:
     """Derive a lon/lat CSV - the shape `gpio convert geoparquet` auto-detects.
 
     ``gpio convert csv`` writes WKT plus the bbox struct, which is not what a
@@ -125,6 +132,9 @@ def generate_csv() -> None:
     """
     print("Generating places.csv (lon/lat columns)...")
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+    source = paths[PLACES_PARQUET]
+    destination = paths[PLACES_CSV]
 
     con = get_duckdb_connection(threads=1)
     try:
@@ -140,15 +150,15 @@ def generate_csv() -> None:
                     placemaker_url,
                     ST_X(geometry) AS lon,
                     ST_Y(geometry) AS lat
-                FROM read_parquet('{PLACES_PARQUET}')
-            ) TO '{PLACES_CSV}' (FORMAT CSV, HEADER)
+                FROM read_parquet('{source}')
+            ) TO '{destination}' (FORMAT CSV, HEADER)
         """)
     finally:
         con.close()
-    print(f"  ✓ Created {PLACES_CSV.name}")
+    print(f"  ✓ Created {destination.name}")
 
 
-def mirror_to_examples() -> None:
+def mirror_to_examples(paths: dict[str, Path]) -> None:
     """Copy the canonical files into examples/data/ for notebooks and docs.
 
     ``examples/data/sample.parquet`` is deliberately left in place: notebooks
@@ -156,27 +166,59 @@ def mirror_to_examples() -> None:
     """
     print("Mirroring into examples/data/...")
     EXAMPLES_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for source in MIRRORED_FILES:
-        shutil.copyfile(source, EXAMPLES_DATA_DIR / source.name)
-        print(f"  ✓ {source.name}")
+    for name, source in paths.items():
+        shutil.copyfile(source, EXAMPLES_DATA_DIR / name)
+        print(f"  ✓ {name}")
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    The ``examples/data/`` mirror is only refreshed when the dataset is written
+    to its committed home. Regenerating elsewhere - which is what the drift
+    guard in ``tests/test_canonical_dataset.py`` does - must not touch the
+    repository, so ``--output-dir`` implies no mirroring.
+    """
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=CANONICAL_DIR,
+        help=(
+            "Directory to write the dataset into "
+            "(default: tests/data/canonical/). Any other directory also skips "
+            "the examples/data/ mirror."
+        ),
+    )
+    args = parser.parse_args(argv)
+    args.output_dir = args.output_dir.resolve()
+    args.mirror = args.output_dir == CANONICAL_DIR
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
     missing = [p for p in (PLACES_SOURCE, BUILDINGS_SOURCE) if not p.exists()]
     if missing:
         for path in missing:
             print(f"ERROR: source fixture not found: {path}", file=sys.stderr)
         return 1
 
-    CANONICAL_DIR.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    paths = output_paths(args.output_dir)
 
-    generate_points()
-    generate_polygons()
-    generate_geojson()
-    generate_csv()
-    mirror_to_examples()
+    generate_points(paths)
+    generate_polygons(paths)
+    generate_geojson(paths)
+    generate_csv(paths)
 
-    total = sum(path.stat().st_size for path in MIRRORED_FILES)
+    if args.mirror:
+        mirror_to_examples(paths)
+    else:
+        print(f"Wrote to {args.output_dir}; skipping the examples/data/ mirror.")
+
+    total = sum(path.stat().st_size for path in paths.values())
     print(f"\nDone. Canonical dataset is {total / 1024:.1f} KB across 4 files.")
     return 0
 
