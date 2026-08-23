@@ -419,6 +419,13 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   negotiated version by construction — stays quiet, so a 1.1.0-only server
   rejecting it does not warn on an otherwise healthy extraction.
 
+  `_probe_startindex_limit`, the sibling probe that detects servers rejecting a
+  `startIndex` above some cap, swallowed failures the same way and now follows
+  the same contract. Its silent `None` meant "no cap known", which re-enables
+  unbounded pagination against a server that will reject or truncate the later
+  pages — the same silently-wrong-output failure mode reached by a different
+  route.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

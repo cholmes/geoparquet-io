@@ -1898,7 +1898,11 @@ def _probe_startindex_limit(
     threshold (e.g., 50,000). This sends a lightweight probe request
     to detect that limit before attempting full pagination.
 
-    Returns the limit value if detected, or None if no limit found.
+    Returns the limit value if detected, or None if no limit found *or* the
+    probe failed. A failed probe is logged as a warning: a silent None here
+    means pagination proceeds past a cap the server would have rejected, which
+    is the same silently-truncated-results failure mode as a lost feature count
+    (issue #678).
     """
     import httpx
 
@@ -1930,7 +1934,16 @@ def _probe_startindex_limit(
                         pass
                 return 50000
         return None
-    except httpx.HTTPError:
+    except (WFSError, httpx.HTTPError, OSError) as e:
+        # Same contract as _get_feature_count: expected transport failures
+        # degrade to "no limit known" but say so, because that answer silently
+        # re-enables unbounded pagination. Programming errors still surface.
+        warn(
+            f"startIndex limit probe failed for '{typename}' at WFS {version}: "
+            f"{type(e).__name__}: {e}. Continuing without a known startIndex "
+            "cap — pagination past a server's limit may return truncated or "
+            "rejected pages."
+        )
         return None
 
 

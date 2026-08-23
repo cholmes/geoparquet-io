@@ -4407,3 +4407,82 @@ class TestMultiLayerExtraction:
 
         # Colons should be replaced with underscores in filename
         assert (output_dir / "ns_layer_name.parquet").exists()
+
+
+class TestStartIndexProbeErrorVisibility:
+    """The sibling probe swallowed failures the same way `_get_feature_count` did.
+
+    `_probe_startindex_limit` detects servers that reject a `startIndex` above
+    some cap. Returning a silent `None` on a failed probe means "no cap known",
+    which re-enables unbounded pagination against a server that will reject or
+    truncate the later pages — the same silently-wrong-output failure mode as a
+    lost feature count (#678), reached by a different route.
+    """
+
+    def test_transport_error_returns_none_and_warns(self, caplog):
+        """A transport failure degrades to "no cap known" but says so."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._get_shared_http_client",
+                side_effect=httpx.ConnectError("nodename nor servname provided"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("nodename nor servname provided" in m for m in warnings), warnings
+        assert any("startindex" in m.lower() for m in warnings), warnings
+
+    def test_programming_error_propagates(self):
+        """A bug inside the probe must surface, not be reported as "no cap"."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        with patch(
+            "geoparquet_io.core.wfs._build_wfs_url",
+            side_effect=AttributeError("'NoneType' object has no attribute 'rstrip'"),
+        ):
+            with pytest.raises(AttributeError, match="rstrip"):
+                _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+    def test_server_without_a_cap_returns_none_without_warning(self, caplog):
+        """A healthy server that imposes no cap is not a failure — stay quiet."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        response = MagicMock()
+        response.status_code = 200
+        client = MagicMock()
+        client.get.return_value = response
+
+        with (
+            patch("geoparquet_io.core.wfs._get_shared_http_client", return_value=client),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_detected_cap_is_returned_without_warning(self, caplog):
+        """The success path still parses the cap out of the 400 body."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        response = MagicMock()
+        response.status_code = 400
+        response.text = "startIndex must not exceed 50,000"
+        client = MagicMock()
+        client.get.return_value = response
+
+        with (
+            patch("geoparquet_io.core.wfs._get_shared_http_client", return_value=client),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result == 50000
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
