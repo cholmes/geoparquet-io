@@ -6,6 +6,7 @@ geospatial types according to their respective specifications.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -15,7 +16,11 @@ from rich.console import Console
 
 from geoparquet_io.core.common import split_zm_suffix, zm_suffix_sql
 from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    _geoarrow_coord_exprs,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import GeoParquetError
 
 
@@ -71,6 +76,31 @@ class ValidationResult:
 
 # Valid values according to GeoParquet specification
 VALID_ENCODINGS = ["WKB", "wkb"]
+
+# The single-geometry-type GeoArrow encodings. GeoParquet 1.1 permits these
+# alongside "WKB" ("Supported values: "WKB"; one of "point", "linestring",
+# "polygon", "multipoint", "multilinestring", "multipolygon""). 1.0 and the
+# 2.0 draft are both WKB-only, so they stay rejected there.
+GEOARROW_ENCODINGS = [
+    "point",
+    "linestring",
+    "polygon",
+    "multipoint",
+    "multilinestring",
+    "multipolygon",
+]
+
+# GeoArrow encoding -> the spec geometry_types name it can hold. The encoding
+# fixes the geometry type of every value in the column, so a data scan does not
+# need to reconstruct geometries to know what is in there.
+_GEOARROW_ENCODING_TYPE = {
+    "point": "Point",
+    "linestring": "LineString",
+    "polygon": "Polygon",
+    "multipoint": "MultiPoint",
+    "multilinestring": "MultiLineString",
+    "multipolygon": "MultiPolygon",
+}
 VALID_ORIENTATIONS = ["counterclockwise"]
 VALID_EDGES_GEOPARQUET = ["planar", "spherical"]
 VALID_EDGES_PARQUET_GEO = ["spherical", "vincenty", "thomas", "andoyer", "karney"]
@@ -223,10 +253,40 @@ def _check_primary_column_in_columns(geo_meta: dict) -> ValidationCheck:
 # =============================================================================
 
 
-def _check_encoding_valid(col_meta: dict, col_name: str) -> ValidationCheck:
+def _is_geoarrow_encoding(encoding: Any) -> bool:
+    """True for one of the spec's single-geometry-type GeoArrow encodings.
+
+    The spec spells these lowercase, and unlike "WKB"/"wkb" there is no
+    established lenient casing to honour, so the match is exact.
+    """
+    return isinstance(encoding, str) and encoding in GEOARROW_ENCODINGS
+
+
+def _geoarrow_encoding_allowed(geo_version: Any) -> bool:
+    """True for versions whose spec text permits the GeoArrow encodings.
+
+    Only GeoParquet 1.1 does: 1.0 says WKB "is the only current option" and
+    the 2.0 draft says "The only supported value is "WKB"".
+    """
+    return _version_at_least(geo_version, 1, 1) and not _version_at_least(geo_version, 2, 0)
+
+
+def _check_encoding_valid(
+    col_meta: dict, col_name: str, geo_version: Any = "1.0.0"
+) -> ValidationCheck:
     """Check 7: column metadata must include a valid 'encoding' string."""
     encoding = col_meta.get("encoding")
-    is_valid = encoding in VALID_ENCODINGS
+
+    if _is_geoarrow_encoding(encoding) and not _geoarrow_encoding_allowed(geo_version):
+        return ValidationCheck(
+            name=f"encoding_valid_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f'column "{col_name}" uses GeoArrow encoding "{encoding}", '
+            f"which requires GeoParquet 1.1 (file declares {geo_version})",
+            category="column_metadata",
+        )
+
+    is_valid = encoding in VALID_ENCODINGS or _is_geoarrow_encoding(encoding)
     return ValidationCheck(
         name=f"encoding_valid_{col_name}",
         status=CheckStatus.PASSED if is_valid else CheckStatus.FAILED,
@@ -666,11 +726,27 @@ def _check_version_features(parquet_file: str, geo_meta: dict) -> ValidationChec
 # =============================================================================
 
 
-def _check_geometry_not_grouped(schema_info: list, geom_col: str) -> ValidationCheck:
-    """Check 14: geometry columns must not be grouped."""
+def _check_geometry_not_grouped(
+    schema_info: list, geom_col: str, encoding: Any = "WKB"
+) -> ValidationCheck:
+    """Check 14: geometry columns must not be grouped.
+
+    The spec's "MUST NOT be a group field" rule is about nesting the geometry
+    inside another column; the GeoArrow encodings store coordinates in a
+    (repeated) group by design, so for those the requirement that survives is
+    that the column sits at the root of the schema.
+    """
     # Find the geometry column in schema
     for col in schema_info:
         if col.get("name") == geom_col:
+            if _is_geoarrow_encoding(encoding):
+                return ValidationCheck(
+                    name=f"geometry_not_grouped_{geom_col}",
+                    status=CheckStatus.PASSED,
+                    message=f'geometry column "{geom_col}" is a "{encoding}" GeoArrow '
+                    "group at the schema root",
+                    category="parquet_schema",
+                )
             # Check if it has children (would indicate a struct/group)
             num_children = col.get("num_children") or 0
             if num_children > 0:
@@ -695,11 +771,156 @@ def _check_geometry_not_grouped(schema_info: list, geom_col: str) -> ValidationC
     )
 
 
-def _check_geometry_byte_array(schema_info: list, geom_col: str) -> ValidationCheck:
-    """Check 15: geometry columns must be stored using BYTE_ARRAY parquet type."""
+# GeoArrow encoding -> number of LIST levels wrapping the coordinate struct.
+#
+# Depth alone is not a unique key. Two pairs share a level and hold identical
+# coordinate data:
+#   linestring <-> multipoint      (depth 1)
+#   polygon    <-> multilinestring (depth 2)
+#
+# What separates them is the set of names on the coordinate nesting, which
+# geoarrow renders into the type string this module already reads via
+# get_schema_info():
+#   linestring       list<vertices: struct<x,y>>
+#   multipoint       list<points:   struct<x,y>>
+#   polygon          list<vertices: list<rings:       struct<x,y>>>
+#   multilinestring  list<vertices: list<linestrings: struct<x,y>>>
+#   multipolygon     list<vertices: list<rings: list<polygons: struct<x,y>>>>
+# _GEOARROW_LIST_FIELDS below pins those, so a column labelled "multipoint" but
+# stored as a linestring is rejected rather than passing on equal depth.
+#
+# The names are not stored in the Parquet file (its fields are the generic
+# "element"); they are how geoarrow.pyarrow renders the extension type, which it
+# resolves from the ARROW:extension:name field metadata gpio's writer emits. So
+# both signals exist only on get_schema_info()'s local/pyarrow path. On the
+# DuckDB path (remote files) parquet_schema() reports the group node with no
+# type at all, and neither check can run — absence of the name is therefore
+# never treated as a mismatch.
+_GEOARROW_LIST_DEPTH = {
+    "point": 0,
+    "linestring": 1,
+    "multipoint": 1,
+    "polygon": 2,
+    "multilinestring": 2,
+    "multipolygon": 3,
+}
+
+
+# The set of LIST field names each encoding's coordinate nesting carries, as
+# get_schema_info() renders it. This is what separates the two pairs that share
+# a list depth and are therefore invisible to _GEOARROW_LIST_DEPTH alone:
+# linestring/multipoint (depth 1) and polygon/multilinestring (depth 2).
+#
+# Matched as a SET, deliberately. get_schema_info()'s pyarrow path renders the
+# names in the reverse of geoarrow.pyarrow's own nesting order -- a polygon
+# reads as list<vertices: list<rings: ...>> here but as
+# list<rings: list<vertices: ...>> from arr.type.storage_type -- so an ordered
+# comparison would encode that quirk and break if it were ever normalised. The
+# five sets are pairwise distinct, so order buys no discrimination anyway.
+#
+# "point" has no list level and needs no entry: depth 0 already identifies it.
+_GEOARROW_LIST_FIELDS = {
+    "linestring": frozenset({"vertices"}),
+    "multipoint": frozenset({"points"}),
+    "polygon": frozenset({"vertices", "rings"}),
+    "multilinestring": frozenset({"vertices", "linestrings"}),
+    "multipolygon": frozenset({"vertices", "rings", "polygons"}),
+}
+
+_GEOARROW_FIELDS_ENCODING = {v: k for k, v in _GEOARROW_LIST_FIELDS.items()}
+
+# Every name the map above can produce. A type string naming anything outside
+# this set came from a source that does not use geoarrow's names (the generic
+# list<element: ...>, or DuckDB's typeless group node), and is not evidence of a
+# wrong encoding either way.
+_KNOWN_LIST_FIELDS = {name.upper() for names in _GEOARROW_LIST_FIELDS.values() for name in names}
+
+
+def _list_field_names(physical_type: str) -> frozenset[str] | None:
+    """The LIST field names in a type string, when they are geoarrow's own.
+
+    Returns None when any LIST level carries a name geoarrow never emits, which
+    must not be read as a mismatch.
+    """
+    found = re.findall(r"LIST<\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", physical_type)
+    if not found or any(name.upper() not in _KNOWN_LIST_FIELDS for name in found):
+        return None
+    return frozenset(name.lower() for name in found)
+
+
+def _check_geoarrow_layout(physical_type: str, geom_col: str, encoding: str) -> ValidationCheck:
+    """Check 15 for GeoArrow columns: a (repeated) group of DOUBLE coordinates.
+
+    The BYTE_ARRAY requirement the spec states is scoped to WKB columns; native
+    encodings instead MUST store "the actual coordinates ... as native numbers,
+    i.e. using the DOUBLE parquet type in a (repeated) group of fields".
+    """
+    name = f"geometry_byte_array_{geom_col}"
+
+    if "BYTE_ARRAY" in physical_type or physical_type == "BINARY":
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.FAILED,
+            message=f'geometry column "{geom_col}" declares GeoArrow encoding "{encoding}" '
+            f"but is stored as {physical_type} (native encodings require a group of "
+            "DOUBLE coordinate fields)",
+            category="parquet_schema",
+        )
+
+    # Only Arrow-style type strings expose the nesting; the parquet_schema()
+    # path reports the group node with no type, and cannot be checked here.
+    if "STRUCT<" in physical_type:
+        expected = _GEOARROW_LIST_DEPTH[encoding]
+        found = physical_type.count("LIST<")
+        if found != expected or "DOUBLE" not in physical_type:
+            return ValidationCheck(
+                name=name,
+                status=CheckStatus.FAILED,
+                message=f'geometry column "{geom_col}" layout does not match GeoArrow '
+                f'encoding "{encoding}" (expected {expected} list level(s) around a '
+                f"DOUBLE coordinate struct, got {physical_type})",
+                category="parquet_schema",
+            )
+
+        # Depth ties linestring/multipoint and polygon/multilinestring, so the
+        # coordinate nesting's field names are what actually separate them.
+        # Only judge them when they are names geoarrow emits: a generic or
+        # absent field name says nothing about the encoding either way.
+        expected_fields = _GEOARROW_LIST_FIELDS.get(encoding)
+        found_fields = _list_field_names(physical_type)
+        if expected_fields and found_fields is not None and found_fields != expected_fields:
+            mislabelled = _GEOARROW_FIELDS_ENCODING.get(found_fields)
+            stored_as = f" (the layout of {mislabelled!r})" if mislabelled else ""
+            return ValidationCheck(
+                name=name,
+                status=CheckStatus.FAILED,
+                message=f"geometry column {geom_col!r} declares GeoArrow encoding "
+                f"{encoding!r}, whose coordinates nest under "
+                f"{sorted(expected_fields)}, but the stored column nests under "
+                f"{sorted(found_fields)}{stored_as}",
+                category="parquet_schema",
+            )
+
+    return ValidationCheck(
+        name=name,
+        status=CheckStatus.PASSED,
+        message=f'geometry column "{geom_col}" uses the native "{encoding}" '
+        "GeoArrow coordinate layout",
+        category="parquet_schema",
+    )
+
+
+def _check_geometry_byte_array(
+    schema_info: list, geom_col: str, encoding: Any = "WKB"
+) -> ValidationCheck:
+    """Check 15: WKB geometry columns must be stored using BYTE_ARRAY parquet type."""
     for col in schema_info:
         if col.get("name") == geom_col:
-            physical_type = col.get("type", "").upper()
+            # parquet_schema() reports a group node's type as an explicit None,
+            # so the "" default never applies: `or ""` is the guard, not `get`.
+            physical_type = (col.get("type") or "").upper()
+            if _is_geoarrow_encoding(encoding):
+                return _check_geoarrow_layout(physical_type, geom_col, encoding)
             # BYTE_ARRAY is represented as BYTE_ARRAY or sometimes as a binary type
             if "BYTE_ARRAY" in physical_type or physical_type == "BINARY":
                 return ValidationCheck(
@@ -755,6 +976,102 @@ def _check_geometry_not_repeated(schema_info: list, geom_col: str) -> Validation
 # =============================================================================
 
 
+def _describe_geom_type(con, safe_url: str, geom_col: str) -> str:
+    """DuckDB's type string for a geometry column ('' when unavailable)."""
+    type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
+    type_result = con.execute(type_query).fetchone()
+    return type_result[1] if type_result else ""
+
+
+def _geoarrow_zm_suffix(col_type: str) -> str:
+    """Dimension suffix implied by a GeoArrow coordinate struct's fields.
+
+    GeoArrow keeps dimensionality in the struct layout (x/y/z/m fields), not in
+    a per-value header, so the suffix is a property of the column type.
+    """
+    match = re.search(r"STRUCT\(([^)]*)\)", col_type or "", re.IGNORECASE)
+    if not match:
+        return ""
+    fields = {field.strip().split(" ")[0].strip('"').lower() for field in match.group(1).split(",")}
+    has_z, has_m = "z" in fields, "m" in fields
+    if has_z and has_m:
+        return " ZM"
+    if has_z:
+        return " Z"
+    if has_m:
+        return " M"
+    return ""
+
+
+def _geoarrow_bounds_subquery(
+    safe_url: str, geom_col: str, encoding: str, limit_clause: str
+) -> str:
+    """Per-row GeoArrow coordinate bounds, with empty geometries filtered out.
+
+    Empty GeoArrow values are either an empty coordinate list (NULL bounds) or,
+    for "point", NaN coordinates; neither has an extent to compare, so the
+    isfinite() guard drops both instead of poisoning MIN/MAX.
+    """
+    quoted_geom = quote_identifier(geom_col)
+    xmin, ymin, xmax, ymax, _, _ = _geoarrow_coord_exprs(quoted_geom, encoding)
+    return f"""
+        SELECT {xmin} AS xmin, {ymin} AS ymin, {xmax} AS xmax, {ymax} AS ymax
+        FROM read_parquet('{safe_url}')
+        WHERE {quoted_geom} IS NOT NULL
+          AND isfinite({xmin}) AND isfinite({ymin})
+        {limit_clause}
+    """
+
+
+def _geoarrow_layout_error(
+    check_name: str, encoding: str, subject: str, error: Exception
+) -> ValidationCheck:
+    """Report a GeoArrow coordinate path that does not resolve, not the raw SQL error."""
+    return ValidationCheck(
+        name=check_name,
+        status=CheckStatus.FAILED,
+        message=f"cannot read {subject}: the stored column layout does not match "
+        f'GeoArrow encoding "{encoding}"',
+        details=str(error),
+        category="data_validation",
+    )
+
+
+def _check_geoarrow_encoding_matches_data(
+    safe_url: str, geom_col: str, encoding: str, con, limit_clause: str
+) -> ValidationCheck:
+    """Check 17 for GeoArrow columns: the stored nesting must fit the encoding.
+
+    There is nothing to parse per value — a native column either exposes the
+    coordinate path its encoding implies (a "polygon" column being a list of
+    rings of x/y structs) or it does not, which is the mismatch this reports.
+    """
+    name = f"encoding_matches_data_{geom_col}"
+    quoted_geom = quote_identifier(geom_col)
+    xmin, _, _, _, _, _ = _geoarrow_coord_exprs(quoted_geom, encoding)
+    query = f"""
+        SELECT COUNT(*) FROM (
+            SELECT {xmin} AS xmin
+            FROM read_parquet('{safe_url}')
+            WHERE {quoted_geom} IS NOT NULL
+            {limit_clause}
+        )
+    """
+
+    try:
+        result = con.execute(query).fetchone()
+    except Exception as e:
+        return _geoarrow_layout_error(name, encoding, "geometry coordinates", e)
+
+    total = result[0] if result else 0
+    return ValidationCheck(
+        name=name,
+        status=CheckStatus.PASSED,
+        message=f'all geometry values match "{encoding}" encoding ({total} checked)',
+        category="data_validation",
+    )
+
+
 def _check_encoding_matches_data(
     parquet_file: str, geom_col: str, encoding: str, con, sample_size: int
 ) -> ValidationCheck:
@@ -766,6 +1083,11 @@ def _check_encoding_matches_data(
 
     # For WKB encoding, verify we can parse geometries as WKB
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
+
+    if _is_geoarrow_encoding(encoding):
+        return _check_geoarrow_encoding_matches_data(
+            safe_url, geom_col, encoding, con, limit_clause
+        )
 
     try:
         # First check if DuckDB already has it as a GEOMETRY type
@@ -857,8 +1179,78 @@ def _normalize_found_geometry_type(raw: str) -> str:
     return _GEOM_TYPE_DISPLAY.get(base, base) + suffix
 
 
+def _compare_geometry_types(
+    normalized_found: set, declared_types: list, total_count: int, geom_col: str
+) -> ValidationCheck:
+    """Compare the geometry types found in the data against the declared list."""
+    name = f"geometry_types_match_data_{geom_col}"
+    declared_set = set(declared_types) if declared_types else set()
+
+    # If declared_types is empty, any type is allowed
+    if not declared_set:
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.PASSED,
+            message=f"geometry_types is empty (all types allowed), "
+            f"found: {normalized_found} ({total_count} checked)",
+            category="data_validation",
+        )
+
+    # Check if all found types are in declared types
+    undeclared = normalized_found - declared_set
+    if undeclared:
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.FAILED,
+            message=f"found undeclared geometry types: {undeclared} ({total_count} checked)",
+            details=f"Declared: {declared_set}, Found: {normalized_found}",
+            category="data_validation",
+        )
+
+    return ValidationCheck(
+        name=name,
+        status=CheckStatus.PASSED,
+        message=f'all geometry types match declared "geometry_types" ({total_count} checked)',
+        category="data_validation",
+    )
+
+
+def _check_geoarrow_geometry_types(
+    safe_url: str, geom_col: str, declared_types: list, con, limit_clause: str, encoding: str
+) -> ValidationCheck:
+    """Check 18 for GeoArrow columns.
+
+    A single-geometry-type encoding pins the geometry type of every value in the
+    column, and the coordinate struct pins its dimensionality, so the types
+    present follow from the column type rather than from a per-value scan.
+
+    The type therefore comes from the *declared* encoding, which check 15 has
+    already reconciled against the stored nesting depth. Since depth does not
+    separate linestring from multipoint (nor polygon from multilinestring, see
+    _GEOARROW_LIST_DEPTH for both the limitation and the way to close it), a
+    column mislabeled as its structural twin is reported here as that twin — a
+    missed detection, never a false rejection.
+    """
+    quoted_geom = quote_identifier(geom_col)
+    found = _GEOARROW_ENCODING_TYPE[encoding] + _geoarrow_zm_suffix(
+        _describe_geom_type(con, safe_url, geom_col)
+    )
+    count_query = f"""
+        SELECT COUNT(*) FROM read_parquet('{safe_url}')
+        WHERE {quoted_geom} IS NOT NULL {limit_clause}
+    """
+    count_result = con.execute(count_query).fetchone()
+    total_count = count_result[0] if count_result else 0
+    return _compare_geometry_types({found}, declared_types, total_count, geom_col)
+
+
 def _check_geometry_types_match_data(
-    parquet_file: str, geom_col: str, declared_types: list, con, sample_size: int
+    parquet_file: str,
+    geom_col: str,
+    declared_types: list,
+    con,
+    sample_size: int,
+    encoding: Any = "WKB",
 ) -> ValidationCheck:
     """Check 18: all geometry types must be included in 'geometry_types' metadata."""
     from geoparquet_io.core.file_utils import safe_file_url
@@ -867,10 +1259,13 @@ def _check_geometry_types_match_data(
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
 
     try:
+        if _is_geoarrow_encoding(encoding):
+            return _check_geoarrow_geometry_types(
+                safe_url, geom_col, declared_types, con, limit_clause, encoding
+            )
+
         # Check if DuckDB already has it as a GEOMETRY type
-        type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
-        type_result = con.execute(type_query).fetchone()
-        col_type = type_result[1] if type_result else ""
+        col_type = _describe_geom_type(con, safe_url, geom_col)
 
         # Build the geometry expression based on column type
         if "GEOMETRY" in col_type.upper():
@@ -903,38 +1298,13 @@ def _check_geometry_types_match_data(
 
         normalized_found = {_normalize_found_geometry_type(t) for t in found_types.keys() if t}
 
-        declared_set = set(declared_types) if declared_types else set()
-
-        # If declared_types is empty, any type is allowed
-        if not declared_set:
-            return ValidationCheck(
-                name=f"geometry_types_match_data_{geom_col}",
-                status=CheckStatus.PASSED,
-                message=f"geometry_types is empty (all types allowed), "
-                f"found: {normalized_found} ({total_count} checked)",
-                category="data_validation",
-            )
-
-        # Check if all found types are in declared types
-        undeclared = normalized_found - declared_set
-        if undeclared:
-            return ValidationCheck(
-                name=f"geometry_types_match_data_{geom_col}",
-                status=CheckStatus.FAILED,
-                message=f"found undeclared geometry types: {undeclared} ({total_count} checked)",
-                details=f"Declared: {declared_set}, Found: {normalized_found}",
-                category="data_validation",
-            )
-
-        return ValidationCheck(
-            name=f"geometry_types_match_data_{geom_col}",
-            status=CheckStatus.PASSED,
-            message=f'all geometry types match declared "geometry_types" ({total_count} checked)',
-            category="data_validation",
-        )
+        return _compare_geometry_types(normalized_found, declared_types, total_count, geom_col)
     except Exception as e:
+        check_name = f"geometry_types_match_data_{geom_col}"
+        if _is_geoarrow_encoding(encoding):
+            return _geoarrow_layout_error(check_name, encoding, "geometry types", e)
         return ValidationCheck(
-            name=f"geometry_types_match_data_{geom_col}",
+            name=check_name,
             status=CheckStatus.FAILED,
             message=f"failed to validate geometry types: {e}",
             category="data_validation",
@@ -964,7 +1334,12 @@ def _check_orientation_matches_data(
 
 
 def _build_bbox_query(
-    safe_url: str, geom_col: str, col_type: str, bbox: tuple, limit_clause: str
+    safe_url: str,
+    geom_col: str,
+    col_type: str,
+    bbox: tuple,
+    limit_clause: str,
+    encoding: Any = "WKB",
 ) -> str:
     """Build SQL query to check if geometries fall within bbox.
 
@@ -974,11 +1349,24 @@ def _build_bbox_query(
         col_type: DuckDB column type (to determine if GEOMETRY or binary)
         bbox: Tuple of (xmin, ymin, xmax, ymax)
         limit_clause: SQL LIMIT clause or empty string
+        encoding: Declared GeoParquet encoding for the column
 
     Returns:
         SQL query string that returns (total, within_bbox) counts
     """
     xmin, ymin, xmax, ymax = bbox
+
+    if _is_geoarrow_encoding(encoding):
+        # Native columns carry coordinates, not serialized geometries: compare
+        # the per-row coordinate bounds directly instead of parsing WKB.
+        return f"""
+            SELECT COUNT(*) as total,
+                   COUNT(CASE WHEN
+                       xmin >= {xmin} AND ymin >= {ymin} AND
+                       xmax <= {xmax} AND ymax <= {ymax}
+                   THEN 1 END) as within_bbox
+            FROM ({_geoarrow_bounds_subquery(safe_url, geom_col, encoding, limit_clause)})
+        """
 
     # Use geometry column directly if native type, otherwise convert from WKB
     quoted_geom = quote_identifier(geom_col)
@@ -1051,7 +1439,12 @@ def _interpret_bbox_result(result: tuple | None, geom_col: str) -> ValidationChe
 
 
 def _check_bbox_contains_data(
-    parquet_file: str, geom_col: str, bbox: list | None, con, sample_size: int
+    parquet_file: str,
+    geom_col: str,
+    bbox: list | None,
+    con,
+    sample_size: int,
+    encoding: Any = "WKB",
 ) -> ValidationCheck:
     """Check 20: all geometries must fall within 'bbox' metadata."""
     if bbox is None:
@@ -1069,17 +1462,24 @@ def _check_bbox_contains_data(
 
     try:
         # Check if DuckDB already has it as a GEOMETRY type
-        type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
-        type_result = con.execute(type_query).fetchone()
-        col_type = type_result[1] if type_result else ""
+        col_type = _describe_geom_type(con, safe_url, geom_col)
 
-        query = _build_bbox_query(safe_url, geom_col, col_type, tuple(bbox[:4]), limit_clause)
+        # NOTE: bbox[:4] mishandles the spec's 6-element 3D form
+        # [xmin,ymin,zmin,xmax,ymax,zmax], comparing against
+        # [xmin,ymin,zmin,xmax]. Pre-existing and equally wrong for WKB;
+        # tracked as #603 item 1 (same line), so it is not fixed here.
+        query = _build_bbox_query(
+            safe_url, geom_col, col_type, tuple(bbox[:4]), limit_clause, encoding
+        )
         result = con.execute(query).fetchone()
         return _interpret_bbox_result(result, geom_col)
 
     except Exception as e:
+        check_name = f"bbox_contains_data_{geom_col}"
+        if _is_geoarrow_encoding(encoding):
+            return _geoarrow_layout_error(check_name, encoding, "geometry bounds", e)
         return ValidationCheck(
-            name=f"bbox_contains_data_{geom_col}",
+            name=check_name,
             status=CheckStatus.FAILED,
             message=f"failed to validate bbox: {e}",
             category="data_validation",
@@ -1300,7 +1700,9 @@ def _check_covering_bbox_field_types(
             num_children = col.get("num_children") or 0
             for j in range(1, min(num_children + 1, 5)):  # Check first 4 children
                 if i + j < len(schema_info):
-                    child_type = schema_info[i + j].get("type", "").upper()
+                    # Same trap as _check_geometry_byte_array: a group child's
+                    # type is an explicit None, so `or ""` is the guard here too.
+                    child_type = (schema_info[i + j].get("type") or "").upper()
                     field_types.add(child_type)
             break
 
@@ -2549,13 +2951,23 @@ def _detect_geographic_in_projected(
 
 
 def _get_geometry_bounds(
-    con, safe_url: str, geom_col: str, limit_clause: str
+    con, safe_url: str, geom_col: str, limit_clause: str, encoding: Any = "WKB"
 ) -> tuple[float, float, float, float, int] | None:
     """Query actual coordinate bounds from geometry data."""
+    if _is_geoarrow_encoding(encoding):
+        query = f"""
+            SELECT MIN(xmin) as min_x, MAX(xmax) as max_x,
+                   MIN(ymin) as min_y, MAX(ymax) as max_y,
+                   COUNT(*) as total
+            FROM ({_geoarrow_bounds_subquery(safe_url, geom_col, encoding, limit_clause)})
+        """
+        result = con.execute(query).fetchone()
+        if result is None or result[0] is None:
+            return None
+        return result[0], result[1], result[2], result[3], result[4]
+
     # Check if DuckDB already has it as a GEOMETRY type
-    type_query = f"DESCRIBE SELECT {quote_identifier(geom_col)} FROM read_parquet('{safe_url}')"
-    type_result = con.execute(type_query).fetchone()
-    col_type = type_result[1] if type_result else ""
+    col_type = _describe_geom_type(con, safe_url, geom_col)
 
     geom_expr = (
         quote_identifier(geom_col)
@@ -2591,6 +3003,7 @@ def _check_coordinates_valid_for_crs(
     crs: Any,
     con,
     sample_size: int,
+    encoding: Any = "WKB",
 ) -> ValidationCheck:
     """Check that geometry coordinates are within valid bounds for the declared CRS."""
     from geoparquet_io.core.file_utils import safe_file_url
@@ -2611,7 +3024,7 @@ def _check_coordinates_valid_for_crs(
         )
 
     try:
-        bounds_result = _get_geometry_bounds(con, safe_url, geom_col, limit_clause)
+        bounds_result = _get_geometry_bounds(con, safe_url, geom_col, limit_clause, encoding)
         if bounds_result is None:
             return ValidationCheck(
                 name=check_name,
@@ -2665,6 +3078,8 @@ def _check_coordinates_valid_for_crs(
         )
 
     except Exception as e:
+        if _is_geoarrow_encoding(encoding):
+            return _geoarrow_layout_error(check_name, encoding, "geometry coordinates", e)
         return ValidationCheck(
             name=check_name,
             status=CheckStatus.FAILED,
@@ -3112,7 +3527,16 @@ def _run_geoparquet_checks(
 
     # Column metadata checks for each geometry column
     for col_name, col_meta in columns.items():
-        checks.append(_check_encoding_valid(col_meta, col_name))
+        # The declared encoding decides how the column is laid out, so the
+        # schema and data checks below all have to read it.
+        encoding = col_meta.get("encoding", "WKB")
+        # A GeoArrow encoding the file's version does not permit is reported by
+        # _check_encoding_valid; the layout-aware checks must not then treat the
+        # column as native, or they would endorse the invalid combination.
+        if _is_geoarrow_encoding(encoding) and not _geoarrow_encoding_allowed(geo_version):
+            encoding = "WKB"
+
+        checks.append(_check_encoding_valid(col_meta, col_name, geo_version))
         checks.append(_check_geometry_types_list(col_meta, col_name))
         checks.append(_check_crs_valid(col_meta, col_name))
         checks.append(_check_orientation_valid(col_meta, col_name))
@@ -3121,13 +3545,12 @@ def _run_geoparquet_checks(
         checks.append(_check_epoch_valid(col_meta, col_name))
 
         # Parquet schema checks
-        checks.append(_check_geometry_not_grouped(schema_info, col_name))
-        checks.append(_check_geometry_byte_array(schema_info, col_name))
+        checks.append(_check_geometry_not_grouped(schema_info, col_name, encoding))
+        checks.append(_check_geometry_byte_array(schema_info, col_name, encoding))
         checks.append(_check_geometry_not_repeated(schema_info, col_name))
 
         # Data validation checks
         if validate_data and con:
-            encoding = col_meta.get("encoding", "WKB")
             checks.append(
                 _check_encoding_matches_data(parquet_file, col_name, encoding, con, sample_size)
             )
@@ -3135,7 +3558,7 @@ def _run_geoparquet_checks(
             geometry_types = col_meta.get("geometry_types", [])
             checks.append(
                 _check_geometry_types_match_data(
-                    parquet_file, col_name, geometry_types, con, sample_size
+                    parquet_file, col_name, geometry_types, con, sample_size, encoding
                 )
             )
 
@@ -3147,12 +3570,16 @@ def _run_geoparquet_checks(
             )
 
             bbox = col_meta.get("bbox")
-            checks.append(_check_bbox_contains_data(parquet_file, col_name, bbox, con, sample_size))
+            checks.append(
+                _check_bbox_contains_data(parquet_file, col_name, bbox, con, sample_size, encoding)
+            )
 
             # Check coordinates are valid for declared CRS
             crs = col_meta.get("crs")
             checks.append(
-                _check_coordinates_valid_for_crs(parquet_file, col_name, crs, con, sample_size)
+                _check_coordinates_valid_for_crs(
+                    parquet_file, col_name, crs, con, sample_size, encoding
+                )
             )
 
     # Version-specific checks

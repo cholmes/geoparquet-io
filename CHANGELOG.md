@@ -380,6 +380,30 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   Arrow-table paths in the same module, which already quoted them. Computed
   quadkey values are unchanged for ordinary column names.
 
+- **Validation accepts the GeoArrow encodings GeoParquet 1.1 permits.**
+  `gpio check spec` (and `validate_geoparquet()`) only recognised `"WKB"`, so a
+  file gpio itself writes with `--geoparquet-version 1.1-geoarrow` failed its
+  own spec check with six errors — four of them raw DuckDB binder errors from
+  calling `ST_GeomFromWKB()` on a nested coordinate struct. The single-geometry
+  type encodings (`point`, `linestring`, `polygon`, `multipoint`,
+  `multilinestring`, `multipolygon`) are now valid for 1.1, and every check
+  that reads the column is layout-aware: the `BYTE_ARRAY` requirement applies
+  only to WKB columns (native columns are checked for the DOUBLE coordinate
+  group the spec requires instead), and the encoding, geometry-type, bbox and
+  CRS data scans read GeoArrow coordinates directly rather than parsing WKB.
+  Empty and null geometries no longer skew those scans. 1.0 and 2.0 remain
+  WKB-only per their spec text, so a file claiming a GeoArrow encoding under
+  either version is still rejected — now with a message naming the version
+  requirement rather than a binder error.
+
+  The layout check does not stop at nesting depth. `linestring`/`multipoint`
+  and `polygon`/`multilinestring` store identical coordinate data at identical
+  depth, so a column relabelled as its twin would otherwise pass every check;
+  the field names on the coordinate nesting (`vertices`, `points`, `rings`,
+  `linestrings`, `polygons`) are matched as well, which separates all six
+  encodings. A type string that does not carry geoarrow's names — the generic
+  `list<element: ...>`, or the typeless group node `parquet_schema()` reports
+  for remote files — is not evidence of a wrong encoding and is not failed on.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
