@@ -29,8 +29,22 @@ disagreement in ``KNOWN_DIVERGENCES`` / ``KNOWN_STRATEGY_DIVERGENCES`` and
 xfails — it does **not** pin either side as correct. Deciding which side wins
 is the write-facade's job. A divergence that stops reproducing fails loudly so
 the stale entry gets removed; anything *new* fails hard rather than being
-absorbed. Every reason string below was found by building this suite; together
-they are the write-facade decision list.
+absorbed.
+
+Both allowlists are empty today, and that is the point: every divergence this
+suite was built to record has since been fixed, and the suite reported each one
+as "no longer reproduces" the moment it was. In order — #686 (`gpio convert
+--geoparquet-version 1.0` emitting the 1.1-only `covering` key) by gpio #714,
+#687 (`write_geoparquet_table` ignoring `parquet-geo-only`) by #702, #688 (the
+streaming geometry type decided by geoarrow import order) by #707, #689
+(disk-rewrite ignoring row-group sizing) by #698, #691 (the validator rejecting
+GeoParquet 1.1's GeoArrow encodings) by #715, and #690 (convert and
+`Table.write` dropping sidecar kv metadata) by #710.
+
+What survives are the two disagreements outside that batch, both still xfailed:
+auto-version resolution splitting four ways on a native-geo input (gpio #600)
+and the validator's `crs_valid` check flipping with geoarrow registration (the
+gpio #603 family). Those two are the remaining write-facade decision list.
 """
 
 from __future__ import annotations
@@ -38,9 +52,6 @@ from __future__ import annotations
 import json
 import os
 import struct
-import subprocess
-import sys
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,74 +107,6 @@ class Divergence:
     state_dependent: bool = False
 
 
-CLI_1_0_COVERING = Divergence(
-    reason=(
-        "gpio convert geoparquet adds a bbox covering column at every version, "
-        "so --geoparquet-version 1.0 emits a 1.0.0 file carrying the 1.1-only "
-        "'covering' key and fails gpio's own spec check — while still exiting "
-        "0. The other three write paths add no covering. See gpio #686."
-    ),
-    oracle_prefixes=("version_features_match",),
-)
-
-WGT_IGNORES_PARQUET_GEO_ONLY = Divergence(
-    reason=(
-        "write_geoparquet_table ignores geoparquet_version='parquet-geo-only'. "
-        "_apply_geoparquet_metadata converts the column to a native GEOMETRY "
-        "logical type and then returns early (common.py:1448) without removing "
-        "the input's carried 'geo' key, so the output keeps whatever version "
-        "the INPUT declared (1.0.0 in, 1.0.0 out) over 2.0-only native types. "
-        "The writer stamps no version of its own. The other three paths drop "
-        "the geo key entirely. See gpio #687."
-    ),
-    assertion_contains="expected no 'geo' metadata key",
-)
-
-STREAMING_GEOMETRY_TYPE = Divergence(
-    reason=(
-        "The arrow-streaming strategy's on-disk geometry type depends on global "
-        "process state: without geoarrow.pyarrow imported it writes LARGE_BINARY "
-        "(fails geometry_byte_array), and once anything in the process has "
-        "imported geoarrow.pyarrow it writes a native geoarrow.wkb extension "
-        "type under a 1.1.0 declaration (fails version_features_match). Either "
-        "way the output fails gpio's own validator, and which failure you get is "
-        "decided by import order. See gpio #688 and "
-        "test_streaming_output_is_independent_of_geoarrow_import."
-    ),
-    oracle_prefixes=("geometry_byte_array", "version_features_match"),
-)
-
-GEOARROW_ENCODING_UNVALIDATABLE = Divergence(
-    reason=(
-        "1.1-geoarrow output is rejected by gpio's own validator: validate.py "
-        "treats 'point'/'linestring'/... GeoArrow encodings as invalid and then "
-        "tries ST_GeomFromWKB on the struct column. GeoParquet 1.1 permits these "
-        "encodings, so this is a validator gap, not a writer bug. See gpio #691."
-    ),
-    oracle_prefixes=(
-        "encoding_valid",
-        "geometry_byte_array",
-        "encoding_matches_data",
-        "geometry_types_match_data",
-        "bbox_contains_data",
-        "coordinates_valid_for_crs",
-    ),
-)
-
-DISK_REWRITE_IGNORES_ROW_GROUP_ROWS = Divergence(
-    reason=(
-        "The disk-rewrite strategy accepts row_group_rows and row_group_size_mb "
-        "and uses neither: write_from_query issues a bare COPY TO and rewrites "
-        "with PyArrow defaults, so a caller's row-group sizing is silently "
-        "dropped. The other three strategies honour it. See gpio #689."
-    ),
-    # Deliberately narrower than "row groups": that also matches the
-    # row-conservation assert ("row groups hold N rows but the file claims M"),
-    # so a genuine row-loss regression in this one cell would have been
-    # absorbed as an xfail instead of failing.
-    assertion_contains="row groups, got",
-)
-
 AUTO_VERSION_NATIVE_DOWNGRADE = Divergence(
     reason=(
         "Auto version mode (geoparquet_version=None) splits four ways on a "
@@ -196,36 +139,19 @@ AUTO_2_0_CRS_STATE = Divergence(
 )
 
 # (path, version) -> Divergence. A1 only.
-KNOWN_DIVERGENCES: dict[tuple[str, str], Divergence] = {
-    ("cli", "1.0"): CLI_1_0_COVERING,
-    ("write_geoparquet_table", "parquet-geo-only"): WGT_IGNORES_PARQUET_GEO_ONLY,
-}
+#
+# Empty: every A1 divergence this suite was written to record has since been
+# fixed (#686 by #714, #687 by #702). Kept rather than deleted -- the
+# adjudication machinery below is what makes a *new* disagreement fail loudly
+# instead of being absorbed, and an empty allowlist is the state that says
+# "all four paths agree at every version".
+KNOWN_DIVERGENCES: dict[tuple[str, str], Divergence] = {}
 
 # (strategy, shape) -> Divergence. A2 only.
-KNOWN_STRATEGY_DIVERGENCES: dict[tuple[str, str], Divergence] = {
-    ("streaming", shape): STREAMING_GEOMETRY_TYPE
-    for shape in ("normal", "zero_row", "null_geoms", "zm", "geom_named", "multi_row_group")
-}
-KNOWN_STRATEGY_DIVERGENCES[("disk-rewrite", "multi_row_group")] = (
-    DISK_REWRITE_IGNORES_ROW_GROUP_ROWS
-)
-
-# A3. The two mechanisms are different bugs and are reported separately.
-KV_DROPPED_BY_CONVERT = (
-    "gpio convert geoparquet drops the input's non-geo kv metadata "
-    "(fiboa/vecorel/STAC sidecars): convert.py:2030 hardcodes "
-    "original_metadata=None, so write_parquet_with_metadata's preservation "
-    "loop has nothing to preserve. Unconditional — every strategy. See gpio #690."
-)
-
-KV_DROPPED_BY_TABLE_WRITE = (
-    "api.Table.write drops the input's non-geo kv metadata for its DEFAULT "
-    "strategy. It calls the strategy's write_from_table directly, bypassing "
-    "the preservation merge in write_parquet_with_metadata, so preservation is "
-    "strategy-dependent: in-memory and streaming keep the keys incidentally "
-    "(the Arrow path copies non-geo schema metadata, common.py:1361-1367) "
-    "while duckdb-kv (the default) and disk-rewrite drop them. See gpio #690."
-)
+#
+# Also empty: #688 (fixed by #707) covered six streaming shapes and #689 (fixed
+# by #698) the disk-rewrite row-group cell.
+KNOWN_STRATEGY_DIVERGENCES: dict[tuple[str, str], Divergence] = {}
 
 # ---------------------------------------------------------------------------
 # Fixture data: built in-test, no new files under tests/data.
@@ -754,8 +680,8 @@ def test_a2_geoarrow_version_agrees_across_strategies(strategy, shape_sources, t
     strategy" as a known asymmetry. That is no longer true:
     ``write_parquet_with_metadata`` auto-routes a WKB input to arrow-streaming
     whatever the caller asked for, so all four requests now produce the same
-    natively encoded file. What remains broken is downstream — gpio's own
-    validator rejects the result.
+    natively encoded file, and since #715 taught the validator the GeoArrow
+    encodings GeoParquet 1.1 permits, the result validates clean too.
     """
     out = tmp_path / f"geoarrow_{strategy}.parquet"
     _write_via_query(shape_sources["normal"], str(out), "1.1-geoarrow", write_strategy=strategy)
@@ -766,7 +692,7 @@ def test_a2_geoarrow_version_agrees_across_strategies(strategy, shape_sources, t
         columns=("id",),  # the WKB column is replaced by a nested x/y struct
     )
     failed = assert_valid_geoparquet_output(str(out), expect)
-    _adjudicate(failed, GEOARROW_ENCODING_UNVALIDATABLE)
+    assert failed == [], f"1.1-geoarrow via {strategy} no longer validates: {failed}"
 
 
 # ---------------------------------------------------------------------------
@@ -786,30 +712,26 @@ def test_a3_input_kv_metadata_survives(path_name, normal_source, tmp_path):
     finally:
         pf.close()
 
-    reasons = {"cli": KV_DROPPED_BY_CONVERT, "api_table_write": KV_DROPPED_BY_TABLE_WRITE}
-    reason = reasons.get(path_name)
-
+    # No allowlist here any more: #710 gave `gpio convert geoparquet` and
+    # `Table.write` the same preservation every other path already had, so all
+    # four paths must keep the input's sidecar keys unconditionally.
     dropped = sorted(set(EXTRA_KV) - written)
-    if dropped and reason is not None:
-        pytest.xfail(f"{reason} (dropped: {dropped})")
     assert not dropped, f"{path_name} dropped input kv metadata {dropped}"
-    if reason is not None:
-        pytest.fail(
-            "recorded divergence no longer reproduces — "
-            f"{path_name} now preserves input kv metadata; remove the entry.\n{reason}"
-        )
 
 
 @pytest.mark.parametrize("strategy", STRATEGIES)
-def test_a3_table_write_kv_depends_on_strategy(strategy, normal_source, tmp_path):
-    """Table.write's kv preservation is decided by the strategy, not the API.
+def test_a3_table_write_kv_survives_every_strategy(strategy, normal_source, tmp_path):
+    """Table.write's kv preservation must not depend on the strategy.
 
-    The preservation merge lives in ``write_parquet_with_metadata``;
-    ``Table.write`` calls ``write_from_table`` directly and so inherits
-    whatever each strategy happens to do. The Arrow-based strategies copy
-    non-geo schema metadata across and keep the keys; the DuckDB COPY paths
-    rebuild the kv block from scratch and lose them. Pinning both directions
-    documents the mechanism the facade has to unify.
+    It used to. ``Table.write`` calls ``write_from_table`` directly, bypassing
+    the preservation merge in ``write_parquet_with_metadata``, so it inherited
+    whatever each strategy happened to do: the Arrow strategies copied non-geo
+    schema metadata across and kept the keys, while the DuckDB COPY paths
+    rebuilt the kv block from scratch and lost them. That made a caller's
+    sidecar payload survive or vanish according to a performance setting.
+
+    #710 pushed the input's preserved keys down to every strategy, so this now
+    pins agreement rather than documenting the split.
     """
     out = tmp_path / f"api_kv_{strategy}.parquet"
     _write_via_api(normal_source, str(out), "1.1", write_strategy=strategy)
@@ -820,20 +742,11 @@ def test_a3_table_write_kv_depends_on_strategy(strategy, normal_source, tmp_path
     finally:
         pf.close()
 
-    preserved = set(EXTRA_KV) <= written
-    if strategy in ("in-memory", "streaming"):
-        assert preserved, (
-            f"{strategy} used to preserve input kv metadata incidentally; it no "
-            f"longer does (kept {sorted(written)}). If this was deliberate, the "
-            "divergence note in KV_DROPPED_BY_TABLE_WRITE needs updating."
-        )
-        return
-    if preserved:
-        pytest.fail(
-            f"{strategy} now preserves input kv metadata through Table.write — "
-            f"update KV_DROPPED_BY_TABLE_WRITE, which records that it does not."
-        )
-    pytest.xfail(KV_DROPPED_BY_TABLE_WRITE)
+    dropped = sorted(set(EXTRA_KV) - written)
+    assert not dropped, (
+        f"Table.write with the {strategy} strategy dropped input kv metadata "
+        f"{dropped}; preservation must not depend on the strategy"
+    )
 
 
 def test_a3_extra_kv_metadata_written(normal_source, tmp_path):
@@ -915,96 +828,18 @@ def test_geo_metadata_snapshot(version, normal_source, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Global-state independence (the highest-value finding in this suite)
+# Global-state independence
 # ---------------------------------------------------------------------------
-
-
-_STREAMING_PROBE = """
-import json, struct, sys, tempfile
-from pathlib import Path
-import pyarrow as pa, pyarrow.parquet as pq
-if "--import-geoarrow" in sys.argv:
-    import geoarrow.pyarrow  # noqa: F401
-from geoparquet_io.core.common import (
-    get_duckdb_connection, get_parquet_metadata, write_parquet_with_metadata,
-)
-geo = {"version": "1.1.0", "primary_column": "geometry",
-       "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}}}
-tmp = Path(tempfile.mkdtemp())
-src = tmp / "src.parquet"
-table = pa.table({"id": [1, 2], "geometry": [struct.pack("<BI2d", 1, 1, 1.0, 2.0),
-                                             struct.pack("<BI2d", 1, 1, 3.0, 4.0)]})
-pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), src)
-out = tmp / "out.parquet"
-con = get_duckdb_connection()
-meta, _ = get_parquet_metadata(str(src))
-write_parquet_with_metadata(
-    con, f"SELECT * FROM read_parquet('{src.as_posix()}')", str(out),
-    original_metadata=meta, geoparquet_version="1.1",
-    write_strategy="streaming", input_file=str(src),
-)
-con.close()
-pf = pq.ParquetFile(out)
-print("GEOMETRY_TYPE:" + str(pf.schema_arrow.field("geometry").type))
-pf.close()
-"""
-
-
-def _run_streaming_probe(*args: str) -> str:
-    # Scrub pytest-cov's subprocess hooks. Without this the child starts its own
-    # coverage via sitecustomize and writes to the run's shared data file; under
-    # xdist that is several unmanaged writers at once, which crashed the worker
-    # running this test on every full-suite run.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("COV_CORE")}
-    env["COVERAGE_PROCESS_START"] = ""
-    proc = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(_STREAMING_PROBE), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-        timeout=300,
-        # close_fds=False lets CPython take its posix_spawn path instead of
-        # fork()+exec. Forking an xdist worker that has already loaded DuckDB
-        # and Arrow — i.e. any worker that ran the rest of the suite first —
-        # killed the worker outright and took the whole run down with it.
-        close_fds=False,
-    )
-    assert proc.returncode == 0, f"probe failed:\n{proc.stdout}\n{proc.stderr}"
-    for line in proc.stdout.splitlines():
-        if line.startswith("GEOMETRY_TYPE:"):
-            return line.split(":", 1)[1]
-    raise AssertionError(f"probe printed no geometry type:\n{proc.stdout}")
-
-
-@pytest.mark.skipif(
-    bool(os.environ.get("PYTEST_XDIST_WORKER")),
-    reason=(
-        "spawns child interpreters; doing that from an xdist worker that has "
-        "already loaded DuckDB and Arrow kills the worker and aborts the run "
-        "(reproduced 4/4 full-suite runs, and the suite is clean when this "
-        "test is deselected). Runs serially: "
-        "uv run pytest tests/test_write_contract.py -k geoarrow_import"
-    ),
-)
-@pytest.mark.xfail(strict=False, reason=STREAMING_GEOMETRY_TYPE.reason)
-def test_streaming_output_is_independent_of_geoarrow_import():
-    """The same write must produce the same file whatever else the process imported.
-
-    Two subprocesses, identical except that one imports ``geoarrow.pyarrow``
-    first. Today they disagree: ``large_binary`` versus a native
-    ``geoarrow.wkb`` extension type, which is why the streaming rows of A2 land
-    on two different validator failures depending on test ordering. Marked
-    non-strict xfail: this asserts the *desired* behavior, so it flips to XPASS
-    when the leak is fixed rather than pinning the bug.
-
-    Skipped under xdist (see the skipif reason). The *symptom* stays covered in
-    parallel runs by the six streaming rows of A2, which accept either failure;
-    this test is what names the cause, so it is kept rather than deleted.
-    """
-    without = _run_streaming_probe()
-    with_geoarrow = _run_streaming_probe("--import-geoarrow")
-    assert without == with_geoarrow, (
-        f"streaming wrote {without!r} on a clean interpreter but {with_geoarrow!r} "
-        "after geoarrow.pyarrow was imported"
-    )
+#
+# This suite's highest-value finding was that the arrow-streaming strategy's
+# on-disk geometry type depended on whether anything in the process had
+# imported geoarrow.pyarrow. It is fixed (#688 by gpio #707), and the
+# regression test now lives in tests/test_streaming_write_determinism.py::
+# test_streaming_output_is_independent_of_geoarrow_import.
+#
+# The version that lived here is deliberately not kept alongside it. It was
+# strictly weaker -- it compared the geometry *type string* from two separate
+# subprocesses, where the surviving test compares the SHA-256 of the whole
+# written file -- and it carried a skipif for PYTEST_XDIST_WORKER, so under the
+# -n 4 the CI fast lane uses it never executed at all. Two tests of one
+# invariant, one of which cannot run where it matters, is worse than one.

@@ -132,18 +132,25 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   as canaries for silent field drift (refresh with `GPIO_UPDATE_SNAPSHOT=1`).
   Building it surfaced six write-path defects, each recorded as an `xfail`
   carrying its issue number rather than pinned as correct behaviour:
-  `gpio convert geoparquet --geoparquet-version 1.0` writes the 1.1-only
-  `covering` key into a 1.0 file and still exits 0 (#686);
-  `write_geoparquet_table` ignores `parquet-geo-only` (#687); the
-  arrow-streaming strategy's on-disk geometry type changes depending on
+  `gpio convert geoparquet --geoparquet-version 1.0` writing the 1.1-only
+  `covering` key into a 1.0 file and still exiting 0 (#686);
+  `write_geoparquet_table` ignoring `parquet-geo-only` (#687); the
+  arrow-streaming strategy's on-disk geometry type changing depending on
   whether anything in the process imported `geoarrow.pyarrow` (#688);
-  `disk-rewrite` silently ignores `row_group_rows`/`row_group_size_mb` (#689);
-  `api.Table.write` and `gpio convert geoparquet` drop input non-geo kv
+  `disk-rewrite` silently ignoring `row_group_rows`/`row_group_size_mb` (#689);
+  `api.Table.write` and `gpio convert geoparquet` dropping input non-geo kv
   metadata that the core query writer preserves (#690); and `1.1-geoarrow`
-  output is rejected by gpio's own validator, which does not accept GeoArrow
-  encodings that GeoParquet 1.1 permits (#691). The suite also covers auto
-  version mode, where the four paths resolve a native-geo-only input two
-  different ways (#600).
+  output being rejected by gpio's own validator, which did not accept the
+  GeoArrow encodings GeoParquet 1.1 permits (#691).
+
+  **All six are fixed as of this release** — by #714, #702, #707, #698, #710
+  and #715 respectively — and the suite reported each one as "no longer
+  reproduces" rather than quietly going green, which is what the allowlists are
+  for. Both are empty now; the machinery stays so a *new* disagreement fails
+  loudly instead of being absorbed. Two out-of-batch divergences remain
+  xfailed: auto-version resolution splitting four ways on a native-geo input
+  (#600), and the validator's `crs_valid` check flipping with geoarrow
+  registration (the #603 family).
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
