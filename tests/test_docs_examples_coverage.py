@@ -127,7 +127,11 @@ def _candidate_fences(page: Path):
         if directives.demonstrates_error or UNJUDGEABLE.search(block.source):
             continue
         groups = statement_groups(block.source)
-        if len(groups) > 1:
+        # Single-command fences count too. They are empirically clean today, but
+        # excluding them would leave an unguarded path for exactly the regression
+        # this test exists to catch: a lone command that quietly starts passing
+        # while the fence still claims it cannot run.
+        if groups:
             yield block, groups
 
 

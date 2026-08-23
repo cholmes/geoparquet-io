@@ -1901,7 +1901,7 @@ gpio extract data.parquet output.parquet --bbox 1000,1000,1001,1001
 
 If you specify a non-existent column, you'll get a clear error:
 
-<!-- doctest: skip="demonstrates the error for an unknown --include-cols column on purpose" -->
+<!-- doctest: skip="demonstrates the error for an unknown --include-cols column on purpose", demonstrates-error -->
 ```bash
 gpio extract data.parquet output.parquet --include-cols invalid_column
 # Error: Columns not found in schema (--include-cols): invalid_column
@@ -1912,7 +1912,7 @@ gpio extract data.parquet output.parquet --include-cols invalid_column
 
 SQL syntax errors are reported with details:
 
-<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose" -->
+<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose", demonstrates-error -->
 ```bash
 gpio extract data.parquet output.parquet --where "invalid syntax here"
 # Error: Parser Error: syntax error at or near "here"
@@ -1922,7 +1922,7 @@ gpio extract data.parquet output.parquet --where "invalid syntax here"
 
 For safety, certain SQL keywords are blocked in WHERE clauses:
 
-<!-- doctest: skip="demonstrates the SQL-injection guard rejecting a --where on purpose" -->
+<!-- doctest: skip="demonstrates the SQL-injection guard rejecting a --where on purpose", demonstrates-error -->
 ```bash
 gpio extract data.parquet output.parquet --where "population > 1000; DROP TABLE users"
 # Error: WHERE clause contains potentially dangerous SQL keywords: DROP
@@ -1930,7 +1930,7 @@ gpio extract data.parquet output.parquet --where "population > 1000; DROP TABLE 
 
 A `;` statement separator is rejected on its own, even when no blocked keyword follows it, because DuckDB executes multi-statement strings:
 
-<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose" -->
+<!-- doctest: skip="demonstrates the error message for an invalid --where on purpose", demonstrates-error -->
 ```bash
 gpio extract data.parquet output.parquet --where "1=1; COPY (SELECT 42) TO 'x.csv'"
 # Error: WHERE clause contains a ';' statement separator outside a quoted string
