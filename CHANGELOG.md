@@ -63,6 +63,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **Canonical sample dataset (#667)**: `tests/data/canonical/` holds one small,
+  spec-clean dataset that the documentation examples, the end-to-end journey
+  tests, and the `examples/` notebooks can all share — `places.parquet` (766
+  POINT features), `buildings.parquet` (42 POLYGON features), and matching
+  `places.geojson` / `places.csv` derivatives, about 405 KB in total and
+  mirrored byte-for-byte into `examples/data/` alongside the pre-existing
+  `sample.parquet`. Both parquet files are GeoParquet 1.1, Hilbert-sorted, with
+  a `bbox` covering and ZSTD compression, so `gpio check all` reports no
+  warnings on the tool's own sample data. The files are derived artifacts, not
+  committed blobs of unknown provenance:
+  `uv run python tests/data/canonical/generate_canonical.py` rebuilds them
+  byte-identically, and builds them by driving the real CLI (`sort hilbert
+  --add-bbox`, `convert geojson`), so regenerating the dataset also smoke-tests
+  gpio. `tests/test_canonical_dataset.py` pins row counts, exact column lists,
+  geo metadata, clean `validate_geoparquet` results, cross-representation
+  agreement between the parquet/GeoJSON/CSV views, and the `examples/data/`
+  mirror, so the dataset cannot rot silently behind the tests that depend on it.
 - **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
   whole Click command tree into a structural snapshot at
   `tests/data/cli_surface.json` — every group, command, option and argument
