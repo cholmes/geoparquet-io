@@ -78,8 +78,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   fences, and ratchets the number of opted-out blocks. A curated fast subset
   (`sort.md`, `piping.md`, `check.md`) runs in the fast suite; the rest carry
   `slow`. Running the docs found real bugs in them, now fixed: `--aws-profile`
-  documented in the trailing position where only the global position works,
-  and `gpio inspect FILE --stats` for what is really `gpio inspect stats FILE`.
+  shown after the subcommand on `sort hilbert`, `add bbox` and
+  `partition string`, which reject it there (it is a hidden per-command option
+  that only some subcommands carry; the global position works everywhere), and
+  `gpio inspect FILE --stats` for what is really `gpio inspect stats FILE`.
 - **Canonical sample dataset (#667)**: `tests/data/canonical/` holds one small,
   spec-clean dataset that the documentation examples, the end-to-end journey
   tests, and the `examples/` notebooks can all share — `places.parquet` (766

@@ -27,7 +27,6 @@ SEED_FILES: dict[str, str] = {
     "data.parquet": "places.parquet",  # ~180
     "places.parquet": "places.parquet",  # ~8
     "myfile.parquet": "places.parquet",  # ~12
-    "sample.parquet": "places.parquet",  # ~6
     "large.parquet": "places.parquet",  # ~8
     "large_file.parquet": "places.parquet",  # ~5
     "huge_dataset.parquet": "places.parquet",  # ~4
@@ -47,6 +46,12 @@ SEED_FILES: dict[str, str] = {
     "input.csv": "places.csv",
     "places.csv": "places.csv",
 }
+
+#: Names the guides use only as *outputs* are deliberately absent above, even
+#: when they read like inputs. ``sample.parquet`` is the cautionary case: it was
+#: seeded at first, which made ``gpio extract data.parquet sample.parquet`` fail
+#: with "Output file already exists" — the harness inventing a precondition the
+#: doc never claimed. If you add a name here, check the guides actually read it.
 
 #: Directories examples write into and expect to exist.
 SEED_DIRS = ("output_dir",)

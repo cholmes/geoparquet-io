@@ -1,16 +1,20 @@
 """Guard the docs-as-tests harness against silent opt-outs.
 
 The point of running the guides' examples is that a broken example turns CI red.
-That only holds if every example is *reachable* by the harness. There are three
+That only holds if every example is *reachable* by the harness. There are four
 ways a block can slip out of reach, and one test here for each:
 
 1. It is fenced with a language the harness does not execute (```sh, ```py,
    ```console) — collected by nobody, noticed by nobody.
-2. It carries a directive the parser cannot read, or opts out with no stated
+2. A stray ``` marker upstream shifts the fence pairing, so the block is
+   swallowed into the body of a phantom one. This was live in benchmarks.md and
+   hid a real bash block; nothing about the rendered page looked wrong.
+3. It carries a directive the parser cannot read, or opts out with no stated
    reason.
-3. It is fenced as prose (```text) while actually containing commands.
+4. It is fenced as prose (```text) while actually containing commands.
 
-Plus a ratchet: the number of opted-out blocks may not grow unnoticed.
+Plus ratchets in both directions: opt-outs may not creep up, and the number of
+blocks that actually execute may not quietly fall.
 
 These are cheap string checks, so they live in the fast suite where they gate
 every pull request.
@@ -33,10 +37,12 @@ from tests.docs_examples.parser import (
 GUIDE_DIR = Path(__file__).resolve().parent.parent / "docs" / "guide"
 DOCS_ROOT = GUIDE_DIR.parent
 
-#: Ratchets. Raising either of these is a deliberate act that shows up in a diff
-#: and needs a justification in the pull request; that is the whole point.
-MAX_SKIPPED_BLOCKS = 220
-MIN_EXECUTED_BLOCKS = 190
+#: Ratchets, set ~15 blocks either side of the current counts (212 skipped, 230
+#: executed). The headroom keeps ordinary doc edits from tripping them while
+#: still catching a drift of any size; moving either number is a deliberate act
+#: that shows up in a diff and needs a justification in the pull request.
+MAX_SKIPPED_BLOCKS = 227
+MIN_EXECUTED_BLOCKS = 215
 
 #: Looks like a command rather than prose or sample output.
 _COMMAND_LIKE = re.compile(r"^\s*(gpio\s|import geoparquet_io|from geoparquet_io\s)")
@@ -68,6 +74,31 @@ def test_every_fence_uses_a_known_language(page: Path):
         + "\n  ".join(unknown)
         + f"\nUse one of {sorted(known)}. Executable ones are {list(EXECUTABLE_LANGUAGES)}; "
         "anything else is treated as inert prose and never runs."
+    )
+
+
+@pytest.mark.parametrize("page", GUIDE_PAGES, ids=lambda p: p.name)
+def test_every_fence_marker_belongs_to_a_block(page: Path):
+    """No stray ``` markers: every one opens or closes a block the parser found.
+
+    This is the totality guard the language check cannot give. A single stray
+    marker does not look like an error — the page still renders — but it shifts
+    the pairing of every fence after it, so a real ```bash block downstream gets
+    swallowed into the body of a phantom one and is never collected. That is a
+    silent hole in the coverage, which is exactly what this harness exists to
+    prevent. (One such stray was live in benchmarks.md and hid a real block.)
+    """
+    lines = page.read_text(encoding="utf-8").split("\n")
+    markers = {i for i, line in enumerate(lines, start=1) if line.strip().startswith("```")}
+    paired = set()
+    for block in iter_fences(page, DOCS_ROOT):
+        paired.add(block.line)
+        paired.add(block.end_line)
+    stray = sorted(markers - paired)
+    assert not stray, (
+        f"{page.name}: ``` marker(s) on line(s) {stray} do not open or close any "
+        "block the parser can pair. A stray marker silently swallows the next "
+        "real code block — delete it, or close the fence it belongs to."
     )
 
 

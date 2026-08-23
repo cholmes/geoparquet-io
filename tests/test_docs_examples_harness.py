@@ -195,6 +195,36 @@ def test_menu_accepts_a_plain_list_of_commands():
     assert check_menu_is_splittable(MENU_BLOCK) is None
 
 
+def test_end_line_points_at_the_closing_fence(tmp_path):
+    """The fence-parity meta-test is only as good as this number."""
+    page = _write(tmp_path, "t.md", "intro\n\n```bash\na\nb\n```\n\ntail\n")
+    (block,) = iter_blocks(page, tmp_path)
+    lines = page.read_text().split("\n")
+    assert lines[block.line - 1].strip() == "```bash"
+    assert lines[block.end_line - 1].strip() == "```"
+
+
+def test_end_line_is_right_for_an_indented_fence(tmp_path):
+    page = _write(tmp_path, "t.md", '=== "CLI"\n\n    ```bash\n    a\n    ```\n\nafter\n')
+    (block,) = iter_blocks(page, tmp_path)
+    lines = page.read_text().split("\n")
+    assert lines[block.end_line - 1].strip() == "```"
+    # Every marker in the page is accounted for; nothing is stray.
+    markers = {i for i, ln in enumerate(lines, 1) if ln.strip().startswith("```")}
+    assert markers == {block.line, block.end_line}
+
+
+def test_a_stray_fence_marker_is_detectable(tmp_path):
+    """A stray marker leaves a ``` that pairs with nothing — what the meta-test finds."""
+    page = _write(tmp_path, "t.md", "```bash\na\n```\n\nprose\n```\n\n```bash\nb\n```\n")
+    lines = page.read_text().split("\n")
+    markers = {i for i, ln in enumerate(lines, 1) if ln.strip().startswith("```")}
+    paired = set()
+    for block in iter_fences(page, tmp_path):
+        paired.update({block.line, block.end_line})
+    assert markers - paired, "the stray marker should not pair with any block"
+
+
 def test_prelude_is_parsed_and_marks_the_block_as_annotated():
     parsed = parse_directives("prelude=\"table = gpio.read('x.parquet')\"")
     assert parsed.prelude == "table = gpio.read('x.parquet')"

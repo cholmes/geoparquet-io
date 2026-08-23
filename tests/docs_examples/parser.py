@@ -115,6 +115,10 @@ class Block:
     line: int
     source: str
     directives: Directives = field(default_factory=Directives)
+    #: 1-based line of the closing fence. Used by the fence-parity meta-test,
+    #: which checks that every ``` marker in a page belongs to a block the
+    #: parser found — a stray marker silently swallows the next real block.
+    end_line: int = 0
 
     @property
     def test_id(self) -> str:
@@ -209,6 +213,8 @@ def iter_fences(path: Path, docs_root: Path | None = None):
             line=text.count("\n", 0, match.start()) + 1,
             source=_dedent(match.group("body"), match.group("indent")),
             directives=_directives_above(text, match.start()),
+            # match.end() sits at the end of the closing fence line.
+            end_line=text.count("\n", 0, match.end()) + 1,
         )
 
 

@@ -3,6 +3,16 @@
 Test ids are ``guide/sort.md:L14[bash]`` and the reported location is the doc
 file and the fence's line, so a failure points straight at the example that
 broke rather than at harness code.
+
+**What this harness does and does not prove.** An example passes when it exits
+zero. Nothing here inspects what it wrote, so a command that succeeds while
+doing nothing useful still counts as green — ``gpio add bbox in.parquet
+out.parquet`` on a file that already has a bbox prints a notice, writes no
+output file, and exits 0. That is a real gap, not an oversight: catching it
+needs expected-output assertions (an ``expects="..."`` directive, or a
+post-condition per block), which is deliberately left for a follow-up. Read a
+green docs lane as "every documented command still parses, runs, and does not
+crash", not as "every documented command does what the prose claims".
 """
 
 from __future__ import annotations
@@ -68,6 +78,12 @@ class DocExampleItem(pytest.Item):
         if self.block.directives.menu:
             if self.block.lang != "bash":
                 pytest.fail("the menu directive only applies to bash blocks")
+            if self.block.directives.prelude:
+                # prelude exists for Python tabs that continue an earlier
+                # session; menu is bash-only. Combined, the prelude would be
+                # split off as its own "alternative" and run on its own, which
+                # is never what the author meant.
+                pytest.fail("menu and prelude cannot be combined (menu is bash, prelude is Python)")
             problem = check_menu_is_splittable(source)
             if problem:
                 pytest.fail(f"menu directive refused: {problem}")
