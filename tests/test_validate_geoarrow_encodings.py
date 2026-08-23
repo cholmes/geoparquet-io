@@ -447,3 +447,84 @@ class TestGeoArrowDimensionSuffix:
     )
     def test_suffix_from_column_type(self, col_type, expected):
         assert _geoarrow_zm_suffix(col_type) == expected
+
+
+# Encodings that share a list depth, and therefore cannot be told apart by
+# nesting level alone: swapping the labels within a pair leaves a file whose
+# coordinate data is byte-identical to a valid file of the other encoding.
+DEPTH_TWIN_SWAPS = [
+    ("linestring", "multipoint"),
+    ("multipoint", "linestring"),
+    ("polygon", "multilinestring"),
+    ("multilinestring", "polygon"),
+]
+
+
+class TestGeoArrowDepthTwinsAreDistinguished:
+    """A mislabelled encoding must fail even when its list depth is right.
+
+    `_GEOARROW_LIST_DEPTH` cannot separate linestring from multipoint (both one
+    list level) or polygon from multilinestring (both two). Without a second
+    signal, relabelling a column as its twin produces a file that validates
+    clean, because every depth-based check agrees with the lie. The outer list
+    field name geoarrow.pyarrow renders (`vertices` / `points` / `rings` /
+    `linestrings`) is what actually separates them.
+    """
+
+    @pytest.mark.parametrize("real,claimed", DEPTH_TWIN_SWAPS)
+    def test_relabelled_twin_is_rejected(self, tmp_path, real, claimed):
+        wkts, geometry_types = GEOARROW_CASES[real]
+        source = _write_geoarrow(tmp_path, f"{real}_real", wkts, geometry_types)
+
+        _, claimed_types = GEOARROW_CASES[claimed]
+
+        def relabel(geo):
+            col = geo["columns"][geo["primary_column"]]
+            col["encoding"] = claimed
+            col["geometry_types"] = claimed_types
+
+        lying = _rewrite_geo_metadata(source, tmp_path / f"{real}_as_{claimed}.parquet", relabel)
+
+        result = validate_geoparquet(str(lying))
+        assert not result.is_valid, (
+            f"a {real} column relabelled as {claimed} validated clean; the two share a "
+            f"list depth, so depth-based checks alone cannot catch this"
+        )
+
+        layout = _checks_by_name(result)["geometry_byte_array_geometry"]
+        assert layout.status == CheckStatus.FAILED, layout.message
+        # The message must name both sides, so the report says which is wrong.
+        assert claimed in layout.message, layout.message
+        assert real in layout.message, layout.message
+
+    @pytest.mark.parametrize("encoding", sorted(GEOARROW_CASES))
+    def test_honestly_labelled_file_still_passes(self, tmp_path, encoding):
+        """The discriminator must not reject correctly labelled files."""
+        wkts, geometry_types = GEOARROW_CASES[encoding]
+        path = _write_geoarrow(tmp_path, f"{encoding}_honest", wkts, geometry_types)
+
+        result = validate_geoparquet(str(path))
+        layout = _checks_by_name(result)["geometry_byte_array_geometry"]
+        assert layout.status == CheckStatus.PASSED, layout.message
+
+    def test_unnamed_list_field_is_not_treated_as_a_mismatch(self):
+        """A type string without a recognised field name says nothing either way.
+
+        `get_schema_info()` only renders geoarrow's field names on its local
+        pyarrow path. The DuckDB path used for remote files reports the group
+        node with no type at all, and a plain-Arrow list renders the generic
+        `element`. Neither is evidence of a wrong encoding, so neither may fail.
+        """
+        from geoparquet_io.core.validate import _check_geoarrow_layout, _list_field_names
+
+        assert _list_field_names("LIST<ELEMENT: STRUCT<X: DOUBLE, Y: DOUBLE>>") is None
+        assert _list_field_names("STRUCT<X: DOUBLE, Y: DOUBLE>") is None
+        assert _list_field_names("LIST<VERTICES: STRUCT<X: DOUBLE, Y: DOUBLE>>") == frozenset(
+            {"vertices"}
+        )
+        # A mix of known and unknown names is still not geoarrow's rendering.
+        assert _list_field_names("LIST<VERTICES: LIST<ELEMENT: STRUCT<X: DOUBLE>>>") is None
+
+        generic = "LIST<ELEMENT: STRUCT<X: DOUBLE, Y: DOUBLE>>"
+        check = _check_geoarrow_layout(generic, "geometry", "multipoint")
+        assert check.status == CheckStatus.PASSED, check.message

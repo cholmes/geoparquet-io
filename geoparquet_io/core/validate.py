@@ -773,29 +773,29 @@ def _check_geometry_not_grouped(
 
 # GeoArrow encoding -> number of LIST levels wrapping the coordinate struct.
 #
-# Depth is not a unique key. Two pairs share a level and hold identical
-# coordinate data, so depth alone cannot tell them apart:
+# Depth alone is not a unique key. Two pairs share a level and hold identical
+# coordinate data:
 #   linestring <-> multipoint      (depth 1)
 #   polygon    <-> multilinestring (depth 2)
-# A column mislabeled as its twin is therefore not caught here. That is a
-# *missed detection*, never a false rejection: a correctly labeled file always
-# passes.
 #
-# They are distinguishable, though, and cheaply. The nested list fields are
-# named per encoding, and those names are already inside the type string this
-# module reads via get_schema_info():
+# What separates them is the set of names on the coordinate nesting, which
+# geoarrow renders into the type string this module already reads via
+# get_schema_info():
 #   linestring       list<vertices: struct<x,y>>
 #   multipoint       list<points:   struct<x,y>>
 #   polygon          list<vertices: list<rings:       struct<x,y>>>
 #   multilinestring  list<vertices: list<linestrings: struct<x,y>>>
-# Matching those names would be the zero-cost strengthening.
+#   multipolygon     list<vertices: list<rings: list<polygons: struct<x,y>>>>
+# _GEOARROW_LIST_FIELDS below pins those, so a column labelled "multipoint" but
+# stored as a linestring is rejected rather than passing on equal depth.
 #
-# Note the names are not stored in the Parquet file (its fields are the
-# generic "element"); they are how geoarrow.pyarrow renders the extension
-# type, which it resolves from the ARROW:extension:name field metadata that
-# gpio's writer does emit ("geoarrow.linestring"). So the names are available
-# on the pyarrow schema path only — on the DuckDB path the type is None and
-# neither signal is present.
+# The names are not stored in the Parquet file (its fields are the generic
+# "element"); they are how geoarrow.pyarrow renders the extension type, which it
+# resolves from the ARROW:extension:name field metadata gpio's writer emits. So
+# both signals exist only on get_schema_info()'s local/pyarrow path. On the
+# DuckDB path (remote files) parquet_schema() reports the group node with no
+# type at all, and neither check can run — absence of the name is therefore
+# never treated as a mismatch.
 _GEOARROW_LIST_DEPTH = {
     "point": 0,
     "linestring": 1,
@@ -804,6 +804,48 @@ _GEOARROW_LIST_DEPTH = {
     "multilinestring": 2,
     "multipolygon": 3,
 }
+
+
+# The set of LIST field names each encoding's coordinate nesting carries, as
+# get_schema_info() renders it. This is what separates the two pairs that share
+# a list depth and are therefore invisible to _GEOARROW_LIST_DEPTH alone:
+# linestring/multipoint (depth 1) and polygon/multilinestring (depth 2).
+#
+# Matched as a SET, deliberately. get_schema_info()'s pyarrow path renders the
+# names in the reverse of geoarrow.pyarrow's own nesting order -- a polygon
+# reads as list<vertices: list<rings: ...>> here but as
+# list<rings: list<vertices: ...>> from arr.type.storage_type -- so an ordered
+# comparison would encode that quirk and break if it were ever normalised. The
+# five sets are pairwise distinct, so order buys no discrimination anyway.
+#
+# "point" has no list level and needs no entry: depth 0 already identifies it.
+_GEOARROW_LIST_FIELDS = {
+    "linestring": frozenset({"vertices"}),
+    "multipoint": frozenset({"points"}),
+    "polygon": frozenset({"vertices", "rings"}),
+    "multilinestring": frozenset({"vertices", "linestrings"}),
+    "multipolygon": frozenset({"vertices", "rings", "polygons"}),
+}
+
+_GEOARROW_FIELDS_ENCODING = {v: k for k, v in _GEOARROW_LIST_FIELDS.items()}
+
+# Every name the map above can produce. A type string naming anything outside
+# this set came from a source that does not use geoarrow's names (the generic
+# list<element: ...>, or DuckDB's typeless group node), and is not evidence of a
+# wrong encoding either way.
+_KNOWN_LIST_FIELDS = {name.upper() for names in _GEOARROW_LIST_FIELDS.values() for name in names}
+
+
+def _list_field_names(physical_type: str) -> frozenset[str] | None:
+    """The LIST field names in a type string, when they are geoarrow's own.
+
+    Returns None when any LIST level carries a name geoarrow never emits, which
+    must not be read as a mismatch.
+    """
+    found = re.findall(r"LIST<\s*([A-Za-z_][A-Za-z0-9_]*)\s*:", physical_type)
+    if not found or any(name.upper() not in _KNOWN_LIST_FIELDS for name in found):
+        return None
+    return frozenset(name.lower() for name in found)
 
 
 def _check_geoarrow_layout(physical_type: str, geom_col: str, encoding: str) -> ValidationCheck:
@@ -837,6 +879,25 @@ def _check_geoarrow_layout(physical_type: str, geom_col: str, encoding: str) -> 
                 message=f'geometry column "{geom_col}" layout does not match GeoArrow '
                 f'encoding "{encoding}" (expected {expected} list level(s) around a '
                 f"DOUBLE coordinate struct, got {physical_type})",
+                category="parquet_schema",
+            )
+
+        # Depth ties linestring/multipoint and polygon/multilinestring, so the
+        # coordinate nesting's field names are what actually separate them.
+        # Only judge them when they are names geoarrow emits: a generic or
+        # absent field name says nothing about the encoding either way.
+        expected_fields = _GEOARROW_LIST_FIELDS.get(encoding)
+        found_fields = _list_field_names(physical_type)
+        if expected_fields and found_fields is not None and found_fields != expected_fields:
+            mislabelled = _GEOARROW_FIELDS_ENCODING.get(found_fields)
+            stored_as = f" (the layout of {mislabelled!r})" if mislabelled else ""
+            return ValidationCheck(
+                name=name,
+                status=CheckStatus.FAILED,
+                message=f"geometry column {geom_col!r} declares GeoArrow encoding "
+                f"{encoding!r}, whose coordinates nest under "
+                f"{sorted(expected_fields)}, but the stored column nests under "
+                f"{sorted(found_fields)}{stored_as}",
                 category="parquet_schema",
             )
 

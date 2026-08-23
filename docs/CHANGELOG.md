@@ -395,6 +395,15 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   WKB-only per their spec text, so a file claiming a GeoArrow encoding under
   either version is still rejected — now with a message naming the version
   requirement rather than a binder error.
+
+  The layout check does not stop at nesting depth. `linestring`/`multipoint`
+  and `polygon`/`multilinestring` store identical coordinate data at identical
+  depth, so a column relabelled as its twin would otherwise pass every check;
+  the field names on the coordinate nesting (`vertices`, `points`, `rings`,
+  `linestrings`, `polygons`) are matched as well, which separates all six
+  encodings. A type string that does not carry geoarrow's names — the generic
+  `list<element: ...>`, or the typeless group node `parquet_schema()` reports
+  for remote files — is not evidence of a wrong encoding and is not failed on.
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the
