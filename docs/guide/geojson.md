@@ -336,7 +336,8 @@ File output uses DuckDB's GDAL integration to produce properly formatted GeoJSON
 | `--description TEXT` | none | Add a description to the FeatureCollection |
 | `--feature-collection` | false | Output a FeatureCollection instead of GeoJSONSeq (streaming only) |
 | `--pretty` | false | Pretty-print the JSON output with indentation |
-| `--lco KEY=VALUE` | none | GDAL layer creation option (may be repeated) |
+| `--keep-crs` | false | Keep the original CRS instead of reprojecting to WGS84 |
+| `--no-repair-geometry` | false | Preserve invalid geometry instead of repairing it with `ST_MakeValid` |
 | `--verbose` | false | Show debug output |
 | `--aws-profile NAME` | none | AWS profile for S3 files |
 
@@ -398,21 +399,13 @@ By default, streaming outputs newline-delimited GeoJSONSeq. To output a complete
 gpio convert geojson data.parquet --feature-collection > output.geojson
 ```
 
-### Advanced GDAL Options
+### GDAL Layer Creation Options
 
-For advanced use cases, pass GDAL layer creation options directly with `--lco`:
-
-```bash
-# Disable writing the layer name
-gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO
-
-# Multiple options
-gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO --lco SIGNIFICANT_FIGURES=10
-```
-
-See the [GDAL GeoJSON driver documentation](https://gdal.org/drivers/vector/geojson.html#layer-creation-options) for all available options.
-
-Note: Using `--lco` with the same option as a dedicated flag (e.g., `--lco COORDINATE_PRECISION=5` with `--precision 7`) will raise an error.
+`gpio convert geojson` does not expose GDAL layer creation options. The GeoJSON
+writer sets them internally, and the settings that matter for GeoJSON output are
+available as dedicated flags (`--precision`, `--write-bbox`, `--id-field`,
+`--feature-collection`, `--pretty`). If you need a driver option that has no
+dedicated flag, use `ogr2ogr` directly on the output file.
 
 ## Performance Tips
 

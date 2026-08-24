@@ -386,6 +386,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Guide examples no longer use flags the CLI does not accept.** Three
+  documented examples failed immediately with `No such option`. `docs/guide/check.md`
+  advertised `gpio check all DIR --check-all` and `--check-sample N`; the real
+  flags are `--all-files` and `--sample-files N`, and the quoted runtime notice
+  was stale to match. `docs/guide/geojson.md` and `docs/cli/convert.md`
+  documented a `--lco KEY=VALUE` passthrough for GDAL layer creation options on
+  `gpio convert geojson`; no such option has ever existed, so the section now
+  explains that the writer sets layer creation options internally and points at
+  `ogr2ogr` for driver options with no dedicated flag. `docs/guide/sub-partitioning.md`
+  showed `gpio partition a5 DIR --min-size … --in-place`; `partition a5` supports
+  neither flag (`sub_partition_directory` only registers `h3`, `s2` and
+  `quadkey`), so the A5 tab is replaced by a note naming the three commands that
+  do support sub-partitioning. Also corrects `docs/cli/inspect.md`, which listed
+  `inspect summary`'s `--check-all` under its Python parameter name
+  (`--check-all-files`), and fills in the `--keep-crs` / `--no-repair-geometry`
+  rows missing from both `convert geojson` option tables.
+
 - **`tests/test_wfs.py` no longer reaches the network.** Nine tests made live
   requests against the fake host. Six exercise `wfs_to_table` and mocked the
   version negotiation, layer lookup and feature fetch, but not

@@ -62,7 +62,8 @@ gpio convert geojson data.parquet output.geojson
 | `--description TEXT` | none | Add description to FeatureCollection |
 | `--feature-collection` | false | Output FeatureCollection instead of GeoJSONSeq |
 | `--pretty` | false | Pretty-print with indentation |
-| `--lco KEY=VALUE` | none | GDAL layer creation option (repeatable) |
+| `--keep-crs` | false | Keep original CRS instead of reprojecting to WGS84 |
+| `--no-repair-geometry` | false | Preserve invalid geometry instead of repairing it |
 | `--verbose` | false | Show debug output |
 | `--aws-profile NAME` | none | AWS profile for S3 |
 
