@@ -15,10 +15,13 @@ constants here deliberately if the dataset is ever meant to change.
 
 from __future__ import annotations
 
+import ast
 import csv
 import hashlib
 import importlib.util
+import inspect
 import json
+import sys
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -259,6 +262,36 @@ def test_generator_output_dir_elsewhere_skips_the_mirror(tmp_path):
 
     assert args.output_dir == tmp_path.resolve()
     assert args.mirror is False
+
+
+def test_generator_never_resolves_gpio_from_path():
+    """The generator must run the checkout's gpio, not an installed one.
+
+    `uv tool install geoparquet-io` leaves a global console script that does
+    not track the working tree. If the generator preferred it, the slow
+    reproducibility test below would compare bytes produced by that stale
+    install against the committed files — passing while the repo's own output
+    had drifted, which is precisely the silent failure it exists to catch.
+    """
+    module = _load_generator()
+
+    command = module._gpio_command()
+    assert command[0] == sys.executable, command
+    assert command[1:] == ["-m", "geoparquet_io.cli.main"], command
+
+    # Inspect the CODE, not the source text: the function's own docstring
+    # legitimately explains why a PATH lookup is forbidden, so a plain
+    # substring check would trip over its own documentation.
+    tree = ast.parse(inspect.getsource(module._gpio_command))
+    calls = [
+        node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", "")
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Attribute, ast.Name))
+    ]
+    assert "which" not in calls, (
+        "_gpio_command resolves gpio from PATH again; the reproducibility "
+        "guarantee only holds when regeneration uses this checkout's code"
+    )
 
 
 @pytest.mark.slow

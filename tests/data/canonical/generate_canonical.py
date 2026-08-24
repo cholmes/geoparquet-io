@@ -17,9 +17,9 @@ and mirrors all four into ``examples/data/`` alongside the pre-existing
 ``sample.parquet`` (which this script never touches).
 
 Everything is produced by gpio itself - the parquet files and the GeoJSON go
-through the real CLI, preferring an installed ``gpio`` on PATH and falling back
-to ``python -m geoparquet_io.cli.main`` - so regenerating the dataset also
-smoke-tests the tool. Only the lon/lat CSV needs a direct DuckDB query, because
+through the real CLI, always as ``python -m geoparquet_io.cli.main`` under the
+interpreter running this script - so regenerating the dataset also smoke-tests
+the gpio in this checkout (see ``_gpio_command`` for why never a PATH lookup). Only the lon/lat CSV needs a direct DuckDB query, because
 ``gpio convert csv`` emits WKT rather than coordinate columns.
 
 The output is byte-reproducible: the CLI is deterministic for these inputs and
@@ -65,10 +65,20 @@ COMPRESSION = "zstd"
 
 
 def _gpio_command() -> list[str]:
-    """Prefer the installed console script; fall back to the module entry point."""
-    executable = shutil.which("gpio")
-    if executable:
-        return [executable]
+    """Always the module entry point of THIS interpreter, never a PATH lookup.
+
+    Preferring an installed console script looks harmless but breaks the
+    script's one guarantee. `uv tool install geoparquet-io` leaves a global
+    executable that does not track the working tree, so a PATH lookup
+    regenerates the dataset with whatever version happens to be installed —
+    and the reproducibility test in tests/test_canonical_dataset.py, which
+    compares regenerated SHA-256s against the committed files, would then pass
+    while the repo's own output had drifted (stale global matching the
+    committed bytes) or fail while the repo was fine. Pinning to
+    sys.executable makes "regenerating also smoke-tests gpio" mean the gpio in
+    this checkout, in every environment, including CI where no console script
+    exists at all.
+    """
     return [sys.executable, "-m", "geoparquet_io.cli.main"]
 
 
