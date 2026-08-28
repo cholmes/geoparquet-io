@@ -155,7 +155,7 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "network: marks tests requiring network access (deselect with '-m \"not network\"')",
-    "integration: marks end-to-end integration tests",
+    "integration: marks end-to-end integration tests; runs in the fast suite unless also marked slow/network (see tests/e2e/test_integration_lane.py)",
     "corpus: tests against the official geoparquet-testing corpus (requires git submodule)",
     "meta: repo tooling checks, excluded from the fast suite",
     "docs_example: a fenced example block executed out of docs/guide/*.md",
@@ -344,12 +344,20 @@ verbose = false
 # site/ (mkdocs build) and mutants/ (mutmut working tree) are gitignored
 # build artifacts; scanning them made test_codespell_passes fail on any
 # machine that had built docs or run mutation testing locally.
-# tests/data/ and examples/data/ hold real-world sample data - place names and
-# addresses carry their own typos, which are data, not spelling mistakes. Both
-# the bare and "*/"-prefixed forms are listed because codespell matches these
-# patterns against the path as given, and pre-commit passes "tests/data/x"
-# while a bare `codespell` run walks the tree as "./tests/data/x".
-skip = ".git,*.lock,*.parquet,*.json,tests/data/*,*/tests/data/*,examples/data/*,*/examples/data/*,geoparquet-testing,.venv,uv.lock,site,mutants"
+# *.csv and *.geojson are sample data, not prose: real-world place names and
+# addresses carry their own misspellings, which are data to be preserved
+# verbatim, not mistakes to be fixed.
+#
+# Skipping by extension, not by directory, because a directory pattern does not
+# work here. codespell matches each candidate against its basename and against
+# the path string it walked, and a whole-repo run walks from "." - so
+# "tests/data/*" never matches "./tests/data/canonical/places.csv" and skips
+# nothing at all. (That entry was dead config and has been removed; the tree it
+# claimed to exclude has been spell-checked all along, and passes.) Matching by
+# extension also keeps prose that lives beside the data - notably
+# tests/data/canonical/README.md - checked, which a working directory skip
+# would have swallowed.
+skip = ".git,*.lock,*.parquet,*.json,*.csv,*.geojson,geoparquet-testing,.venv,uv.lock,site,mutants"
 ignore-words-list = "nd,ot,crs,inout,hel,bu"
 check-filenames = true
 

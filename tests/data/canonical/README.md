@@ -1,11 +1,12 @@
 # Canonical sample dataset
 
-One small, spec-clean dataset that the documentation examples, the end-to-end
-journey tests, and the `examples/` notebooks all share. Doc examples name their
-inputs with placeholders (`input.parquet`, `data.parquet`, `places.parquet`,
-`buildings.parquet`, `input.geojson`); the docs-as-tests harness seeds a temp
-directory from these files under those names, so an example can be executed
-verbatim without editing the doc.
+One small, spec-clean dataset for the documentation examples, the end-to-end
+journey tests, and the `examples/` notebooks to share. Those consumers land in
+their own changes; this is the data they are being written against. Doc examples
+name their inputs with placeholders (`input.parquet`, `data.parquet`,
+`places.parquet`, `buildings.parquet`, `input.geojson`), and the docs-as-tests
+harness will seed a temp directory from these files under those names, so an
+example can be executed verbatim without editing the doc.
 
 Everything here is a derived artifact. Nothing is hand-made, and nothing should
 be edited in place — change the generator and rerun it.
@@ -64,10 +65,23 @@ unchanged sources leaves `git status` clean. The script also refreshes the
 `examples/data/` mirror; it never touches `examples/data/sample.parquet`, which
 the notebooks still reference.
 
+`--output-dir DIR` writes the dataset somewhere else and skips the mirror, so a
+regeneration can be inspected without touching the repository:
+
+```bash
+uv run python tests/data/canonical/generate_canonical.py --output-dir /tmp/check
+```
+
 `tests/test_canonical_dataset.py` pins the shape of all of this — row counts,
 exact column lists, geo metadata, clean validation, the mirror, and the size
 budget — so the dataset cannot rot silently. If a change here is deliberate,
 update those constants in the same commit.
+
+One test there is slow-marked: it regenerates into a temp directory via
+`--output-dir` and compares SHA-256 against the committed files. That is the
+guard against the failure mode the rest of the suite cannot see — a change in
+gpio's own output leaving these files stale and the reproducibility claim above
+quietly false. When it fails, rerun the generator and commit the result.
 
 ## Known gaps
 

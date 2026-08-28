@@ -86,6 +86,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   `partition string`, which reject it there (it is a hidden per-command option
   that only some subcommands carry; the global position works everywhere), and
   `gpio inspect FILE --stats` for what is really `gpio inspect stats FILE`.
+- **Honest notebook CI signal (#667)**: the `notebooks` job reported a green
+  check for `examples/05_cloud_workflows.ipynb` while executing nothing — all
+  ten of its code cells were commented out, so nbmake "passed" a notebook that
+  ran zero statements. Every cell there uploads to S3/GCS/Azure and needs live
+  credentials, so the notebook is now explicitly skipped by
+  `examples/conftest.py` and says so in its own opening cell, instead of
+  claiming a pass CI never earned. The skip is a
+  `pytest_collection_modifyitems` hook rather than `collect_ignore`:
+  `collect_ignore` is only consulted when pytest walks a directory, and the CI
+  job passes an expanded `examples/*.ipynb` file list, against which it is
+  silently bypassed. Skipping (not deselecting) keeps the reason visible in the
+  CI log. `tests/test_notebook_signal.py` guards the class of bug: a notebook
+  nbmake runs must execute at least one real `gpio` call, and any notebook
+  whose code cells are mostly commented-out stubs must carry an
+  `<!-- nbsignal: illustrative reason="..." -->` directive — invisible when
+  rendered, mandatory in source. `examples/04_partitioning.ipynb` (8 of 10
+  cells inert, because `gpio` rightly refuses to partition the bundled 42-row
+  sample) now carries that directive. No workflow change was needed.
 - **Canonical sample dataset (#667)**: `tests/data/canonical/` holds one small,
   spec-clean dataset that the documentation examples, the end-to-end journey
   tests, and the `examples/` notebooks can all share — `places.parquet` (766
@@ -103,6 +121,41 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   geo metadata, clean `validate_geoparquet` results, cross-representation
   agreement between the parquet/GeoJSON/CSV views, and the `examples/data/`
   mirror, so the dataset cannot rot silently behind the tests that depend on it.
+  A slow-marked drift guard regenerates into a temp directory (via the
+  generator's `--output-dir`) and compares SHA-256 against the committed files,
+  catching the one failure the rest of the suite cannot see: a change in gpio's
+  own output leaving these files stale and the reproducibility claim false.
+- **End-to-end journey matrix (#667)**: `tests/e2e/test_journeys.py` runs ten
+  multi-command user journeys through the *installed* `gpio` binary — GeoJSON
+  round trip via GeoParquet 2.0, H3 index → H3 partition, piping chains from
+  `docs/guide/piping.md` (real shell pipelines, Arrow IPC between stages), the
+  GeoJSONSeq stdout bridge, reproject with CRS assertions, aggregate
+  → overview → PMTiles pyramid, a CSV round trip, admin-division enrichment →
+  admin partition, a remote `extract --limit` over HTTPS, and 200k synthetic
+  points whose Hilbert sort must lift the estimated row-group skip rate from
+  under 10% to over 50%. Each journey ends in `gpio check all` plus concrete
+  value assertions (row conservation, expected columns, cell ids, country codes,
+  bbox extents) — never a bare exit code, because `gpio check all` **exits 0 on a
+  file whose spec validation failed**; the shared oracle in
+  `tests/e2e/journey_support.py` parses the report and cross-checks
+  `validate_geoparquet`, and `test_oracle_rejects_a_damaged_journey_output` fails
+  if that ever stops catching a damaged intermediate. Journeys 1–7 ride the fast
+  lane (~12s serial), 8 and 10 are slow-marked, 9 is network-marked; journey 6
+  skips without tippecanoe (which also covers the Windows leg) and journey 8
+  skips with a clear reason when the Overture boundary cache is cold, offline or
+  busy — so it gates warm machines (typically developers'; CI's ephemeral
+  runners start cold and skip until the slow job caches the admin
+  directory). Journey 3b is a
+  strict `xfail` pinning a real break, filed as #722: the documented
+  `extract … - | add quadkey - | partition string - dir/` chain dies with an
+  unhandled DuckDB error because `extract`'s Arrow IPC stream omits
+  `geometry_types`. Journey 4 documents #723 (`convert geojson -` with a named
+  output fails with a misleading "File not found: -").
+  `tests/e2e/test_integration_lane.py` gives the `integration` marker enforced
+  semantics — every journey must carry it, no `tests.yml` selection may deselect
+  it, and each journey must land in exactly one CI job — instead of adding a
+  duplicate `-m integration` job that would re-run the fast lane's work.
+
 - **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
   whole Click command tree into a structural snapshot at
   `tests/data/cli_surface.json` — every group, command, option and argument
@@ -425,6 +478,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Removed deprecated CLI commands and guide documentation
 
 ### Fixed
+
+- **Guide examples no longer use flags the CLI does not accept.** Three
+  documented examples failed immediately with `No such option`. `docs/guide/check.md`
+  advertised `gpio check all DIR --check-all` and `--check-sample N`; the real
+  flags are `--all-files` and `--sample-files N`, and the quoted runtime notice
+  was stale to match. `docs/guide/geojson.md` and `docs/cli/convert.md`
+  documented a `--lco KEY=VALUE` passthrough for GDAL layer creation options on
+  `gpio convert geojson`; no such option has ever existed, so the section now
+  explains that the GeoJSON writer does not use GDAL at all and points at
+  `ogr2ogr` for driver options with no dedicated flag. `docs/guide/sub-partitioning.md`
+  showed `gpio partition a5 DIR --min-size … --in-place`; `partition a5` supports
+  neither flag (`sub_partition_directory` only registers `h3`, `s2` and
+  `quadkey`), so the A5 tab is replaced by a note naming the three commands that
+  do support sub-partitioning. Also corrects `docs/cli/inspect.md`, which listed
+  `inspect summary`'s `--check-all` under its Python parameter name
+  (`--check-all-files`), and fills in the `--keep-crs` / `--no-repair-geometry`
+  rows missing from both `convert geojson` option tables.
 
 - **`tests/test_wfs.py` no longer reaches the network.** Nine tests made live
   requests against the fake host. Six exercise `wfs_to_table` and mocked the

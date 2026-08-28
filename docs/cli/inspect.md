@@ -26,7 +26,8 @@ This will show all available options for the `inspect` command.
 
 ### inspect summary Options
 
-- `--check-all-files` - For partitioned datasets, check all files
+- `--check-all` - For partitioned datasets, aggregate info from all files
+- `--markdown` - Output as Markdown for README files
 
 ### inspect meta Options
 

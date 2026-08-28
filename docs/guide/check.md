@@ -345,13 +345,13 @@ When checking a directory containing partitioned data, you can control how many 
 ```bash
 # By default, checks only the first file
 gpio check all partitions/
-# Output: Checking first file (of 4 total). Use --check-all or --check-sample N for more.
+# Output: Checking first file (of 4 total). Use --all-files or --sample-files N for more.
 
 # Check all files in the partition
-gpio check all partitions/ --check-all
+gpio check all partitions/ --all-files
 
 # Check a sample of files (first N files)
-gpio check all partitions/ --check-sample 3
+gpio check all partitions/ --sample-files 3
 ```
 
 !!! note "--fix not available for partitions"

@@ -1,0 +1,7 @@
+# The canonical dataset is byte-compared against regenerated output
+# (tests/test_canonical_dataset.py), so the checked-out bytes must be exactly
+# the committed bytes on every platform. -text disables line-ending conversion
+# so core.autocrlf on Windows cannot turn the LF fixtures into CRLF and break
+# the drift and mirror byte-identity tests.
+tests/data/canonical/** -text
+examples/data/** -text

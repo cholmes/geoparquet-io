@@ -220,20 +220,27 @@ class TestConvertCore:
         # File should still be valid, just not Hilbert ordered
         # (We can't easily test for lack of ordering without larger dataset)
 
-    def test_convert_verbose(self, shapefile_input, temp_output_file, capsys):
-        """Test verbose output."""
-        convert_to_geoparquet(
-            shapefile_input,
-            temp_output_file,
-            skip_hilbert=False,
-            verbose=True,
-        )
+    def test_convert_verbose(self, shapefile_input, temp_output_file, caplog):
+        """Test verbose output.
 
-        captured = capsys.readouterr()
-        # Logging output goes to stderr
-        assert "Detecting geometry column" in captured.err
-        assert "Dataset bounds" in captured.err
-        assert "bbox" in captured.err.lower()
+        Asserted via ``caplog``, not ``capsys``: under pytest the root logger
+        already has handlers (pytest's capture), so gpio's library bootstrap
+        attaches only a NullHandler and log records propagate to pytest's
+        capture instead of being written to stderr.
+        """
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            convert_to_geoparquet(
+                shapefile_input,
+                temp_output_file,
+                skip_hilbert=False,
+                verbose=True,
+            )
+
+        assert "Detecting geometry column" in caplog.text
+        assert "Dataset bounds" in caplog.text
+        assert "bbox" in caplog.text.lower()
 
     def test_convert_custom_compression(self, shapefile_input, temp_output_file):
         """Test custom compression settings."""

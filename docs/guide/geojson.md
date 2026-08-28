@@ -347,7 +347,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
     geojson_str = gpio.read('data.parquet').to_geojson()
     ```
 
-File output uses DuckDB's GDAL integration to produce properly formatted GeoJSON with RFC 7946 compliance.
+File output is generated directly from query results as RFC 7946-compliant GeoJSON; no GDAL is involved.
 
 ## Options Reference
 
@@ -360,7 +360,8 @@ File output uses DuckDB's GDAL integration to produce properly formatted GeoJSON
 | `--description TEXT` | none | Add a description to the FeatureCollection |
 | `--feature-collection` | false | Output a FeatureCollection instead of GeoJSONSeq (streaming only) |
 | `--pretty` | false | Pretty-print the JSON output with indentation |
-| `--lco KEY=VALUE` | none | GDAL layer creation option (may be repeated) |
+| `--keep-crs` | false | Keep the original CRS instead of reprojecting to WGS84 |
+| `--no-repair-geometry` | false | Preserve invalid geometry instead of repairing it with `ST_MakeValid` |
 | `--verbose` | false | Show debug output |
 | `--aws-profile NAME` | none | AWS profile for S3 files |
 
@@ -425,22 +426,14 @@ By default, streaming outputs newline-delimited GeoJSONSeq. To output a complete
 gpio convert geojson data.parquet --feature-collection > output.geojson
 ```
 
-### Advanced GDAL Options
+### No GDAL Layer Creation Options
 
-For advanced use cases, pass GDAL layer creation options directly with `--lco`:
-
-<!-- doctest: skip="documents --lco, which that command does not accept" -->
-```bash
-# Disable writing the layer name
-gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO
-
-# Multiple options
-gpio convert geojson data.parquet out.geojson --lco WRITE_NAME=NO --lco SIGNIFICANT_FIGURES=10
-```
-
-See the [GDAL GeoJSON driver documentation](https://gdal.org/drivers/vector/geojson.html#layer-creation-options) for all available options.
-
-Note: Using `--lco` with the same option as a dedicated flag (e.g., `--lco COORDINATE_PRECISION=5` with `--precision 7`) will raise an error.
+`gpio convert geojson` does not use GDAL, so there are no layer creation
+options to pass: the writer generates GeoJSON directly from query results. The
+settings that matter for GeoJSON output are available as dedicated flags
+(`--precision`, `--write-bbox`, `--id-field`, `--feature-collection`,
+`--pretty`). If you need a GDAL driver option that has no dedicated flag, run
+`ogr2ogr` on the output file.
 
 ## Performance Tips
 
