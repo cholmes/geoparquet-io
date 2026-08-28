@@ -27,6 +27,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
     quote_identifier,
+    register_arrow_table_for_spatial,
     validate_where_clause,
 )
 from geoparquet_io.core.exceptions import (
@@ -742,7 +743,10 @@ def extract_table(
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        con.register("__input_table", table)
+        # Combines chunks first: repair_query_geometry below runs ST_IsValid
+        # over this registered table, which segfaults DuckDB spatial when the
+        # table is chunked (#737).
+        register_arrow_table_for_spatial(con, "__input_table", table)
         source_ref, needs_wkb = _setup_geometry_view(con, table, geom_col)
 
         if needs_wkb and geom_col in selected_columns:

@@ -233,6 +233,21 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Segfault on chunked Arrow input to geometry repair (#737).** `ST_IsValid`
+  over a *chunked* registered Arrow table crashes DuckDB 1.5.1's spatial
+  extension. The crash lands in the invalid-geometry **count** — before any
+  repair runs — so the `except Exception` guard downstream cannot catch it and
+  the process dies with SIGSEGV; the `finally` block then deletes the temp
+  parquet, so an ArcGIS extraction loses every downloaded feature and the caller
+  sees only a non-zero exit. `pyarrow.parquet.read_table` returns hundreds of
+  chunks for any sizable file (280 for the reporter's 559k-row layer), so this
+  was reached by ordinary use rather than an edge case. Both paths that run
+  `ST_IsValid` over a registered Arrow table — `repair_arrow_table_geometry`
+  (WFS/ArcGIS/BigQuery/Carto extraction) and `extract_table` (the Python API and
+  streaming extract) — now register a single-chunk copy through the new
+  `register_arrow_table_for_spatial()` helper, which carries the reason so
+  future registrations do not have to rediscover it.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

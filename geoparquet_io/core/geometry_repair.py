@@ -164,7 +164,10 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
     if table.num_rows == 0 or geometry_column not in table.column_names:
         return table, 0
 
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import (
+        get_duckdb_connection,
+        register_arrow_table_for_spatial,
+    )
 
     col = quote_identifier(geometry_column)
     # Decode WKB defensively: TRY() yields NULL on malformed bytes so a bad row
@@ -172,7 +175,11 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
     parsed = f"TRY(ST_GeomFromWKB({col}))"
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        con.register("_gpio_repair_src", table)
+        # Combines chunks first: the ST_IsValid count below segfaults DuckDB
+        # spatial on a chunked registered table (#737). The original `table` is
+        # what we hand back when there is nothing to repair, so the combined
+        # copy is released on return.
+        register_arrow_table_for_spatial(con, "_gpio_repair_src", table)
         # Layered count: the single-WHERE form segfaults on tables containing
         # NULL geometry rows (issue #642) — see _layered_invalid_count_sql.
         n = con.execute(_layered_invalid_count_sql("_gpio_repair_src", parsed)).fetchone()[0]

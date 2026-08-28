@@ -261,3 +261,123 @@ def test_repair_arrow_table_geometry_null_rows_at_scale():
     assert count == expected_invalid
     nulls = sum(1 for v in repaired.column("geometry").to_pylist() if v is None)
     assert nulls == expected_nulls
+
+
+def _chunked_table(con, *wkts, chunks: int = 8, geom_col="geometry"):
+    """Build a table whose columns are split across ``chunks`` Arrow chunks."""
+    import pyarrow as pa
+
+    single = _wkb_table(con, *wkts, geom_col=geom_col)
+    batches = single.to_batches(max_chunksize=max(1, single.num_rows // chunks))
+    table = pa.Table.from_batches(batches, schema=single.schema)
+    assert table.column(geom_col).num_chunks > 1, "fixture must be chunked"
+    return table
+
+
+def test_repair_arrow_table_geometry_combines_chunks_before_registering():
+    """#737: ST_IsValid over a chunked registered table segfaults DuckDB spatial.
+
+    ``pq.read_table()`` returns many chunks for any sizable file (280 for the
+    559k-row layer in the report), and the crash is a SIGSEGV inside the *count*
+    query -- before any repair runs, and past the reach of the ``except
+    Exception`` guard, so the whole process dies with the downloaded data
+    already removed by the ``finally`` block.
+
+    Being memory corruption it is non-deterministic at the margin and needs real
+    geometry to reproduce, so a test cannot provoke it reliably -- the same
+    limitation as the #642 case below. Assert the invariant that avoids it
+    instead: whatever gets registered is a single chunk per column.
+    """
+    from unittest import mock
+
+    con = _con()
+    table = _chunked_table(con, *([BOWTIE_WKT, SQUARE_WKT] * 32))
+    registered = []
+
+    class _RecordingConnection:
+        """Delegates to a real connection, recording what gets registered."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def register(self, name, value):
+            registered.append(value)
+            return self._inner.register(name, value)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    with mock.patch(
+        "geoparquet_io.core.duckdb_utils.get_duckdb_connection",
+        side_effect=lambda **kw: _RecordingConnection(get_duckdb_connection(**kw)),
+    ):
+        repaired, n = repair_arrow_table_geometry(table, "geometry", repair=True)
+
+    assert registered, "the helper must register the table it queries"
+    for column in registered[0].columns:
+        assert column.num_chunks <= 1, (
+            f"registered a {column.num_chunks}-chunk column; "
+            "ST_IsValid over chunked Arrow input segfaults DuckDB spatial (#737)"
+        )
+    assert n == 32
+    assert repaired.num_rows == table.num_rows
+
+
+def test_repair_arrow_table_geometry_repairs_a_chunked_table():
+    """Chunked input must come back correct, not merely uncrashed."""
+    con = _con()
+    table = _chunked_table(con, *([BOWTIE_WKT, SQUARE_WKT] * 32))
+
+    repaired, n = repair_arrow_table_geometry(table, "geometry", repair=True)
+
+    assert n == 32
+    assert repaired.num_rows == 64
+    con.register("_repaired", repaired.combine_chunks())
+    remaining = con.execute(
+        "SELECT COUNT(*) FROM _repaired WHERE NOT ST_IsValid(ST_GeomFromWKB(geometry))"
+    ).fetchone()[0]
+    assert remaining == 0
+
+
+def test_repair_arrow_table_geometry_chunked_preserves_schema_metadata():
+    con = _con()
+    table = _chunked_table(con, *([BOWTIE_WKT, SQUARE_WKT] * 32))
+    table = table.replace_schema_metadata({b"geo": b'{"version": "1.1.0"}'})
+
+    repaired, _ = repair_arrow_table_geometry(table, "geometry", repair=True)
+
+    assert repaired.schema.metadata == {b"geo": b'{"version": "1.1.0"}'}
+
+
+def test_extract_table_combines_chunks_before_registering():
+    """#737 again: extract's table path runs the same ST_IsValid over its input.
+
+    `extract_table` registers the caller's Arrow table and then hands the
+    query to `repair_query_geometry`, so a chunked table reaches the same crash
+    through `gpio.read(...).extract(...)` and the streaming path.
+    """
+    from unittest import mock
+
+    from geoparquet_io.core.extract import extract_table
+
+    con = _con()
+    table = _chunked_table(con, *([BOWTIE_WKT, SQUARE_WKT] * 32))
+    registered = []
+
+    real_register = type(con).register
+
+    def _spy(self, name, value):
+        registered.append((name, value))
+        return real_register(self, name, value)
+
+    with mock.patch.object(type(con), "register", _spy):
+        result = extract_table(table)
+
+    assert result.num_rows == 64
+    inputs = [value for name, value in registered if name == "__input_table"]
+    assert inputs, "extract_table must register its input table"
+    for column in inputs[0].columns:
+        assert column.num_chunks <= 1, (
+            f"registered a {column.num_chunks}-chunk column; "
+            "ST_IsValid over chunked Arrow input segfaults DuckDB spatial (#737)"
+        )

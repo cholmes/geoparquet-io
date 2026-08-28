@@ -637,6 +637,30 @@ class _DuckDBFieldWrapper:
         self.name = col_info.get("name", "")
 
 
+def register_arrow_table_for_spatial(con, name: str, table):
+    """Register an Arrow table under ``name`` for querying with spatial functions.
+
+    ``ST_IsValid`` over a *chunked* registered Arrow table segfaults DuckDB
+    1.5.1's spatial extension (issue #737). It is a memory-safety fault, not one
+    bad geometry: crash probability rises with the chunk count, and no single
+    chunk reproduces it in isolation. A SIGSEGV takes the process down, so no
+    ``except`` guard downstream can contain it — and `pyarrow.parquet.read_table`
+    returns hundreds of chunks for any sizable file, so ordinary use reaches it.
+
+    Combining costs one copy of the data and removes the crash. Use this
+    wherever a registered Arrow table is queried with spatial functions.
+
+    DuckDB keeps its own reference to the registered object, so the caller does
+    not have to hold the combined copy alive.
+
+    Returns:
+        The single-chunk table that was registered.
+    """
+    combined = table.combine_chunks()
+    con.register(name, combined)
+    return combined
+
+
 def _get_query_columns(con, query: str) -> list[str]:
     """
     Get column names from a SQL query without executing it fully.
