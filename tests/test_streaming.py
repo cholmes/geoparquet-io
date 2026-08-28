@@ -347,7 +347,9 @@ class TestStreamIO:
 
         query = "SELECT * FROM data"
         result = _wrap_query_with_wkb_conversion(query, "geometry")
-        assert "ST_AsWKB(geometry)" in result
+        # The geometry column is an identifier and is quoted at every raw SQL
+        # interpolation (see CLAUDE.md's DuckDB patterns; enforced since #662).
+        assert 'ST_AsWKB("geometry")' in result
         assert "__stream_source" in result
 
     def test_wrap_query_with_wkb_conversion_no_geom(self):
