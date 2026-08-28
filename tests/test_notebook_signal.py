@@ -100,8 +100,14 @@ def _is_inert(source: str) -> bool:
 
 
 def _is_install_cell(source: str) -> bool:
-    """True for the commented-out ``!pip install`` cell notebooks conventionally open with."""
-    return bool(INSTALL_CELL_RE.search(source))
+    """True for the commented-out ``!pip install`` cell notebooks conventionally open with.
+
+    The exemption is anchored to the whole-cell shape (a couple of comment
+    lines at most), so a long commented-out stub cell cannot dodge the inert
+    count by merely citing a pip-install line.
+    """
+    lines = [line for line in source.splitlines() if line.strip()]
+    return len(lines) <= 3 and bool(INSTALL_CELL_RE.search(source))
 
 
 def _safe_parse(source: str) -> ast.Module | None:
@@ -317,8 +323,8 @@ def _load_examples_conftest():
 def test_skip_hook_actually_applies_the_skip_marker() -> None:
     """Drive the real hook body and assert it marks the illustrative notebook.
 
-    The nbmake end-to-end proof below is ``meta``-marked (nightly only), so on
-    its own it leaves a ~24h window in which a neutered hook body -- one that
+    The nbmake end-to-end proof below is ``meta``-marked (post-merge slow lane),
+    so on its own it leaves a window in which a neutered hook body -- one that
     matches the notebook but never calls ``add_marker`` -- passes every PR lane.
     This test closes that window for a few microseconds, by importing the hook
     and running it against stub items rather than asserting on its source shape.
@@ -369,11 +375,11 @@ def test_illustrative_notebook_is_actually_skipped_by_nbmake() -> None:
             str(target),
             "--no-cov",
             "-q",
-            "-p",
-            "no:randomly",
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(PROJECT_ROOT),
     )
     assert result.returncode == 0, f"nbmake run failed:\n{result.stdout}\n{result.stderr}"
