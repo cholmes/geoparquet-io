@@ -157,7 +157,10 @@ def test_existing_covering_survives_v2_roundtrip(tmp_path, command):
     _run(*command, src, out)
 
     assert "bbox" in pq.ParquetFile(str(out)).schema_arrow.names
-    assert _geometry_column_meta(out)["covering"] == {"bbox": BBOX_COVERING}
+    # The bbox entry survives unchanged. Asserting the whole dict would pin a
+    # command's *other* coverings out of existence: `sort quadkey` legitimately
+    # adds a `quadkey` entry alongside this one.
+    assert _geometry_column_meta(out)["covering"]["bbox"] == BBOX_COVERING
 
 
 def test_undeclared_bbox_column_is_not_silently_declared_at_v2(tmp_path):
@@ -485,3 +488,34 @@ def test_fast_path_carry_declines_when_no_covering_is_declared():
         )
     }
     assert _covering_to_carry_on_fast_path(plain, "geometry", "2.0") is None
+
+
+def test_a_non_bbox_covering_survives_a_write_that_adds_a_bbox_covering(tmp_path):
+    """`covering` is a dict of entries, not just `bbox`.
+
+    Assigning a fresh dict destroyed an `h3` covering the input declared, on a
+    write that was only meant to add the `bbox` entry beside it.
+    """
+    table = _points_table()
+    table = table.append_column("bbox", _bbox_struct(table))
+    table = table.append_column("h3", pa.array(["8928308280fffff"] * table.num_rows, pa.string()))
+    geo = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {
+            "geometry": {
+                "encoding": "WKB",
+                "geometry_types": ["Point"],
+                "crs": {"id": {"authority": "OGC", "code": "CRS84"}},
+                "covering": {"h3": {"column": "h3", "resolution": 9}},
+            }
+        },
+    }
+    src = tmp_path / "in.parquet"
+    pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), str(src))
+    out = tmp_path / "out.parquet"
+
+    _run("extract", "geoparquet", src, out, "--geoparquet-version", "1.1")
+
+    covering = _geometry_column_meta(out)["covering"]
+    assert covering.get("h3") == {"column": "h3", "resolution": 9}

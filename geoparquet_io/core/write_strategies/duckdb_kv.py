@@ -525,13 +525,22 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         bbox_col_name = detect_bbox_column_from_schema(schema_result.schema, verbose)
 
         if bbox_col_name:
-            col_meta["covering"] = {
-                "bbox": {
-                    "xmin": [bbox_col_name, "xmin"],
-                    "ymin": [bbox_col_name, "ymin"],
-                    "xmax": [bbox_col_name, "xmax"],
-                    "ymax": [bbox_col_name, "ymax"],
-                }
+            # Merge, never replace: `covering` also carries non-bbox entries
+            # (h3/s2/a5/quadkey), and assigning a fresh dict destroyed an h3
+            # covering the input declared. Do not overwrite an existing `bbox`
+            # entry either -- one carried in or supplied through custom_metadata
+            # came from something that could vouch for it, unlike this
+            # name-based detection.
+            covering = col_meta.setdefault("covering", {})
+            if "bbox" in covering:
+                if verbose:
+                    debug(f"Keeping the bbox covering already declared for '{bbox_col_name}'")
+                return
+            covering["bbox"] = {
+                "xmin": [bbox_col_name, "xmin"],
+                "ymin": [bbox_col_name, "ymin"],
+                "xmax": [bbox_col_name, "xmax"],
+                "ymax": [bbox_col_name, "ymax"],
             }
             if verbose:
                 debug(f"Added bbox covering metadata for column '{bbox_col_name}'")
