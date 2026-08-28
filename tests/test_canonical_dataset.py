@@ -1,0 +1,389 @@
+"""Meta-tests for the canonical sample dataset in ``tests/data/canonical/``.
+
+The canonical dataset exists to be the one shared input for the docs-as-tests
+harness, the end-to-end journey tests, and the ``examples/`` notebooks. Those
+consumers land separately and will pin placeholder names (``input.parquet``,
+``places.parquet``, ``buildings.parquet``, ``input.geojson``, ...) to these
+files, at which point a silent change here would quietly change the meaning of
+every one of them. These tests are what stops that.
+
+These tests pin the shape of the dataset: row counts, exact column lists,
+GeoParquet metadata, clean spec validation, cross-representation consistency,
+the ``examples/data/`` mirror, and the size budget. Regenerate the dataset with
+``uv run python tests/data/canonical/generate_canonical.py`` and update the
+constants here deliberately if the dataset is ever meant to change.
+"""
+
+from __future__ import annotations
+
+import ast
+import csv
+import hashlib
+import importlib.util
+import inspect
+import json
+import sys
+from pathlib import Path
+
+import pyarrow.parquet as pq
+import pytest
+
+from geoparquet_io.core.validate import CheckStatus, validate_geoparquet
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CANONICAL_DIR = REPO_ROOT / "tests" / "data" / "canonical"
+EXAMPLES_DATA_DIR = REPO_ROOT / "examples" / "data"
+
+PLACES_PARQUET = CANONICAL_DIR / "places.parquet"
+BUILDINGS_PARQUET = CANONICAL_DIR / "buildings.parquet"
+PLACES_GEOJSON = CANONICAL_DIR / "places.geojson"
+PLACES_CSV = CANONICAL_DIR / "places.csv"
+
+DATA_FILES = (PLACES_PARQUET, BUILDINGS_PARQUET, PLACES_GEOJSON, PLACES_CSV)
+PARQUET_FILES = (PLACES_PARQUET, BUILDINGS_PARQUET)
+
+EXPECTED_ROWS = {"places.parquet": 766, "buildings.parquet": 42}
+EXPECTED_COLUMNS = {
+    "places.parquet": [
+        "fsq_place_id",
+        "name",
+        "address",
+        "placemaker_url",
+        "geometry",
+        "bbox",
+    ],
+    "buildings.parquet": ["id", "geometry", "bbox"],
+}
+EXPECTED_GEOMETRY_TYPES = {
+    "places.parquet": ["Point"],
+    "buildings.parquet": ["Polygon"],
+}
+
+PLACES_CSV_COLUMNS = [
+    "fsq_place_id",
+    "name",
+    "address",
+    "placemaker_url",
+    "lon",
+    "lat",
+]
+
+# Every canonical file is mirrored into examples/data/ so notebooks and docs can
+# use the same data without reaching into tests/.
+MIRRORED_FILES = (
+    "places.parquet",
+    "buildings.parquet",
+    "places.geojson",
+    "places.csv",
+)
+
+# The dataset ships in the repository twice (tests/data/canonical + the mirror),
+# so the budget covers both copies - that is what a clone actually pays for.
+MAX_CANONICAL_BYTES = 1_000_000
+
+# The one check the validator legitimately cannot run on these files: neither
+# declares a winding order, so there is nothing for it to compare the data
+# against. Pinned by name because "no failures" alone is satisfied just as well
+# by a validator that silently stopped running its checks.
+EXPECTED_SKIPPED_CHECKS = {"orientation_matches_data_geometry"}
+MIN_PASSED_CHECKS = 28
+
+
+GENERATOR = CANONICAL_DIR / "generate_canonical.py"
+
+
+def _geo_metadata(path: Path) -> dict:
+    """Return the parsed ``geo`` key of a parquet file's schema metadata."""
+    metadata = pq.ParquetFile(path).schema_arrow.metadata or {}
+    return json.loads(metadata[b"geo"])
+
+
+def _load_generator():
+    """Import generate_canonical.py by path - it is a script, not a package."""
+    spec = importlib.util.spec_from_file_location("generate_canonical", GENERATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _drift_diagnosis(names: list[str], regenerated_dir: Path) -> str:
+    """Explain a byte mismatch, separating gpio's output from its writer's stamp.
+
+    DuckDB writes its own version into every parquet footer's ``created_by``, so
+    a patch bump changes the bytes of a file whose data and geo metadata are
+    untouched. Both cases mean "regenerate and commit", but only one of them is
+    a change in gpio, and the failure message should not accuse the wrong one.
+    """
+    lines = []
+    for name in names:
+        regenerated, committed = regenerated_dir / name, CANONICAL_DIR / name
+        if name.endswith(".parquet") and pq.read_table(regenerated).equals(
+            pq.read_table(committed)
+        ):
+            was = pq.ParquetFile(committed).metadata.created_by
+            now = pq.ParquetFile(regenerated).metadata.created_by
+            lines.append(
+                f"  {name}: same rows; footer written by {now!r}, committed as {was!r}"
+                if was != now
+                else f"  {name}: same rows, so the difference is in the metadata or encoding"
+            )
+        else:
+            lines.append(f"  {name}: content differs, not just the writer's version stamp")
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize("path", DATA_FILES, ids=lambda p: p.name)
+def test_canonical_file_exists(path):
+    """Every canonical file is present and non-empty."""
+    assert path.is_file(), f"missing canonical file: {path}"
+    assert path.stat().st_size > 0
+
+
+def test_regeneration_script_and_readme_exist():
+    """The dataset is a reproducible artifact, not a mystery blob."""
+    assert (CANONICAL_DIR / "generate_canonical.py").is_file()
+    assert (CANONICAL_DIR / "README.md").is_file()
+
+
+@pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
+def test_parquet_row_count(path):
+    """Row counts are pinned so downstream journey assertions stay meaningful."""
+    assert pq.ParquetFile(path).metadata.num_rows == EXPECTED_ROWS[path.name]
+
+
+@pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
+def test_parquet_columns(path):
+    """Exact column list, in order - doc examples reference these names."""
+    assert pq.ParquetFile(path).schema_arrow.names == EXPECTED_COLUMNS[path.name]
+
+
+@pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
+def test_parquet_geo_metadata(path):
+    """GeoParquet 1.1 metadata with a bbox covering, ready for spatial pushdown."""
+    geo = _geo_metadata(path)
+    assert geo["version"].startswith("1.1")
+    assert geo["primary_column"] == "geometry"
+
+    column = geo["columns"]["geometry"]
+    assert column["encoding"] == "WKB"
+    assert column["geometry_types"] == EXPECTED_GEOMETRY_TYPES[path.name]
+    assert column["covering"]["bbox"] == {
+        "xmin": ["bbox", "xmin"],
+        "ymin": ["bbox", "ymin"],
+        "xmax": ["bbox", "xmax"],
+        "ymax": ["bbox", "ymax"],
+    }
+
+
+@pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
+def test_parquet_passes_spec_validation(path):
+    """gpio's own validator reports a clean bill of health on its sample data."""
+    result = validate_geoparquet(str(path), validate_data=True, sample_size=0)
+
+    problems = [
+        f"{check.status.value}: {check.name} - {check.message}"
+        for check in result.checks
+        if check.status in (CheckStatus.FAILED, CheckStatus.WARNING)
+    ]
+    assert not problems, f"{path.name} failed spec validation: {problems}"
+    assert result.detected_version.startswith("1.1")
+
+    # "Nothing failed" is cheap to satisfy by not checking anything, so pin what
+    # ran. A check that quietly turns SKIPPED - because a metadata key it keys
+    # off went missing, say - would otherwise leave this test green.
+    skipped = {check.name for check in result.checks if check.status is CheckStatus.SKIPPED}
+    assert skipped == EXPECTED_SKIPPED_CHECKS, (
+        f"{path.name}: unexpected set of skipped checks {sorted(skipped)}; a check "
+        "that stops running takes its coverage with it"
+    )
+    assert result.passed_count >= MIN_PASSED_CHECKS, (
+        f"{path.name}: only {result.passed_count} checks passed, expected at least "
+        f"{MIN_PASSED_CHECKS}"
+    )
+
+
+@pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
+def test_parquet_compression_is_zstd(path):
+    """ZSTD keeps `gpio check compression` clean on the canonical files."""
+    metadata = pq.ParquetFile(path).metadata
+    codecs = {
+        metadata.row_group(rg).column(col).compression
+        for rg in range(metadata.num_row_groups)
+        for col in range(metadata.num_columns)
+    }
+    assert codecs == {"ZSTD"}
+
+
+def test_geojson_shape():
+    """The GeoJSON derivative is a FeatureCollection of the same 766 points."""
+    document = json.loads(PLACES_GEOJSON.read_text(encoding="utf-8"))
+
+    assert document["type"] == "FeatureCollection"
+    assert len(document["features"]) == EXPECTED_ROWS["places.parquet"]
+
+    first = document["features"][0]
+    assert first["type"] == "Feature"
+    assert first["geometry"]["type"] == "Point"
+    assert len(first["geometry"]["coordinates"]) == 2
+    # bbox is a GeoParquet covering, not a GeoJSON property - it is dropped.
+    assert list(first["properties"]) == [
+        "fsq_place_id",
+        "name",
+        "address",
+        "placemaker_url",
+    ]
+
+
+def test_csv_shape():
+    """The CSV derivative carries lon/lat columns, ready for `convert geoparquet`."""
+    with PLACES_CSV.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert list(rows[0]) == PLACES_CSV_COLUMNS
+    assert len(rows) == EXPECTED_ROWS["places.parquet"]
+
+    lons = [float(row["lon"]) for row in rows]
+    lats = [float(row["lat"]) for row in rows]
+    # Northern Ghana / Togo border region - the source extract's footprint.
+    assert -1.0 < min(lons) and max(lons) < 1.5
+    assert 9.7 < min(lats) and max(lats) < 12.5
+
+
+def test_derivatives_describe_the_same_features():
+    """Parquet, GeoJSON and CSV agree on identity and position, row for row."""
+    table = pq.read_table(PLACES_PARQUET)
+    parquet_ids = table.column("fsq_place_id").to_pylist()
+
+    features = json.loads(PLACES_GEOJSON.read_text(encoding="utf-8"))["features"]
+    geojson_ids = [f["properties"]["fsq_place_id"] for f in features]
+
+    with PLACES_CSV.open(newline="", encoding="utf-8") as handle:
+        csv_rows = list(csv.DictReader(handle))
+    csv_ids = [row["fsq_place_id"] for row in csv_rows]
+
+    assert geojson_ids == parquet_ids
+    assert csv_ids == parquet_ids
+
+    # gpio writes GeoJSON coordinates rounded to 7 decimals (~1 cm).
+    for feature, row in zip(features, csv_rows, strict=True):
+        lon, lat = feature["geometry"]["coordinates"]
+        assert lon == pytest.approx(float(row["lon"]), abs=1e-6)
+        assert lat == pytest.approx(float(row["lat"]), abs=1e-6)
+
+
+@pytest.mark.parametrize("name", MIRRORED_FILES)
+def test_examples_mirror_is_byte_identical(name):
+    """examples/data/ is a mirror, so regenerating the canonical set updates both."""
+    mirrored = EXAMPLES_DATA_DIR / name
+    assert mirrored.is_file(), f"missing mirror: {mirrored}"
+    assert mirrored.read_bytes() == (CANONICAL_DIR / name).read_bytes()
+
+
+def test_mirror_list_matches_what_the_generator_writes():
+    """The mirror tests are parametrized over MIRRORED_FILES, so it must be complete.
+
+    A fifth output added to the generator without a matching entry here would be
+    written into ``examples/data/`` and then checked by nothing: the byte-identity
+    test above only iterates the names this module already knows about.
+    """
+    produced = set(_load_generator().OUTPUT_FILENAMES)
+    assert produced == set(MIRRORED_FILES), (
+        f"generator writes {sorted(produced)} but this module mirrors "
+        f"{sorted(MIRRORED_FILES)}; the difference is unguarded"
+    )
+    assert {path.name for path in DATA_FILES} == produced
+
+
+def test_existing_sample_parquet_is_preserved():
+    """Notebooks still reference examples/data/sample.parquet; it must survive."""
+    assert (EXAMPLES_DATA_DIR / "sample.parquet").is_file()
+
+
+def test_canonical_dataset_stays_small():
+    """Keep the committed dataset well under a megabyte, mirror included.
+
+    Budgeting only ``tests/data/canonical/`` would understate the cost by half:
+    every file here is committed twice, and a clone pays for both.
+    """
+    copies = [*DATA_FILES, *(EXAMPLES_DATA_DIR / name for name in MIRRORED_FILES)]
+    total = sum(path.stat().st_size for path in copies)
+    assert total < MAX_CANONICAL_BYTES, (
+        f"canonical dataset grew to {total} bytes across both copies (budget {MAX_CANONICAL_BYTES})"
+    )
+
+
+def test_generator_output_dir_defaults_to_the_canonical_directory():
+    """No arguments means "regenerate in place", mirror included."""
+    args = _load_generator().parse_args([])
+
+    assert args.output_dir == CANONICAL_DIR
+    assert args.mirror is True
+
+
+def test_generator_output_dir_elsewhere_skips_the_mirror(tmp_path):
+    """A regeneration aimed at a temp directory must not write into the repo."""
+    args = _load_generator().parse_args(["--output-dir", str(tmp_path)])
+
+    assert args.output_dir == tmp_path.resolve()
+    assert args.mirror is False
+
+
+def test_generator_never_resolves_gpio_from_path():
+    """The generator must run the checkout's gpio, not an installed one.
+
+    `uv tool install geoparquet-io` leaves a global console script that does
+    not track the working tree. If the generator preferred it, the slow
+    reproducibility test below would compare bytes produced by that stale
+    install against the committed files — passing while the repo's own output
+    had drifted, which is precisely the silent failure it exists to catch.
+    """
+    module = _load_generator()
+
+    command = module._gpio_command()
+    assert command[0] == sys.executable, command
+    assert command[1:] == ["-m", "geoparquet_io.cli.main"], command
+
+    # Inspect the CODE, not the source text: the function's own docstring
+    # legitimately explains why a PATH lookup is forbidden, so a plain
+    # substring check would trip over its own documentation.
+    tree = ast.parse(inspect.getsource(module._gpio_command))
+    calls = [
+        node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", "")
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Attribute, ast.Name))
+    ]
+    assert "which" not in calls, (
+        "_gpio_command resolves gpio from PATH again; the reproducibility "
+        "guarantee only holds when regeneration uses this checkout's code"
+    )
+
+
+@pytest.mark.slow
+def test_regeneration_reproduces_the_committed_files(tmp_path):
+    """The committed dataset is still what the generator produces today.
+
+    Without this, a change in gpio's sort, bbox, GeoJSON or compression output
+    would leave the committed files stale and the generator's promise of
+    reproducibility quietly false - discovered only by whoever next reran it.
+    """
+    module = _load_generator()
+    examples_before = {name: (EXAMPLES_DATA_DIR / name).read_bytes() for name in MIRRORED_FILES}
+
+    assert module.main(["--output-dir", str(tmp_path)]) == 0
+
+    drifted = [
+        name for name in MIRRORED_FILES if _sha256(tmp_path / name) != _sha256(CANONICAL_DIR / name)
+    ]
+    assert not drifted, (
+        f"regenerating produced different bytes for {drifted}; rerun "
+        f"tests/data/canonical/generate_canonical.py and commit the result.\n"
+        + _drift_diagnosis(drifted, tmp_path)
+    )
+
+    # --output-dir must leave the repository alone.
+    for name, content in examples_before.items():
+        assert (EXAMPLES_DATA_DIR / name).read_bytes() == content

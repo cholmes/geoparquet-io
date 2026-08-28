@@ -343,7 +343,11 @@ def _stream_feature_collection(
 
     # Output to file or stdout
     if output_path:
-        with open(output_path, "w", encoding="utf-8") as f:
+        # newline="\n" keeps the output byte-identical across platforms. Text mode
+        # would translate every "\n" to os.linesep, so Windows produced CRLF
+        # GeoJSON - a different file for the same input, which breaks checksum
+        # comparisons and any consumer reading the stream as bytes.
+        with open(output_path, "w", encoding="utf-8", newline="\n") as f:
             if pretty:
                 json.dump(fc, f, indent=2)
             else:
