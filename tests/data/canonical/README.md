@@ -1,11 +1,12 @@
 # Canonical sample dataset
 
-One small, spec-clean dataset that the documentation examples, the end-to-end
-journey tests, and the `examples/` notebooks all share. Doc examples name their
-inputs with placeholders (`input.parquet`, `data.parquet`, `places.parquet`,
-`buildings.parquet`, `input.geojson`); the docs-as-tests harness seeds a temp
-directory from these files under those names, so an example can be executed
-verbatim without editing the doc.
+One small, spec-clean dataset for the documentation examples, the end-to-end
+journey tests, and the `examples/` notebooks to share. Those consumers land in
+their own changes; this is the data they are being written against. Doc examples
+name their inputs with placeholders (`input.parquet`, `data.parquet`,
+`places.parquet`, `buildings.parquet`, `input.geojson`), and the docs-as-tests
+harness will seed a temp directory from these files under those names, so an
+example can be executed verbatim without editing the doc.
 
 Everything here is a derived artifact. Nothing is hand-made, and nothing should
 be edited in place — change the generator and rerun it.

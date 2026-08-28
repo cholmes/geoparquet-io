@@ -1,10 +1,11 @@
 """Meta-tests for the canonical sample dataset in ``tests/data/canonical/``.
 
-The canonical dataset is the shared input for the docs-as-tests harness, the
-end-to-end journey tests, and the ``examples/`` notebooks. Those consumers pin
-placeholder names (``input.parquet``, ``places.parquet``, ``buildings.parquet``,
-``input.geojson``, ...) to these files, so a silent change here would quietly
-change the meaning of every downstream test.
+The canonical dataset exists to be the one shared input for the docs-as-tests
+harness, the end-to-end journey tests, and the ``examples/`` notebooks. Those
+consumers land separately and will pin placeholder names (``input.parquet``,
+``places.parquet``, ``buildings.parquet``, ``input.geojson``, ...) to these
+files, at which point a silent change here would quietly change the meaning of
+every one of them. These tests are what stops that.
 
 These tests pin the shape of the dataset: row counts, exact column lists,
 GeoParquet metadata, clean spec validation, cross-representation consistency,
@@ -77,8 +78,15 @@ MIRRORED_FILES = (
 )
 
 # The dataset ships in the repository twice (tests/data/canonical + the mirror),
-# so the per-copy budget is deliberately tight.
+# so the budget covers both copies - that is what a clone actually pays for.
 MAX_CANONICAL_BYTES = 1_000_000
+
+# The one check the validator legitimately cannot run on these files: neither
+# declares a winding order, so there is nothing for it to compare the data
+# against. Pinned by name because "no failures" alone is satisfied just as well
+# by a validator that silently stopped running its checks.
+EXPECTED_SKIPPED_CHECKS = {"orientation_matches_data_geometry"}
+MIN_PASSED_CHECKS = 28
 
 
 GENERATOR = CANONICAL_DIR / "generate_canonical.py"
@@ -100,6 +108,32 @@ def _load_generator():
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _drift_diagnosis(names: list[str], regenerated_dir: Path) -> str:
+    """Explain a byte mismatch, separating gpio's output from its writer's stamp.
+
+    DuckDB writes its own version into every parquet footer's ``created_by``, so
+    a patch bump changes the bytes of a file whose data and geo metadata are
+    untouched. Both cases mean "regenerate and commit", but only one of them is
+    a change in gpio, and the failure message should not accuse the wrong one.
+    """
+    lines = []
+    for name in names:
+        regenerated, committed = regenerated_dir / name, CANONICAL_DIR / name
+        if name.endswith(".parquet") and pq.read_table(regenerated).equals(
+            pq.read_table(committed)
+        ):
+            was = pq.ParquetFile(committed).metadata.created_by
+            now = pq.ParquetFile(regenerated).metadata.created_by
+            lines.append(
+                f"  {name}: same rows; footer written by {now!r}, committed as {was!r}"
+                if was != now
+                else f"  {name}: same rows, so the difference is in the metadata or encoding"
+            )
+        else:
+            lines.append(f"  {name}: content differs, not just the writer's version stamp")
+    return "\n".join(lines)
 
 
 @pytest.mark.parametrize("path", DATA_FILES, ids=lambda p: p.name)
@@ -157,7 +191,19 @@ def test_parquet_passes_spec_validation(path):
     ]
     assert not problems, f"{path.name} failed spec validation: {problems}"
     assert result.detected_version.startswith("1.1")
-    assert result.passed_count > 0
+
+    # "Nothing failed" is cheap to satisfy by not checking anything, so pin what
+    # ran. A check that quietly turns SKIPPED - because a metadata key it keys
+    # off went missing, say - would otherwise leave this test green.
+    skipped = {check.name for check in result.checks if check.status is CheckStatus.SKIPPED}
+    assert skipped == EXPECTED_SKIPPED_CHECKS, (
+        f"{path.name}: unexpected set of skipped checks {sorted(skipped)}; a check "
+        "that stops running takes its coverage with it"
+    )
+    assert result.passed_count >= MIN_PASSED_CHECKS, (
+        f"{path.name}: only {result.passed_count} checks passed, expected at least "
+        f"{MIN_PASSED_CHECKS}"
+    )
 
 
 @pytest.mark.parametrize("path", PARQUET_FILES, ids=lambda p: p.name)
@@ -237,15 +283,37 @@ def test_examples_mirror_is_byte_identical(name):
     assert mirrored.read_bytes() == (CANONICAL_DIR / name).read_bytes()
 
 
+def test_mirror_list_matches_what_the_generator_writes():
+    """The mirror tests are parametrized over MIRRORED_FILES, so it must be complete.
+
+    A fifth output added to the generator without a matching entry here would be
+    written into ``examples/data/`` and then checked by nothing: the byte-identity
+    test above only iterates the names this module already knows about.
+    """
+    produced = set(_load_generator().OUTPUT_FILENAMES)
+    assert produced == set(MIRRORED_FILES), (
+        f"generator writes {sorted(produced)} but this module mirrors "
+        f"{sorted(MIRRORED_FILES)}; the difference is unguarded"
+    )
+    assert {path.name for path in DATA_FILES} == produced
+
+
 def test_existing_sample_parquet_is_preserved():
     """Notebooks still reference examples/data/sample.parquet; it must survive."""
     assert (EXAMPLES_DATA_DIR / "sample.parquet").is_file()
 
 
 def test_canonical_dataset_stays_small():
-    """Keep the committed dataset well under a megabyte per copy."""
-    total = sum(path.stat().st_size for path in DATA_FILES)
-    assert total < MAX_CANONICAL_BYTES, f"canonical dataset grew to {total} bytes"
+    """Keep the committed dataset well under a megabyte, mirror included.
+
+    Budgeting only ``tests/data/canonical/`` would understate the cost by half:
+    every file here is committed twice, and a clone pays for both.
+    """
+    copies = [*DATA_FILES, *(EXAMPLES_DATA_DIR / name for name in MIRRORED_FILES)]
+    total = sum(path.stat().st_size for path in copies)
+    assert total < MAX_CANONICAL_BYTES, (
+        f"canonical dataset grew to {total} bytes across both copies (budget {MAX_CANONICAL_BYTES})"
+    )
 
 
 def test_generator_output_dir_defaults_to_the_canonical_directory():
@@ -311,8 +379,9 @@ def test_regeneration_reproduces_the_committed_files(tmp_path):
         name for name in MIRRORED_FILES if _sha256(tmp_path / name) != _sha256(CANONICAL_DIR / name)
     ]
     assert not drifted, (
-        f"regenerating produced different bytes for {drifted}; gpio's output "
-        f"changed - rerun tests/data/canonical/generate_canonical.py and commit"
+        f"regenerating produced different bytes for {drifted}; rerun "
+        f"tests/data/canonical/generate_canonical.py and commit the result.\n"
+        + _drift_diagnosis(drifted, tmp_path)
     )
 
     # --output-dir must leave the repository alone.
