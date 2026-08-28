@@ -40,6 +40,33 @@ from geoparquet_io.core.streaming import (
 )
 
 
+def _resolve_output_version(
+    input_parquet: str,
+    geoparquet_version: str | None,
+    verbose: bool,
+) -> str:
+    """The GeoParquet version this run will actually write.
+
+    Mirrors ``write_parquet_with_metadata``: an explicit version wins, auto mode
+    preserves the input's version, and anything unreadable falls back to the
+    default. Guessing "1.1" for auto mode instead told users sorting a 2.0 file
+    to "consider --geoparquet-version 2.0" -- noise that hides real gaps (#738).
+    """
+    if geoparquet_version:
+        return geoparquet_version
+    if is_stdin(input_parquet):
+        return DEFAULT_GEOPARQUET_VERSION
+
+    from geoparquet_io.core.common import extract_version_from_metadata
+
+    try:
+        metadata, _ = get_parquet_metadata(input_parquet, verbose)
+    except Exception as e:
+        debug(f"Could not read {input_parquet} to resolve output version: {e}")
+        return DEFAULT_GEOPARQUET_VERSION
+    return extract_version_from_metadata(metadata) or DEFAULT_GEOPARQUET_VERSION
+
+
 def hilbert_order_table(
     table: pa.Table,
     geometry_column: str | None = None,
@@ -236,7 +263,7 @@ def hilbert_order(
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB')
     """
-    effective_version = geoparquet_version or DEFAULT_GEOPARQUET_VERSION
+    effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose)
     if effective_version == "1.1":
         warn(
             "Hilbert sorting to GeoParquet v1.1 provides no spatial filter pushdown benefit. "

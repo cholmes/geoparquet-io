@@ -685,6 +685,28 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   are is the single `_CARRIED_SCHEMA_METADATA_KEYS` constant the
   parquet-geo-only path already uses, not a second copy of the same list.
 
+- **GeoParquet 2.0 output no longer drops the `bbox` covering (#738).** A 2.0
+  write whose input was already 2.x took a fast path that let DuckDB regenerate
+  the `geo` key from scratch, discarding every `covering` entry. So
+  `gpio sort hilbert --add-bbox` on a 2.0 file wrote the bbox column, reported
+  success, and declared nothing — bytes on disk no reader could use — and any
+  2.0→2.0 operation silently stripped a covering the input carried. Writes now
+  rewrite the metadata whenever the output should declare a covering (the input
+  declares one, or the output schema carries a bbox struct column), so the
+  covering survives every command and every write strategy. GeoParquet 2.0 keeps
+  1.1's optional bbox covering ([geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302));
+  it prunes *pages* within a row group where 2.0's native statistics only prune
+  whole row groups. Two consequences of the same premise: `gpio check` now
+  accepts a declared bbox covering on a 2.0 file instead of flagging it and
+  offering to delete it (an *undeclared* bbox column is still flagged — that is
+  the real defect — and `--fix` now only removes those); and `gpio sort hilbert`
+  no longer advises "consider `--geoparquet-version 2.0`" when auto mode is
+  already writing 2.0, a warning that assumed 1.1 output instead of resolving
+  the version the write would actually use. The three divergent bbox-column
+  detectors in `common.py`, `geo_metadata.py` and the DuckDB-KV write strategy
+  are now one shared `detect_bbox_column_from_schema()`, so the decision to
+  write a covering and the covering itself can never disagree.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

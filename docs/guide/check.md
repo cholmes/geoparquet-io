@@ -117,6 +117,11 @@ Verifies:
 - GeoParquet metadata version
 - Bbox covering metadata
 
+A bbox column is optional in GeoParquet 2.0, but it must be declared: a bbox
+column that no `covering` entry points at costs file size and cannot be used by
+any reader, so `check bbox` fails the file and suggests `gpio add bbox-metadata`
+(or `--fix` to drop the column).
+
 ### Row Groups
 
 === "CLI"
@@ -253,7 +258,7 @@ Validates file structure and metadata against the GeoParquet specification:
 - **Version sanity** — an unknown `geo` metadata version (e.g. `99.0.0`) fails
   validation, even in auto mode. Version/feature mismatches also fail: a file
   declaring version 1.0 while using GeoParquet 2.0 native Parquet geo types, or
-  the 1.1-only `covering` key, is flagged as inconsistent.
+  the `covering` key that 1.1 introduced, is flagged as inconsistent.
 - **CRS structure** — PROJJSON `crs` objects must carry the required `type`
   member, and it must be a known PROJJSON CRS type.
 - **Datum-aware epoch validation** — a coordinate `epoch` on a datum ensemble

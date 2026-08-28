@@ -38,7 +38,7 @@ Add precomputed bounding boxes for faster spatial queries:
     gpio.read('input.parquet').add_bbox(column_name='bounds').write('output.parquet')
     ```
 
-Creates a struct column with `{xmin, ymin, xmax, ymax}` for each feature. Bbox covering metadata is automatically added to comply with GeoParquet 1.1 spec.
+Creates a struct column with `{xmin, ymin, xmax, ymax}` for each feature, plus the `covering` metadata that points at it — at every output version. GeoParquet 1.1 introduced the covering, and 2.0 keeps it as an option ([geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302)): 2.0's native statistics prune whole row groups, while the covering column's page index also prunes pages within a row group.
 
 ### Existing Bbox Detection
 

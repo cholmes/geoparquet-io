@@ -371,6 +371,27 @@ def _covering_column(covering_entry) -> str | None:
     return None
 
 
+def geo_metadata_declares_covering(metadata: dict | None) -> bool:
+    """True when KV ``metadata``'s geo block declares a ``covering`` on any column.
+
+    Used to decide whether a write that would otherwise skip the metadata
+    rewrite has to perform one anyway: the fast path lets DuckDB regenerate the
+    ``geo`` key, which would drop a covering the input carried.
+    """
+    if not metadata:
+        return False
+    for geo_key in ("geo", b"geo"):
+        if geo_key not in metadata:
+            continue
+        geo_dict = _decode_geo_value(metadata[geo_key])
+        if not geo_dict:
+            continue
+        for col_meta in (geo_dict.get("columns") or {}).values():
+            if isinstance(col_meta, dict) and col_meta.get("covering"):
+                return True
+    return False
+
+
 def _prune_coverings(col_meta, columns: set[str]) -> None:
     """Drop ``covering`` entries pointing at columns not in ``columns``."""
     covering = col_meta.get("covering") if isinstance(col_meta, dict) else None
@@ -752,15 +773,26 @@ def _detect_version_from_table(table: pa.Table, verbose: bool = False) -> str | 
         return None
 
 
-def _detect_bbox_column_from_table(table: pa.Table, verbose: bool = False) -> str | None:
-    """
-    Detect bbox struct column from Arrow table schema.
+# Column-name suffixes that conventionally denote a bbox covering column, and
+# the struct fields such a column must expose to be one (GeoParquet
+# "Bounding Box Columns").
+_BBOX_COLUMN_SUFFIXES = ("bbox", "bounds", "extent")
+_BBOX_STRUCT_FIELDS = frozenset({"xmin", "ymin", "xmax", "ymax"})
 
-    Looks for columns with conventional names (bbox, bounds, extent) that have
-    the required struct fields (xmin, ymin, xmax, ymax).
+
+def detect_bbox_column_from_schema(schema: pa.Schema, verbose: bool = False) -> str | None:
+    """
+    Detect a bbox covering column in an Arrow schema.
+
+    Looks for columns with conventional names (bbox, bounds, extent) that are
+    structs carrying the required xmin/ymin/xmax/ymax fields.
+
+    This is the single detector every writer and every "does this output need a
+    covering?" decision shares, so the decision to write a ``covering`` entry
+    and the entry itself can never disagree.
 
     Args:
-        table: PyArrow Table to check
+        schema: PyArrow Schema to check
         verbose: Whether to print verbose output
 
     Returns:
@@ -768,27 +800,22 @@ def _detect_bbox_column_from_table(table: pa.Table, verbose: bool = False) -> st
     """
     import pyarrow as pa
 
-    conventional_suffixes = ["bbox", "bounds", "extent"]
-    required_fields = {"xmin", "ymin", "xmax", "ymax"}
-
-    for field in table.schema:
-        name = field.name
-        field_type = field.type
-
-        # Check if column name ends with conventional suffixes
-        is_bbox_name = any(name.endswith(suffix) for suffix in conventional_suffixes)
-        if not is_bbox_name:
+    for field in schema:
+        if not field.name.endswith(_BBOX_COLUMN_SUFFIXES):
             continue
-
-        # Check if it's a struct with the required fields
-        if pa.types.is_struct(field_type):
-            struct_field_names = {f.name for f in field_type}
-            if required_fields.issubset(struct_field_names):
-                if verbose:
-                    debug(f"Found bbox column in table: {name}")
-                return name
+        if not pa.types.is_struct(field.type):
+            continue
+        if _BBOX_STRUCT_FIELDS.issubset({f.name for f in field.type}):
+            if verbose:
+                debug(f"Found bbox column in table: {field.name}")
+            return field.name
 
     return None
+
+
+def _detect_bbox_column_from_table(table: pa.Table, verbose: bool = False) -> str | None:
+    """Detect bbox struct column from an Arrow table's schema."""
+    return detect_bbox_column_from_schema(table.schema, verbose)
 
 
 # =============================================================================

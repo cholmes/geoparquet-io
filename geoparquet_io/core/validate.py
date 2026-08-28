@@ -665,7 +665,7 @@ def _check_version_known(geo_meta: dict) -> ValidationCheck:
 
 
 def _columns_declaring_covering(geo_meta: dict) -> list[str]:
-    """Names of geometry columns whose metadata declares the 1.1-only 'covering' key."""
+    """Names of geometry columns whose metadata declares the 'covering' key (added in 1.1)."""
     return sorted(
         name
         for name, col in (geo_meta.get("columns") or {}).items()

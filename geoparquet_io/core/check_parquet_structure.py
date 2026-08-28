@@ -317,23 +317,29 @@ def _check_parquet_geo_only(parquet_file, file_type_info, verbose, return_result
 
 
 def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, quiet=False):
-    """Check GeoParquet 2.0 file (bbox not recommended)."""
+    """Check GeoParquet 2.0 file (a bbox column is optional, but must be declared)."""
     bbox_info = check_bbox_structure(parquet_file, verbose)
     stats_info = has_parquet_geo_row_group_stats(parquet_file)
 
     issues = []
     recommendations = []
 
-    # For v2, bbox column is NOT recommended
-    if bbox_info["has_bbox_column"]:
+    # GeoParquet 2.0 keeps 1.1's optional bbox covering
+    # (opengeospatial/geoparquet#302): the native geo types give row group
+    # statistics, while a covering also prunes pages within a row group. So a
+    # bbox column is a legitimate choice here -- but only if a `covering` entry
+    # declares it. An undeclared one costs bytes and no reader can use it (#738).
+    undeclared_bbox = bbox_info["has_bbox_column"] and not bbox_info["has_bbox_metadata"]
+    if undeclared_bbox:
         issues.append(
-            f"Bbox column '{bbox_info['bbox_column_name']}' found (not needed for GeoParquet 2.0)"
+            f"Bbox column '{bbox_info['bbox_column_name']}' is not declared in the "
+            "'covering' metadata, so no reader can use it"
         )
         recommendations.append(
-            "Remove bbox column with --fix (native geo types provide row group stats)"
+            "Declare it with 'gpio add bbox-metadata', or remove the column with --fix"
         )
 
-    passed = not bbox_info["has_bbox_column"]
+    passed = not undeclared_bbox
 
     # Print results (skip if quiet mode)
     if not quiet:
@@ -341,14 +347,20 @@ def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, 
         success(f"✓ Version {file_type_info['geo_version']}")
         success("✓ Uses native Parquet GEOMETRY/GEOGRAPHY types")
 
-        if bbox_info["has_bbox_column"]:
+        if undeclared_bbox:
             warn(
-                f"⚠️  Bbox column '{bbox_info['bbox_column_name']}' found (not recommended for 2.0)"
+                f"⚠️  Bbox column '{bbox_info['bbox_column_name']}' found but not declared "
+                "in 'covering' metadata"
             )
-            info("   Native Parquet geo types provide row group stats for spatial filtering.")
-            info("   Use --fix to remove the bbox column")
+            info("   As written, it costs file size and no reader can use it.")
+            info("   Declare it with 'gpio add bbox-metadata', or use --fix to remove it.")
+        elif bbox_info["has_bbox_column"]:
+            success(
+                f"✓ Bbox covering column '{bbox_info['bbox_column_name']}' declared "
+                "(optional in 2.0; enables page-level pruning)"
+            )
         else:
-            success("✓ No bbox column (correct for GeoParquet 2.0)")
+            success("✓ No bbox column (native geo statistics are enough for most files)")
 
         if stats_info["has_stats"]:
             success("✓ Row group statistics available for spatial filtering")
@@ -363,10 +375,12 @@ def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, 
             "has_bbox_column": bbox_info["has_bbox_column"],
             "bbox_column_name": bbox_info.get("bbox_column_name"),
             "has_row_group_stats": stats_info["has_stats"],
-            "needs_bbox_removal": bbox_info["has_bbox_column"],
+            # Only an *undeclared* bbox column is removable: --fix must not
+            # delete a covering the file legitimately declares.
+            "needs_bbox_removal": undeclared_bbox,
             "issues": issues,
             "recommendations": recommendations,
-            "fix_available": bbox_info["has_bbox_column"],
+            "fix_available": undeclared_bbox,
         }
 
 

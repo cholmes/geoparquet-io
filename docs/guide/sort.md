@@ -45,11 +45,17 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 - Enhances query performance
 
 !!! warning "GeoParquet version matters"
-    Hilbert sorting to GeoParquet v1.1 (the default) provides **no spatial filter pushdown benefit** because v1.1 files lack native `geo_bbox` row group statistics. Use `--geoparquet-version 2.0` to enable native geo stats that allow query engines to skip irrelevant row groups.
+    Sorting only pays off if readers can *use* the resulting spatial locality. Without `--geoparquet-version`, the output keeps the input's version, so a v1.1 file stays v1.1 — and v1.1 has no native `geo_bbox` row group statistics. Either write v2.0 for native statistics, or add a `bbox` covering column that engines can push predicates down onto:
 
     ```bash
+    # Native row group statistics (recommended)
     gpio sort hilbert input.parquet output.parquet --geoparquet-version 2.0
+
+    # A bbox covering column instead (or as well — it also prunes pages within a row group)
+    gpio sort hilbert input.parquet output.parquet --add-bbox
     ```
+
+    `--add-bbox` writes the column *and* the `covering` metadata that points at it, at every output version. GeoParquet 2.0 keeps 1.1's optional bbox covering ([geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302)) precisely because the native statistics only prune whole row groups, while a covering column's page index prunes pages inside one.
 
 ## Options
 

@@ -155,12 +155,6 @@ def _wrap_query_with_crs(
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
 
-def _detect_bbox_column_name(schema_names: list[str]) -> str | None:
-    """Detect bbox column name from schema using common naming conventions."""
-    for name in schema_names:
-        if name in ["bbox", "bounds", "extent"] or name.endswith("_bbox"):
-            return name
-    return None
 
 
 def _build_copy_options(
@@ -460,7 +454,10 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         The bbox column is still written for 1.0 — only the 'covering' key is 1.1+.
         """
-        from geoparquet_io.core.geo_metadata import covering_supported
+        from geoparquet_io.core.geo_metadata import (
+            covering_supported,
+            detect_bbox_column_from_schema,
+        )
 
         if not covering_supported(geoparquet_version):
             if verbose:
@@ -468,7 +465,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             return
 
         schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-        bbox_col_name = _detect_bbox_column_name(schema_result.schema.names)
+        bbox_col_name = detect_bbox_column_from_schema(schema_result.schema, verbose)
 
         if bbox_col_name:
             col_meta["covering"] = {

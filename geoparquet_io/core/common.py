@@ -1014,9 +1014,8 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
     Returns:
         str: Name of bbox column if found, None otherwise
     """
-    import pyarrow as pa
-
     from geoparquet_io.core.crs_utils import parse_geo_metadata_from_schema
+    from geoparquet_io.core.geo_metadata import detect_bbox_column_from_schema
 
     geo_meta = parse_geo_metadata_from_schema(table.schema.metadata)
     covering_column = _bbox_column_from_covering(geo_meta)
@@ -1025,27 +1024,7 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
             debug(f"Found bbox column from covering metadata: {covering_column}")
         return covering_column
 
-    conventional_suffixes = ["bbox", "bounds", "extent"]
-    required_fields = {"xmin", "ymin", "xmax", "ymax"}
-
-    for field in table.schema:
-        name = field.name
-        field_type = field.type
-
-        # Check if column name ends with conventional suffixes
-        is_bbox_name = any(name.endswith(suffix) for suffix in conventional_suffixes)
-        if not is_bbox_name:
-            continue
-
-        # Check if it's a struct with the required fields
-        if pa.types.is_struct(field_type):
-            struct_field_names = {f.name for f in field_type}
-            if required_fields.issubset(struct_field_names):
-                if verbose:
-                    debug(f"Found bbox column in table: {name}")
-                return name
-
-    return None
+    return detect_bbox_column_from_schema(table.schema, verbose)
 
 
 # WKB geometry type codes to GeoParquet base names (2D types)
@@ -2360,6 +2339,38 @@ def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict
         debug(f"Preserving input KV metadata keys: {sorted(preserved)}")
     return preserved
 
+def _output_carries_covering(
+    con,
+    query: str,
+    original_metadata: dict | None,
+    verbose: bool,
+) -> bool:
+    """Whether the written file should declare a ``covering`` for its geometry.
+
+    True when the input's geo metadata already declares one (pruning has
+    already dropped coverings whose column the output does not emit), or when
+    the output schema contains a bbox struct column that no covering names yet.
+
+    Best-effort: a schema probe that fails answers False, leaving the write on
+    whatever path it was already taking rather than aborting it.
+    """
+    from geoparquet_io.core.geo_metadata import (
+        detect_bbox_column_from_schema,
+        geo_metadata_declares_covering,
+    )
+
+    if geo_metadata_declares_covering(original_metadata):
+        return True
+
+    try:
+        schema = con.execute(f"SELECT * FROM ({query}) AS __subq LIMIT 0").arrow().schema
+    except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
+        if verbose:
+            debug(f"Could not read output schema to check for a bbox column: {e}")
+        return False
+
+    return detect_bbox_column_from_schema(schema, verbose) is not None
+
 
 def write_parquet_with_metadata(
     con,
@@ -2479,6 +2490,20 @@ def write_parquet_with_metadata(
         rewrite_needed = True
         if verbose:
             debug("Forcing metadata rewrite for covering metadata")
+
+    # Same reason, for a covering nobody passed in custom_metadata: a 2.0 output
+    # otherwise takes the plain COPY TO fast path, where DuckDB regenerates the
+    # `geo` key from scratch and drops every `covering` entry -- the one
+    # describing a bbox column `--add-bbox` just wrote, or one carried in from
+    # the input. GeoParquet 2.0 keeps 1.1's optional bbox covering
+    # (opengeospatial/geoparquet#302) precisely because it prunes *pages* where
+    # the native row-group statistics only prune row groups; a bbox column that
+    # nothing declares costs bytes and tells readers nothing (#738).
+    if not rewrite_needed and effective_version != "parquet-geo-only":
+        if _output_carries_covering(con, query, original_metadata, verbose):
+            rewrite_needed = True
+            if verbose:
+                debug("Forcing metadata rewrite to describe the output's bbox covering")
 
     # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa).
     # Build a merged local dict rather than mutating the caller-supplied
