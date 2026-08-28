@@ -188,7 +188,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "Python"
 
-    <!-- doctest: setup="gpio process aggregate h3 input.parquet cells.parquet --resolution 5" -->
+    <!-- doctest: needs-tippecanoe, setup="gpio process aggregate h3 input.parquet cells.parquet --resolution 5" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -298,6 +298,7 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
 
 === "Python"
 
+    <!-- doctest: needs-tippecanoe -->
     ```python
     from geoparquet_io.api import ops
 
