@@ -63,6 +63,24 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **Honest notebook CI signal (#667)**: the `notebooks` job reported a green
+  check for `examples/05_cloud_workflows.ipynb` while executing nothing — all
+  ten of its code cells were commented out, so nbmake "passed" a notebook that
+  ran zero statements. Every cell there uploads to S3/GCS/Azure and needs live
+  credentials, so the notebook is now explicitly skipped by
+  `examples/conftest.py` and says so in its own opening cell, instead of
+  claiming a pass CI never earned. The skip is a
+  `pytest_collection_modifyitems` hook rather than `collect_ignore`:
+  `collect_ignore` is only consulted when pytest walks a directory, and the CI
+  job passes an expanded `examples/*.ipynb` file list, against which it is
+  silently bypassed. Skipping (not deselecting) keeps the reason visible in the
+  CI log. `tests/test_notebook_signal.py` guards the class of bug: a notebook
+  nbmake runs must execute at least one real `gpio` call, and any notebook
+  whose code cells are mostly commented-out stubs must carry an
+  `<!-- nbsignal: illustrative reason="..." -->` directive — invisible when
+  rendered, mandatory in source. `examples/04_partitioning.ipynb` (8 of 10
+  cells inert, because `gpio` rightly refuses to partition the bundled 42-row
+  sample) now carries that directive. No workflow change was needed.
 - **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
   whole Click command tree into a structural snapshot at
   `tests/data/cli_surface.json` — every group, command, option and argument
