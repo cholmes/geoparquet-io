@@ -22,16 +22,19 @@ gpio skills --copy .
 Copy the skill content to your clipboard and paste it at the start of a conversation:
 
 === "macOS"
+    <!-- doctest: skip="uses pbcopy, which only exists on macOS" -->
     ```bash
     gpio skills --show | pbcopy
     ```
 
 === "Linux (X11)"
+    <!-- doctest: skip="uses xclip, which is not a gpio dependency" -->
     ```bash
     gpio skills --show | xclip -selection clipboard
     ```
 
 === "Windows (PowerShell)"
+    <!-- doctest: skip="the PowerShell variant of the bash example above, which is the one executed" -->
     ```powershell
     gpio skills --show | Set-Clipboard
     ```

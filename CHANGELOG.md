@@ -63,6 +63,29 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Added
 
+- **The guides' examples now run as tests (#667)**: every fenced `bash` and
+  `python` block in `docs/guide/*.md` is collected as a pytest item with an id
+  like `guide/sort.md:L14[bash]`, executed in a throwaway directory seeded from
+  the canonical dataset under the placeholder names the docs already use
+  (`input.parquet`, `data.parquet`, `buildings.parquet`, ...), so an example
+  runs verbatim and a failure reports the doc file and the fence's line. A
+  block that cannot run says so in the doc source with an HTML comment that is
+  invisible in the rendered page — `<!-- doctest: skip="needs cloud
+  credentials" -->`, `network`, `slow`, `needs-tippecanoe`, `needs-ogr`,
+  `setup="..."`, `prelude="..."`, `menu` — and `tests/test_docs_examples_meta.py`
+  keeps that honest: it rejects fence languages the harness cannot run (```sh,
+  ```py), stray ``` markers that silently swallow the next block, unparsable or
+  unexplained directives, commands hidden in prose fences, and ratchets the
+  number of opted-out blocks. `tests/test_docs_examples_coverage.py` adds the
+  expensive guard in the slow lane: it runs each statement of every skipped,
+  locally-runnable bash fence and fails if one exits 0, so a single justified
+  skip cannot take working commands down with it. A curated fast subset
+  (`sort.md`, `piping.md`, `check.md`) runs in the fast suite; the rest carry
+  `slow`. Running the docs found real bugs in them, now fixed: `--aws-profile`
+  shown after the subcommand on `sort hilbert`, `add bbox` and
+  `partition string`, which reject it there (it is a hidden per-command option
+  that only some subcommands carry; the global position works everywhere), and
+  `gpio inspect FILE --stats` for what is really `gpio inspect stats FILE`.
 - **Honest notebook CI signal (#667)**: the `notebooks` job reported a green
   check for `examples/05_cloud_workflows.ipynb` while executing nothing — all
   ten of its code cells were commented out, so nbmake "passed" a notebook that

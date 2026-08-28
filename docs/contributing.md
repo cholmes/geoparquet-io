@@ -117,7 +117,26 @@ Coverage gates (both enforced in CI):
 | `@pytest.mark.integration` | marks end-to-end integration tests; runs in the fast suite unless also marked slow/network (see tests/e2e/test_integration_lane.py) |
 | `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
 | `@pytest.mark.meta` | repo tooling checks, excluded from the fast suite |
+| `@pytest.mark.docs_example` | a fenced example block executed out of docs/guide/*.md |
 <!-- END GENERATED: test-markers -->
+
+### Documentation examples are tests
+
+Every fenced `bash` and `python` block in `docs/guide/*.md` is collected as a
+test and executed against a seeded scratch directory, so an example you add to
+a guide runs in CI. If a block cannot run, mark it in the doc with an HTML
+comment on the line above the fence — `<!-- doctest: skip="why" -->`,
+`network`, `setup="…"`, `needs-tippecanoe`, and friends. The reason is
+mandatory and has to be true of the whole fence.
+
+**[`tests/docs_examples/README.md`](https://github.com/geoparquet/geoparquet-io/blob/main/tests/docs_examples/README.md)
+is the reference**: the full directive vocabulary, how the seeding works, what
+the meta-test rejects, and how to write a reason that will still mean something
+to the next person.
+
+```bash
+uv run pytest docs/guide -n 4 -m "not network"   # run the guides' examples
+```
 
 ## Code Quality
 

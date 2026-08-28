@@ -19,7 +19,10 @@ For most users, the default just works. No configuration is needed:
     ```bash
     # Process a 50GB file on a machine with 4GB RAM
     gpio extract huge_dataset.parquet filtered.parquet --bbox -122.5,37.5,-122.0,38.0
+    ```
 
+    <!-- doctest: skip="needs large_file.shp, which the harness does not seed" -->
+    ```bash
     # Convert a massive shapefile to GeoParquet
     gpio convert large_file.shp output.parquet
     ```
@@ -68,6 +71,7 @@ Override the default strategy when needed:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Use streaming strategy
     gpio extract input.parquet output.parquet --write-strategy streaming
@@ -122,6 +126,7 @@ Override auto-detection when needed:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Limit DuckDB to 2GB for streaming writes
     gpio extract input.parquet output.parquet --write-memory 2GB
@@ -173,6 +178,7 @@ Override auto-detection when needed:
 
 gpio detects Docker memory limits automatically via cgroups. No extra configuration needed:
 
+<!-- doctest: skip="requires Docker" -->
 ```bash
 # Docker automatically limits memory, gpio respects it
 docker run -m 2g my-gpio-image gpio extract input.parquet output.parquet
@@ -180,6 +186,7 @@ docker run -m 2g my-gpio-image gpio extract input.parquet output.parquet
 
 If you need explicit control:
 
+<!-- doctest: skip="requires Docker" -->
 ```bash
 docker run -m 2g my-gpio-image gpio extract input.parquet output.parquet --write-memory 1GB
 ```
@@ -202,6 +209,7 @@ For serverless environments with tight memory constraints:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # AWS Lambda with 1GB memory
     gpio extract input.parquet output.parquet --write-memory 384MB
@@ -228,6 +236,7 @@ For serverless environments with tight memory constraints:
 
 === "CLI"
 
+    <!-- doctest: skip="needs large_dataset.parquet, which the harness does not seed" -->
     ```bash
     # 100GB dataset on a 16GB machine - just works
     gpio extract large_dataset.parquet filtered.parquet \
@@ -237,6 +246,7 @@ For serverless environments with tight memory constraints:
 
 === "Python"
 
+    <!-- doctest: skip="needs large_dataset.parquet, which the harness does not seed" -->
     ```python
     import geoparquet_io as gpio
 
@@ -255,13 +265,14 @@ If you suspect the default strategy is producing incorrect output:
 
 === "CLI"
 
+    <!-- doctest: setup="gpio extract input.parquet output.parquet" -->
     ```bash
     # 1. Write with in-memory strategy (loads full dataset)
     gpio extract input.parquet test_inmemory.parquet --write-strategy in-memory
 
     # 2. Compare with default strategy output
-    gpio inspect test_inmemory.parquet --stats
-    gpio inspect output.parquet --stats
+    gpio inspect stats test_inmemory.parquet
+    gpio inspect stats output.parquet
     ```
 
 === "Python"
@@ -288,6 +299,7 @@ If you suspect the default strategy is producing incorrect output:
 
 === "CLI"
 
+    <!-- doctest: skip="reads a directory of partitioned files the reader produces" -->
     ```bash
     # Process multiple files with limited memory
     for f in data/*.parquet; do

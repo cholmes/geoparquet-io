@@ -9,6 +9,7 @@ gpio supports a plugin system that allows you to extend its functionality with s
 Install gpio with plugins in one command:
 
 === "uv"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Install gpio with a plugin
     uv tool install geoparquet-io --with gpio-myplugin
@@ -18,6 +19,7 @@ Install gpio with plugins in one command:
     ```
 
 === "pipx"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Install gpio with a plugin
     pipx install geoparquet-io --preinstall gpio-myplugin
@@ -31,12 +33,14 @@ Install gpio with plugins in one command:
 Add plugins to an already-installed gpio tool:
 
 === "uv"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Add plugin to existing installation
     uv tool install --with gpio-myplugin geoparquet-io
     ```
 
 === "pipx"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Inject plugin into existing installation
     pipx inject geoparquet-io gpio-myplugin
@@ -47,11 +51,13 @@ Add plugins to an already-installed gpio tool:
 For Python API usage, install plugins as regular dependencies:
 
 === "uv"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     uv add geoparquet-io gpio-myplugin
     ```
 
 === "pip"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     pip install geoparquet-io gpio-myplugin
     ```
@@ -96,6 +102,7 @@ This tells gpio:
 
 Check if a plugin is installed and discoverable:
 
+<!-- doctest: skip="illustrates authoring a plugin package" -->
 ```bash
 # List all installed tools (including plugins)
 uv tool list
@@ -111,6 +118,7 @@ gpio myplugin --help
 ### From Tool Installation
 
 === "uv"
+    <!-- doctest: skip="uninstalls and reinstalls the developer's global gpio" -->
     ```bash
     # Reinstall without the plugin
     uv tool uninstall geoparquet-io
@@ -118,6 +126,7 @@ gpio myplugin --help
     ```
 
 === "pipx"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Remove injected plugin
     pipx uninject geoparquet-io gpio-myplugin
@@ -126,11 +135,13 @@ gpio myplugin --help
 ### From Python Projects
 
 === "uv"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     uv remove gpio-myplugin
     ```
 
 === "pip"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     pip uninstall gpio-myplugin
     ```
@@ -205,6 +216,7 @@ def process(input_file, output_file):
 Once your plugin is ready:
 
 1. **Test locally**:
+   <!-- doctest: skip="illustrates authoring a plugin package" -->
    ```bash
    cd gpio-myplugin
    uv tool install geoparquet-io --with .
@@ -212,6 +224,7 @@ Once your plugin is ready:
    ```
 
 2. **Publish to PyPI**:
+   <!-- doctest: skip="illustrates authoring a plugin package" -->
    ```bash
    uv build
    uv publish

@@ -13,6 +13,7 @@ The `gpio convert geojson` command supports two modes:
 
 The primary use case is generating PMTiles or MBTiles from GeoParquet data by piping to [tippecanoe](https://github.com/felt/tippecanoe):
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # Basic PMTiles generation
 gpio convert geojson buildings.parquet | tippecanoe -P -o buildings.pmtiles
@@ -28,6 +29,7 @@ gpio convert geojson data.parquet | tippecanoe -P -o tiles.mbtiles
 
 The streaming output includes RFC 8142 record separators by default. These special characters (`\x1e`) enable tippecanoe's **parallel mode** (`-P` flag), which significantly speeds up tile generation by allowing tippecanoe to process features in parallel.
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # The -P flag tells tippecanoe to read in parallel mode
 gpio convert geojson data.parquet | tippecanoe -P -o output.pmtiles
@@ -35,6 +37,7 @@ gpio convert geojson data.parquet | tippecanoe -P -o output.pmtiles
 
 If you're piping to a tool that doesn't support RFC 8142, disable the separators:
 
+<!-- doctest: skip="pipes into a placeholder tool that stands in for the reader's own" -->
 ```bash
 gpio convert geojson data.parquet --no-rs | some-other-tool
 ```
@@ -48,15 +51,10 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "CLI"
 
+    <!-- doctest: needs-tippecanoe, menu -->
     ```bash
     # Basic usage
     gpio pmtiles create buildings.parquet buildings.pmtiles
-
-    # With filtering (no manual piping needed)
-    gpio pmtiles create data.parquet tiles.pmtiles \
-      --bbox "-122.5,37.5,-122.0,38.0" \
-      --where "population > 10000" \
-      --include-cols name,type,height
 
     # With CRS override (for incorrect metadata)
     gpio pmtiles create data.parquet tiles.pmtiles --src-crs EPSG:3857
@@ -65,8 +63,18 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
     gpio pmtiles create --layer-by-column owner data.parquet tiles.pmtiles
     ```
 
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
+    ```bash
+    # With filtering (no manual piping needed)
+    gpio pmtiles create data.parquet tiles.pmtiles \
+      --bbox "-122.5,37.5,-122.0,38.0" \
+      --where "population > 10000" \
+      --include-cols name,type,height
+    ```
+
 === "Python"
 
+    <!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -113,6 +121,7 @@ For national- or global-overview maps over dense data, re-enable the size limit 
 
 === "CLI"
 
+    <!-- doctest: needs-tippecanoe, menu -->
     ```bash
     # Re-enable tippecanoe's size limit so drop-densest actually drops
     gpio pmtiles create dense.parquet tiles.pmtiles \
@@ -135,6 +144,7 @@ For national- or global-overview maps over dense data, re-enable the size limit 
 
 === "Python"
 
+    <!-- doctest: skip="the lines are alternatives that write the same output file" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -163,6 +173,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "CLI"
 
+    <!-- doctest: skip="needs cells.parquet, which the harness does not seed" -->
     ```bash
     # Auto bands from the tile budget (builds temp overviews if missing)
     gpio pmtiles pyramid cells.parquet cells.pmtiles
@@ -177,6 +188,7 @@ Levels come from [`gpio process overview`](process-overview.md) — existing `_r
 
 === "Python"
 
+    <!-- doctest: needs-tippecanoe, setup="gpio process aggregate h3 input.parquet cells.parquet --resolution 5" -->
     ```python
     from geoparquet_io.api import ops
 
@@ -224,6 +236,15 @@ Because each zoom is served by exactly one band, no zoom-range filtering is need
 
 Use `gpio extract` to filter data before conversion to reduce output size:
 
+<!-- doctest: needs-tippecanoe -->
+```bash
+# Limit rows for testing
+gpio extract data.parquet --limit 1000 | \
+  gpio convert geojson - | \
+  tippecanoe -P -o sample.pmtiles
+```
+
+<!-- doctest: skip="filters on 'population', a column the sample data does not have" -->
 ```bash
 # Filter by bounding box
 gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | \
@@ -234,17 +255,13 @@ gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | \
 gpio extract data.parquet --where "population > 10000" | \
   gpio convert geojson - | \
   tippecanoe -P -o cities.pmtiles
-
-# Limit rows for testing
-gpio extract data.parquet --limit 1000 | \
-  gpio convert geojson - | \
-  tippecanoe -P -o sample.pmtiles
 ```
 
 ### Select Specific Columns
 
 Reduce output size by selecting only needed columns:
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 gpio extract data.parquet --include-cols name,type,population | \
   gpio convert geojson - | \
@@ -255,6 +272,7 @@ gpio extract data.parquet --include-cols name,type,population | \
 
 Apply spatial operations before conversion:
 
+<!-- doctest: needs-tippecanoe, menu -->
 ```bash
 # Add bbox and sort, then convert
 gpio add bbox data.parquet | \
@@ -272,6 +290,7 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
 
 === "CLI"
 
+    <!-- doctest: needs-tippecanoe -->
     ```bash
     # Automatically reproject from EPSG:3857 to WGS84
     gpio pmtiles create data.parquet tiles.pmtiles --src-crs EPSG:3857
@@ -279,6 +298,7 @@ gpio convert reproject data.parquet - --dst-crs EPSG:4326 | \
 
 === "Python"
 
+    <!-- doctest: needs-tippecanoe -->
     ```python
     from geoparquet_io.api import ops
 
@@ -299,13 +319,17 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
     ```bash
     # Write to GeoJSON file
     gpio convert geojson data.parquet output.geojson
+    ```
 
+    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
+    ```bash
     # With options
     gpio convert geojson data.parquet output.geojson --precision 5 --write-bbox
     ```
 
 === "Python"
 
+    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
     ```python
     import geoparquet_io as gpio
 
@@ -352,6 +376,7 @@ The `--precision` option controls decimal places for coordinates. Lower precisio
 | 5 | ~1m | City-level visualization |
 | 4 | ~10m | Regional maps |
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # Reduce precision for smaller output
 gpio convert geojson data.parquet --precision 5 | tippecanoe -P -o output.pmtiles
@@ -361,6 +386,7 @@ gpio convert geojson data.parquet --precision 5 | tippecanoe -P -o output.pmtile
 
 Use `--id-field` to specify which column should become the GeoJSON feature `id`:
 
+<!-- doctest: skip="uses attribute columns the sample dataset does not carry" -->
 ```bash
 gpio convert geojson buildings.parquet --id-field osm_id | tippecanoe -P -o output.pmtiles
 ```
@@ -371,6 +397,7 @@ This is useful for feature state in map rendering or for joining data.
 
 Include per-feature bounding boxes with `--write-bbox`:
 
+<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
 ```bash
 gpio convert geojson data.parquet output.geojson --write-bbox
 ```
@@ -417,6 +444,7 @@ settings that matter for GeoJSON output are available as dedicated flags
 
 ### Large File Example
 
+<!-- doctest: skip="pipes into tippecanoe and filters on a column the sample data lacks" -->
 ```bash
 # Efficient pipeline for large files
 gpio extract large.parquet \
@@ -430,6 +458,7 @@ gpio extract large.parquet \
 
 Read from S3, GCS, or Azure:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # From S3 with profile
 gpio convert geojson s3://bucket/data.parquet --aws-profile my-aws | tippecanoe -P -o output.pmtiles

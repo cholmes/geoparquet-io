@@ -10,6 +10,7 @@ The `convert` command transforms between GeoParquet and other vector formats wit
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```bash
     gpio convert input.shp output.parquet
     ```
@@ -25,6 +26,7 @@ The `convert` command transforms between GeoParquet and other vector formats wit
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -141,7 +143,10 @@ gpio convert data.parquet output.shp --overwrite
     ```bash
     # Local: Creates output.shp, output.shx, output.dbf, etc.
     gpio convert data.parquet output.shp
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # Remote: Uploads output.shp.zip containing all files
     gpio convert data.parquet s3://bucket/output.shp
     # → Creates s3://bucket/output.shp.zip
@@ -149,6 +154,7 @@ gpio convert data.parquet output.shp --overwrite
 
 **CSV:**
 
+<!-- doctest: menu -->
 ```bash
 # Include WKT geometry (default)
 gpio convert data.parquet output.csv
@@ -162,18 +168,22 @@ gpio convert data.parquet output.csv --no-bbox
 
 **GeoJSON:**
 
+<!-- doctest: menu -->
 ```bash
 # Custom precision (default: 7)
 gpio convert data.parquet output.geojson --precision 5
 
+# Pretty-print JSON
+gpio convert data.parquet output.geojson --pretty
+```
+
+<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
+```bash
 # Include bbox for each feature
 gpio convert data.parquet output.geojson --write-bbox
 
 # Use specific field as feature ID
 gpio convert data.parquet output.geojson --id-field osm_id
-
-# Pretty-print JSON
-gpio convert data.parquet output.geojson --pretty
 ```
 
 ### Cloud Output Support
@@ -185,6 +195,10 @@ All formats support cloud destinations via upload:
     ```bash
     # Write local then upload
     gpio convert data.parquet local.gpkg
+    ```
+
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     gpio publish upload local.gpkg s3://bucket/output.gpkg
     ```
 
@@ -196,7 +210,10 @@ All formats support cloud destinations via upload:
     # Write locally first
     table = gpio.read('data.parquet')
     table.write('local.gpkg')
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```python
     # Upload to cloud
     gpio.upload('local.gpkg', 's3://bucket/output.gpkg')
     ```
@@ -207,6 +224,7 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 
 === "CLI"
 
+    <!-- doctest: skip="needs a multi-layer GeoPackage; gpio convert geopackage writes one layer" -->
     ```bash
     # Read specific layer from GeoPackage
     gpio convert geoparquet multilayer.gpkg buildings.parquet --layer buildings
@@ -222,7 +240,10 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="needs a multi-layer GeoPackage; gpio convert geopackage writes one layer" -->
+    ```python
     # Read specific layer
     gpio.convert('multilayer.gpkg', layer='buildings').write('buildings.parquet')
     gpio.convert('multilayer.gpkg', layer='roads').write('roads.parquet')
@@ -234,6 +255,7 @@ GeoPackage and FileGDB files can contain multiple layers. By default, the first 
 !!! warning "Invalid Layer Names"
     Due to an upstream bug in DuckDB's spatial extension, specifying a non-existent layer name may cause a crash instead of raising an error. Ensure layer names are valid before conversion. You can inspect available layers using tools like `ogrinfo`:
 
+    <!-- doctest: skip="needs a multi-layer GeoPackage and the GDAL command line" -->
     ```bash
     ogrinfo multilayer.gpkg
     ```
@@ -253,6 +275,7 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 
 === "CLI"
 
+    <!-- doctest: skip="needs input_multi_geom.parquet, which the harness does not seed" -->
     ```bash
     # Both geometry columns preserved
     gpio convert input_multi_geom.parquet output.parquet
@@ -260,6 +283,7 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 
 === "Python"
 
+    <!-- doctest: skip="needs input_multi_geom.parquet, which the harness does not seed" -->
     ```python
     import geoparquet_io as gpio
 
@@ -287,6 +311,7 @@ GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `
 
 === "Python"
 
+    <!-- doctest: skip="names 'the_geom', a geometry column the sample data does not use" -->
     ```python
     import geoparquet_io as gpio
 
@@ -339,6 +364,7 @@ against the actual coordinate dimensions in both directions.
 
 Read from cloud storage or HTTPS:
 
+<!-- doctest: skip="needs cloud credentials" -->
 ```bash
 # Convert remote file
 gpio convert https://example.com/data.geojson local.parquet
@@ -370,6 +396,7 @@ still counts and warns about the invalid features it left untouched.
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage containing invalid geometries to repair" -->
     ```bash
     # Default: repairs and warns ("Repaired 3 invalid geometries")
     gpio convert cordoba.gpkg output.parquet
@@ -383,7 +410,10 @@ still counts and warns about the invalid features it left untouched.
 
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="needs a GeoPackage containing invalid geometries to repair" -->
+    ```python
     # Default: repairs invalid geometry
     gpio.convert("cordoba.gpkg").write("output.parquet")
 
@@ -411,6 +441,7 @@ full circle). Earlier gpio versions failed on curved input — opt out with
 
 === "CLI"
 
+    <!-- doctest: skip="needs a GeoPackage containing curved geometries to linearise" -->
     ```bash
     # Default: linearizes and warns ("Linearized 66 curved geometries ...")
     gpio convert curved.gpkg output.parquet
@@ -426,7 +457,10 @@ full circle). Earlier gpio versions failed on curved input — opt out with
 
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: skip="needs a GeoPackage containing curved geometries to linearise" -->
+    ```python
     # Default: linearizes curved geometries
     gpio.convert("curved.gpkg").write("output.parquet")
 
@@ -451,6 +485,7 @@ first.
 
 For faster conversion when spatial ordering isn't critical:
 
+<!-- doctest: setup="gpio convert geopackage input.parquet large.gpkg" -->
 ```bash
 gpio convert large.gpkg output.parquet --skip-hilbert
 ```
@@ -461,6 +496,7 @@ Trade-off: Faster conversion but less optimal for spatial queries.
 
 Control compression type and level:
 
+<!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
 ```bash
 # GZIP compression
 gpio convert input.shp output.parquet --compression GZIP --compression-level 6
@@ -526,6 +562,7 @@ writes true 2.0 native output just like the CLI.
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```bash
     # GeoParquet 1.1 with native GeoArrow nested-coordinate encoding
     # (no bbox column; incompatible mixed-geometry columns fall back to WKB)
@@ -540,6 +577,7 @@ writes true 2.0 native output just like the CLI.
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -570,6 +608,7 @@ Available versions:
 
 Track progress and see detailed information:
 
+<!-- doctest: setup="gpio convert geopackage input.parquet input.gpkg" -->
 ```bash
 gpio convert input.gpkg output.parquet --verbose
 ```
@@ -587,6 +626,7 @@ Shows:
 
 === "CLI"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' buildings.shp places.geojson" -->
     ```bash
     gpio convert buildings.shp buildings.parquet
     ```
@@ -601,6 +641,7 @@ Shows:
 
 === "Python"
 
+    <!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' buildings.shp places.geojson" -->
     ```python
     import geoparquet_io as gpio
 
@@ -611,6 +652,7 @@ Shows:
 
 === "CLI"
 
+    <!-- doctest: setup="gpio convert geopackage input.parquet large_dataset.gpkg" -->
     ```bash
     gpio convert large_dataset.gpkg output.parquet --skip-hilbert
     ```
@@ -619,7 +661,10 @@ Shows:
 
     ```python
     import geoparquet_io as gpio
+    ```
 
+    <!-- doctest: setup="gpio convert geopackage input.parquet large_dataset.gpkg", prelude="import geoparquet_io as gpio" -->
+    ```python
     # Python doesn't sort by default, so just skip sort_hilbert()
     gpio.convert('large_dataset.gpkg').write('output.parquet')
     ```
@@ -639,6 +684,7 @@ Maximum ZSTD compression with progress tracking.
 
 ### Convert and Inspect
 
+<!-- doctest: needs-ogr, setup="ogr2ogr -f 'ESRI Shapefile' input.shp places.geojson" -->
 ```bash
 # Convert
 gpio convert input.shp output.parquet
@@ -657,9 +703,13 @@ Auto-detects geometry columns. WKT columns (wkt, geometry, geom) checked first, 
 ```bash
 # Auto-detect WKT or lat/lon
 gpio convert points.csv points.parquet
+```
 
+<!-- doctest: skip="needs a CSV with a 'geom_wkt' column" -->
+```bash
 # Explicit columns
 gpio convert data.csv out.parquet --wkt-column geom_wkt
+
 gpio convert data.csv out.parquet --lat-column lat --lon-column lng
 
 # Custom delimiter
@@ -670,6 +720,7 @@ gpio convert data.txt out.parquet --delimiter "|"
 
 Default: WGS84 (EPSG:4326). Override with `--crs` for WKT data:
 
+<!-- doctest: skip="needs projected.csv, which the harness does not seed" -->
 ```bash
 gpio convert projected.csv out.parquet --crs EPSG:3857
 ```
@@ -681,6 +732,7 @@ Validates lat/lon ranges (-90 to 90, -180 to 180). Warns on large coordinates su
 Fails on invalid WKT by default. Skip the unparsable rows with
 `--skip-invalid`:
 
+<!-- doctest: skip="needs messy.csv, which the harness does not seed" -->
 ```bash
 gpio convert messy.csv out.parquet --skip-invalid
 ```
@@ -696,6 +748,7 @@ Skips invalid rows, disables Hilbert ordering. Mixed geometry types supported.
 
 Auto-detects comma and tab. Override with `--delimiter` for semicolon, pipe, or any single character.
 
+<!-- doctest: skip="needs a CSV with the quirks the example describes" -->
 ```bash
 gpio convert data.csv out.parquet --delimiter ";"
 ```

@@ -67,6 +67,7 @@ Partition by string column values or prefixes:
 
 === "CLI"
 
+    <!-- doctest: skip="partitions on 'region', a column the sample data does not have" -->
     ```bash
     # Preview partitions
     gpio partition string input.parquet --column region --preview
@@ -79,13 +80,17 @@ Partition by string column values or prefixes:
 
     # Hive-style partitioning
     gpio partition string input.parquet output/ --column region --hive
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # To cloud storage
-    gpio partition string s3://bucket/input.parquet s3://bucket/output/ --column region --aws-profile prod
+    gpio --aws-profile prod partition string s3://bucket/input.parquet s3://bucket/output/ --column region
     ```
 
 === "Python"
 
+    <!-- doctest: skip="partitions on 'category', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
 
@@ -114,6 +119,7 @@ Partition by H3 hexagonal cells:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition h3 input.parquet output/ --auto
@@ -123,7 +129,10 @@ Partition by H3 hexagonal cells:
 
     # Preview at resolution 7 (~5km² cells)
     gpio partition h3 input.parquet --resolution 7 --preview
+    ```
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolution 9
     gpio partition h3 input.parquet output/ --resolution 9
 
@@ -136,6 +145,7 @@ Partition by H3 hexagonal cells:
 
 === "Python"
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -193,6 +203,7 @@ Partition by S2 spherical cells:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal level for ~100K rows per partition
     gpio partition s2 input.parquet output/ --auto
@@ -203,18 +214,22 @@ Partition by S2 spherical cells:
     # Preview at level 10 (~78 km² cells)
     gpio partition s2 input.parquet --level 10 --preview
 
+    # Hive-style (S2 column included by default)
+    gpio partition s2 input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific level 13 (~1.2km² cells)
     gpio partition s2 input.parquet output/ --level 13
 
     # Keep S2 column in output files
     gpio partition s2 input.parquet output/ --level 12 --keep-s2-column
-
-    # Hive-style (S2 column included by default)
-    gpio partition s2 input.parquet output/ --auto --hive
     ```
 
 === "Python"
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -272,6 +287,7 @@ Partition by A5 spatial cells:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition a5 input.parquet output/ --auto
@@ -282,20 +298,24 @@ Partition by A5 spatial cells:
     # Preview at resolution 10 (~41km² cells)
     gpio partition a5 input.parquet --resolution 10 --preview
 
+    # Hive-style (A5 column included by default)
+    gpio partition a5 input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolution 15
     gpio partition a5 input.parquet output/ --resolution 15
 
     # Keep A5 column in output files
     gpio partition a5 input.parquet output/ --resolution 12 --keep-a5-column
-
-    # Hive-style (A5 column included by default)
-    gpio partition a5 input.parquet output/ --auto --hive
     ```
 
 === "Python"
 
     !!! note "CLI-Only"
         A5 partitioning is currently CLI-only. Use S2 partitioning in Python as an alternative:
+        <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
         ```python
         gpio.read('input.parquet').partition_by_s2('output/', level=10)
         ```
@@ -339,6 +359,7 @@ Partition by Bing Maps quadkey tiles:
 
 === "CLI"
 
+    <!-- doctest: menu -->
     ```bash
     # Auto-calculate optimal resolution for ~100K rows per partition
     gpio partition quadkey input.parquet output/ --auto
@@ -349,18 +370,22 @@ Partition by Bing Maps quadkey tiles:
     # Preview with auto-resolution
     gpio partition quadkey input.parquet --auto --preview
 
+    # Hive-style (quadkey column included by default)
+    gpio partition quadkey input.parquet output/ --auto --hive
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
     # Partition at specific resolutions (column at 13, partition at 9)
     gpio partition quadkey input.parquet output/ --resolution 13 --partition-resolution 9
 
     # Keep quadkey column in output files
     gpio partition quadkey input.parquet output/ --resolution 13 --partition-resolution 9 --keep-quadkey-column
-
-    # Hive-style (quadkey column included by default)
-    gpio partition quadkey input.parquet output/ --auto --hive
     ```
 
 === "Python"
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -421,11 +446,14 @@ Partition by balanced spatial partitions:
 === "CLI"
 
     ```bash
-    # Auto-partition (default: ~120k rows each)
-    gpio partition kdtree input.parquet output/
-
     # Preview auto-selected partitions
     gpio partition kdtree input.parquet --preview
+    ```
+
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```bash
+    # Auto-partition (default: ~120k rows each)
+    gpio partition kdtree input.parquet output/
 
     # Explicit partition count (must be power of 2)
     gpio partition kdtree input.parquet output/ --partitions 32
@@ -439,6 +467,7 @@ Partition by balanced spatial partitions:
 
 === "Python"
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -485,6 +514,7 @@ This command performs **two operations**:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Preview GAUL partitions by continent
     gpio partition admin input.parquet --dataset gaul --levels continent --preview
@@ -498,6 +528,7 @@ This command performs **two operations**:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -523,6 +554,7 @@ Partition by multiple administrative levels:
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Hierarchical: continent → country
     gpio partition admin input.parquet output/ --dataset gaul --levels continent,country
@@ -540,6 +572,7 @@ Partition by multiple administrative levels:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -570,6 +603,7 @@ output files (not just encoded in the folder names).
 
 === "CLI"
 
+    <!-- doctest: network -->
     ```bash
     # Vecorel partitions (forces Overture country,region)
     gpio partition admin input.parquet output/ --vecorel
@@ -580,6 +614,7 @@ output files (not just encoded in the folder names).
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 
@@ -599,7 +634,7 @@ All partition commands support:
 
 --8<-- "_includes/common-cli-options.md"
 
-```bash
+```text
 --preview-limit 15     # Number of partitions to show (default: 15)
 --force                # Override analysis warnings
 --skip-analysis        # Skip analysis (performance-sensitive cases)
@@ -674,13 +709,17 @@ gpio partition h3 large.parquet output/ --auto --target-rows 50000
 
 ### With Manual Resolution
 
+<!-- doctest: menu -->
 ```bash
 # 1. Preview to understand partitioning
 gpio partition h3 large.parquet --resolution 7 --preview
 
 # 2. Adjust resolution if needed
 gpio partition h3 large.parquet --resolution 8 --preview
+```
 
+<!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+```bash
 # 3. Execute when satisfied
 gpio partition h3 large.parquet output/ --resolution 8
 ```
@@ -689,6 +728,7 @@ gpio partition h3 large.parquet output/ --resolution 8
 
 After partitioning by admin boundaries or string columns, some files may still be too large. Use `--min-size` with directory input to sub-partition only the oversized files:
 
+<!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
 ```bash
 # Sub-partition files >100MB with H3
 gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place

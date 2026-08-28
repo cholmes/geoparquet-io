@@ -13,9 +13,12 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
 
     ```bash
     gpio sort hilbert input.parquet output.parquet
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```bash
     # From HTTPS to S3
-    gpio sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet --aws-profile prod
+    gpio --aws-profile prod sort hilbert https://example.com/data.parquet s3://bucket/sorted.parquet
     ```
 
 === "Python"
@@ -24,7 +27,10 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
     import geoparquet_io as gpio
 
     gpio.read('input.parquet').sort_hilbert().write('output.parquet')
+    ```
 
+    <!-- doctest: skip="needs cloud credentials" -->
+    ```python
     # With upload to S3
     gpio.read('https://example.com/data.parquet') \
         .sort_hilbert() \
@@ -47,10 +53,8 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
 
 ## Options
 
+<!-- doctest: menu -->
 ```bash
-# Specify geometry column
-gpio sort hilbert input.parquet output.parquet -g geom
-
 # Add bbox column if missing
 gpio sort hilbert input.parquet output.parquet --add-bbox
 
@@ -64,6 +68,12 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 256
 gpio sort hilbert input.parquet output.parquet --verbose
 ```
 
+<!-- doctest: skip="filters on 'geom', a column the sample data does not have" -->
+```bash
+# Specify geometry column
+gpio sort hilbert input.parquet output.parquet -g geom
+```
+
 ## Compression Options
 
 --8<-- "_includes/compression-options.md"
@@ -72,6 +82,7 @@ gpio sort hilbert input.parquet output.parquet --verbose
 
 Control row group sizes for optimal performance:
 
+<!-- doctest: menu -->
 ```bash
 # Recommended for spatial filter pushdown (GeoParquet 2.0)
 gpio sort hilbert input.parquet output.parquet --row-group-size 30000 --geoparquet-version 2.0
@@ -93,7 +104,10 @@ Sort by any column(s) for non-spatial ordering needs:
     ```bash
     # Sort by a single column
     gpio sort column input.parquet output.parquet name
+    ```
 
+    <!-- doctest: skip="sorts on 'country', a column the sample data does not have" -->
+    ```bash
     # Sort by multiple columns (comma-separated)
     gpio sort column input.parquet output.parquet country,city
 
@@ -103,6 +117,7 @@ Sort by any column(s) for non-spatial ordering needs:
 
 === "Python"
 
+    <!-- doctest: skip="sorts on 'date', a column the sample data does not have" -->
     ```python
     import geoparquet_io as gpio
     from geoparquet_io.api import ops

@@ -50,6 +50,7 @@ Runs all validation checks:
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_spatial()
     print(f"Spatially ordered: {result.passed()}")
@@ -84,6 +85,7 @@ Checks if data is spatially ordered. Spatially ordered data improves:
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_compression()
     print(f"Compression optimal: {result.passed()}")
@@ -101,6 +103,7 @@ Validates geometry column compression settings.
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_bbox()
     if not result.passed():
@@ -124,6 +127,7 @@ Verifies:
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_row_groups()
     for rec in result.recommendations():
@@ -145,6 +149,7 @@ Checks row group size optimization for cloud-native access.
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_optimization()
     print(f"Score: {result.to_dict()['score']}/5")
@@ -176,6 +181,7 @@ The `gpio check spatial` command also reports spatial filter pushdown readiness 
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_spatial_pushdown()
     details = result.to_dict()
@@ -204,6 +210,7 @@ Bloom filter detection is included in `gpio check all` and `gpio inspect meta`:
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.check_bloom_filters()
     details = result.to_dict()
@@ -228,6 +235,7 @@ Reports which columns have bloom filters, coverage percentages, and total bloom 
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     result = table.validate()
     if result.passed():
@@ -287,6 +295,7 @@ Validates file structure and metadata against the GeoParquet specification:
 
 === "CLI"
 
+    <!-- doctest: skip="needs output.json, which the harness does not seed" -->
     ```bash
     gpio check stac output.json
     ```
@@ -322,6 +331,7 @@ Validates STAC Item or Collection JSON:
 
 === "Python"
 
+    <!-- doctest: prelude="import geoparquet_io as gpio; table = gpio.read('myfile.parquet')" -->
     ```python
     # Custom sampling for spatial check
     result = table.check_spatial(sample_size=200, limit_rows=1000000)
@@ -331,6 +341,7 @@ Validates STAC Item or Collection JSON:
 
 When checking a directory containing partitioned data, you can control how many files are checked:
 
+<!-- doctest: skip="needs partitions/, which the harness does not seed" -->
 ```bash
 # By default, checks only the first file
 gpio check all partitions/
