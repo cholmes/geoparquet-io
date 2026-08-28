@@ -141,7 +141,7 @@ def generate_csv(paths: dict[str, Path]) -> None:
     DuckDB. Full double precision is kept so the CSV round-trips exactly.
     """
     print("Generating places.csv (lon/lat columns)...")
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
 
     source = paths[PLACES_PARQUET]
     destination = paths[PLACES_CSV]
@@ -150,7 +150,8 @@ def generate_csv(paths: dict[str, Path]) -> None:
     try:
         con.execute("SET preserve_insertion_order = true")
         # COPY ... TO does not accept a prepared parameter for its destination,
-        # so both paths are inlined. They are script constants, not user input.
+        # so both paths are inlined. The destination derives from --output-dir,
+        # which makes it user input; escape both like any SQL string literal.
         con.execute(f"""
             COPY (
                 SELECT
@@ -160,8 +161,8 @@ def generate_csv(paths: dict[str, Path]) -> None:
                     placemaker_url,
                     ST_X(geometry) AS lon,
                     ST_Y(geometry) AS lat
-                FROM read_parquet('{source}')
-            ) TO '{destination}' (FORMAT CSV, HEADER)
+                FROM read_parquet('{_escape_sql_string(str(source))}')
+            ) TO '{_escape_sql_string(str(destination))}' (FORMAT CSV, HEADER)
         """)
     finally:
         con.close()
