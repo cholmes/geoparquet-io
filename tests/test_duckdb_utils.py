@@ -1,7 +1,5 @@
 """Tests for core/duckdb_utils.py module."""
 
-from unittest import mock
-
 import duckdb
 import pytest
 
@@ -13,6 +11,7 @@ from geoparquet_io.core.duckdb_utils import (
     _bucket_needs_auth,
     _clear_s3_cache,
     _escape_sql_string,
+    _install_and_load_extension,
     build_spatial_join_condition,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
@@ -512,28 +511,60 @@ class TestWhereConditionFragment:
         assert where_sql_fragment(None) == ""
 
 
-class TestExtensionInstallWarning:
-    """A failed extension INSTALL must warn instead of being swallowed."""
+class _FakeExtensionConnection:
+    """Connection stub whose INSTALL/LOAD outcomes are scripted per test."""
 
-    def test_failed_spatial_install_warns(self, caplog):
-        """INSTALL spatial failures are surfaced to the user (issue #574)."""
-        real_execute = duckdb.DuckDBPyConnection.execute
+    def __init__(self, install_error=None, load_error=None):
+        self._install_error = install_error
+        self._load_error = load_error
+        self.statements = []
 
-        def failing_install(self, sql, *args, **kwargs):
-            if sql.strip().startswith("INSTALL spatial"):
-                raise duckdb.IOException("permission denied creating extension dir")
-            return real_execute(self, sql, *args, **kwargs)
+    def execute(self, sql):
+        self.statements.append(sql)
+        if sql.startswith("INSTALL") and self._install_error is not None:
+            raise self._install_error
+        if sql.startswith("LOAD") and self._load_error is not None:
+            raise self._load_error
+
+
+@pytest.mark.parametrize("name", ["spatial", "httpfs", "aws"])
+class TestInstallAndLoadExtension:
+    """A failed INSTALL must surface when LOAD fails, and stay quiet otherwise (issue #574)."""
+
+    def test_install_failure_with_working_load_is_silent(self, name, caplog):
+        """The parallel-install race and a loadable cached copy must not warn."""
+        con = _FakeExtensionConnection(
+            install_error=duckdb.IOException("permission denied creating extension dir")
+        )
 
         with caplog.at_level("WARNING", logger="geoparquet_io"):
-            with mock.patch.object(duckdb.DuckDBPyConnection, "execute", failing_install):
-                try:
-                    get_duckdb_connection()
-                except duckdb.Error:
-                    # LOAD may still fail if the extension really isn't there;
-                    # the warning is what this test guards.
-                    pass
+            _install_and_load_extension(con, name)
+
+        assert con.statements == [f"INSTALL {name};", f"LOAD {name};"]
+        assert not caplog.records, [r.message for r in caplog.records]
+
+    def test_install_failure_explains_load_failure(self, name, caplog):
+        """When LOAD also fails, the install error is warned and LOAD's error propagates."""
+        con = _FakeExtensionConnection(
+            install_error=duckdb.IOException("permission denied creating extension dir"),
+            load_error=duckdb.IOException(f'Extension "{name}.duckdb_extension" not found'),
+        )
+
+        with caplog.at_level("WARNING", logger="geoparquet_io"):
+            with pytest.raises(duckdb.IOException, match="not found"):
+                _install_and_load_extension(con, name)
 
         assert any(
-            "spatial" in record.message and "permission denied" in record.message
+            name in record.message and "permission denied" in record.message
             for record in caplog.records
         ), f"no warning about the failed install: {[r.message for r in caplog.records]}"
+
+    def test_load_failure_alone_warns_nothing(self, name, caplog):
+        """A LOAD failure with a clean INSTALL has nothing extra to explain."""
+        con = _FakeExtensionConnection(load_error=duckdb.IOException("load blew up"))
+
+        with caplog.at_level("WARNING", logger="geoparquet_io"):
+            with pytest.raises(duckdb.IOException, match="load blew up"):
+                _install_and_load_extension(con, name)
+
+        assert not caplog.records, [r.message for r in caplog.records]
