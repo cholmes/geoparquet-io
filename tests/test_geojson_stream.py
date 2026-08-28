@@ -637,3 +637,60 @@ class TestRepairAfterReprojection:
         rows = con.execute(query).fetchall()
         assert len(rows) == 1
         assert json.loads(rows[0][0])["properties"]["name"] == "kept"
+
+
+class TestFeatureMembersEmitValidJson:
+    """#726: --write-bbox and --id-field appended a comma *outside* the SQL
+    string literal, so it split the feature SELECT into two columns instead of
+    landing in the JSON. Every Feature came out truncated after the option's
+    own member, and the writer failed to parse its own output."""
+
+    @staticmethod
+    def _convert(tmp_path, places_test_file, *extra_args):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = tmp_path / "out.geojson"
+        result = CliRunner().invoke(
+            cli, ["convert", "geojson", places_test_file, str(out), *extra_args]
+        )
+        assert result.exit_code == 0, result.output
+        return json.loads(out.read_text())
+
+    def test_write_bbox_emits_parseable_features(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--write-bbox")
+
+        assert data["type"] == "FeatureCollection"
+        assert data["features"]
+        for feature in data["features"]:
+            assert len(feature["bbox"]) == 4
+            assert feature["geometry"] is not None
+            assert "properties" in feature
+
+    def test_id_field_emits_parseable_features(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--id-field", "name")
+
+        assert data["features"]
+        for feature in data["features"]:
+            assert feature["id"] == feature["properties"]["name"]
+            assert feature["geometry"] is not None
+
+    def test_bbox_and_id_field_together(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--write-bbox", "--id-field", "name")
+
+        assert data["features"]
+        for feature in data["features"]:
+            assert "id" in feature
+            assert len(feature["bbox"]) == 4
+            assert feature["geometry"] is not None
+
+    def test_option_fragments_end_in_a_concatenation_operator(self):
+        """The fragments are spliced into a `||` chain, so they must continue it."""
+        from geoparquet_io.core.geojson_stream import _build_feature_query
+
+        query = _build_feature_query("t", "geometry", ["name"], write_bbox=True, id_field="name")
+        # A stray SELECT-list comma would make this parse as several columns.
+        assert query.count(" AS feature") == 1
+        assert "',' ||" in query
+        assert "'],' ||" in query

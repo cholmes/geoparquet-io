@@ -203,7 +203,10 @@ def _build_feature_query(
     id_expr = ""
     if id_field:
         quoted_id = quote_identifier(id_field)
-        id_expr = f"'\"id\":' || to_json({quoted_id}) || ',',"
+        # Ends in `||`, not a bare comma: this fragment is spliced into a
+        # concatenation chain, and a trailing comma would separate SELECT items
+        # instead of landing in the JSON, truncating every Feature (#726).
+        id_expr = f"'\"id\":' || to_json({quoted_id}) || ',' ||"
 
     # Build bbox expression if requested (use reprojected geometry)
     # Bbox coordinates honor the precision parameter via ROUND()
@@ -214,7 +217,7 @@ def _build_feature_query(
             f"ROUND(ST_XMin({geom_for_output}), {precision}) || ',' || "
             f"ROUND(ST_YMin({geom_for_output}), {precision}) || ',' || "
             f"ROUND(ST_XMax({geom_for_output}), {precision}) || ',' || "
-            f"ROUND(ST_YMax({geom_for_output}), {precision}) || '],',"
+            f"ROUND(ST_YMax({geom_for_output}), {precision}) || '],' ||"
         )
 
     # Build complete Feature JSON using string concatenation
