@@ -30,10 +30,18 @@ dependencies = [
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
     "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
     # S2 support needs the 'geography' community extension, which is built per
-    # DuckDB release. It is published up to 1.5.1 but NOT for 1.5.2/1.5.3/1.5.4
+    # DuckDB release. It is published up to 1.5.1 but NOT for 1.5.2-1.5.5
     # (INSTALL ... FROM community returns HTTP 404). Cap below 1.5.2 so S2 keeps
     # working; raise the cap once 'geography' is republished for a newer DuckDB.
     # (gpio still errors clearly via ExtensionUnavailableError if it is missing.)
+    #
+    # Staying on <=1.5.1 keeps us on a DuckDB whose TRY() applies the selection
+    # vector twice under conditional execution (dropped in 1.5.2, see
+    # duckdb/duckdb-spatial#858): TRY() over a blob can segfault, and over a
+    # fixed-width type it can silently return another row's value. That is why
+    # core/geometry_repair.py counts invalid geometry in layers (#645). When the
+    # cap moves past 1.5.1, that workaround — and the risk at the other TRY()
+    # call sites — goes away.
     "duckdb>=1.5.0,<1.5.2",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
@@ -47,6 +55,7 @@ dependencies = [
     "geoarrow-pyarrow>=0.1.0",  # Required for CRS handling in Parquet native geo types
     "pyproj>=3.0.0",  # Required for CRS handling and PROJJSON generation
     "mercantile>=1.2.0",  # Required for quadkey generation
+    "pmtiles>=3.0.0",  # Required for reading/writing PMTiles archive metadata (pyramid bands)
     "httpx>=0.25.0",  # Required for ArcGIS REST API requests (http2 disabled due to ArcGIS compatibility)
     "owslib>=0.29.0",  # Required for OGC Web Feature Service (WFS) extraction
     # Security: explicit constraints for transitive dependencies
@@ -89,7 +98,7 @@ dev = [
     "codespell>=2.2",
     "import-linter>=2.0",
     "bandit>=1.7",
-    "pip>=26.1",  # CVE-2026-6357
+    "pip>=26.2",  # CVE-2026-6357; PYSEC-2026-3721 (doubly-encoded index URLs)
     "pip-audit>=2.7",
     "menard>=0.4.0",
     "deptry>=0.25.0",
@@ -125,13 +134,21 @@ pythonpath = ["."]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+# Coverage flags deliberately absent: a plain `uv run pytest` should be fast and
+# green. Instrumenting every run (including every spawned subprocess) cost 39-49%
+# on single-file dev runs, and a partial run can never clear the 67% floor, so the
+# default local invocation always exited 1 on a gate that measured nothing.
+# The floor is enforced where it is meaningful — the ubuntu/3.11 job in
+# .github/workflows/tests.yml passes --cov=geoparquet_io --cov-report=term-missing
+# --cov-report=xml --cov-fail-under=67 over the whole fast suite, and feeds
+# Codecov plus the 90% diff-cover gate. Locally, opt in with:
+#   uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0
+# (--cov-fail-under=0 is required on a subset: [tool.coverage.report].fail_under
+# re-arms the 67% floor on any --cov run, which a partial run can never clear.)
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--cov=geoparquet_io",
-    "--cov-report=term-missing",
-    "--cov-fail-under=67",
     # The geoparquet-testing submodule ships its own pytest suite; never collect it.
     "--ignore=tests/data/geoparquet-testing",
 ]
@@ -140,6 +157,7 @@ markers = [
     "network: marks tests requiring network access (deselect with '-m \"not network\"')",
     "integration: marks end-to-end integration tests",
     "corpus: tests against the official geoparquet-testing corpus (requires git submodule)",
+    "meta: repo tooling checks, excluded from the fast suite",
 ]
 
 [tool.ruff]
@@ -256,14 +274,16 @@ ignore_errors = true
 [tool.mutmut]
 source_paths = ["geoparquet_io/"]
 # Fast tests only: slow/network tests are nondeterministic (live third-party
-# servers) and far too slow to run once per mutant. --no-cov drops the
-# coverage overhead and the global --cov-fail-under gate from addopts.
+# servers) and far too slow to run once per mutant. --no-cov drops the coverage
+# overhead and stops [tool.coverage.report].fail_under from failing every mutant.
 # NOTE: mutmut 3 runs pytest in-process and IGNORES a `runner` setting;
 # extra args must go in pytest_add_cli_args.
-# The --ignore'd files are tooling meta-tests that spawn `uv run ...`
-# subprocesses against the project; from mutmut's mutants/ cwd that would
+# `not meta` is what keeps the tooling meta-tests out: they spawn `uv run ...`
+# subprocesses against the project, and from mutmut's mutants/ cwd that would
 # resolve/install the MUTATED package — meaningless for mutation score and
-# fatal to the run.
+# fatal to the run. It replaces the per-file --ignore list those tests used to
+# need. test_import_linter.py is not in the meta lane (it is a fast unit test
+# of the contract config) but shells out the same way, so it keeps its ignore.
 pytest_add_cli_args = [
     "--no-cov",
     # --tb=short (not --tb=no): a failure in mutmut's single-process stats
@@ -271,11 +291,8 @@ pytest_add_cli_args = [
     # (tests that chdir break mutmut's trampoline) and made nightly red with
     # no diagnosable reason. See the tests/ chdir guard in .pre-commit-config.
     "--tb=short",
-    "-m", "not slow and not network",
-    "--ignore=tests/test_codespell.py",
+    "-m", "not slow and not network and not meta",
     "--ignore=tests/test_import_linter.py",
-    "--ignore=tests/test_security.py",
-    "--ignore=tests/test_validate_claude_md.py",
 ]
 pytest_add_cli_args_test_selection = ["tests/"]
 # Everything the test suite reads relative to the repo root must also exist

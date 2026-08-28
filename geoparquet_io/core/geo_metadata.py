@@ -17,12 +17,17 @@ to avoid circular dependencies.
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING
 
 import duckdb
 
-from geoparquet_io.core.duckdb_utils import _geoarrow_coord_exprs, _get_query_column_type
+from geoparquet_io.core.duckdb_utils import (
+    _geoarrow_coord_exprs,
+    _get_query_column_type,
+    quote_identifier,
+)
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -186,6 +191,58 @@ def _add_bbox_covering(
         debug(f"Added bbox covering metadata for column '{bbox_info['bbox_column_name']}'")
 
 
+def covering_supported(version: str | None) -> bool:
+    """Whether a GeoParquet version may carry the ``covering`` column key.
+
+    ``covering`` was introduced in GeoParquet 1.1 — the word does not appear
+    anywhere in the v1.0.0 specification — so 1.0 output must omit it. The bbox
+    *column* itself is an ordinary Parquet column and stays legal at 1.0; only
+    the metadata key is gated.
+
+    Accepts both the short option form ("1.0", "1.1") and the metadata form
+    ("1.0.0", "1.1.0"). Unknown/absent versions are treated as supporting it.
+    """
+    return not str(version or "").startswith("1.0")
+
+
+def strip_unsupported_covering(geo_meta: dict, version: str | None, verbose: bool = False) -> dict:
+    """Return ``geo_meta`` without ``covering`` on any column when ``version`` predates 1.1.
+
+    Single gate shared by every write path, applied after metadata assembly so it
+    also catches coverings carried in from a 1.1 source file or supplied through
+    ``custom_metadata`` (h3/s2/a5/quadkey).
+
+    Never mutates its input. The assembled metadata still aliases the caller's
+    column dicts through the shallow copy in ``_initialize_geo_metadata``, and
+    partition loops reuse one ``original_metadata`` dict across many writes, so
+    popping in place would strip the shared dict permanently and silently cost a
+    later 1.1 write its covering.
+    """
+    if covering_supported(version):
+        return geo_meta
+
+    columns = geo_meta.get("columns")
+    if not isinstance(columns, dict):
+        return geo_meta
+    if not any(isinstance(col, dict) and "covering" in col for col in columns.values()):
+        return geo_meta
+
+    stripped = {}
+    for col_name, col_meta in columns.items():
+        if isinstance(col_meta, dict) and "covering" in col_meta:
+            col_meta = {k: v for k, v in col_meta.items() if k != "covering"}
+            if verbose:
+                debug(
+                    f"Dropped 1.1-only covering metadata for column '{col_name}' "
+                    f"(version {version})"
+                )
+        stripped[col_name] = col_meta
+
+    result = dict(geo_meta)
+    result["columns"] = stripped
+    return result
+
+
 def _add_custom_covering(
     geo_meta: dict, geom_col: str, custom_metadata: dict | None, verbose: bool
 ) -> None:
@@ -211,6 +268,154 @@ def _add_custom_covering(
     if verbose:
         for key in custom_metadata["covering"]:
             debug(f"Added {key} covering metadata")
+
+
+#: Per-column geo metadata keys that are derived from the data itself and are
+#: therefore invalidated by anything that changes which rows/coordinates are
+#: written (row filters, reprojection, per-partition splits, multi-file merges).
+DERIVED_STAT_KEYS = ("bbox", "geometry_types")
+
+#: Sentinel returned by a rewrite callback to mean "drop the geo key entirely".
+_DROP_GEO = object()
+
+
+def _decode_geo_value(raw):
+    """Decode a KV ``geo`` value (bytes/str/dict) to a dict, or ``None``."""
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _encode_geo_value(geo_dict: dict, like):
+    """Re-encode ``geo_dict`` in the same form (bytes/str/dict) as ``like``."""
+    if isinstance(like, bytes):
+        return json.dumps(geo_dict).encode("utf-8")
+    if isinstance(like, str):
+        return json.dumps(geo_dict)
+    return geo_dict
+
+
+def _rewrite_geo_metadata(metadata: dict | None, rewrite) -> dict | None:
+    """Return a deep copy of KV ``metadata`` with ``geo`` passed through ``rewrite``.
+
+    Handles both the ``"geo"`` and ``b"geo"`` keys, hands ``rewrite`` a mutable
+    decoded dict, and re-encodes the result in whichever form the value arrived
+    in. A ``rewrite`` returning :data:`_DROP_GEO` removes the key; an
+    unparsable value is left untouched. The input is never mutated.
+    """
+    if not metadata:
+        return metadata
+
+    result = copy.deepcopy(metadata)
+    for geo_key in ("geo", b"geo"):
+        if geo_key not in result:
+            continue
+        raw = result[geo_key]
+        geo_dict = _decode_geo_value(raw)
+        if geo_dict is None:
+            continue
+        rewritten = rewrite(geo_dict)
+        if rewritten is _DROP_GEO:
+            del result[geo_key]
+        else:
+            result[geo_key] = _encode_geo_value(rewritten, raw)
+    return result
+
+
+def _drop_derived_stats(geo_dict: dict) -> dict:
+    """Remove :data:`DERIVED_STAT_KEYS` from every column entry, in place."""
+    for col_meta in (geo_dict.get("columns") or {}).values():
+        if isinstance(col_meta, dict):
+            for key in DERIVED_STAT_KEYS:
+                col_meta.pop(key, None)
+    return geo_dict
+
+
+def strip_derived_stats(metadata: dict | None) -> dict | None:
+    """Return a copy of Parquet KV ``metadata`` without derived geo stats.
+
+    Drops the per-column ``bbox`` and ``geometry_types`` (see
+    :data:`DERIVED_STAT_KEYS`) from the ``geo`` metadata so the write machinery
+    recomputes them from the data actually written — or omits them when there is
+    nothing to describe (both are optional per spec for an empty result).
+
+    Callers are anything that changes which rows or coordinates land in the
+    output: row filters (``extract``), coordinate transforms (``reproject``),
+    per-partition splits, and multi-file merges whose carried metadata came from
+    only the first input file.
+
+    Both ``"geo"`` and ``b"geo"`` keys are handled, and the value is returned in
+    the same form (``bytes``/``str``/``dict``) it arrived in. The input is never
+    mutated; unparsable ``geo`` values are passed through untouched.
+    """
+    return _rewrite_geo_metadata(metadata, _drop_derived_stats)
+
+
+def _covering_column(covering_entry) -> str | None:
+    """Return the data column a single ``covering`` entry points at, if any."""
+    if not isinstance(covering_entry, dict):
+        return None
+    # Spatial-index coverings (h3/s2/a5/quadkey): {"column": name, ...}
+    column = covering_entry.get("column")
+    if isinstance(column, str):
+        return column
+    # bbox covering: {"xmin": [column, "xmin"], ...}
+    for ref in covering_entry.values():
+        if isinstance(ref, (list, tuple)) and ref and isinstance(ref[0], str):
+            return ref[0]
+    return None
+
+
+def _prune_coverings(col_meta, columns: set[str]) -> None:
+    """Drop ``covering`` entries pointing at columns not in ``columns``."""
+    covering = col_meta.get("covering") if isinstance(col_meta, dict) else None
+    if not isinstance(covering, dict):
+        return
+    for key in [k for k, v in covering.items() if _covering_column(v) not in columns]:
+        del covering[key]
+    if not covering:
+        del col_meta["covering"]
+
+
+def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str]):
+    """Drop column entries and coverings that reference absent columns.
+
+    Returns :data:`_DROP_GEO` when the primary geometry column itself is gone,
+    meaning the file must not advertise ``geo`` metadata at all.
+    """
+    col_entries = geo_dict.get("columns")
+    if not isinstance(col_entries, dict):
+        return geo_dict
+
+    for name in [n for n in col_entries if n not in columns]:
+        del col_entries[name]
+
+    primary = geo_dict.get("primary_column")
+    if primary is not None and primary not in col_entries:
+        return _DROP_GEO
+
+    for col_meta in col_entries.values():
+        _prune_coverings(col_meta, columns)
+    return geo_dict
+
+
+def prune_geo_metadata_to_columns(metadata: dict | None, columns: list[str]) -> dict | None:
+    """Return a copy of KV ``metadata`` with references to absent columns removed.
+
+    A column projection (``gpio extract --exclude-cols``) can remove the bbox
+    column a ``covering`` points at, or a secondary geometry column, leaving geo
+    metadata that references a schema root that no longer exists — which readers
+    and ``gpio check spec`` both reject. Entries for columns missing from
+    ``columns`` are dropped; if the primary geometry column is among them the
+    whole ``geo`` key is dropped, since the output is no longer GeoParquet.
+    """
+    present = set(columns)
+    return _rewrite_geo_metadata(metadata, lambda geo: _prune_geo_dict_to_columns(geo, present))
 
 
 def create_geo_metadata(
@@ -267,7 +472,7 @@ def create_geo_metadata(
             if key != "covering":
                 geo_meta[key] = value
 
-    return geo_meta
+    return strip_unsupported_covering(geo_meta, version, verbose)
 
 
 # =============================================================================
@@ -322,9 +527,7 @@ def compute_bbox_via_sql(
         # If we can't determine schema, return None rather than failing
         return None
 
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    quoted_geom = f'"{escaped_col}"'
+    quoted_geom = quote_identifier(geometry_column)
 
     # GeoArrow native types (STRUCT(x DOUBLE, y DOUBLE)[N]) cannot be passed to
     # ST_XMin directly. Detect at runtime and use UNNEST to extract coordinates.
@@ -348,10 +551,10 @@ def compute_bbox_via_sql(
     else:
         bbox_query = f"""
             SELECT
-                MIN(ST_XMin("{escaped_col}")) as xmin,
-                MIN(ST_YMin("{escaped_col}")) as ymin,
-                MAX(ST_XMax("{escaped_col}")) as xmax,
-                MAX(ST_YMax("{escaped_col}")) as ymax
+                MIN(ST_XMin({quoted_geom})) as xmin,
+                MIN(ST_YMin({quoted_geom})) as ymin,
+                MAX(ST_XMax({quoted_geom})) as xmax,
+                MAX(ST_YMax({quoted_geom})) as ymax
             FROM ({query})
         """
     result = con.execute(bbox_query).fetchone()
@@ -359,6 +562,103 @@ def compute_bbox_via_sql(
     if result and all(v is not None for v in result):
         return list(result)
     return None
+
+
+def _fold_geo_stat_rows(rows) -> tuple[list[float] | None, list[str]]:
+    """Fold ``(geom_type, xmin, ymin, xmax, ymax)`` rows into ``(bbox, types)``."""
+    from geoparquet_io.core.common import _DUCKDB_TO_SPEC_TYPE, split_zm_suffix
+
+    types: set[str] = set()
+    extents: list[tuple[float, float, float, float]] = []
+    for geom_type, xmin, ymin, xmax, ymax in rows:
+        if geom_type:
+            base, suffix = split_zm_suffix(geom_type)
+            types.add(_DUCKDB_TO_SPEC_TYPE.get(base.upper(), base) + suffix)
+        if None not in (xmin, ymin, xmax, ymax):
+            extents.append((xmin, ymin, xmax, ymax))
+
+    if not extents:
+        return None, sorted(types)
+    bbox = [
+        min(e[0] for e in extents),
+        min(e[1] for e in extents),
+        max(e[2] for e in extents),
+        max(e[3] for e in extents),
+    ]
+    return bbox, sorted(types)
+
+
+def _geo_stats_unsupported(con, query: str, geometry_column: str) -> bool:
+    """True when the combined per-type aggregation cannot run on this column.
+
+    GeoArrow native types (``STRUCT(x DOUBLE, y DOUBLE)[N]``) support neither
+    ``ST_GeometryType`` nor the shared aggregation, and a column that is not in
+    the query result obviously cannot be aggregated. Both cases fall back to the
+    single-stat helpers, which already handle them.
+    """
+    try:
+        col_type = _get_query_column_type(con, query, geometry_column) or ""
+        if "STRUCT" in col_type:
+            return True
+        return geometry_column not in _get_query_columns(con, query)
+    except (duckdb.Error, RuntimeError, ValueError, AttributeError):
+        return True
+
+
+def compute_geo_stats_via_sql(
+    con,
+    query: str,
+    geometry_column: str,
+    need_bbox: bool = True,
+    need_geometry_types: bool = True,
+) -> tuple[list[float] | None, list[str]]:
+    """Compute ``bbox`` and ``geometry_types`` in a SINGLE scan of ``query``.
+
+    Both stats are aggregates over the same rows, so grouping by geometry type
+    yields one small row per type carrying that type's extent — the union of
+    which is the collection bbox. That replaces the two independent full scans
+    the write strategies used to run, which matters because invalidating a
+    carried bbox forces the (possibly expensive, e.g. ``ST_Transform``) query to
+    be re-executed for it.
+
+    Args:
+        con: DuckDB connection with spatial extension loaded
+        query: SQL query containing the geometry column
+        geometry_column: Name of the geometry column
+        need_bbox: Compute the bbox (``False`` returns ``None`` for it)
+        need_geometry_types: Compute geometry types (``False`` returns ``[]``)
+
+    Returns:
+        ``(bbox_or_None, geometry_types)``
+    """
+    from geoparquet_io.core.common import compute_geometry_types_via_sql, zm_suffix_sql
+
+    def _separately() -> tuple[list[float] | None, list[str]]:
+        return (
+            compute_bbox_via_sql(con, query, geometry_column) if need_bbox else None,
+            compute_geometry_types_via_sql(con, query, geometry_column)
+            if need_geometry_types
+            else [],
+        )
+
+    if not (need_bbox and need_geometry_types):
+        return _separately()
+    if _geo_stats_unsupported(con, query, geometry_column):
+        return _separately()
+
+    quoted = quote_identifier(geometry_column)
+    stats_query = f"""
+        SELECT
+            ST_GeometryType({quoted}) || {zm_suffix_sql(quoted)} AS geom_type,
+            MIN(ST_XMin({quoted})) AS xmin,
+            MIN(ST_YMin({quoted})) AS ymin,
+            MAX(ST_XMax({quoted})) AS xmax,
+            MAX(ST_YMax({quoted})) AS ymax
+        FROM ({query})
+        WHERE {quoted} IS NOT NULL
+        GROUP BY 1
+    """
+    return _fold_geo_stat_rows(con.execute(stats_query).fetchall())
 
 
 def compute_geometry_types_via_sql(

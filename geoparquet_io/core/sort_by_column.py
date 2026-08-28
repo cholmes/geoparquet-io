@@ -7,7 +7,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
@@ -65,7 +65,7 @@ def sort_by_column_table(
 
         # Build ORDER BY clause
         direction = " DESC" if descending else ""
-        order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+        order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
         query = f"SELECT * FROM __input_table ORDER BY {order_clause}"
         result = con.execute(query).arrow().read_all()
@@ -92,6 +92,7 @@ def sort_by_column(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Sort a GeoParquet file by specified column(s).
@@ -115,6 +116,7 @@ def sort_by_column(
         row_group_rows: Exact number of rows per row group
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
 
@@ -143,6 +145,7 @@ def sort_by_column(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -165,7 +168,7 @@ def sort_by_column(
     metadata, schema = get_parquet_metadata(input_parquet, verbose)
 
     # Validate that specified columns exist - use get_usable_columns for actual DuckDB column names
-    usable_cols = get_usable_columns(safe_url)
+    usable_cols = get_usable_columns(input_parquet)
     existing_columns = [c["name"] for c in usable_cols]
     for col in column_list:
         if col not in existing_columns:
@@ -184,7 +187,7 @@ def sort_by_column(
 
     # Build ORDER BY clause
     direction = " DESC" if descending else ""
-    order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+    order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
     # Build SELECT query
     order_query = f"""
@@ -213,6 +216,7 @@ def sort_by_column(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
+            memory_limit=memory_limit,
         )
 
         success(f"Sorted by {', '.join(column_list)} to: {output_parquet}")
@@ -238,6 +242,7 @@ def _sort_by_column_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for sort_by_column."""
     # Suppress verbose when streaming to stdout
@@ -260,7 +265,7 @@ def _sort_by_column_streaming(
 
         # Build ORDER BY clause
         direction = " DESC" if descending else ""
-        order_clause = ", ".join(f'"{col}"{direction}' for col in column_list)
+        order_clause = ", ".join(f"{quote_identifier(col)}{direction}" for col in column_list)
 
         if verbose:
             debug(f"Sorting by column(s): {', '.join(column_list)}")
@@ -278,6 +283,7 @@ def _sort_by_column_streaming(
         row_group_rows=row_group_rows,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):

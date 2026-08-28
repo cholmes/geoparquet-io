@@ -442,6 +442,53 @@ class TestTimeout:
 
         assert mock_client.get.call_args.kwargs["timeout"] == 300.0
 
+    def test_non_json_without_batch_size_is_remote_access_error(self):
+        """A non-paged request that gets HTML must not report a batch problem.
+
+        Regression test for #485: the count and layer-info queries carry no
+        batch size, so a WAF/proxy block page was reported as
+        "Batch size 0 too large", hiding the real cause.
+        """
+        from geoparquet_io.core.exceptions import BatchTooLargeError, RemoteAccessError
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.side_effect = json.JSONDecodeError("x", "<html>", 0)
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/html"}
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            with pytest.raises(RemoteAccessError) as exc_info:
+                make_request_with_retry("GET", "https://example.com/count")
+
+        assert not isinstance(exc_info.value, BatchTooLargeError)
+        assert "Batch size" not in str(exc_info.value)
+        assert "text/html" in str(exc_info.value)
+
+    def test_non_json_with_batch_size_keeps_batch_error(self):
+        """A paged request that gets HTML still raises BatchTooLargeError."""
+        from geoparquet_io.core.exceptions import BatchTooLargeError
+        from geoparquet_io.core.http_retry import make_request_with_retry
+
+        mock_client = MagicMock()
+        mock_response = Mock()
+        mock_response.json.side_effect = json.JSONDecodeError("x", "<html>", 0)
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "text/html"}
+        mock_client.get.return_value = mock_response
+
+        with patch("geoparquet_io.core.http_retry.get_shared_http_client") as mock_get_client:
+            mock_get_client.return_value = mock_client
+            with pytest.raises(BatchTooLargeError) as exc_info:
+                make_request_with_retry("GET", "https://example.com/query", batch_size=1000)
+
+        assert exc_info.value.batch_size == 1000
+
 
 class TestCrsParsing:
     """Tests for output-crs parsing helpers."""
@@ -1280,37 +1327,41 @@ class TestStreamingConversion:
         result = _geojson_page_to_table([])
         assert result is None
 
-    def test_disable_gdal_geojson_size_limit_sets_env(self, monkeypatch):
-        """Helper removes GDAL's per-feature GeoJSON size limit (issue #517)."""
+    def test_gdal_size_limit_lifted_inside_scope_and_unset_after(self, monkeypatch):
+        """The limit is lifted inside the scope and removed again on exit (#517)."""
         import os
 
-        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+        from geoparquet_io.core.arcgis import _gdal_geojson_size_limit_lifted
 
         monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
-        _disable_gdal_geojson_size_limit()
-        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+        with _gdal_geojson_size_limit_lifted():
+            assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+        assert "OGR_GEOJSON_MAX_OBJ_SIZE" not in os.environ
 
-    def test_disable_gdal_geojson_size_limit_overrides_existing(self, monkeypatch):
-        """A prior nonzero limit is lifted unconditionally (issue #517)."""
+    def test_gdal_size_limit_restores_existing_value(self, monkeypatch):
+        """A prior nonzero limit is lifted inside, then put back (issue #517)."""
         import os
 
-        from geoparquet_io.core.arcgis import _disable_gdal_geojson_size_limit
+        from geoparquet_io.core.arcgis import _gdal_geojson_size_limit_lifted
 
         monkeypatch.setenv("OGR_GEOJSON_MAX_OBJ_SIZE", "200")
-        _disable_gdal_geojson_size_limit()
-        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+        with _gdal_geojson_size_limit_lifted():
+            assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "200"
 
-    def test_geojson_page_to_table_lifts_size_limit(self, monkeypatch):
-        """Converting a page sets the GDAL size limit before ST_Read (#517)."""
+    def test_geojson_page_to_table_does_not_leak_size_limit(self, monkeypatch):
+        """Converting a page lifts the limit for ST_Read without leaking it (#517)."""
         import os
 
         from geoparquet_io.core.arcgis import _geojson_page_to_table
 
-        monkeypatch.delenv("OGR_GEOJSON_MAX_OBJ_SIZE", raising=False)
+        monkeypatch.setenv("OGR_GEOJSON_MAX_OBJ_SIZE", "200")
         table = _geojson_page_to_table(MOCK_FEATURES_PAGE["features"])
 
         assert table is not None
-        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "0"
+        assert os.environ["OGR_GEOJSON_MAX_OBJ_SIZE"] == "200", (
+            "the GDAL size limit leaked out of the page conversion"
+        )
 
     @patch("geoparquet_io.core.arcgis.fetch_all_features")
     def test_stream_features_to_parquet_single_page(self, mock_fetch, output_file):

@@ -8,7 +8,212 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is the first beta release of geoparquet-io 1.0, featuring major new spatial indexing systems, auto-resolution partitioning, comprehensive `--overwrite` support, and significant performance improvements.
 
+### Breaking
+
+- **BREAKING (Python API): CLI and Python API defaults aligned.** `gpio <cmd>`
+  and its `geoparquet_io.api` twin are advertised as the same operation, but
+  several defaults had silently diverged, so the "same" call did two different
+  things. The API now follows the CLI. **These change library behaviour for
+  callers that relied on the old defaults** (the CLI is unaffected):
+  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `dataset` now
+    defaults to `"gaul"` (was `"overture"`), matching
+    `gpio add admin-divisions --dataset`. **This changes output column names**
+    — the prefix is derived from the dataset name, so what used to land as
+    `overture_country` now lands as `gaul_country`, and downstream
+    `df["overture_country"]` raises `KeyError`. The new `prefix` parameter
+    (mirroring the CLI's `--prefix`) pins the old names:
+    `add_admin_divisions(dataset="overture", prefix="overture")`.
+  - `ops.add_admin_divisions` / `Table.add_admin_divisions`: `levels=None` now
+    adds **every level the dataset provides** (GAUL: `continent`, `country`,
+    `department`), matching the CLI with no `--levels`. It previously added
+    `country` only.
+  - `Table.partition_by_h3/quadkey/s2/a5/string/kdtree/admin`: `hive` now
+    defaults to `False` (was `True`), matching `gpio partition <scheme>
+    --hive`, which is off by default. Pass `hive=True` explicitly for
+    Hive-style `key=value/` output directories. **With `hive=False` the
+    partition value lives only in the file name, so the generated index column
+    (`quadkey`, `h3_cell`, `s2_cell`, `a5_cell`, `kdtree_cell`) is dropped from
+    the output files.** The new `keep_<scheme>_column` parameters mirror the
+    CLI's `--keep-*-column` and restore it without switching to Hive layout.
+  - `ops.from_wfs` / `ops.from_wfs_layers` / `Table.from_wfs`: `auto_tile` now
+    defaults to `True`, matching `gpio extract wfs`. With it off, a server that
+    caps responses (`maxFeatures` / `startIndex` limits) returned a **silently
+    truncated** table and reported success; the CLI tiled and fetched
+    everything. Pass `auto_tile=False` to opt back out.
+  - `Table.from_wfs`: `page_size` now defaults to `100000` (was `10000`),
+    matching `ops.from_wfs` and `gpio extract wfs --page-size`. Every entry
+    point — the CLI option, `wfs_to_table`, `convert_wfs_to_geoparquet`,
+    `convert_wfs_layers_to_directory`, `fetch_all_features_duckdb`,
+    `_fetch_with_spatial_tiles` and both API wrappers — now references a single
+    `DEFAULT_WFS_PAGE_SIZE` constant in `core/wfs.py`.
+  - `Table.check_spatial`: `limit_rows` now defaults to `500000` (was
+    `100000`), matching `gpio check spatial --limit-rows`; the API previously
+    analysed 5x fewer rows and could report a different verdict on the same
+    file.
+  - `Table.partition_by_string/kdtree/admin`: `compression_level` now defaults
+    to `None` (was a hardcoded `15`), letting each codec pick its own default.
+    The pinned value made every non-ZSTD codec raise —
+    `partition_by_string(..., compression="GZIP")` failed with "GZIP
+    compression level must be between 1 and 9, got 15" while the equivalent
+    CLI command succeeded.
+
+  `tests/test_cli_api_default_parity.py` now walks every Click command, resolves
+  its API twin and diffs the two default sets, so a *new* mismatch fails the
+  suite rather than waiting to be noticed.
+
 ### Added
+
+- **CLI surface regression test (#664)**: `tests/test_cli_surface.py` walks the
+  whole Click command tree into a structural snapshot at
+  `tests/data/cli_surface.json` — every group, command, option and argument
+  with its opts, its *secondary* opts, type, default, `required`, `is_flag` and
+  `multiple` — and fails naming the exact field that drifted. Recording
+  `--warmup` and `--no-warmup` in separate fields matters: concatenated, a
+  boolean flag pair is indistinguishable from two aliases for the same switch,
+  which is a user-visible behavior change. Help prose is deliberately not
+  pinned. Plugin-contributed commands are excluded, so an installed plugin
+  cannot break the test. Intentional changes are accepted by re-recording with
+  `GPIO_UPDATE_SNAPSHOT=1 uv run pytest tests/test_cli_surface.py` — honored
+  only for an affirmative value, so `GPIO_UPDATE_SNAPSHOT=0` means no, and
+  refused outright when `CI` is set so a stray env var cannot rewrite the
+  baseline green. The snapshot also pins each group's argv rewriting: the
+  subcommand a default-dispatch group falls back to (`check` → `all`, `inspect`
+  → `summary`) and the output-extension map `gpio convert` dispatches on
+  (`.gpkg` → `geopackage`, `.fgb` → `flatgeobuf`, ...). Both lived only in a
+  closure and were previously unobservable. Companion parametrized tests render
+  `--help` for every built-in leaf command and every group. The snapshot
+  comparison needs click >= 8.2's `UNSET` sentinel to distinguish an undeclared
+  default from an explicit `None`, and skips below that; the help-render cases
+  still run.
+
+- **Spatial-index golden-value tests (#664)**: `tests/test_spatial_index_golden.py`
+  pins the cell values every index family (h3, s2, a5, quadkey, kdtree) assigns to
+  a fixed eight-geometry fixture — both hemispheres, both sides of the
+  antimeridian, a point a hair off a cell corner, and a polygon wide enough that
+  centroid keying is distinguishable from bbox-corner keying. The suite asserts
+  that `add_*_table`, `partition_by_*`, the streaming `add_*_column` path,
+  `sort quadkey`, and the `gpio add h3` CLI all agree on those same values, so an
+  index-registry refactor that silently moves a geometry into a different cell
+  fails a test that names the index and the point. a5 cases carry `network`
+  (community extension download); the rest run offline.
+
+- **CLI↔API parity harness (#664)**:
+  `tests/test_cli_api_call_parity_scaffold.py` invokes `gpio <cmd>`, `ops.<fn>`
+  and `Table.<method>` with nothing but defaults for the 13 commands the planned
+  refactors touch (`add bbox/h3/s2/a5/quadkey/kdtree`, `sort
+  hilbert/column/quadkey`, `convert geoparquet`, `extract geoparquet`,
+  `partition h3/quadkey`), records the values each front end hands to core, and
+  diffs them through a documented per-command normalization map. Six existing
+  divergences are recorded as justified entries in `KNOWN_PARITY_GAPS` —
+  including `gpio add kdtree` auto-sizing the tree from the row count while
+  `ops.add_kdtree`/`Table.add_kdtree` pin `iterations=9` — each re-asserted by
+  its own test so a fix cannot leave a stale allowlist entry behind. The
+  filename says `scaffold` because it deliberately asserts on call structure
+  rather than behavior: there is no single seam where the three front doors
+  meet yet, so it is to be rewritten against the write facade once write-path
+  unification lands.
+
+- **Every CLI command must have a Python API twin (#664)**: CLAUDE.md states the
+  rule but the `check-api-for-cli` pre-commit hook only prints a reminder, so
+  `tests/test_cli_api_default_parity.py` now enforces it. Commands resolving to
+  no `ops` function and no `Table` method must appear in the `NO_API_TWIN`
+  allowlist with a written justification; the seven that ship without one today
+  (`benchmark compare/report/suite`, `check stac`, `publish stac`, `inspect
+  layers`, `skills`) are recorded there, and the test fails both on a new
+  twin-less command and on an entry that has since grown an API.
+
+- **Write-contract characterization suite (#664)**: `tests/test_write_contract.py`
+  pins what gpio's write paths actually put on disk, using
+  `core/validate.py::validate_geoparquet` as the oracle. Three decoupled
+  matrices — the four public write entry points x four requested versions, the
+  four write strategies x six input shapes (zero-row, null geometries, ZM,
+  a geometry column named `geom`, multi-row-group), and kv-metadata passthrough
+  — plus four normalized geo-metadata snapshots under `tests/data/snapshots/`
+  as canaries for silent field drift (refresh with `GPIO_UPDATE_SNAPSHOT=1`).
+  Building it surfaced six write-path defects, each recorded as an `xfail`
+  carrying its issue number rather than pinned as correct behaviour:
+  `gpio convert geoparquet --geoparquet-version 1.0` writing the 1.1-only
+  `covering` key into a 1.0 file and still exiting 0 (#686);
+  `write_geoparquet_table` ignoring `parquet-geo-only` (#687); the
+  arrow-streaming strategy's on-disk geometry type changing depending on
+  whether anything in the process imported `geoarrow.pyarrow` (#688);
+  `disk-rewrite` silently ignoring `row_group_rows`/`row_group_size_mb` (#689);
+  `api.Table.write` and `gpio convert geoparquet` dropping input non-geo kv
+  metadata that the core query writer preserves (#690); and `1.1-geoarrow`
+  output being rejected by gpio's own validator, which did not accept the
+  GeoArrow encodings GeoParquet 1.1 permits (#691).
+
+  **All six are fixed as of this release** — by #714, #702, #707, #698, #710
+  and #715 respectively — and the suite reported each one as "no longer
+  reproduces" rather than quietly going green, which is what the allowlists are
+  for. Both are empty now; the machinery stays so a *new* disagreement fails
+  loudly instead of being absorbed. Two out-of-batch divergences remain
+  xfailed: auto-version resolution splitting four ways on a native-geo input
+  (#600), and the validator's `crs_valid` check flipping with geoarrow
+  registration (the #603 family). The oracle also excuses
+  `native_geo_stats_contains_data` on Windows only, where pyarrow's wheel
+  writes all-zero geospatial statistics for native GEOMETRY columns (#721);
+  every other oracle check stays enforced on every platform.
+
+- **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
+  into a single zoom-banded PMTiles archive. Each level is tiled once with
+  tippecanoe, pinned to the zoom band where its worst tile fits the
+  `--max-tile-kb` budget, and the bands are merged with `tile-join` and
+  recorded under a `gpio:pyramid` key in the archive metadata. Existing
+  `_r*` overview siblings are reused; missing levels are built automatically.
+  `--include-features` appends the raw features as the final band
+  (`--features-min-zoom` defaults to base band max + 1); `--layer-mode
+  single|grouped|per-level` controls layer naming for client styling. Python
+  API: `ops.create_pmtiles_pyramid`.
+
+- **`gpio process overview` (#570)**: derive coarser aggregate levels from an
+  existing `gpio process aggregate` output. The scheme (`a5_cell`/`h3_cell`/
+  `admin_code`) and base level are detected from the file; cells roll up by
+  true hierarchy (`a5_cell_to_parent`/`h3_cell_to_parent`; admin region→country
+  via ISO code prefix with cached Overture country polygons). `count`, `sum_*`,
+  `min_*`, `max_*`, and breakdown `count_*` columns roll up exactly; `avg_*` is
+  count-weighted (exact when the metric has no NULLs). Levels are explicit
+  (`--levels 4,7`) or auto-selected against a tile-size budget
+  (`--max-tile-kb`, default 500) using a worst-tile probe of parent-cell
+  centroids in DuckDB. Outputs are siblings (`cells_r7.parquet`,
+  `by_region_country.parquet`). Python API: `ops.create_overviews`,
+  `Table.overview`.
+
+- **`--bucket-point` on `gpio process aggregate` (#567).** Grid/admin keying
+  can now derive its per-feature point from a bbox covering column
+  (`--bucket-point bbox`, auto-detected or via `--bbox-column`) or an existing
+  point column, instead of the geometry centroid. Since the default output
+  synthesizes cell polygons from the cell id, the (usually huge) geometry
+  column is excluded from the scan entirely — Parquet projection pushdown
+  skips its column chunks, making low-zoom aggregation of large polygon
+  datasets (e.g. 225 GB of building footprints with a `bbox` column)
+  dramatically cheaper, with no DuckDB pre-step. Also on the Python API as
+  `aggregate_a5/h3/admin(..., bucket_point=..., bbox_column=...)`.
+
+- **`--where` row filter on `gpio process aggregate` (#568).** All three
+  subcommands (`a5`, `h3`, `admin`) accept a DuckDB WHERE clause that filters
+  input rows before aggregation — slice a dataset by year, category, or
+  attribute in the same single-command pass, with no pre-filter rewrite.
+  The filter applies to the source scan, so counts, `--metric` rollups,
+  `--breakdown` pivots, and `--auto` resolution sizing all reflect only the
+  matching rows. Semantics and safety validation match `gpio extract --where`;
+  also available on the Python API (`aggregate_a5/h3/admin(..., where=...)`).
+  On a hive-partitioned input the clause can filter on partition columns
+  (`--where "year = 2025"`). A `;` statement separator outside a quoted string
+  is now rejected in every `--where` clause (`extract` included), since DuckDB
+  executes multi-statement strings.
+
+- **`--metric-nodata` NoData sentinel handling in `gpio process aggregate` (#566).**
+  Real-world numeric columns often encode "no value" as a sentinel like `-999`
+  instead of SQL `NULL`, which silently poisons `--metric` rollups (an average
+  of building heights comes back at `-313 m`). All three subcommands (`a5`,
+  `h3`, `admin`) now accept `--metric-nodata "-999"` (comma-separate multiple
+  sentinels) to map those values to `NULL` before aggregation: `sum`/`avg`/
+  `min`/`max` ignore them while `count` still counts every feature. `nan` is
+  accepted for NaN-encoded nodata, and sentinels are compared at the metric
+  column's own precision so the classic float32 nodata `-3.4028235e+38`
+  matches `REAL` columns. Also on the Python API as
+  `aggregate_a5/h3/admin(..., metric_nodata=...)`.
 
 - **New spec-validation checks in `gpio check spec` (#586).** Validation now
   fails on unknown `geo` metadata versions (e.g. `99.0.0`) even in auto mode;
@@ -81,7 +286,68 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Auto-detection of spatial clustering in check command
 - Bbox overlap detection for order validation
 
+#### Testing
+- Geo-metadata reader agreement suite (`tests/test_geo_metadata_parity.py`).
+  Pins the current behavior of the five `geo` metadata call sites — four
+  distinct implementations, since `core/add/quadkey.py` is now a one-line
+  delegate — so the planned metadata consolidation is verifiable: all five must
+  produce an identical parsed dict on every geo fixture in `tests/data/` and on
+  a representative slice of the geoparquet-testing corpus. Edge cases where the
+  readers legitimately diverge (str-keyed metadata, invalid JSON, absent key,
+  empty dict) are pinned per reader rather than forced equal, and the
+  CRS-equality trio (`validate._crs_equals`, `validate._is_crs84_equivalent`,
+  `inspect_utils._crs_are_equivalent`) is pinned over a 5x5 CRS matrix with the
+  cells where the helpers disagree recorded as a consolidation decision list.
+  Three cells contradict the GeoParquet specification rather than merely
+  disagreeing with each other — an explicit `"crs": null` reported as CRS84, an
+  omitted `crs` reported as unequal to OGC:CRS84, and OGC:CRS84 reported as
+  unequal to EPSG:4326 — and are recorded as `xfail(strict=True)` cases
+  asserting the spec-correct verdict, tracked by #699. Also covers the
+  pyproj-fallback axis-order split between the two binary helpers and the
+  boundary behavior of `validate._version_at_least`.
+
 ### Changed
+
+- **Local `pytest` runs are no longer instrumented for coverage (#665).**
+  `--cov`/`--cov-fail-under` moved out of `addopts` in `pyproject.toml` and into
+  the CI job that actually reports coverage. A plain `uv run pytest` is now fast
+  (39-49% quicker on a single file) and exits 0 instead of failing a whole-suite
+  67% gate that a partial run could never clear; pass `--cov=geoparquet_io
+  --cov-report=term-missing --cov-fail-under=0` to opt in (the `0` matters:
+  `[tool.coverage.report].fail_under` re-arms the 67% floor on any `--cov` run).
+  CI is unchanged in strictness: the ubuntu/3.11 fast-test job still enforces the
+  67% floor, uploads to Codecov, and runs the 90% diff-cover gate. The other nine
+  matrix jobs (and the two non-reporting slow-suite jobs) no longer compute
+  coverage they discarded, and `fetch-depth: 0` is now limited to the one job
+  that needs git history. Note the 39-49% figure is a local single-file
+  measurement; total CI matrix wall time was unchanged within noise. Which leg
+  reports coverage is now decided once, by a job-level `COVERAGE_JOB` flag that
+  the four dependent steps read, so moving the baseline Python version can no
+  longer silently disable both coverage gates while every check stays green
+  (`tests/test_coverage_job.py` asserts the flag names a combination the matrix
+  actually schedules).
+
+- **Repo-tooling tests moved to a `meta` lane, out of the fast suite (#665).**
+  The codespell, commitizen, doc-sync, mutmut, mypy, validate-CLAUDE.md and
+  security-tool-availability checks now carry `@pytest.mark.meta`. They spawn
+  `uv run` subprocesses and were the fast suite's only source of contention
+  flakes. Most of them re-run something CI checks elsewhere — codespell,
+  doc-sync, mypy and validate-claude-md are pre-commit hooks the lint job runs,
+  and the bandit/pip-audit availability checks are covered for real by the
+  `security` job — while the commitizen and mutmut tests validate configuration
+  that no hook in the lint job touches (commitizen is a `commit-msg`-stage hook,
+  mutmut has no hook at all), which is why the lane still runs in CI rather than
+  being deleted. The fast selection is now
+  `-m "not slow and not network and not meta"` and the slow/nightly job runs
+  `-m "(slow or meta) and not network"` with no file-level exclusions, so
+  nothing stops being checked in CI. Run them locally with
+  `uv run pytest -m meta`. `tests/test_validate_claude_md.py` also drops five of
+  its seven `uv run` spawns in favour of calling the validator's `main()` in
+  process, keeping the happy path and one detected-error path as real
+  subprocesses. The nightly mutation run picks the lane up too: mutmut's
+  per-mutant selection is now `not slow and not network and not meta`, which
+  replaces the per-file `--ignore` list it needed to keep those subprocesses
+  from resolving the *mutated* package out of mutmut's `mutants/` tree.
 
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** The
   `gpio check spec` heuristic that flags geographic-looking coordinates (values
@@ -119,6 +385,393 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 - Removed deprecated CLI commands and guide documentation
 
 ### Fixed
+
+- **`tests/test_wfs.py` no longer reaches the network.** Nine tests made live
+  requests against the fake host. Six exercise `wfs_to_table` and mocked the
+  version negotiation, layer lookup and feature fetch, but not
+  `_get_feature_count` — which `wfs_to_table` calls twice before the mocked
+  fetch as part of its auto-tiling probe. Three more, in
+  `TestAutoPageSingleWorker`, call `fetch_all_features_duckdb` directly, which
+  probes the server's startIndex support before paging; that probe drives httpx
+  itself, so mocking the page fetcher never covered it. Both `_get_feature_count`
+  and `_probe_startindex_limit` swallow every exception, so all nine passed
+  while silently making live requests, contrary to the module's stated "mocked
+  HTTP responses to avoid network dependencies". A shared `offline_wfs_probes`
+  fixture now completes the mock and installs a tripwire on `_make_request` that
+  fails the test if a future unmocked request escapes through that path. No
+  assertion changed meaning — the stubs return the `None` the failed requests
+  already produced. Measured over the file's fast lane: 12 outbound connection
+  attempts and 24 `time.sleep` calls totalling 36.00s of retry backoff both drop
+  to zero, and serial runtime goes from 43.4s to 6.3s.
+
+- **`gpio add quadkey --quadkey-name` now accepts any column name Parquet
+  accepts.** The file-based code path interpolated the output column name and
+  the bbox column name into its SQL raw, so `--quadkey-name 'weird name'`
+  died with `Parser Error: syntax error at or near "name"` and a name
+  containing a double quote died with `unterminated quoted identifier`. Both
+  names now go through `quote_identifier()`, matching the streaming and
+  Arrow-table paths in the same module, which already quoted them. Computed
+  quadkey values are unchanged for ordinary column names.
+
+- **Validation accepts the GeoArrow encodings GeoParquet 1.1 permits.**
+  `gpio check spec` (and `validate_geoparquet()`) only recognised `"WKB"`, so a
+  file gpio itself writes with `--geoparquet-version 1.1-geoarrow` failed its
+  own spec check with six errors — four of them raw DuckDB binder errors from
+  calling `ST_GeomFromWKB()` on a nested coordinate struct. The single-geometry
+  type encodings (`point`, `linestring`, `polygon`, `multipoint`,
+  `multilinestring`, `multipolygon`) are now valid for 1.1, and every check
+  that reads the column is layout-aware: the `BYTE_ARRAY` requirement applies
+  only to WKB columns (native columns are checked for the DOUBLE coordinate
+  group the spec requires instead), and the encoding, geometry-type, bbox and
+  CRS data scans read GeoArrow coordinates directly rather than parsing WKB.
+  Empty and null geometries no longer skew those scans. 1.0 and 2.0 remain
+  WKB-only per their spec text, so a file claiming a GeoArrow encoding under
+  either version is still rejected — now with a message naming the version
+  requirement rather than a binder error.
+
+  The layout check does not stop at nesting depth. `linestring`/`multipoint`
+  and `polygon`/`multilinestring` store identical coordinate data at identical
+  depth, so a column relabelled as its twin would otherwise pass every check;
+  the field names on the coordinate nesting (`vertices`, `points`, `rings`,
+  `linestrings`, `polygons`) are matched as well, which separates all six
+  encodings. A type string that does not carry geoarrow's names — the generic
+  `list<element: ...>`, or the typeless group node `parquet_schema()` reports
+  for remote files — is not evidence of a wrong encoding and is not failed on.
+
+- **`gpio extract wfs` no longer hides a failed feature-count probe.** The
+  `resultType=hits` probe that drives auto-tiling wrapped its whole body in a
+  bare `except Exception: pass`, so any server hiccup, unreachable host, or bug
+  inside the probe returned "no count" indistinguishably from a server that
+  genuinely does not report one — silently disabling auto-tiling and
+  pagination, the exact path that yields a **silently truncated** table plus a
+  success message. Expected failures (`WFSError`, transport, and OS errors) now
+  log a warning naming the cause and the consequence; programming errors are no
+  longer swallowed and surface as the bugs they are. The "count unavailable"
+  return contract is unchanged, so extraction still degrades rather than
+  aborting. The speculative WFS 2.0.0 count attempt — which falls back to the
+  negotiated version by construction — stays quiet, so a 1.1.0-only server
+  rejecting it does not warn on an otherwise healthy extraction.
+
+  `_probe_startindex_limit`, the sibling probe that detects servers rejecting a
+  `startIndex` above some cap, swallowed failures the same way and now follows
+  the same contract. Its silent `None` meant "no cap known", which re-enables
+  unbounded pagination against a server that will reject or truncate the later
+  pages — the same silently-wrong-output failure mode reached by a different
+  route.
+
+- **`--row-group-rows` / `--row-group-size-mb` now apply to the `disk-rewrite`
+  write strategy.** `DiskRewriteStrategy` accepted both sizing options and used
+  neither, so anything routed through it (including the fallback path) got
+  default row groups no matter what the caller asked for — a silent divergence
+  from the other three strategies that showed up later as `gpio check row-group`
+  failures. The strategy now sizes both its DuckDB `COPY` and the PyArrow
+  metadata rewrite from the request, converting an MB target to a row count with
+  the same sampling logic `duckdb-kv` uses (now shared in
+  `core/write_strategies/row_group_sizing.py` instead of living in `duckdb_kv`).
+  Non-geo writes through the strategy honour the options too.
+
+  The MB-to-rows estimate samples the query with its trailing `ORDER BY`
+  removed, so the sample's `LIMIT` pushes down instead of re-sorting (and
+  re-downloading) the whole source. That scanner tracks `''` and `""` state and
+  nothing else — the hand-rolled quote walker #657 removed from the `--where`
+  path — so a query carrying a line comment, block comment, dollar quote or
+  `E''` escape is now left alone rather than truncated mid-construct. Three of
+  those produced SQL that no longer parsed (recovered by the fallback, losing
+  the MB target); the `E''` case produced SQL that still parsed but with a
+  different `WHERE` clause, estimating from a different row set. Skipping the
+  speed-up is always safe; guessing is not.
+
+- **GeoParquet 1.0 output no longer carries the 1.1-only `covering` key.**
+  `gpio convert geoparquet --geoparquet-version 1.0` keyed the covering
+  metadata off bbox-column presence alone, so it wrote a file declaring version
+  1.0.0 with a `covering` entry — a field that does not exist in the GeoParquet
+  1.0.0 specification (it was introduced in 1.1) — which gpio's own
+  `gpio check spec` then rejected while `convert` still exited 0. The covering
+  metadata is now version-gated at the shared metadata-assembly points, so every
+  write strategy inherits the gate, including coverings carried in from a 1.1
+  source file or supplied as `custom_metadata` (h3/s2/a5/quadkey). The bbox
+  **column** is still written and remains fully functional for 1.0 output —
+  only the metadata key is 1.1+.
+  The two entry points that exist *solely* to write that key —
+  `gpio add bbox-metadata` and `Table.add_bbox_metadata()` — now fail with a
+  clear error naming the conflict when the file or table declares 1.0, instead
+  of silently producing a file their own validator rejects. **This is a
+  behavior change**: those calls previously "succeeded" on a 1.0 input.
+  Convert to 1.1 first (`gpio convert geoparquet in.parquet out.parquet
+  --geoparquet-version 1.1`). Note that `gpio add bbox` with the default
+  version is unaffected — it writes 1.1 output, covering included.
+  Relatedly, `gpio check bbox` no longer reports a 1.0 file's bbox column as
+  "missing metadata covering" (for those files the actionable advice is the
+  version upgrade it already recommends), and it now flags — rather than
+  affirming with a ✓ — a pre-1.1 file that carries a covering key anyway.
+
+- **`write_geoparquet_table` now honors an explicit
+  `geoparquet_version="parquet-geo-only"`.** The table write path converted the
+  geometry column to a native Parquet GEOMETRY logical type but returned
+  without removing the input table's carried `geo` key, so the output declared
+  whatever version the *input* had — a 1.x file using a feature only
+  GeoParquet 2.0 permits, which `gpio check spec` failed on
+  `version_features_match`. The key is now dropped, along with any carried
+  `ARROW:schema`/`pandas` descriptor — pyarrow writes a carried blob through
+  verbatim rather than replacing it, so the output otherwise shipped a
+  serialized schema naming the *input's* columns and CRS. Unrelated file-level
+  KV metadata (e.g. `vecorel`) is still preserved. The exclusion set is now a
+  single `_CARRIED_SCHEMA_METADATA_KEYS` constant shared with
+  `write_parquet_with_metadata` — which `api.Table.write` and `gpio convert
+  geoparquet` both route through — rather than a second hand-maintained
+  literal that could drift from it. A test pins that there is exactly one
+  spelling of the set and that both write paths reference it.
+
+  The new validator-oracle test excludes `native_geo_stats_contains_data` on
+  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
+  for a native GEOMETRY column, so that check fails there for a platform reason
+  unrelated to this fix (#721). Every other validator check stays enforced on
+  every platform.
+
+- **The arrow-streaming write strategy no longer emits a different file
+  depending on what the process imported.** `geoarrow.pyarrow` registers its
+  extension types process-globally on import, and many ordinary gpio code paths
+  do so; that registration changed what DuckDB's Arrow export handed the
+  streaming writer, and with it the on-disk geometry type. The same call on the
+  same input produced a `LARGE_BINARY` geometry column in a clean interpreter
+  (failing `gpio check spec`'s `geometry_byte_array`) but a *native* Parquet
+  GEOMETRY logical type once anything had imported `geoarrow.pyarrow` (failing
+  `version_features_match`, since native types require GeoParquet 2.0). Both
+  variants were invalid GeoParquet 1.1, and which one you got was decided by
+  unrelated import order. Streaming writes are now normalized per target
+  version, so the output is a function of the inputs alone: GeoParquet 1.0 and
+  1.1 write **every** geometry column — primary and secondary alike — as plain
+  `BYTE_ARRAY` WKB, matching what the `duckdb-kv` and `in-memory` strategies
+  already produced for the primary column; GeoParquet 2.0 and
+  `parquet-geo-only` write **every** geometry column as a native Parquet
+  GEOMETRY type, which 2.0 validation requires of each column in
+  `geo["columns"]` and which is a secondary column's only geometry identity
+  once `parquet-geo-only` drops the geo metadata; `1.1-geoarrow` keeps its
+  native GeoArrow encoding on the primary column. Batches holding more than
+  2 GB of WKB are split so narrowing to Arrow's 32-bit `binary` offsets cannot
+  overflow — this now also covers the native 2.0 path, whose `geoarrow.wkb`
+  storage is 32-bit too. (#688)
+
+  The validator assertions here exclude `native_geo_stats_contains_data` on
+  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
+  for a native GEOMETRY column, so that check fails there for a platform reason
+  unrelated to this fix (#721). Every other validator check stays enforced on
+  every platform.
+
+- **`gpio convert geoparquet` and `Table.write` keep the input's non-geo
+  key/value metadata.** A GeoParquet file's file-level KV metadata carries
+  sidecar payloads — `fiboa`, `vecorel`, STAC fragments, collection records —
+  and `write_parquet_with_metadata` already merged them into its output. The two
+  highest-level entry points never reached that merge: `convert` hardcoded
+  `original_metadata=None` and passed no KV metadata at all (every strategy
+  dropped the keys), while `Table.write` called the write strategy directly, so
+  preservation depended on the strategy — the Arrow strategies copied the keys
+  off the table schema incidentally, and the DuckDB COPY paths (`duckdb-kv`,
+  the default, and `disk-rewrite`) rebuilt the KV block from scratch and lost
+  them. Both entry points now hand the input's preserved keys to the writer, so
+  sidecar metadata survives on every entry point and every write strategy. The
+  `geo` key itself is never copied — it is regenerated from the written data —
+  and neither are Arrow's own `ARROW:schema` / `pandas` keys. Which keys those
+  are is the single `_CARRIED_SCHEMA_METADATA_KEYS` constant the
+  parquet-geo-only path already uses, not a second copy of the same list.
+
+- **Six internal DuckDB connections now route through the shared connection
+  factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
+  `get_column_statistics`, `add country-codes`'s connection setup, and the
+  disk-rewrite write strategy previously called bare `duckdb.connect()` and
+  re-applied session settings by hand, skipping `get_duckdb_connection()`.
+  All six now gain `arrow_large_buffer_size` (required for >2GB string/WKB
+  Arrow exports), which none of them had set, alongside the
+  `geometry_always_xy` axis-order setting they had each been reimplementing
+  inline. `gpio inspect stats` also now loads httpfs when the file it is
+  inspecting lives on cloud storage, matching `gpio inspect head`.
+  To prevent regressions, the `duckdb-antipatterns` pre-commit check now bans
+  `duckdb.connect(`, `.sql(`, `.query(`, `.execute(` and `.read_parquet(`
+  outside `core/duckdb_utils.py` — including via an aliased or
+  `from duckdb import ...` import, which would otherwise slip past the check.
+  A trailing `# allow-bare-connect` comment marks a deliberate exception.
+- **Library-safe writes: no global state leaks.** Side effects that made `gpio`
+  unsafe to embed in a host application are fixed. (1) `write_parquet_with_metadata()`
+  no longer mutates a caller-supplied `extra_kv_metadata` dict in place — a dict
+  reused across writes (e.g. a partition loop) no longer accumulates preserved
+  keys from prior files — and caller-supplied keys now explicitly win over keys
+  preserved from the input file. (2) `.write(profile=...)` and
+  `.upload(profile=...)` to S3 no longer set `AWS_PROFILE` in the host process
+  environment at all, including the non-parquet (`.fgb`/`.gpkg`/`.csv`/`.shp`/
+  `.geojson`) write path. The profile was already handed explicitly to the
+  uploader, which resolves credentials from it directly, so the environment
+  mutation was redundant as well as leaky — and, being an unlocked
+  process-global, wrong under concurrency. The CLI's existing save/restore
+  behavior is unchanged. (3) `configure_verbose()` no longer stamps a level onto
+  the shared `geoparquet_io` logger: a default (`verbose=False`) call leaves a
+  level the host application chose untouched, and a nested default call no
+  longer truncates the output of an outer `--verbose` run. (4) The first
+  library call no longer hijacks a host application's logging: when the host
+  has already configured logging, `gpio` attaches a `logging.NullHandler` and
+  propagates instead of installing its own stream handler, so messages are no
+  longer emitted twice. (5) Two environment variables are no longer set
+  permanently by a library call: the ArcGIS reader lifts GDAL's per-feature
+  GeoJSON size cap (`OGR_GEOJSON_MAX_OBJ_SIZE`) only for the duration of the
+  read that needs it, and the unused `get_bigquery_connection()` helper — which
+  set `GOOGLE_APPLICATION_CREDENTIALS` with no restore — is removed in favour of
+  the `BigQueryConnection` context manager the extract path already used.
+- **`--write-memory` now honored by every command that offers it (previously
+  silently ignored on twelve of them).** `add h3`/`a5`/`s2`/`kdtree`/`quadkey`/
+  `bbox`/`geometry-metrics`/`admin-divisions`, `sort column`/`quadkey`,
+  `convert geoparquet` and `extract bigquery` accepted the flag but never
+  forwarded it, so the value was dropped and the auto-detected default limit
+  was used instead — the same bug class fixed for `sort hilbert` in #627. The
+  flag is now forwarded by all 22 commands that expose it (`convert
+  geoparquet`/`reproject`, `extract geoparquet`/`bigquery`, `sort
+  hilbert`/`column`/`quadkey`, `add admin-divisions`/`geometry-metrics`/`bbox`/
+  `h3`/`a5`/`s2`/`kdtree`/`quadkey`, and all seven `partition` subcommands).
+  It remains absent — by design — from commands with no DuckDB write engine to
+  configure: `convert geojson`/`geopackage`/`flatgeobuf`/`csv`/`shapefile`,
+  `extract arcgis`/`wfs`/`carto`, `add bbox-metadata`, `pmtiles
+  create`/`pyramid`, `process overview`/`aggregate`, and `publish
+  stac`/`upload`. On `extract bigquery` the limit is applied to the DuckDB
+  connection that runs the BigQuery scan (the memory-heavy step); the Parquet
+  write itself is a PyArrow write.
+
+- **`--write-memory` is validated instead of reaching SQL unchecked.** The
+  value is interpolated into DuckDB's `SET memory_limit = '…'` (a SET value
+  cannot be parameterised), and DuckDB executes multi-statement strings, so an
+  unvalidated value could append arbitrary SQL — reachable from any library
+  caller passing a config-supplied `memory_limit`. Values must now match a
+  plain size literal (`512MB`, `2GB`, `4.5GB`, `1GiB`); anything else is a
+  clean Click parameter error rather than a raw DuckDB `ParserException`
+  traceback.
+
+- **`--write-memory` no longer aborts with `--geoparquet-version
+  1.1-geoarrow`.** That version reroutes WKB input to the arrow-streaming
+  write strategy, which cannot honour a memory limit; the combination raised a
+  raw `ValueError` traceback on `sort hilbert` (since #627) and on the seven
+  commands above. gpio now warns and ignores the limit when *it* rerouted the
+  strategy, and reports a clean parameter error only when the user explicitly
+  chose an incompatible `--write-strategy`. Streaming Arrow IPC to stdout also
+  warns rather than dropping the limit silently.
+- **Stale geo metadata after reproject, filtered extract, and multi-file
+  merges.** The per-column `bbox` and `geometry_types` are derived from the
+  data, so every path that changes which rows or coordinates get written now
+  invalidates them and lets the write machinery recompute them from the output:
+
+  - `gpio convert reproject` no longer carries the input's degree-space
+    collection `bbox` into output reprojected to another CRS.
+  - `gpio extract` with a row filter (`--bbox`/`--geometry`/`--where`/`--limit`)
+    no longer advertises the full pre-filter extent. A zero-row extract omits
+    `bbox` entirely (it is optional per spec) rather than claiming a non-empty
+    one.
+  - `gpio extract` over a glob or directory no longer stamps the FIRST input
+    file's `bbox`/`geometry_types` on the merged output. That was an
+    *under-covering* bbox, which is worse than an over-covering one: conformant
+    readers skip data that falls outside it.
+  - `geometry_types` (required in GeoParquet 1.1) is recomputed alongside
+    `bbox` rather than being carried through unchanged — filtering out the only
+    polygon no longer leaves `["Point", "Polygon"]` behind.
+  - `--write-strategy streaming` now emits a `bbox` for GeoParquet 1.0/1.1
+    output instead of only for 2.0. (This strategy is also selected implicitly
+    for `1.1-geoarrow`.)
+
+  An unfiltered, untransformed single-file copy still preserves its carried
+  stats. Both file-based and streaming/stdout paths are fixed.
+
+  Recomputing costs one extra aggregate scan of the (already filtered) query —
+  measured ~33% slower on a 3M-row/50MB file (0.96s vs 0.72s) — and reproject
+  runs `ST_Transform` over every row a second time to do it. `bbox` and
+  `geometry_types` are now derived in a single grouped scan rather than two
+  independent ones, which claws back part of that.
+
+- **`gpio extract --exclude-cols` left dangling geo metadata.** Dropping the
+  `bbox` column left the `covering` entry pointing at a column that is no
+  longer in the schema (`gpio check spec` failed on the result); dropping the
+  geometry column produced a file that still advertised itself as GeoParquet
+  with a geometry column that did not exist. Geo metadata entries and
+  `covering` references are now pruned to the output schema, and an output with
+  no geometry column is written as plain Parquet with a warning.
+
+- **`gpio extract` metadata-preservation failures are visible.** `extract` now
+  warns instead of silently dropping all `geo`/KV metadata when the input
+  footer cannot be read for preservation, for any failure mode (a corrupt
+  footer can surface as `OSError`, `GeoParquetError`, or an Arrow exception).
+- **Geometry-column identifiers are now quoted at every raw SQL interpolation
+  (todo #008).** Files whose primary geometry column name has a space,
+  uppercase letter, reserved word, or embedded quote — a name read verbatim
+  from the file's own `geo.primary_column` metadata — previously crashed
+  several commands with a DuckDB `ParserException`, since the column name was
+  interpolated unquoted into a generated SQL identifier. Fixed in `stream_io`'s
+  WKB-conversion wrapper and across every `add bbox` code path — the CLI's
+  file-based `STRUCT_PACK` expression, its stdin/stdout streaming query
+  builder, the `Table.add_bbox()` / `add_bbox_table()` Python-API path, and
+  the shared `add_bbox` helper used by `admin-divisions`/`country-codes` —
+  plus `check spatial`'s sampling-method queries. All now use the existing
+  `quote_identifier` helper, which also closes a second, narrower gap: two of
+  the `add bbox` builders were already hand-quoting with `"{col}"` and so
+  tolerated spaces, but didn't double an embedded `"`, which still broke
+  them. Separately, the native Parquet-geo-stats getters in `duckdb_metadata`
+  (and sibling `bbox`/`compression` lookups) compared the column name as a
+  SQL **string literal** (`WHERE path_in_schema = '...'`) rather than an
+  identifier; a space there was always harmless, but an embedded `'` broke
+  the literal and was silently swallowed by a broad `except Exception`,
+  returning `None`/empty stats instead of raising or the correct value.
+  Fixed with `_escape_sql_string`. Since a hostile filename can carry such a
+  name via `geo.primary_column`, this was also a latent SQL-injection vector,
+  not just a crash bug.
+- **Commands no longer break on unusual column names or paths with an
+  apostrophe.** A geometry column named `geom col`, `Geometry` or `geo"m` — a
+  name read verbatim from the file's own `geo.primary_column` — used to crash
+  `add bbox/h3/s2/a5/quadkey/geometry-metrics/kdtree`, `inspect stats`,
+  `sort hilbert`, `sort column`, `extract geoparquet` and `convert
+  geojson/csv` with a DuckDB parser error, and made `check spec` report a
+  valid file as failing. Column names are now quoted wherever they are
+  interpolated into SQL, so a crafted file can no longer inject SQL through
+  its own metadata, and `--column`/`--bbox-name` accept any name the format
+  allows. Separately, a file under a directory containing `'` (e.g.
+  `o'brien/data.parquet`) was escaped twice and reported as not found by
+  `check`, `inspect`, `add bbox` and `convert`; paths are now escaped exactly
+  once.
+- **`--where` validation is now parser-based, and reaches `gpio extract
+  bigquery` / `gpio extract carto`.** Three fixes to the shared
+  `--where` guard:
+
+    - The statement gate no longer walks the clause looking for an
+      unquoted `;`. That walker only understood `'` and `"`, so a `;`
+      hidden behind dollar quoting (`$$'$$`), a block comment, a line
+      comment, or an `E'\''` escape slipped through and executed as extra
+      statements. The clause is now composed into the exact `WHERE
+      (<clause>\n)` shape the callers emit and handed to DuckDB's parser;
+      anything that parses as more than one statement — or does not parse
+      at all — is rejected.
+    - Blocklisted keywords are matched against real SQL word tokens
+      instead of the uppercased clause text, so ordinary filters that
+      merely contain one inside a string literal are accepted again:
+      `name = 'Grant County'`, `street LIKE '%Alter Markt%'`,
+      `descr ILIKE '%drop off%'`, `status = 'DELETE'`, `name = 'Merge
+      Lane'`. `REPLACE` is no longer blocklisted at all — it is a standard
+      scalar function in DuckDB, BigQuery and Postgres/Carto, and a
+      function call cannot modify data.
+    - `gpio extract bigquery` and `gpio extract carto` now run their
+      `--where` through that check (on the dry-run/build path too, before
+      any network request), and build their SQL through the shared
+      condition helper. Previously they inlined `({where})` on one line, so
+      a clause ending in `--` commented out everything after it: a
+      `--bbox`-and-`--limit` request silently became a full-table
+      download. The bbox condition and the `LIMIT` now survive.
+
+  Scope, stated plainly: this guard is a safety net for **trusted** input,
+  not a security boundary. It stops a clause from becoming additional
+  statements; it does not stop abuse that stays inside a single expression
+  (e.g. `1=1 AND length((SELECT content FROM read_text('/etc/hosts')))>0`
+  still passes). `gpio extract arcgis --where` remains unvalidated by
+  design — it is sent as an HTTP query parameter to the Feature Service,
+  never interpolated into a local SQL statement.
+
+- **Clear errors for missing `--metric`/`--breakdown` columns in
+  `gpio process aggregate`.** Requesting a column that doesn't exist now
+  reports the column name and the available columns instead of a raw DuckDB
+  binder error — and `--metric count` specifically explains that `count` is
+  emitted automatically for every bucket (use `--breakdown` for per-category
+  counts). A literal `count` column in the input (e.g. re-aggregating an
+  aggregate) still works.
 
 - **Non-planar edges metadata survives rewrites (#588).** `"edges":
   "spherical"` (e.g. from BigQuery GEOGRAPHY extracts) is now preserved across

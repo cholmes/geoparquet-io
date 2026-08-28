@@ -8,7 +8,6 @@ import uuid
 
 from geoparquet_io.core.add.kdtree import add_kdtree_column
 from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
-from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -186,13 +185,11 @@ def partition_by_kdtree(
         actual_input = stdin_temp_file
 
     try:
-        safe_url = safe_file_url(actual_input, verbose)
-
         # Check if KD-tree column exists and get row count for dataset size validation
         from geoparquet_io.core.duckdb_metadata import get_column_names, get_row_count
 
-        column_names = get_column_names(safe_url)
-        total_rows = get_row_count(safe_url)
+        column_names = get_column_names(actual_input)
+        total_rows = get_row_count(actual_input)
 
         column_exists = kdtree_column_name in column_names
 

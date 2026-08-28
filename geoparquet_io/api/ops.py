@@ -30,6 +30,7 @@ from geoparquet_io.core.hilbert_order import hilbert_order_table
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 
 def add_bbox(
@@ -116,18 +117,26 @@ def add_geometry_metrics(
 def add_admin_divisions(
     table: pa.Table,
     *,
-    dataset: str = "overture",
+    dataset: str = "gaul",
     levels: list[str] | None = None,
     vecorel: bool = False,
+    prefix: str | None = None,
 ) -> pa.Table:
     """
     Add administrative division columns via spatial join.
 
     Args:
         table: Input PyArrow Table
-        dataset: Boundaries dataset ("overture", "gaul")
-        levels: Admin levels to add (e.g., ["country", "region"])
+        dataset: Boundaries dataset ("gaul", "overture"). Default matches the
+            CLI (`gpio add admin-divisions --dataset`).
+        levels: Admin levels to add (e.g., ["country", "region"]). None adds
+            every level the dataset provides, matching the CLI with no
+            ``--levels``: ``["continent", "country", "department"]`` for GAUL,
+            ``["country", "region"]`` for Overture.
         vecorel: Output Vecorel-compliant columns (default: False)
+        prefix: Column name prefix, as with the CLI's ``--prefix``. None uses
+            the dataset's own name (``gaul_country``, ``overture_country``);
+            "admin" produces ``admin:country``.
 
     Returns:
         New table with admin division columns added
@@ -138,6 +147,7 @@ def add_admin_divisions(
         >>> table = ops.add_admin_divisions(table, vecorel=True)
     """
     from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+    from geoparquet_io.core.admin_datasets import default_admin_levels
 
     if vecorel:
         dataset = "overture"
@@ -147,8 +157,9 @@ def add_admin_divisions(
         table,
         add_admin_divisions_multi,
         dataset_name=dataset,
-        levels=levels or ["country"],
+        levels=levels or default_admin_levels(dataset),
         vecorel=vecorel,
+        prefix=prefix,
         verbose=False,
     )
 
@@ -271,6 +282,10 @@ def aggregate_a5(
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
     geometry_column: str | None = None,
+    where: str | None = None,
+    metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into A5 grid cells with per-cell statistics.
@@ -283,6 +298,13 @@ def aggregate_a5(
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
         geometry_column: Geometry column name (defaults to "geometry")
+        where: DuckDB WHERE clause filtering input rows before aggregation
+        metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
+            e.g. "-999" or "-999,-9999"
+        bucket_point: Keying point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per A5 cell
@@ -297,6 +319,10 @@ def aggregate_a5(
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
         geometry_column=geometry_column,
+        where=where,
+        metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -308,6 +334,10 @@ def aggregate_h3(
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
     geometry_column: str | None = None,
+    where: str | None = None,
+    metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into H3 grid cells with per-cell statistics.
@@ -320,6 +350,13 @@ def aggregate_h3(
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
         geometry_column: Geometry column name (defaults to "geometry")
+        where: DuckDB WHERE clause filtering input rows before aggregation
+        metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
+            e.g. "-999" or "-999,-9999"
+        bucket_point: Keying point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per H3 cell
@@ -334,6 +371,10 @@ def aggregate_h3(
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
         geometry_column=geometry_column,
+        where=where,
+        metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
     )
 
 
@@ -344,6 +385,10 @@ def aggregate_admin(
     breakdown: str | None = None,
     breakdown_limit: int = 20,
     out_geometry: str = "polygon",
+    where: str | None = None,
+    metric_nodata: str | None = None,
+    bucket_point: str = "geometry",
+    bbox_column: str | None = None,
 ) -> pa.Table:
     """
     Aggregate an Arrow table into administrative regions with per-region statistics.
@@ -355,6 +400,13 @@ def aggregate_admin(
         breakdown: Column name to pivot into per-category count columns
         breakdown_limit: Max number of breakdown categories (default: 20)
         out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+        where: DuckDB WHERE clause filtering input rows before aggregation
+        metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns,
+            e.g. "-999" or "-999,-9999"
+        bucket_point: Join-point source: "geometry" (centroid, default),
+            "bbox" (center of a bbox covering column), or a point column name
+        bbox_column: Bbox covering column for bucket_point="bbox" (auto-detected
+            when omitted)
 
     Returns:
         New PyArrow Table with one row per admin region
@@ -374,6 +426,80 @@ def aggregate_admin(
         breakdown=breakdown,
         breakdown_limit=breakdown_limit,
         out_geometry=out_geometry,
+        where=where,
+        metric_nodata=metric_nodata,
+        bucket_point=bucket_point,
+        bbox_column=bbox_column,
+    )
+
+
+def create_overviews(
+    input_parquet: str,
+    *,
+    levels: str | list[int | str] | None = None,
+    max_tile_kb: int = 500,
+    bytes_per_cell: float | None = None,
+    cell_column: str | None = None,
+    scheme: str | None = None,
+    output_dir: str | None = None,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geoparquet_version: str | None = None,
+    force: bool = False,
+    verbose: bool = False,
+    show_sql: bool = False,
+) -> list[tuple[int | str, str]]:
+    """
+    Build coarser overview levels from an aggregate GeoParquet file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, rolls up by
+    true cell hierarchy, and writes one GeoParquet sibling per coarser level
+    (``cells.parquet`` -> ``cells_r4.parquet``; admin ->
+    ``by_region_country.parquet``). Counts, sums, mins, maxes, and breakdown
+    counts roll up exactly; averages are count-weighted (exact when the
+    metric had no NULLs).
+
+    Args:
+        input_parquet: Path to a `gpio process aggregate` output
+        levels: Explicit levels (comma string or list; admin: "country").
+            Default: auto-select against max_tile_kb
+        max_tile_kb: Tile-size budget in KB for auto level selection (default: 500)
+        bytes_per_cell: Override the estimated compressed bytes per cell
+        cell_column: Cell id column when auto-detection fails
+        scheme: Bucketing scheme (a5/h3/admin) when inference is ambiguous,
+            e.g. H3 ids stored as integers
+        output_dir: Directory for overview files (default: beside the input)
+        compression: Parquet compression codec (default: ZSTD)
+        compression_level: Optional compression level
+        geoparquet_version: GeoParquet version to write
+        force: Overwrite existing overview output files
+        verbose: Enable verbose output
+        show_sql: Log the rollup SQL
+
+    Returns:
+        List of (level, output_path) tuples, coarse to fine
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_overviews('cells.parquet', levels=[4, 7])
+        [(4, 'cells_r4.parquet'), (7, 'cells_r7.parquet')]
+    """
+    from geoparquet_io.core.process.overview import create_overviews as _create_overviews
+
+    return _create_overviews(
+        input_parquet,
+        levels=levels,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        cell_column=cell_column,
+        scheme=scheme,
+        output_dir=output_dir,
+        compression=compression,
+        compression_level=compression_level,
+        geoparquet_version=geoparquet_version,
+        force=force,
+        verbose=verbose,
+        show_sql=show_sql,
     )
 
 
@@ -1003,10 +1129,10 @@ def from_wfs(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     repair_geometry: bool = True,
 ) -> pa.Table:
     """
@@ -1030,8 +1156,10 @@ def from_wfs(
             requested. If False (default), warn and use the server's actual CRS.
             The CRS the server declares in its GeoJSON response is authoritative;
             gpio never guesses from coordinates when the server states it (#499).
-        auto_tile: Automatically subdivide into spatial tiles for servers with
-            startIndex limits (default: False)
+        auto_tile: Automatically subdivide into spatial tiles when the server
+            caps responses (maxFeatures or startIndex limits). Matches the CLI
+            default; setting it False accepts silently truncated results
+            (default: True)
 
     Returns:
         PyArrow Table with geometry column
@@ -1039,8 +1167,8 @@ def from_wfs(
     Example:
         >>> from geoparquet_io.api import ops
         >>> table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
-        >>> # For large datasets on servers with startIndex limits:
-        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
+        >>> # Accept whatever a capped server returns, without tiling:
+        >>> table = ops.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=False)
     """
     from geoparquet_io.core.wfs import wfs_to_table
 
@@ -1067,11 +1195,11 @@ def from_wfs_layers(
     bbox: tuple[float, float, float, float] | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     parallel_layers: int = 1,
     axis_order: str = "auto",
     strict_crs: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     skip_hilbert: bool = False,
     skip_bbox: bool = False,
     compression: str = "ZSTD",
@@ -1095,8 +1223,10 @@ def from_wfs_layers(
         parallel_layers: Number of layers to extract concurrently (default: 1)
         axis_order: Bbox axis order ('auto', 'xy', 'latlon')
         strict_crs: If True, fail when the server returns a different CRS than requested
-        auto_tile: Automatically subdivide into spatial tiles for servers with
-            startIndex limits (default: False)
+        auto_tile: Automatically subdivide into spatial tiles when the server
+            caps responses (maxFeatures or startIndex limits). Matches the CLI
+            default; setting it False accepts silently truncated results
+            (default: True)
         skip_hilbert: Skip Hilbert curve sorting (default: False)
         skip_bbox: Skip adding bbox column (default: False)
         compression: Compression algorithm (default: 'ZSTD')
@@ -1256,18 +1386,18 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
     safe_url = safe_file_url(parquet_file, verbose=False)
 
     # Try native geo stats first (GeoParquet 2.0 / parquet-geo-only)
-    rg_stats = get_per_row_group_native_geo_stats(safe_url)
+    rg_stats = get_per_row_group_native_geo_stats(parquet_file)
 
     # Fall back to bbox column if no native stats
     if not rg_stats:
-        has_bbox, bbox_col_name = has_bbox_column(safe_url)
+        has_bbox, bbox_col_name = has_bbox_column(parquet_file)
         if has_bbox and bbox_col_name:
-            rg_stats = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+            rg_stats = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
 
     if not rg_stats:
         return []
 
-    file_meta = get_file_metadata(safe_url)
+    file_meta = get_file_metadata(parquet_file)
     num_rows_per_rg = _get_num_rows_per_row_group(safe_url, file_meta)
 
     return _merge_row_counts(rg_stats, num_rows_per_rg)
@@ -1436,4 +1566,86 @@ def create_pmtiles(
         maximum_tile_bytes=maximum_tile_bytes,
         force=force,
         repair_geometry=repair_geometry,
+    )
+
+
+def create_pmtiles_pyramid(
+    input_path: str,
+    output_path: str,
+    *,
+    levels: str | list[int | str] | None = None,
+    max_tile_kb: int = 500,
+    bytes_per_cell: float | None = None,
+    layer_mode: str = "grouped",
+    include_features: bool = False,
+    features_source: str | None = None,
+    features_min_zoom: int | None = None,
+    max_zoom: int | None = None,
+    attribution: str | None = None,
+    force: bool = False,
+    verbose: bool = False,
+) -> None:
+    """
+    Create a banded multi-level PMTiles pyramid from an aggregate file.
+
+    Detects the aggregate's scheme (a5/h3/admin) and base level, assigns each
+    level a zoom band that fits the tile budget, runs tippecanoe once per band,
+    and merges everything into one archive with tile-join. Existing overview
+    siblings (from `gpio process overview` / `ops.create_overviews`) are
+    reused; missing levels are built automatically. Bands are recorded in the
+    PMTiles metadata under ``gpio:pyramid``.
+
+    Requires tippecanoe and tile-join (ships with tippecanoe) in PATH.
+
+    Args:
+        input_path: Path to a `gpio process aggregate` output (GeoParquet)
+        output_path: Path for the output PMTiles archive
+        levels: Explicit overview levels (comma string or list; admin:
+            "country"). Default: auto-select against max_tile_kb
+        max_tile_kb: Tile-size budget in KB for band selection (default: 500)
+        bytes_per_cell: Override the estimated compressed bytes per cell
+        layer_mode: "single", "grouped" (default), or "per-level"
+        include_features: Append the original features as the final zoom band
+        features_source: GeoParquet source for the features band
+        features_min_zoom: First zoom of the features band (default: base
+            band max zoom + 1)
+        max_zoom: Max zoom of the base aggregate band
+        attribution: Attribution HTML for the tiles
+        force: Overwrite the output archive if it exists
+        verbose: Enable verbose output
+
+    Raises:
+        TippecanoeNotFoundError: If tippecanoe is not in PATH
+        TileJoinNotFoundError: If tile-join is not in PATH
+        RuntimeError: If a tippecanoe or tile-join run fails
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.create_pmtiles_pyramid('cells.parquet', 'cells.pmtiles')
+        >>> ops.create_pmtiles_pyramid(
+        ...     'cells.parquet',
+        ...     'pyramid.pmtiles',
+        ...     include_features=True,
+        ...     features_source='buildings.parquet',
+        ...     max_zoom=8,
+        ... )
+    """
+    from geoparquet_io.core.pmtiles_pyramid import (
+        create_pmtiles_pyramid as _create_pmtiles_pyramid,
+    )
+
+    _create_pmtiles_pyramid(
+        input_path,
+        output_path,
+        levels=levels,
+        max_tile_kb=max_tile_kb,
+        bytes_per_cell=bytes_per_cell,
+        layer_mode=layer_mode,
+        include_features=include_features,
+        features_source=features_source,
+        features_min_zoom=features_min_zoom,
+        max_zoom=max_zoom,
+        attribution=attribution,
+        force=force,
+        verbose=verbose,
     )

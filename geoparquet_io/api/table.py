@@ -19,6 +19,8 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,7 +55,7 @@ def _run_partition_with_temp_file(
     temp_prefix: str = "gpio_partition",
     core_kwargs: dict,
     compression: str = "ZSTD",
-    compression_level: int = 15,
+    compression_level: int | None = None,
     collect_stats: bool = False,
 ) -> dict:
     """
@@ -69,7 +71,7 @@ def _run_partition_with_temp_file(
         temp_prefix: Prefix for the temp file name
         core_kwargs: Keyword arguments for the core function
         compression: Compression codec
-        compression_level: Compression level
+        compression_level: Compression level (None lets the codec pick its own)
         collect_stats: If True, return file count stats instead of core_fn result
 
     Returns:
@@ -103,7 +105,7 @@ def _run_partition_with_temp_file(
             return {
                 "output_dir": str(output_path),
                 "file_count": len(parquet_files),
-                "hive": core_kwargs.get("hive", True),
+                "hive": core_kwargs.get("hive", False),
             }
 
         return result if result else {"status": "completed"}
@@ -143,12 +145,12 @@ def _calculate_bounds_from_table(
         # Use ST_Extent to get the bounding box of all geometries
         query = f"""
             SELECT
-                ST_XMin(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_YMin(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_XMax(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}"))),
-                ST_YMax(ST_Extent_Agg(ST_GeomFromWKB("{geometry_column}")))
+                ST_XMin(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_YMin(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_XMax(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)}))),
+                ST_YMax(ST_Extent_Agg(ST_GeomFromWKB({quote_identifier(geometry_column)})))
             FROM input_table
-            WHERE "{geometry_column}" IS NOT NULL
+            WHERE {quote_identifier(geometry_column)} IS NOT NULL
         """
         result = con.execute(query).fetchone()
 
@@ -287,6 +289,8 @@ def convert(
     profile: str | None = None,
     layer: str | None = None,
     repair_geometry: bool = True,
+    linearize_curves: bool = True,
+    max_angle_deg: float | None = None,
 ) -> Table:
     """
     Convert a geospatial file to a Table.
@@ -306,6 +310,11 @@ def convert(
         profile: AWS profile name for S3 authentication (default: None)
         layer: Layer name for multi-layer formats (GeoPackage, FileGDB). If not specified,
                reads the first/default layer.
+        linearize_curves: Stroke curved geometries (CircularString..MultiSurface) into
+               their linear equivalents when DuckDB cannot parse them (default: True,
+               mirroring repair_geometry). False raises an actionable error instead.
+        max_angle_deg: Maximum angular step per stroked arc segment in degrees
+               (default: 4.0, GDAL's OGR_ARC_STEPSIZE default).
 
     Returns:
         Table for chaining operations
@@ -331,9 +340,11 @@ def convert(
         geometry_column=geometry_column,
         layer=layer,
         repair_geometry=repair_geometry,
+        linearize_curves=linearize_curves,
+        max_angle_deg=max_angle_deg,
     )
 
-    return Table(arrow_table, geometry_column=geom_col)
+    return Table(arrow_table, geometry_column=geom_col, crs=detected_crs)
 
 
 def extract_arcgis(
@@ -459,13 +470,23 @@ class Table:
         >>> result.write('output.parquet')
     """
 
-    def __init__(self, table: pa.Table, geometry_column: str | None = None):
+    def __init__(
+        self,
+        table: pa.Table,
+        geometry_column: str | None = None,
+        crs: dict | str | None = None,
+    ):
         """
         Create a Table wrapper.
 
         Args:
             table: PyArrow Table containing GeoParquet data
             geometry_column: Name of geometry column (auto-detected if None)
+            crs: CRS detected at read time (PROJJSON dict or string), used as a
+                fallback when the Arrow table itself carries no CRS. Spatial
+                sources read through DuckDB arrive as bare WKB with no embedded
+                CRS, so without this hint the written GeoParquet silently
+                claimed OGC:CRS84 for projected data (issue #625).
         """
         self._table = table
         self._geometry_column = geometry_column or self._detect_geometry_column()
@@ -474,6 +495,28 @@ class Table:
         # registered, so the table alone can't always tell a native-geo-only
         # source from generic WKB. None when the table wasn't read from a file.
         self._auto_version_hint: str | None = None
+        self._crs_hint: dict | str | None = crs
+
+    _KEEP_CRS_HINT = object()
+
+    def _wrap(
+        self,
+        table: pa.Table,
+        geometry_column: str | None,
+        crs: dict | str | None | object = _KEEP_CRS_HINT,
+    ) -> Table:
+        """Build a derived Table, carrying the read-time hints forward.
+
+        Chained operations (add_bbox, sort_hilbert, ...) produce new Arrow
+        tables that still contain no embedded CRS, so the CRS hint (and the
+        auto-version hint) must survive the chain to reach write(). An
+        operation that changes the CRS (reproject) passes ``crs=`` explicitly
+        so the hint never mislabels transformed coordinates.
+        """
+        hint = self._crs_hint if crs is Table._KEEP_CRS_HINT else crs
+        derived = Table(table, geometry_column=geometry_column, crs=hint)
+        derived._auto_version_hint = self._auto_version_hint
+        return derived
 
     def _detect_geometry_column(self) -> str | None:
         """Detect geometry column from metadata or common names."""
@@ -604,10 +647,10 @@ class Table:
         bbox: tuple[float, float, float, float] | None = None,
         limit: int | None = None,
         max_workers: int = 1,
-        page_size: int = 10000,
+        page_size: int = DEFAULT_WFS_PAGE_SIZE,
         axis_order: str = "auto",
         strict_crs: bool = False,
-        auto_tile: bool = False,
+        auto_tile: bool = True,
         repair_geometry: bool = True,
     ) -> Table:
         """
@@ -624,7 +667,7 @@ class Table:
             bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
             limit: Maximum features to fetch
             max_workers: Parallel requests for large datasets (default: 1)
-            page_size: Features per page when using parallel mode (default: 10000)
+            page_size: Features per page when using parallel mode (default: 100000)
             axis_order: Bbox axis order ('auto', 'xy', 'latlon'). 'auto' detects from
                 CRS format - URN CRS with WFS 1.1.0+ uses lat,lon per OGC spec.
             strict_crs: If True, fail when the server returns a different CRS than
@@ -632,8 +675,10 @@ class Table:
                 CRS. The CRS the server declares in its GeoJSON response is
                 authoritative; gpio never guesses from coordinates when the
                 server states it (#499).
-            auto_tile: Automatically subdivide into spatial tiles for servers with
-                startIndex limits (default: False)
+            auto_tile: Automatically subdivide into spatial tiles when the server
+                caps responses (maxFeatures or startIndex limits). Matches the CLI
+                default; setting it False accepts silently truncated results
+                (default: True)
 
         Returns:
             Table for chaining operations
@@ -641,8 +686,8 @@ class Table:
         Example:
             >>> import geoparquet_io as gpio
             >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'cities').add_bbox().write('cities.parquet')
-            >>> # For large datasets on servers with startIndex limits:
-            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=True)
+            >>> # Accept whatever a capped server returns, without tiling:
+            >>> gpio.Table.from_wfs('https://geo.example.com/wfs', 'parcels', auto_tile=False)
         """
         from geoparquet_io.core.wfs import wfs_to_table
 
@@ -710,7 +755,10 @@ class Table:
         """
         from geoparquet_io.core.streaming import extract_crs_from_table
 
-        return extract_crs_from_table(self._table, self._geometry_column)
+        embedded = extract_crs_from_table(self._table, self._geometry_column)
+        if embedded is not None:
+            return embedded
+        return self._crs_hint
 
     @property
     def bounds(self) -> tuple[float, float, float, float] | None:
@@ -964,7 +1012,9 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
+        import pyarrow as pa
+
+        from geoparquet_io.core.remote import is_remote_url
         from geoparquet_io.core.upload import upload
         from geoparquet_io.core.write_strategies import WriteStrategy, WriteStrategyFactory
 
@@ -988,12 +1038,14 @@ class Table:
 
         # For remote destinations, write to temp file first
         if is_remote:
-            setup_aws_profile_if_needed(profile, path_str)
             temp_dir = PathLib(tempfile.gettempdir())
             local_path = temp_dir / f"gpio_write_{uuid.uuid4()}.parquet"
         else:
             local_path = PathLib(path)
 
+        # No AWS_PROFILE env mutation: profile= is handed straight to upload(),
+        # which resolves the credentials for it explicitly, so a library call
+        # never rewrites the host process environment.
         try:
             # 1.1-geoarrow produces native GeoArrow encoding from WKB geometry, which
             # requires the streaming strategy (duckdb-kv COPY TO can only emit WKB).
@@ -1026,6 +1078,16 @@ class Table:
 
                 input_crs = parse_crs_string_to_projjson(input_crs)
 
+            # Carry the table's non-geo file-level KV metadata (fiboa, vecorel,
+            # STAC fragments) into the write. The Arrow strategies copied it
+            # incidentally off the schema while the DuckDB COPY strategies —
+            # including the default — rebuilt the KV block from scratch and
+            # dropped it, so preservation depended on the strategy (#690).
+            # 'geo' is deliberately excluded: it is regenerated from the table.
+            from geoparquet_io.core.common import extract_preserved_kv_metadata
+
+            preserved_kv = extract_preserved_kv_metadata(self._table.schema.metadata)
+
             strategy.write_from_table(
                 table=self._table,
                 output_path=str(local_path),
@@ -1037,6 +1099,7 @@ class Table:
                 row_group_rows=row_group_rows,
                 verbose=verbose,
                 input_crs=input_crs,
+                extra_kv_metadata=preserved_kv or None,
             )
 
             # Upload to remote if needed
@@ -1062,7 +1125,7 @@ class Table:
         import uuid
         from pathlib import Path as PathLib
 
-        from geoparquet_io.core.remote import is_remote_url, setup_aws_profile_if_needed
+        from geoparquet_io.core.remote import is_remote_url
         from geoparquet_io.core.upload import upload
 
         # Check if destination is remote
@@ -1146,8 +1209,8 @@ class Table:
 
             # Upload to remote if needed
             if is_remote:
-                setup_aws_profile_if_needed(profile, path_str)
-
+                # profile= is passed explicitly to upload() below, so there is no
+                # AWS_PROFILE env mutation to leak into the host process.
                 # Special handling for shapefiles: zip all sidecars into .shp.zip
                 if format == "shapefile":
                     from geoparquet_io.core.common import create_shapefile_zip
@@ -1243,7 +1306,7 @@ class Table:
             bbox_column_name=column_name,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_quadkey(
         self,
@@ -1271,7 +1334,7 @@ class Table:
             use_centroid=use_centroid,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_hilbert(self) -> Table:
         """
@@ -1286,7 +1349,7 @@ class Table:
             self._table,
             geometry_column=self._geometry_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def extract(
         self,
@@ -1323,7 +1386,7 @@ class Table:
             geometry_column=self._geometry_column,
             repair_geometry=repair_geometry,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_h3(
         self,
@@ -1347,7 +1410,7 @@ class Table:
             h3_column_name=column_name,
             resolution=resolution,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_a5(
         self,
@@ -1371,7 +1434,7 @@ class Table:
             a5_column_name=column_name,
             resolution=resolution,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def aggregate_a5(
         self,
@@ -1380,6 +1443,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into A5 grid cells with per-cell statistics.
@@ -1390,6 +1457,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Keying point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per A5 cell
@@ -1404,8 +1476,12 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
 
     def aggregate_h3(
         self,
@@ -1414,6 +1490,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into H3 grid cells with per-cell statistics.
@@ -1424,6 +1504,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Keying point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per H3 cell
@@ -1438,8 +1523,12 @@ class Table:
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
             geometry_column=self._geometry_column,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
 
     def aggregate_admin(
         self,
@@ -1448,6 +1537,10 @@ class Table:
         breakdown: str | None = None,
         breakdown_limit: int = 20,
         out_geometry: str = "polygon",
+        where: str | None = None,
+        metric_nodata: str | None = None,
+        bucket_point: str = "geometry",
+        bbox_column: str | None = None,
     ) -> Table:
         """
         Aggregate features into administrative regions with per-region statistics.
@@ -1458,6 +1551,11 @@ class Table:
             breakdown: Column name to pivot into per-category count columns
             breakdown_limit: Max number of breakdown categories (default: 20)
             out_geometry: Output geometry type: "polygon", "centroid", "both", or "none"
+            where: DuckDB WHERE clause filtering input rows before aggregation
+            metric_nodata: NoData sentinel value(s) mapped to NULL in metric columns
+            bucket_point: Join-point source: "geometry" (centroid, default),
+                "bbox" (center of a bbox covering column), or a point column name
+            bbox_column: Bbox covering column for bucket_point="bbox"
 
         Returns:
             New Table with one row per admin region
@@ -1471,8 +1569,42 @@ class Table:
             breakdown=breakdown,
             breakdown_limit=breakdown_limit,
             out_geometry=out_geometry,
+            where=where,
+            metric_nodata=metric_nodata,
+            bucket_point=bucket_point,
+            bbox_column=bbox_column,
         )
-        return Table(result, "geometry" if out_geometry != "none" else None)
+        return self._wrap(result, "geometry" if out_geometry != "none" else None)
+
+    def overview(
+        self,
+        level: int | str,
+        cell_column: str | None = None,
+        scheme: str | None = None,
+    ) -> Table:
+        """
+        Roll an aggregate table up to a coarser overview level.
+
+        The table must be a `process aggregate` output (carrying an
+        ``a5_cell``/``h3_cell``/``admin_code`` column plus ``count``). Counts,
+        sums, mins, maxes, and breakdown counts roll up exactly; averages are
+        count-weighted (exact when the metric had no NULLs).
+
+        Args:
+            level: Target level -- a coarser grid resolution, or ``"country"``
+                for a region-level admin aggregate
+            cell_column: Cell id column when auto-detection fails
+            scheme: Bucketing scheme (``a5``/``h3``/``admin``) when inference
+                is ambiguous, e.g. H3 ids stored as integers
+
+        Returns:
+            New Table with one row per parent cell
+        """
+        from geoparquet_io.core.process.overview import rollup_table
+
+        result = rollup_table(self._table, level, cell_column=cell_column, scheme=scheme)
+        has_geometry = "geometry" in result.column_names
+        return self._wrap(result, "geometry" if has_geometry else None)
 
     def add_s2(
         self,
@@ -1503,7 +1635,7 @@ class Table:
             s2_column_name=column_name,
             level=level,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def add_geometry_metrics(
         self,
@@ -1531,7 +1663,7 @@ class Table:
             add_geometry_metrics,
             vecorel=vecorel,
         )
-        return Table(result_table, self._geometry_column)
+        return self._wrap(result_table, self._geometry_column)
 
     def add_kdtree(
         self,
@@ -1558,7 +1690,7 @@ class Table:
             iterations=iterations,
             sample_size=sample_size,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_column(
         self,
@@ -1582,7 +1714,7 @@ class Table:
             columns=column_name,
             descending=descending,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def sort_quadkey(
         self,
@@ -1614,7 +1746,7 @@ class Table:
             use_centroid=use_centroid,
             remove_quadkey_column=remove_column,
         )
-        return Table(result, self._geometry_column)
+        return self._wrap(result, self._geometry_column)
 
     def reproject(
         self,
@@ -1643,7 +1775,9 @@ class Table:
             geometry_column=self._geometry_column,
             assume_crs84=assume_crs84,
         )
-        return Table(result, self._geometry_column)
+        # The source-CRS hint would mislabel transformed coordinates; the
+        # reprojected table's CRS is target_crs by construction.
+        return self._wrap(result, self._geometry_column, crs=target_crs)
 
     def partition_by_quadkey(
         self,
@@ -1652,18 +1786,23 @@ class Table:
         resolution: int = 13,
         partition_resolution: int = 6,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
+        keep_quadkey_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by quadkey.
+        Partition the table into a directory of files split by quadkey.
 
         Args:
             output_dir: Output directory path
             resolution: Quadkey resolution for sorting (0-23, default: 13)
             partition_resolution: Resolution for partition boundaries (default: 6)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_quadkey_column: Keep the generated ``quadkey`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-quadkey-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1686,6 +1825,7 @@ class Table:
                 "resolution": resolution,
                 "partition_resolution": partition_resolution,
                 "hive": hive,
+                "keep_quadkey_column": keep_quadkey_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1698,17 +1838,22 @@ class Table:
         *,
         resolution: int = 9,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
+        keep_h3_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by H3 cell.
+        Partition the table into a directory of files split by H3 cell.
 
         Args:
             output_dir: Output directory path
             resolution: H3 resolution level 0-15 (default: 9)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_h3_column: Keep the generated ``h3_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-h3-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1730,6 +1875,7 @@ class Table:
             core_kwargs={
                 "resolution": resolution,
                 "hive": hive,
+                "keep_h3_column": keep_h3_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1742,11 +1888,12 @@ class Table:
         *,
         level: int = 13,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
+        keep_s2_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by S2 cell.
+        Partition the table into a directory of files split by S2 cell.
 
         Uses Google's S2 spherical geometry library to partition data
         by cell boundaries at the specified level.
@@ -1755,7 +1902,11 @@ class Table:
             output_dir: Output directory path
             level: S2 level 0-30 (default: 13, ~1.2 km² cells)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_s2_column: Keep the generated ``s2_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-s2-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1777,6 +1928,7 @@ class Table:
             core_kwargs={
                 "level": level,
                 "hive": hive,
+                "keep_s2_column": keep_s2_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1789,11 +1941,12 @@ class Table:
         *,
         resolution: int = 15,
         compression: str = "ZSTD",
-        hive: bool = True,
+        hive: bool = False,
+        keep_a5_column: bool | None = None,
         overwrite: bool = False,
     ) -> dict:
         """
-        Partition the table into Hive-partitioned directory by A5 cell.
+        Partition the table into a directory of files split by A5 cell.
 
         A5 is a hierarchical grid system similar to H3 but with different
         properties. Uses fixed precision levels from 0-30.
@@ -1802,7 +1955,11 @@ class Table:
             output_dir: Output directory path
             resolution: A5 resolution level 0-30 (default: 15)
             compression: Compression codec (default: ZSTD)
-            hive: Use Hive-style partitioning (default: True)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_a5_column: Keep the generated ``a5_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-a5-column``.
             overwrite: Overwrite existing output directory
 
         Returns:
@@ -1824,6 +1981,7 @@ class Table:
             core_kwargs={
                 "resolution": resolution,
                 "hive": hive,
+                "keep_a5_column": keep_a5_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -1854,7 +2012,9 @@ class Table:
         Args:
             destination: Object store URL (e.g., s3://bucket/path/data.parquet)
             compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
             row_group_size_mb: Target row group size in MB
             row_group_rows: Exact rows per row group
             geoparquet_version: GeoParquet version (1.0, 1.1, 1.1-geoarrow, 2.0, or None to preserve).
@@ -1878,10 +2038,7 @@ class Table:
         import uuid
         from pathlib import Path
 
-        from geoparquet_io.core.remote import setup_aws_profile_if_needed
         from geoparquet_io.core.upload import upload as do_upload
-
-        setup_aws_profile_if_needed(profile, destination)
 
         # Write to temp file with uuid to avoid Windows file locking issues
         temp_path = Path(tempfile.gettempdir()) / f"gpio_upload_{uuid.uuid4()}.parquet"
@@ -1935,7 +2092,7 @@ class Table:
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         n = min(n, self.num_rows)
-        return Table(self._table.slice(0, n), self._geometry_column)
+        return self._wrap(self._table.slice(0, n), self._geometry_column)
 
     def tail(self, n: int = 10) -> Table:
         """
@@ -1959,7 +2116,7 @@ class Table:
             raise ValueError(f"n must be non-negative, got {n}")
         n = min(n, self.num_rows)
         offset = max(0, self.num_rows - n)
-        return Table(self._table.slice(offset, n), self._geometry_column)
+        return self._wrap(self._table.slice(offset, n), self._geometry_column)
 
     def stats(self) -> dict:
         """
@@ -2005,13 +2162,13 @@ class Table:
             if regular_cols:
                 select_parts = []
                 for col_name in regular_cols:
-                    escaped_col = col_name.replace('"', '""')
+                    quoted_col = quote_identifier(col_name)
                     select_parts.extend(
                         [
-                            f'COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL)',
-                            f'MIN("{escaped_col}")',
-                            f'MAX("{escaped_col}")',
-                            f'APPROX_COUNT_DISTINCT("{escaped_col}")',
+                            f"COUNT(*) FILTER (WHERE {quoted_col} IS NULL)",
+                            f"MIN({quoted_col})",
+                            f"MAX({quoted_col})",
+                            f"APPROX_COUNT_DISTINCT({quoted_col})",
                         ]
                     )
 
@@ -2045,14 +2202,14 @@ class Table:
                         exc_info=True,
                     )
                     for col_name in regular_cols:
-                        escaped_col = col_name.replace('"', '""')
+                        quoted_col = quote_identifier(col_name)
                         try:
                             query = f"""
                                 SELECT
-                                    COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL),
-                                    MIN("{escaped_col}"),
-                                    MAX("{escaped_col}"),
-                                    APPROX_COUNT_DISTINCT("{escaped_col}")
+                                    COUNT(*) FILTER (WHERE {quoted_col} IS NULL),
+                                    MIN({quoted_col}),
+                                    MAX({quoted_col}),
+                                    APPROX_COUNT_DISTINCT({quoted_col})
                                 FROM input_table
                             """
                             result = con.execute(query).fetchone()
@@ -2086,9 +2243,9 @@ class Table:
 
             # Handle geometry columns separately (only null count)
             for col_name in geometry_cols:
-                escaped_col = col_name.replace('"', '""')
+                quoted_col = quote_identifier(col_name)
                 query = f"""
-                    SELECT COUNT(*) FILTER (WHERE "{escaped_col}" IS NULL)
+                    SELECT COUNT(*) FILTER (WHERE {quoted_col} IS NULL)
                     FROM input_table
                 """
                 result = con.execute(query).fetchone()
@@ -2327,7 +2484,7 @@ class Table:
         results = self._with_temp_file(check_all, verbose=False, return_results=True, quiet=True)
         return CheckResult(results, check_type="all")
 
-    def check_spatial(self, sample_size: int = 100, limit_rows: int = 100000) -> CheckResult:
+    def check_spatial(self, sample_size: int = 100, limit_rows: int = 500000) -> CheckResult:
         """
         Check if data is spatially ordered.
 
@@ -2335,8 +2492,9 @@ class Table:
         A ratio < 0.5 indicates good spatial clustering.
 
         Args:
-            sample_size: Number of random pairs to sample
-            limit_rows: Maximum rows to analyze
+            sample_size: Number of random pairs to sample (default: 100)
+            limit_rows: Maximum rows to analyze (default: 500000, matching
+                `gpio check spatial --limit-rows`)
 
         Returns:
             CheckResult with spatial ordering analysis
@@ -2563,9 +2721,10 @@ class Table:
     def add_admin_divisions(
         self,
         *,
-        dataset: str = "overture",
+        dataset: str = "gaul",
         levels: list[str] | None = None,
         vecorel: bool = False,
+        prefix: str | None = None,
     ) -> Table:
         """
         Add administrative division columns via spatial join.
@@ -2574,21 +2733,34 @@ class Table:
         based on spatial intersection with an administrative boundaries dataset.
 
         Args:
-            dataset: Boundaries dataset ("overture", "gaul", or custom URL)
-            levels: Admin levels to add (e.g., ["country", "admin1"])
+            dataset: Boundaries dataset ("gaul", "overture", or custom URL).
+                Default matches the CLI
+                (`gpio add admin-divisions --dataset`).
+            levels: Admin levels to add (e.g., ["country", "department"]). None
+                adds every level the dataset provides, matching the CLI with no
+                ``--levels``: ``["continent", "country", "department"]`` for
+                GAUL, ``["country", "region"]`` for Overture.
             vecorel: Output Vecorel-compliant columns. Forces Overture dataset
                 with country,region levels. (default: False)
+            prefix: Column name prefix, as with the CLI's ``--prefix``. None
+                uses the dataset's own name (``gaul_country``,
+                ``overture_country``); "admin" produces ``admin:country``.
 
         Returns:
             Table with admin division columns added
 
         Example:
             >>> table = gpio.read('data.parquet')
-            >>> enriched = table.add_admin_divisions(levels=["country", "admin1"])
+            >>> enriched = table.add_admin_divisions(levels=["country"])
+            >>> # Keep the pre-1.4 column names when switching datasets
+            >>> enriched = table.add_admin_divisions(
+            ...     dataset="overture", prefix="overture"
+            ... )
             >>> # Vecorel-compliant output
             >>> enriched = table.add_admin_divisions(vecorel=True)
         """
         from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+        from geoparquet_io.core.admin_datasets import default_admin_levels
 
         if vecorel:
             dataset = "overture"
@@ -2597,11 +2769,12 @@ class Table:
         result_table = self._with_temp_io_files(
             add_admin_divisions_multi,
             dataset_name=dataset,
-            levels=levels or ["country"],
+            levels=levels or default_admin_levels(dataset),
             vecorel=vecorel,
+            prefix=prefix,
             verbose=False,
         )
-        return Table(result_table, self._geometry_column)
+        return self._wrap(result_table, self._geometry_column)
 
     def add_bbox_metadata(self, bbox_column: str = "bbox") -> Table:
         """
@@ -2660,6 +2833,19 @@ class Table:
                 "columns": {},
             }
 
+        # 'covering' was introduced in GeoParquet 1.1. This method exists solely to
+        # write that key, so a 1.0 table gets a clear error naming the conflict
+        # rather than silently returning a table without the metadata it asked for.
+        from geoparquet_io.core.geo_metadata import covering_supported
+
+        table_version = geo_meta.get("version", "")
+        if not covering_supported(table_version):
+            raise ValueError(
+                f"Cannot add bbox covering metadata: this table declares GeoParquet "
+                f"{table_version}, and the 'covering' key requires GeoParquet 1.1 or later. "
+                f"Write the table at 1.1 first (e.g. write(..., geoparquet_version='1.1'))."
+            )
+
         # Add covering metadata for the geometry column
         if geom_col not in geo_meta["columns"]:
             geo_meta["columns"][geom_col] = {}
@@ -2677,7 +2863,7 @@ class Table:
         schema_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
         new_table = self._table.replace_schema_metadata(schema_metadata)
 
-        return Table(new_table, self._geometry_column)
+        return self._wrap(new_table, self._geometry_column)
 
     def partition_by_string(
         self,
@@ -2685,10 +2871,10 @@ class Table:
         column: str,
         *,
         chars: int | None = None,
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by string column values.
@@ -2700,10 +2886,12 @@ class Table:
             output_dir: Output directory for partition files
             column: Column name to partition by
             chars: Use first N characters as prefix (None for full value)
-            hive: Use Hive-style partitioning (column=value/)
+            hive: Use Hive-style partitioning (column=value/) (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2739,10 +2927,11 @@ class Table:
         output_dir: str | Path,
         *,
         iterations: int = 9,
-        hive: bool = True,
+        hive: bool = False,
+        keep_kdtree_column: bool | None = None,
         overwrite: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by KD-tree spatial cells.
@@ -2753,10 +2942,16 @@ class Table:
         Args:
             output_dir: Output directory for partition files
             iterations: Number of KD-tree splits (creates 2^iterations partitions)
-            hive: Use Hive-style partitioning
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
+            keep_kdtree_column: Keep the generated ``kdtree_cell`` column in the output
+                files. None (default) follows ``hive``: kept for Hive-style
+                output, dropped for flat output where the value is already in
+                the file name. Mirrors ``--keep-kdtree-column``.
             overwrite: Overwrite existing files
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2776,6 +2971,7 @@ class Table:
             core_kwargs={
                 "iterations": iterations,
                 "hive": hive,
+                "keep_kdtree_column": keep_kdtree_column,
                 "overwrite": overwrite,
             },
             compression=compression,
@@ -2788,11 +2984,11 @@ class Table:
         *,
         dataset: str = "gaul",
         levels: list[str] | None = None,
-        hive: bool = True,
+        hive: bool = False,
         overwrite: bool = False,
         vecorel: bool = False,
         compression: str = "ZSTD",
-        compression_level: int = 15,
+        compression_level: int | None = None,
     ) -> dict:
         """
         Partition by administrative boundaries.
@@ -2803,15 +2999,18 @@ class Table:
         Args:
             output_dir: Output directory for partition files
             dataset: Boundaries dataset ("gaul", "overture", or custom URL)
-            levels: Admin levels to partition by (e.g., ["country", "admin1"])
-            hive: Use Hive-style partitioning
+            levels: Admin levels to partition by (e.g., ["country",
+                "department"] for GAUL, ["country", "region"] for Overture)
+            hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             overwrite: Overwrite existing files
             vecorel: Output Vecorel-compliant admin columns
                 (admin:country_code, admin:subdivision_code) in each partition
                 with schema metadata. Forces the Overture dataset with
                 country,region levels. (default: False)
             compression: Compression codec
-            compression_level: Compression level
+            compression_level: Compression level. None lets the codec pick its
+                own default, matching the CLI -- a fixed value is rejected by
+                codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
             dict with partition statistics
@@ -2821,7 +3020,7 @@ class Table:
             >>> stats = table.partition_by_admin(
             ...     'output/',
             ...     dataset='gaul',
-            ...     levels=['country', 'admin1']
+            ...     levels=['country', 'department']
             ... )
         """
         from geoparquet_io.core.partition.admin_hierarchical import (

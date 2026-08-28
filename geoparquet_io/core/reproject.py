@@ -28,8 +28,9 @@ from geoparquet_io.core.crs_utils import (
     parse_crs_string_to_projjson,
     resolve_crs_to_string,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, success
 from geoparquet_io.core.remote import (
@@ -187,8 +188,10 @@ def reproject_table(
         source_table = "__input_table"
         if geom_is_blob:
             # Quote all column names to handle special characters (colons, spaces, etc.)
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [
+                f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+            ]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -199,14 +202,14 @@ def reproject_table(
         # Use ST_AsWKB to convert back to WKB format for GeoParquet compatibility
         query = f"""
             SELECT
-                * EXCLUDE ("{geom_col}"),
+                * EXCLUDE ({quote_identifier(geom_col)}),
                 ST_AsWKB(
                     ST_Transform(
-                        "{geom_col}",
+                        {quote_identifier(geom_col)},
                         '{effective_source_crs}',
                         '{target_crs}'
                     )
-                ) AS "{geom_col}"
+                ) AS {quote_identifier(geom_col)}
             FROM {source_table}
         """
 
@@ -460,7 +463,7 @@ def reproject_impl(
             if verbose:
                 debug(f"Excluding bbox column '{bbox_col}' (will be regenerated)")
         # Quote column names to handle special characters (colons, spaces, etc.)
-        exclude_clause = ", ".join(f'"{c}"' for c in exclude_cols)
+        exclude_clause = ", ".join(quote_identifier(c) for c in exclude_cols)
 
         # Build SQL query with ST_Transform
         # geometry_always_xy is set at connection level (DuckDB 1.5+)
@@ -474,20 +477,20 @@ def reproject_impl(
                     SELECT
                         * EXCLUDE ({exclude_clause}),
                         ST_Transform(
-                            "{geom_col}",
+                            {quote_identifier(geom_col)},
                             '{effective_source_crs}',
                             '{target_crs}'
-                        ) AS "{geom_col}"
+                        ) AS {quote_identifier(geom_col)}
                     FROM '{input_url}'
                 )
                 SELECT
                     *,
                     STRUCT_PACK(
-                        xmin := ST_XMin("{geom_col}"),
-                        ymin := ST_YMin("{geom_col}"),
-                        xmax := ST_XMax("{geom_col}"),
-                        ymax := ST_YMax("{geom_col}")
-                    ) AS "{bbox_col}"
+                        xmin := ST_XMin({quote_identifier(geom_col)}),
+                        ymin := ST_YMin({quote_identifier(geom_col)}),
+                        xmax := ST_XMax({quote_identifier(geom_col)}),
+                        ymax := ST_YMax({quote_identifier(geom_col)})
+                    ) AS {quote_identifier(bbox_col)}
                 FROM reprojected
             """
             if verbose:
@@ -497,10 +500,10 @@ def reproject_impl(
                 SELECT
                     * EXCLUDE ({exclude_clause}),
                     ST_Transform(
-                        "{geom_col}",
+                        {quote_identifier(geom_col)},
                         '{effective_source_crs}',
                         '{target_crs}'
-                    ) AS "{geom_col}"
+                    ) AS {quote_identifier(geom_col)}
                 FROM '{input_url}'
             """
 
@@ -562,6 +565,7 @@ def reproject_impl(
                     input_crs=target_crs_projjson,
                     memory_limit=memory_limit,
                     input_file=read_source,
+                    invalidate_derived_stats=True,
                 )
                 # Replace original with temp file
                 shutil.move(str(tmp_path), str(out_path))
@@ -590,6 +594,7 @@ def reproject_impl(
                     input_crs=target_crs_projjson,
                     memory_limit=memory_limit,
                     input_file=read_source,
+                    invalidate_derived_stats=True,
                 )
 
                 if is_remote:
@@ -677,7 +682,7 @@ def _reproject_streaming(
             if bbox_col:
                 exclude_cols.append(bbox_col)
             # Quote column names to handle special characters (colons, spaces, etc.)
-            exclude_clause = ", ".join(f'"{c}"' for c in exclude_cols)
+            exclude_clause = ", ".join(quote_identifier(c) for c in exclude_cols)
 
             # Build reprojection query with bbox regeneration if input had bbox
             if bbox_col:
@@ -687,20 +692,20 @@ def _reproject_streaming(
                         SELECT
                             * EXCLUDE ({exclude_clause}),
                             ST_Transform(
-                                "{geom_col}",
+                                {quote_identifier(geom_col)},
                                 '{effective_source_crs}',
                                 '{target_crs}'
-                            ) AS "{geom_col}"
+                            ) AS {quote_identifier(geom_col)}
                         FROM '{working_url}'
                     )
                     SELECT
                         *,
                         STRUCT_PACK(
-                            xmin := ST_XMin("{geom_col}"),
-                            ymin := ST_YMin("{geom_col}"),
-                            xmax := ST_XMax("{geom_col}"),
-                            ymax := ST_YMax("{geom_col}")
-                        ) AS "{bbox_col}"
+                            xmin := ST_XMin({quote_identifier(geom_col)}),
+                            ymin := ST_YMin({quote_identifier(geom_col)}),
+                            xmax := ST_XMax({quote_identifier(geom_col)}),
+                            ymax := ST_YMax({quote_identifier(geom_col)})
+                        ) AS {quote_identifier(bbox_col)}
                     FROM reprojected
                 """
             else:
@@ -708,10 +713,10 @@ def _reproject_streaming(
                     SELECT
                         * EXCLUDE ({exclude_clause}),
                         ST_Transform(
-                            "{geom_col}",
+                            {quote_identifier(geom_col)},
                             '{effective_source_crs}',
                             '{target_crs}'
-                        ) AS "{geom_col}"
+                        ) AS {quote_identifier(geom_col)}
                     FROM '{working_url}'
                 """
 
@@ -734,6 +739,11 @@ def _reproject_streaming(
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                 except (json.JSONDecodeError, KeyError) as e:
                     debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")
+
+            # Reprojection moves coordinates, so the carried bbox (and, for a
+            # geometry-repairing transform, geometry_types) no longer describes
+            # the output; drop them so they are recomputed from the written data.
+            metadata = strip_derived_stats(metadata)
 
             # Write output using stream_io
             write_output(

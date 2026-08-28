@@ -139,7 +139,7 @@ Partition by H3 hexagonal cells:
     ```python
     import geoparquet_io as gpio
 
-    # Partition by H3 (Hive-style by default)
+    # Partition by H3 (flat files by default, like the CLI; pass hive=True for key=value/)
     gpio.read('input.parquet').partition_by_h3('output/')
 
     # Custom resolution
@@ -218,7 +218,7 @@ Partition by S2 spherical cells:
     ```python
     import geoparquet_io as gpio
 
-    # Partition by S2 (Hive-style by default)
+    # Partition by S2 (flat files by default, like the CLI; pass hive=True for key=value/)
     gpio.read('input.parquet').partition_by_s2('output/')
 
     # Custom level

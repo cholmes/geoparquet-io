@@ -36,8 +36,8 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet. By... |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or... |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files. |
-| `gpio pmtiles` | create | PMTiles generation commands. Generate PMTiles from... |
-| `gpio process` | aggregate | Transform or reduce GeoParquet data (aggregate, ...). |
+| `gpio pmtiles` | create, pyramid | PMTiles generation commands. Generate PMTiles from... |
+| `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview,... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
@@ -136,7 +136,8 @@ gpio sort quadkey <input> <output>
 # Add bounding box column (required for many tools)
 gpio add bbox <input> <output>
 
-# Add bbox covering metadata to existing bbox column
+# Add bbox covering metadata to existing bbox column (needs GeoParquet 1.1+:
+# 'covering' was introduced in 1.1, so this refuses on a 1.0 file)
 gpio add bbox-metadata <file>
 
 # Add admin division columns (country, state, etc.) based on geometry location

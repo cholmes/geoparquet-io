@@ -58,6 +58,23 @@ class TestSortCommands:
         assert result.exit_code == 0
         assert os.path.exists(temp_output_file)
 
+    def test_hilbert_sort_write_memory_reaches_engine(self, places_test_file, temp_output_file):
+        """--write-memory must configure the DuckDB write connection, not be dropped."""
+        runner = CliRunner()
+        result = runner.invoke(
+            sort,
+            [
+                "hilbert",
+                places_test_file,
+                temp_output_file,
+                "--write-memory",
+                "512MB",
+                "--verbose",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "DuckDB memory limit: 512MB" in result.output
+
     def test_hilbert_sort_with_custom_geometry_column(self, places_test_file, temp_output_file):
         """Test Hilbert sort with custom geometry column name."""
         runner = CliRunner()

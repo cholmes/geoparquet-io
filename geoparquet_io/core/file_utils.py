@@ -181,19 +181,21 @@ def handle_output_overwrite(
     output_file.unlink()
 
 
-def safe_file_url(file_path, verbose=False):
+def resolve_file_url(file_path, verbose=False):
     """
-    Prepare a file path for safe use in SQL queries.
+    Validate a path and resolve it to the URL readers should open.
 
-    Handles URL encoding for HTTP(S) URLs and escapes single quotes
-    to prevent SQL injection when paths are interpolated into queries.
+    Percent-encodes HTTP(S) URLs and checks that a local path exists, but does
+    **not** escape it for SQL -- use this for anything that opens the file
+    directly (fsspec, pyarrow, metadata helpers). :func:`safe_file_url` is the
+    SQL-facing variant, and it is the single point at which a path is escaped.
 
     Args:
         file_path: Local path or remote URL
         verbose: Whether to log debug info
 
     Returns:
-        str: Safe file path/URL with single quotes escaped for SQL
+        str: Resolved, unescaped file path/URL
     """
     from geoparquet_io.core.remote import is_remote_url
 
@@ -202,18 +204,40 @@ def safe_file_url(file_path, verbose=False):
             parsed = urllib.parse.urlparse(file_path)
             duckdb_safe_chars = "/*?[]=,"
             encoded_path = urllib.parse.quote(parsed.path, safe=duckdb_safe_chars)
-            safe_url = parsed._replace(path=encoded_path).geturl()
+            resolved = parsed._replace(path=encoded_path).geturl()
         else:
-            safe_url = file_path
+            resolved = file_path
 
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-            debug(f"Reading from {protocol}: {safe_url}")
-        return _escape_sql_string(safe_url)
-    else:
-        if not has_glob_pattern(file_path) and not os.path.exists(file_path):
-            raise FileNotFoundGeoParquetError(file_path)
-        return _escape_sql_string(file_path)
+            debug(f"Reading from {protocol}: {resolved}")
+        return resolved
+
+    if not has_glob_pattern(file_path) and not os.path.exists(file_path):
+        raise FileNotFoundGeoParquetError(file_path)
+    return file_path
+
+
+def safe_file_url(file_path, verbose=False):
+    """
+    Prepare a file path for safe use in SQL queries.
+
+    Handles URL encoding for HTTP(S) URLs and escapes single quotes
+    to prevent SQL injection when paths are interpolated into queries.
+
+    Escaping is **not** idempotent: the result is only ever interpolated into
+    SQL, never re-escaped and never handed back to a filesystem API. Pass the
+    raw path to helpers that escape their own arguments (everything in
+    ``duckdb_metadata``), and use :func:`resolve_file_url` for direct reads.
+
+    Args:
+        file_path: Local path or remote URL
+        verbose: Whether to log debug info
+
+    Returns:
+        str: Safe file path/URL with single quotes escaped for SQL
+    """
+    return _escape_sql_string(resolve_file_url(file_path, verbose))
 
 
 def _get_file_cache_key(parquet_file: str) -> tuple[str, float]:

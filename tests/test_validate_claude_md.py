@@ -15,12 +15,22 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Repo tooling checks: this suite validates a maintenance script rather than
+# library behaviour, so it runs in the meta lane instead of the fast suite.
+pytestmark = pytest.mark.meta
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "validate_claude_md.py"
 
 
 def _run_validator(*extra_args: str) -> subprocess.CompletedProcess:
-    """Run the validation script and return the CompletedProcess."""
+    """Run the validation script as a subprocess and return the CompletedProcess.
+
+    Only the happy path and one end-to-end failure still go through a
+    subprocess -- enough to prove the script is executable and wires argv,
+    stdout and exit codes together. Every other case calls ``main()`` in
+    process, which is the same code path without the ~1s `uv run` spawn.
+    """
     return subprocess.run(
         ["uv", "run", "python", str(SCRIPT_PATH), *extra_args],
         capture_output=True,
@@ -35,7 +45,12 @@ def _run_validator(*extra_args: str) -> subprocess.CompletedProcess:
 
 
 class TestValidateClaudeMdIntegration:
-    """Integration tests that run the full validation script."""
+    """End-to-end tests that run the full validation flow.
+
+    Two of these spawn the script as a subprocess (happy path and one
+    detected-error path); the rest drive the same ``main()`` entry point
+    in process to avoid a `uv run` spawn per test.
+    """
 
     def test_script_exists(self):
         """Verify validation script exists."""
@@ -49,8 +64,10 @@ class TestValidateClaudeMdIntegration:
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
-    def test_script_accepts_custom_path(self, tmp_path):
-        """Verify script accepts a custom CLAUDE.md path via --claude-md."""
+    def test_script_accepts_custom_path(self, tmp_path, capsys):
+        """Verify the validator accepts a custom CLAUDE.md path via --claude-md."""
+        from scripts.validate_claude_md import main
+
         fake = tmp_path / "CLAUDE.md"
         fake.write_text(
             "## Project Overview\n"
@@ -58,30 +75,32 @@ class TestValidateClaudeMdIntegration:
             "## Testing with uv\n"
             "## Git Workflow\n"
         )
-        result = _run_validator("--claude-md", str(fake))
-        # Should at least not crash with exit code 2
-        assert result.returncode in (0, 1)
+        rc = main(["--claude-md", str(fake)])
+        out = capsys.readouterr().out
+        # Exit code 2 means "CLAUDE.md not found", so anything else proves the
+        # custom path was located and read.
+        assert rc in (0, 1), f"custom --claude-md path was not read:\n{out}"
 
-    def test_script_accepts_project_root(self, tmp_path):
-        """Verify script accepts --project-root argument."""
+    def test_script_accepts_project_root(self, tmp_path, capsys):
+        """Verify the validator accepts a --project-root argument."""
+        from scripts.validate_claude_md import main
+
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         claude = fake_root / "CLAUDE.md"
         claude.write_text("## Project Overview\n## Architecture\n## Testing\n## Git Workflow\n")
-        result = _run_validator(
-            "--claude-md",
-            str(claude),
-            "--project-root",
-            str(fake_root),
-        )
-        # Should not crash with exit code 2
-        assert result.returncode in (0, 1)
+        rc = main(["--claude-md", str(claude), "--project-root", str(fake_root)])
+        out = capsys.readouterr().out
+        assert rc in (0, 1), f"--project-root was not accepted:\n{out}"
 
-    def test_missing_claude_md(self, tmp_path):
-        """Script returns exit code 2 when CLAUDE.md is missing."""
+    def test_missing_claude_md(self, tmp_path, capsys):
+        """Validator returns exit code 2 when CLAUDE.md is missing."""
+        from scripts.validate_claude_md import main
+
         missing = tmp_path / "nonexistent.md"
-        result = _run_validator("--claude-md", str(missing))
-        assert result.returncode == 2
+        rc = main(["--claude-md", str(missing)])
+        assert rc == 2
+        assert "not found" in capsys.readouterr().out
 
     def test_catches_invalid_command(self, tmp_path):
         """Detects references to non-existent CLI commands."""
@@ -97,8 +116,10 @@ class TestValidateClaudeMdIntegration:
         assert result.returncode == 1
         assert "nonexistent-command" in result.stdout
 
-    def test_catches_invalid_path(self, tmp_path):
+    def test_catches_invalid_path(self, tmp_path, capsys):
         """Detects references to non-existent file paths."""
+        from scripts.validate_claude_md import main
+
         fake = tmp_path / "CLAUDE.md"
         fake.write_text(
             "## Project Overview\n"
@@ -107,12 +128,14 @@ class TestValidateClaudeMdIntegration:
             "## Git Workflow\n"
             "\nCheck `geoparquet_io/core/does_not_exist.py` for details.\n"
         )
-        result = _run_validator("--claude-md", str(fake))
-        assert result.returncode == 1
-        assert "does_not_exist" in result.stdout
+        rc = main(["--claude-md", str(fake)])
+        assert rc == 1
+        assert "does_not_exist" in capsys.readouterr().out
 
-    def test_catches_invalid_marker(self, tmp_path):
+    def test_catches_invalid_marker(self, tmp_path, capsys):
         """Detects references to undefined pytest markers."""
+        from scripts.validate_claude_md import main
+
         fake = tmp_path / "CLAUDE.md"
         fake.write_text(
             "## Project Overview\n"
@@ -121,9 +144,9 @@ class TestValidateClaudeMdIntegration:
             "## Git Workflow\n"
             "\nUse `@pytest.mark.nonexistent` for special tests.\n"
         )
-        result = _run_validator("--claude-md", str(fake))
-        assert result.returncode == 1
-        assert "nonexistent" in result.stdout
+        rc = main(["--claude-md", str(fake)])
+        assert rc == 1
+        assert "nonexistent" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import duckdb
@@ -28,6 +29,7 @@ import pyarrow as pa
 
 # Public API
 __all__ = [
+    "DEFAULT_WFS_PAGE_SIZE",
     "EmptyLayerError",
     "LayerNotFoundError",
     "WFSAuthenticationError",
@@ -48,7 +50,11 @@ from geoparquet_io.core.common import (
     write_geoparquet_table,
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
     get_shared_http_client as _get_shared_http_client_base,
@@ -337,6 +343,18 @@ def get_wfs_capabilities(service_url: str, version: str = "1.1.0"):
 
 # WFS versions in preference order (newest first)
 WFS_VERSIONS = ["2.0.0", "1.1.0", "1.0.0"]
+
+# Single source of truth for the default page size used when paginating WFS
+# requests. Every entry point references it -- the CLI option
+# (`gpio extract wfs --page-size`), the core functions (`wfs_to_table`,
+# `convert_wfs_to_geoparquet`, `convert_wfs_layers_to_directory`,
+# `fetch_all_features_duckdb`, `_fetch_with_spatial_tiles`) and the Python API
+# wrappers (`ops.from_wfs`, `ops.from_wfs_layers`, `Table.from_wfs`) -- so their
+# defaults cannot drift apart again.
+#
+# Note: the CLI option is typed `click.IntRange(1000, 500000)`, so any new
+# value for this constant must fall inside that range.
+DEFAULT_WFS_PAGE_SIZE: Final[int] = 100_000
 
 
 def negotiate_wfs_version(service_url: str, preferred_version: str = "auto"):
@@ -1155,6 +1173,7 @@ def _get_feature_count(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     axis_order: str = "auto",
+    warn_on_failure: bool = True,
 ) -> int | None:
     """
     Try to get feature count using resultType=hits.
@@ -1168,12 +1187,21 @@ def _get_feature_count(
         bbox: Optional bounding box filter (xmin, ymin, xmax, ymax)
         crs: CRS for bbox parameter
         axis_order: Bbox axis order ("auto", "xy", "latlon")
+        warn_on_failure: Log a warning when the probe fails. Pass False for
+            speculative probes that have a fallback by construction (see the
+            2.0.0-then-negotiated-version probe in ``wfs_to_table``), where a
+            failure is an expected answer rather than a loss of capability.
 
     Returns:
-        Feature count or None if not supported
+        Feature count, or None if the server does not report one *or* the probe
+        failed. A failed probe is logged as a warning (unless suppressed via
+        ``warn_on_failure``) so the resulting loss of auto-tiling / pagination
+        is visible in the logs.
     """
     if version == "1.0.0":
         return None  # resultType=hits not supported in WFS 1.0.0
+
+    import httpx
 
     clean_url = _clean_service_url(service_url)
     params = {
@@ -1189,22 +1217,39 @@ def _get_feature_count(
 
     try:
         content = _make_request(clean_url, params=params)
+    except (WFSError, httpx.HTTPError, OSError) as e:
+        # Expected failure modes: the service is down, unreachable, rejecting us,
+        # or timing out. Degrade to "count unknown" rather than aborting the
+        # extraction, but say so — a silent None disables auto-tiling and
+        # pagination, which is how servers return silently truncated results
+        # (issue #678). Programming errors are not caught: they must surface.
+        detail = f"{type(e).__name__}: {e}"
+        if not warn_on_failure:
+            debug(
+                f"Speculative feature count probe failed for '{typename}' "
+                f"at WFS {version}: {detail}"
+            )
+            return None
+        warn(
+            f"Feature count probe (resultType=hits) failed for '{typename}' "
+            f"at WFS {version}: {detail}. Continuing without a "
+            "server feature count — auto-tiling and pagination cannot engage, "
+            "so results from a server that caps responses may be incomplete."
+        )
+        return None
 
-        # Parse XML response to find numberOfFeatures
-        import re
+    # Parse XML response to find numberOfFeatures
+    match = re.search(rb'numberOfFeatures="(\d+)"', content)
+    if match:
+        return int(match.group(1))
 
-        match = re.search(rb'numberOfFeatures="(\d+)"', content)
-        if match:
-            return int(match.group(1))
+    # Try alternative attribute name
+    match = re.search(rb'numberMatched="(\d+)"', content)
+    if match:
+        return int(match.group(1))
 
-        # Try alternative attribute name
-        match = re.search(rb'numberMatched="(\d+)"', content)
-        if match:
-            return int(match.group(1))
-
-    except Exception:
-        pass
-
+    # Server answered but reported no count — a normal outcome, not a failure.
+    debug(f"WFS {version} hits response for '{typename}' carried no feature count")
     return None
 
 
@@ -1240,7 +1285,7 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
 
             # Check type compatibility using TRY_CAST
             # Quote column name to handle reserved words/special chars
-            quoted_col = f'"{col_name}"'
+            quoted_col = quote_identifier(col_name)
 
             try:
                 stats = con.execute(f"""
@@ -1713,7 +1758,7 @@ def _deduplicate_tiles(table: pa.Table) -> pa.Table:
 
         if "_wfs_fid" in table.column_names:
             all_cols = [c for c in table.column_names if c != "_wfs_fid"]
-            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            col_list = ", ".join(quote_identifier(c) for c in all_cols)
             # Deduplicate by fid when present, fall back to geometry for NULL fids
             query = f"""
                 SELECT {col_list}
@@ -1732,7 +1777,7 @@ def _deduplicate_tiles(table: pa.Table) -> pa.Table:
             """
         else:
             all_cols = table.column_names
-            col_list = ", ".join(f'"{c}"' for c in all_cols)
+            col_list = ", ".join(quote_identifier(c) for c in all_cols)
             query = f"""
                 SELECT {col_list}
                 FROM (
@@ -1756,7 +1801,7 @@ def _fetch_with_spatial_tiles(
     layer_bbox: tuple[float, float, float, float],
     crs: str,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     max_features: int | None = None,
     sort_by: str | None = None,
@@ -1853,7 +1898,11 @@ def _probe_startindex_limit(
     threshold (e.g., 50,000). This sends a lightweight probe request
     to detect that limit before attempting full pagination.
 
-    Returns the limit value if detected, or None if no limit found.
+    Returns the limit value if detected, or None if no limit found *or* the
+    probe failed. A failed probe is logged as a warning: a silent None here
+    means pagination proceeds past a cap the server would have rejected, which
+    is the same silently-truncated-results failure mode as a lost feature count
+    (issue #678).
     """
     import httpx
 
@@ -1885,7 +1934,16 @@ def _probe_startindex_limit(
                         pass
                 return 50000
         return None
-    except httpx.HTTPError:
+    except (WFSError, httpx.HTTPError, OSError) as e:
+        # Same contract as _get_feature_count: expected transport failures
+        # degrade to "no limit known" but say so, because that answer silently
+        # re-enables unbounded pagination. Programming errors still surface.
+        warn(
+            f"startIndex limit probe failed for '{typename}' at WFS {version}: "
+            f"{type(e).__name__}: {e}. Continuing without a known startIndex "
+            "cap — pagination past a server's limit may return truncated or "
+            "rejected pages."
+        )
         return None
 
 
@@ -2101,7 +2159,7 @@ def fetch_all_features_duckdb(
     bbox: tuple[float, float, float, float] | None = None,
     crs: str | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     extract_fid: bool = False,
     sort_by: str | None = None,
@@ -2310,7 +2368,7 @@ def wfs_to_table(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     verbose: bool = False,
@@ -2396,8 +2454,14 @@ def wfs_to_table(
     # Try WFS 2.0.0 first for count query since it often has higher/no limits
     expected_count = None
     if auto_tile and version != "1.0.0":
-        # Try WFS 2.0.0 count first (higher limits), fall back to requested version
-        expected_count = _get_feature_count(service_url, layer_info.typename, "2.0.0")
+        # Try WFS 2.0.0 count first (higher limits), fall back to requested
+        # version. The 2.0.0 attempt is speculative — a 1.1.0-only server
+        # rejecting it is an expected answer, not a degradation, so it stays
+        # quiet; the fallback below is the probe whose failure actually costs
+        # us auto-tiling, and it warns.
+        expected_count = _get_feature_count(
+            service_url, layer_info.typename, "2.0.0", warn_on_failure=False
+        )
         if not expected_count:
             expected_count = _get_feature_count(service_url, layer_info.typename, version)
         if expected_count:
@@ -2568,7 +2632,7 @@ def convert_wfs_to_geoparquet(
     output_crs: str | None = None,
     limit: int | None = None,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     axis_order: str = "auto",
     strict_crs: bool = False,
     skip_hilbert: bool = False,
@@ -2580,7 +2644,7 @@ def convert_wfs_to_geoparquet(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     sort_by: str | None = None,
     repair_geometry: bool = True,
 ) -> None:
@@ -2613,7 +2677,9 @@ def convert_wfs_to_geoparquet(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing file
         verbose: Enable debug output
-        auto_tile: Automatically subdivide into spatial tiles for servers with startIndex limits
+        auto_tile: Automatically subdivide into spatial tiles when the server caps
+            responses (maxFeatures or startIndex limits). Disabling this accepts
+            silently truncated results (default: True)
         sort_by: Attribute to sort by for stable pagination. If None, auto-detected.
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True).
             When False, invalid geometry is preserved and a warning reports the count.
@@ -2717,7 +2783,7 @@ def convert_wfs_layers_to_directory(
     output_dir: str | Path,
     parallel_layers: int = 1,
     max_workers: int = 1,
-    page_size: int = 100000,
+    page_size: int = DEFAULT_WFS_PAGE_SIZE,
     version: str = "1.1.0",
     bbox: tuple[float, float, float, float] | None = None,
     bbox_mode: str = "auto",
@@ -2734,7 +2800,7 @@ def convert_wfs_layers_to_directory(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     verbose: bool = False,
-    auto_tile: bool = False,
+    auto_tile: bool = True,
     sort_by: str | None = None,
     repair_geometry: bool = True,
 ) -> dict[str, Path]:
@@ -2766,7 +2832,9 @@ def convert_wfs_layers_to_directory(
         geoparquet_version: GeoParquet version
         overwrite: Overwrite existing files
         verbose: Enable debug output
-        auto_tile: Auto-tile for servers with startIndex limits
+        auto_tile: Auto-tile when the server caps responses (maxFeatures or
+            startIndex limits). Disabling this accepts silently truncated
+            results (default: True)
         sort_by: Sort attribute for stable pagination
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 

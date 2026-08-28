@@ -259,6 +259,15 @@ Validates file structure and metadata against the GeoParquet specification:
   suffixes (`"Point Z"`, `"LineString ZM"`), and validation matches declared
   suffixes against the actual coordinate dimensions in both directions
   (declared-but-absent and present-but-undeclared).
+- **GeoArrow encodings** — the single-geometry type encodings (`point`,
+  `linestring`, `polygon`, `multipoint`, `multilinestring`, `multipolygon`)
+  are valid for GeoParquet 1.1, so files written with
+  `--geoparquet-version 1.1-geoarrow` validate. The checks are layout-aware:
+  the `BYTE_ARRAY` requirement applies only to `WKB` columns, native columns
+  are checked for the DOUBLE coordinate group the spec requires, and the data
+  scans read GeoArrow coordinates directly. GeoParquet 1.0 and 2.0 are
+  WKB-only per their spec text, so a file claiming a GeoArrow encoding under
+  either version fails.
 
 **Exit codes:**
 

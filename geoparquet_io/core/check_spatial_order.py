@@ -4,7 +4,7 @@
 import random as _random
 from statistics import mean
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress
@@ -41,9 +41,10 @@ def _bboxes_overlap(bbox1: dict, bbox2: dict) -> bool:
 
 def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbose):
     """Calculate average distance between consecutive features."""
+    quoted_geom = quote_identifier(geometry_column)
     query = f"""
     WITH numbered AS (
-        SELECT ROW_NUMBER() OVER () as id, {geometry_column} as geom
+        SELECT ROW_NUMBER() OVER () as id, {quoted_geom} as geom
         FROM '{safe_url}' {row_limit}
     )
     SELECT AVG(ST_Distance(a.geom, b.geom)) as avg_dist
@@ -60,8 +61,9 @@ def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbos
 
 def _calculate_random_avg(con, safe_url, geometry_column, row_limit, random_sample_size, verbose):
     """Calculate average distance between random pairs of features."""
+    quoted_geom = quote_identifier(geometry_column)
     query = f"""
-    WITH sample AS (SELECT {geometry_column} as geom FROM '{safe_url}' {row_limit}),
+    WITH sample AS (SELECT {quoted_geom} as geom FROM '{safe_url}' {row_limit}),
     random_pairs AS (
         SELECT a.geom as geom1, b.geom as geom2
         FROM (SELECT geom FROM sample ORDER BY random() LIMIT {random_sample_size}) a,
@@ -166,9 +168,7 @@ def check_spatial_order_bbox_stats(
         has_bbox_column,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose)
-
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
     if not has_bbox or not bbox_col_name:
         raise ValueError(
             f"File {parquet_file} does not have a bbox column. "
@@ -178,7 +178,7 @@ def check_spatial_order_bbox_stats(
     if verbose:
         debug(f"Using bbox column: {bbox_col_name}")
 
-    row_group_bboxes = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+    row_group_bboxes = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
 
     if verbose:
         debug(f"Analyzing {len(row_group_bboxes)} row groups")
@@ -316,7 +316,7 @@ def check_spatial_order(
     safe_url = safe_file_url(parquet_file, verbose)
 
     # Try bbox-stats method first (faster)
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
     if has_bbox and bbox_col_name:
         if verbose:
             debug(f"Using bbox-stats method (bbox column: {bbox_col_name})")
@@ -334,7 +334,7 @@ def check_spatial_order(
 
     # Try native geo_bbox stats (GeoParquet 2.0 / parquet-geo-only)
     geometry_column = find_primary_geometry_column(parquet_file, verbose)
-    native_geo_stats = get_per_row_group_native_geo_stats(safe_url, geometry_column)
+    native_geo_stats = get_per_row_group_native_geo_stats(parquet_file, geometry_column)
     if native_geo_stats:
         if verbose:
             debug(f"Using native geo_bbox stats ({len(native_geo_stats)} row groups)")
@@ -554,9 +554,7 @@ def check_spatial_pushdown_readiness(
         has_bbox_column,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose)
-
-    has_bbox, bbox_col_name = has_bbox_column(safe_url)
+    has_bbox, bbox_col_name = has_bbox_column(parquet_file)
 
     issues: list[str] = []
     recommendations: list[str] = []
@@ -582,7 +580,7 @@ def check_spatial_pushdown_readiness(
     if verbose:
         debug(f"Using bbox column: {bbox_col_name}")
 
-    row_group_bboxes = get_per_row_group_bbox_stats(safe_url, bbox_col_name)
+    row_group_bboxes = get_per_row_group_bbox_stats(parquet_file, bbox_col_name)
     num_rgs = len(row_group_bboxes)
 
     if verbose:

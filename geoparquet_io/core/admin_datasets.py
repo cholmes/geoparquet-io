@@ -934,3 +934,27 @@ class AdminDatasetFactory:
 
         dataset_class = cls._datasets[dataset_name]
         return dataset_class(source_path=source_path, verbose=verbose)
+
+
+def default_admin_levels(dataset_name: str, source_path: str | None = None) -> list[str]:
+    """Return the levels to add when the caller did not name any.
+
+    Single source of truth for "no levels specified" across both front doors:
+    ``gpio add admin-divisions`` with no ``--levels`` and
+    ``ops.add_admin_divisions`` / ``Table.add_admin_divisions`` with
+    ``levels=None`` both add every level the dataset provides, so the two
+    produce the same output schema.
+
+    Args:
+        dataset_name: Name of the dataset ("current", "gaul", "overture")
+        source_path: Optional custom path/URL to the dataset
+
+    Returns:
+        Every level the dataset exposes, e.g. ``["continent", "country",
+        "department"]`` for GAUL.
+
+    Raises:
+        InvalidParameterError: If dataset_name is invalid
+    """
+    dataset = AdminDatasetFactory.create(dataset_name, source_path, verbose=False)
+    return dataset.get_available_levels()

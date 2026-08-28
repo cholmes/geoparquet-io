@@ -39,6 +39,8 @@ from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
     create_geo_metadata,
+    prune_geo_metadata_to_columns,
+    strip_derived_stats,
 )
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -60,7 +62,6 @@ from geoparquet_io.core.remote import (
     is_remote_url,
     needs_httpfs,
     remote_write_context,
-    setup_aws_profile_if_needed,
     upload_if_remote,
 )
 from geoparquet_io.core.streaming import extract_version_from_metadata
@@ -163,17 +164,15 @@ def detect_geoparquet_file_type(parquet_file, verbose=False, con=None):
         "bbox_recommended": True,  # Default for v1.x
     }
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Check for geo metadata (uses PyArrow for local files, DuckDB for remote)
-    geo_meta = get_geo_metadata(safe_url, con=con)
+    geo_meta = get_geo_metadata(parquet_file, con=con)
     if geo_meta:
         result["has_geo_metadata"] = True
         if isinstance(geo_meta, dict) and "version" in geo_meta:
             result["geo_version"] = geo_meta["version"]
 
     # Check for native Parquet geo types using schema
-    geo_columns = detect_geometry_columns(safe_url, con=con)
+    geo_columns = detect_geometry_columns(parquet_file, con=con)
     if geo_columns:
         result["has_native_geo_types"] = True
 
@@ -235,10 +234,8 @@ def get_parquet_metadata(parquet_file, verbose=False):
         if first_file:
             file_to_check = first_file
 
-    safe_url = safe_file_url(file_to_check, verbose=False)
-
     # Get key-value metadata (returns dict like {b'geo': b'...'})
-    kv_metadata = get_kv_metadata(safe_url)
+    kv_metadata = get_kv_metadata(file_to_check)
 
     # Get PyArrow schema for backward compatibility
     # (some code uses schema.field(i).name patterns)
@@ -246,7 +243,7 @@ def get_parquet_metadata(parquet_file, verbose=False):
         # For remote files, use a DuckDB-based approach to read schema
         from geoparquet_io.core.duckdb_metadata import get_schema_info
 
-        schema_info = get_schema_info(safe_url)
+        schema_info = get_schema_info(file_to_check)
         # Create a simple object that mimics PyArrow schema for basic usage
         schema = _DuckDBSchemaWrapper(schema_info)
     else:
@@ -283,14 +280,12 @@ def calculate_file_bounds(file_path, geom_column=None, verbose=False):
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(file_path))
 
     try:
-        # Quote column name to handle special characters, uppercase, etc.
-        quoted_geom = geom_column.replace('"', '""')
         bounds_query = f"""
             SELECT
-                MIN(ST_XMin("{quoted_geom}")) as xmin,
-                MIN(ST_YMin("{quoted_geom}")) as ymin,
-                MAX(ST_XMax("{quoted_geom}")) as xmax,
-                MAX(ST_YMax("{quoted_geom}")) as ymax
+                MIN(ST_XMin({quote_identifier(geom_column)})) as xmin,
+                MIN(ST_YMin({quote_identifier(geom_column)})) as ymin,
+                MAX(ST_XMax({quote_identifier(geom_column)})) as xmax,
+                MAX(ST_YMax({quote_identifier(geom_column)})) as ymax
             FROM read_parquet('{safe_url}')
         """
         result = con.execute(bounds_query).fetchone()
@@ -519,9 +514,7 @@ def compute_geometry_types_via_sql(
     if "STRUCT" in col_type:
         return []
 
-    # Escape column name for SQL (double any embedded quotes)
-    escaped_col = geometry_column.replace('"', '""')
-    quoted_col = f'"{escaped_col}"'
+    quoted_col = quote_identifier(geometry_column)
     typed_expr = f"ST_GeometryType({quoted_col}) || {zm_suffix_sql(quoted_col)}"
     types_query = f"""
         SELECT DISTINCT {typed_expr} as geom_type
@@ -571,15 +564,15 @@ def compute_geometry_dimensions_via_sql(
     if "STRUCT" in col_type:
         return set()
 
-    escaped_col = geometry_column.replace('"', '""')
-    geom_expr = f'"{escaped_col}"'
+    quoted_col = quote_identifier(geometry_column)
+    geom_expr = quoted_col
     if "BLOB" in col_type or "BINARY" in col_type:
         geom_expr = f"ST_GeomFromWKB({geom_expr})"
 
     dims_query = f"""
         SELECT DISTINCT ST_ZMFlag({geom_expr}) AS zm
         FROM ({query})
-        WHERE "{escaped_col}" IS NOT NULL
+        WHERE {quoted_col} IS NOT NULL
     """
     try:
         results = con.execute(dims_query).fetchall()
@@ -992,12 +985,27 @@ def _detect_version_from_table(table, verbose: bool = False) -> str | None:
         return None
 
 
+def _table_bbox_struct_ok(table, column_name: str) -> bool:
+    """True when ``column_name`` is a struct column with the bbox fields."""
+    import pyarrow as pa
+
+    try:
+        field = table.schema.field(column_name)
+    except KeyError:
+        return False
+    return pa.types.is_struct(field.type) and {"xmin", "ymin", "xmax", "ymax"}.issubset(
+        {f.name for f in field.type}
+    )
+
+
 def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
     """
     Detect bbox struct column from Arrow table schema.
 
-    Looks for columns with conventional names (bbox, bounds, extent) that have
-    the required struct fields (xmin, ymin, xmax, ymax).
+    Consults the GeoParquet ``covering.bbox`` metadata first (the authoritative
+    pointer, which may use a non-conventional name), then falls back to columns
+    with conventional names (bbox, bounds, extent) that have the required
+    struct fields (xmin, ymin, xmax, ymax).
 
     Args:
         table: PyArrow Table to check
@@ -1007,6 +1015,15 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
         str: Name of bbox column if found, None otherwise
     """
     import pyarrow as pa
+
+    from geoparquet_io.core.crs_utils import parse_geo_metadata_from_schema
+
+    geo_meta = parse_geo_metadata_from_schema(table.schema.metadata)
+    covering_column = _bbox_column_from_covering(geo_meta)
+    if covering_column and _table_bbox_struct_ok(table, covering_column):
+        if verbose:
+            debug(f"Found bbox column from covering metadata: {covering_column}")
+        return covering_column
 
     conventional_suffixes = ["bbox", "bounds", "extent"]
     required_fields = {"xmin", "ymin", "xmax", "ymax"}
@@ -1360,6 +1377,59 @@ def _assemble_and_apply_geo_metadata(
     return table
 
 
+# Schema-metadata keys that describe the *input's* schema rather than the
+# output's, so they must never ride along into a write.
+#
+# `geo` would declare the input's GeoParquet version over output the writer has
+# just given a different shape; `ARROW:schema` and `pandas` are serialized
+# descriptors that pyarrow writes through verbatim rather than regenerating,
+# leaving the output naming the input's columns and CRS.
+#
+# One definition, used by both places that need it -- the parquet-geo-only path
+# below (which sees `bytes` keys, straight off a pyarrow schema) and
+# write_parquet_with_metadata's preserved-keys loop (which sees them decoded).
+# They were separate literals; a key added to one and not the other is a silent
+# metadata leak, so the bytes form is derived rather than written out again.
+_CARRIED_SCHEMA_METADATA_KEYS = frozenset({"geo", "ARROW:schema", "pandas"})
+_CARRIED_SCHEMA_METADATA_KEYS_BYTES = frozenset(
+    key.encode("utf-8") for key in _CARRIED_SCHEMA_METADATA_KEYS
+)
+
+
+def _strip_geo_metadata_key(table, verbose: bool = False):
+    """Drop the input's ``geo``/``ARROW:schema``/``pandas`` keys, keeping other KV.
+
+    Used for parquet-geo-only output, which carries its geometry typing in the
+    Parquet schema and must not also declare a GeoParquet version.
+
+    The exclusion set matches ``write_parquet_with_metadata``'s (see the
+    preserved-keys loop in that function): besides ``geo``, a carried
+    ``ARROW:schema``/``pandas`` describes the *input's* schema and is written
+    through verbatim, leaving the output with a serialized descriptor naming
+    columns and a CRS the file does not have.
+
+    Args:
+        table: PyArrow Table whose schema metadata to clean
+        verbose: Whether to print verbose output
+
+    Returns:
+        pa.Table: Table without carried geo/schema-descriptor metadata keys
+    """
+    existing_metadata = table.schema.metadata
+    if not existing_metadata:
+        return table
+
+    dropped = [k for k in existing_metadata if k in _CARRIED_SCHEMA_METADATA_KEYS_BYTES]
+    if not dropped:
+        return table
+
+    new_metadata = {k: v for k, v in existing_metadata.items() if k not in dropped}
+    if verbose:
+        names = ", ".join(sorted(k.decode("utf-8") for k in dropped))
+        debug(f"parquet-geo-only: dropped the input's {names} metadata key(s)")
+    return table.replace_schema_metadata(new_metadata)
+
+
 def _apply_geoparquet_metadata(
     table,
     geometry_column: str,
@@ -1429,7 +1499,12 @@ def _apply_geoparquet_metadata(
 
     # Step 2: Build and apply geo metadata (unless parquet-geo-only)
     if not should_add_geo_metadata:
-        return table
+        # parquet-geo-only means no GeoParquet metadata at all. Step 1 has just
+        # given the column a native Parquet GEOMETRY logical type, so a 'geo'
+        # key carried in from the input would declare a version whose spec
+        # forbids that type (issue #687). Drop it, keeping unrelated KV
+        # metadata, to match the other write paths.
+        return _strip_geo_metadata_key(table, verbose)
 
     # Detect bbox column from table schema
     bbox_column = _detect_bbox_column_from_table(table, verbose)
@@ -1675,9 +1750,6 @@ def write_geoparquet_via_arrow(
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         input_crs: PROJJSON dict with CRS from input file
     """
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
-
     # Detect geometry column if not provided
     if geometry_column is None:
         geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
@@ -1690,6 +1762,9 @@ def write_geoparquet_via_arrow(
     query_columns = _get_query_columns(con, query)
     has_geometry = geometry_column in query_columns
 
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
     with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
         actual_output,
         is_remote,
@@ -2190,6 +2265,102 @@ def _plain_copy_to(
         success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
 
 
+def _prune_metadata_to_output_columns(
+    con,
+    query: str,
+    original_metadata: dict | None,
+    geometry_column: str | None,
+    verbose: bool,
+) -> dict | None:
+    """Drop geo metadata that references columns the output query does not emit.
+
+    Best-effort: a schema probe that fails leaves the metadata untouched rather
+    than aborting the write.
+    """
+    if not original_metadata:
+        return original_metadata
+
+    try:
+        output_columns = _get_query_columns(con, query)
+    except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
+        if verbose:
+            debug(f"Could not read output schema to prune geo metadata: {e}")
+        return original_metadata
+
+    pruned = prune_geo_metadata_to_columns(original_metadata, output_columns)
+    had_geo = "geo" in original_metadata or b"geo" in original_metadata
+    if had_geo and geometry_column is None:
+        warn(
+            "Output has no geometry column - writing plain Parquet without geo metadata "
+            f"(columns: {', '.join(output_columns)})"
+        )
+    return pruned
+
+
+def extract_preserved_kv_metadata(metadata: dict | None) -> dict[str, str]:
+    """Return an input's non-geo file-level KV metadata as ``{str: str}``.
+
+    Sidecar payloads (``fiboa``, ``vecorel``, STAC fragments, collection
+    records) live in Parquet's file-level key/value metadata next to ``geo``.
+    Every write path that rebuilds the KV block must carry them over, so this
+    is the single definition of which keys survive a rewrite (#690).
+
+    Keys and values that are not valid UTF-8 are skipped: the write paths pass
+    KV metadata as text (DuckDB ``KV_METADATA`` takes SQL string literals), so a
+    binary payload cannot be round-tripped and dropping it beats failing the
+    write.
+
+    Args:
+        metadata: KV metadata dict from a Parquet file or Arrow schema. Keys
+            and values may be ``bytes`` or ``str``; ``None`` is accepted.
+
+    Returns:
+        Decoded ``{key: value}`` for every key outside
+        ``_CARRIED_SCHEMA_METADATA_KEYS``.
+    """
+    if not metadata:
+        return {}
+
+    preserved: dict[str, str] = {}
+    for key, value in metadata.items():
+        # The key is decoded inside the try as well: Parquet KV keys are
+        # arbitrary bytes, and a non-UTF-8 key must skip like a non-UTF-8
+        # value rather than raise out of a metadata-preservation helper.
+        try:
+            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+            if key_str in _CARRIED_SCHEMA_METADATA_KEYS:
+                continue
+            val_str = value.decode("utf-8") if isinstance(value, bytes) else value
+        except UnicodeDecodeError:
+            debug(f"Skipping non-UTF-8 KV metadata entry {key!r} (cannot be preserved as text)")
+            continue
+        preserved[key_str] = val_str
+    return preserved
+
+
+def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict[str, str]:
+    """Read a Parquet input's preservable non-geo KV metadata.
+
+    Returns an empty dict when the file cannot be inspected (e.g. a remote
+    input without credentials): losing sidecar keys is bad, but failing an
+    otherwise valid conversion because of them would be worse.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_kv_metadata
+
+    try:
+        # Both the read and the decode are guarded: a malformed KV block is an
+        # input-data problem, and losing sidecar keys must never be the reason
+        # an otherwise valid write fails.
+        preserved = extract_preserved_kv_metadata(get_kv_metadata(parquet_file))
+    except Exception as e:  # noqa: BLE001 - any read failure degrades to "nothing to preserve"
+        warn(f"Could not read input KV metadata from {parquet_file}: {e}")
+        return {}
+
+    if verbose and preserved:
+        debug(f"Preserving input KV metadata keys: {sorted(preserved)}")
+    return preserved
+
+
 def write_parquet_with_metadata(
     con,
     query,
@@ -2210,6 +2381,7 @@ def write_parquet_with_metadata(
     geometry_info: dict | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
     input_file: str | None = None,
+    invalidate_derived_stats: bool = False,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2253,6 +2425,13 @@ def write_parquet_with_metadata(
             existing file. Enables full-fidelity non-planar edges preservation
             (native GEOGRAPHY logical types are only visible in the file's
             schema); without it, edges still fall back to original_metadata.
+        invalidate_derived_stats: When True, strip the carried per-column
+            ``bbox`` and ``geometry_types`` from ``original_metadata`` before
+            building output geo metadata. Set by callers that transform geometry
+            (reproject), filter rows (extract), or merge several inputs whose
+            carried metadata came from only the first file: the input's stats no
+            longer describe the output, so they must be recomputed from the
+            written data or omitted rather than carried.
 
     Returns:
         None
@@ -2265,8 +2444,11 @@ def write_parquet_with_metadata(
 
     configure_verbose(verbose)
 
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
+    # Callers that transform geometry, filter rows, or merge multiple inputs
+    # invalidate the carried bbox/geometry_types; drop them so the write
+    # strategies recompute (or omit) them instead of describing the input.
+    if invalidate_derived_stats:
+        original_metadata = strip_derived_stats(original_metadata)
 
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)
@@ -2274,6 +2456,14 @@ def write_parquet_with_metadata(
         geometry_column = geometry_info["primary"]
     else:
         geometry_column = _detect_geometry_from_query(con, query, original_metadata, verbose)
+
+    # A column projection (e.g. ``extract --exclude-cols``) can drop the bbox
+    # column a ``covering`` points at, a secondary geometry column, or the
+    # geometry column itself. Carrying those references produces metadata that
+    # names schema roots the output does not have.
+    original_metadata = _prune_metadata_to_output_columns(
+        con, query, original_metadata, geometry_column, verbose
+    )
 
     if geoparquet_version is None:
         geoparquet_version = extract_version_from_metadata(original_metadata)
@@ -2290,21 +2480,14 @@ def write_parquet_with_metadata(
         if verbose:
             debug("Forcing metadata rewrite for covering metadata")
 
-    # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa)
-    if original_metadata:
-        preserved_keys = {}
-        for key, value in original_metadata.items():
-            key_str = key.decode("utf-8") if isinstance(key, bytes) else key
-            if key_str in ("geo", "ARROW:schema", "pandas"):
-                continue
-            val_str = value.decode("utf-8") if isinstance(value, bytes) else value
-            preserved_keys[key_str] = val_str
-        if preserved_keys:
-            if extra_kv_metadata is None:
-                extra_kv_metadata = {}
-            for k, v in preserved_keys.items():
-                if k not in extra_kv_metadata:
-                    extra_kv_metadata[k] = v
+    # Preserve non-geo KV metadata from input (e.g., vecorel, fiboa).
+    # Build a merged local dict rather than mutating the caller-supplied
+    # extra_kv_metadata: partition loops reuse one dict across writes, and
+    # writing into it in place leaked prior files' keys into later ones.
+    preserved_keys = extract_preserved_kv_metadata(original_metadata)
+    if preserved_keys:
+        # Caller-supplied entries win over preserved keys of the same name.
+        extra_kv_metadata = {**preserved_keys, **(extra_kv_metadata or {})}
 
     if extra_kv_metadata:
         rewrite_needed = True
@@ -2317,6 +2500,9 @@ def write_parquet_with_metadata(
         info("\n-- Query:")
         progress(query)
 
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
     with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
         actual_output,
         is_remote,
@@ -2346,6 +2532,7 @@ def write_parquet_with_metadata(
             # which requires the arrow-streaming strategy (DuckDB COPY TO cannot emit
             # nested GeoArrow types). Already-native inputs keep their preservation
             # path (duckdb-kv passes the native column through unchanged).
+            auto_routed_strategy = False
             if geoparquet_version == "1.1-geoarrow":
                 primary = (geometry_info or {}).get("primary")
                 input_encoding = (
@@ -2358,16 +2545,31 @@ def write_parquet_with_metadata(
                     if verbose:
                         debug("Routing 1.1-geoarrow WKB input through arrow-streaming")
                     write_strategy = "streaming"
+                    auto_routed_strategy = True
 
             strategy_enum = WriteStrategy(write_strategy)
             strategy = WriteStrategyFactory.get_strategy(strategy_enum)
 
-            # Validate memory_limit is only used with duckdb-kv strategy
+            # Only duckdb-kv can honour a memory limit. If *we* rerouted the
+            # strategy (1.1-geoarrow above), the user did nothing wrong: warn and
+            # drop the limit rather than aborting a command that worked before
+            # --write-memory was plumbed through (#663). A strategy the user
+            # explicitly asked for is a real error — raised as a core exception so
+            # the CLI shows a clean message instead of a traceback.
             if memory_limit is not None and strategy_enum != WriteStrategy.DUCKDB_KV:
-                raise ValueError(
-                    f"--write-memory is only supported with the 'duckdb-kv' strategy, "
-                    f"not '{write_strategy}'"
-                )
+                if auto_routed_strategy:
+                    warn(
+                        "--write-memory is ignored for GeoParquet 1.1-geoarrow output: "
+                        "GeoArrow encoding requires the arrow-streaming write strategy, "
+                        "which does not support a memory limit."
+                    )
+                    memory_limit = None
+                else:
+                    raise InvalidParameterError(
+                        "--write-memory",
+                        f"a memory limit is only supported with the 'duckdb-kv' "
+                        f"write strategy, not '{write_strategy}'",
+                    )
 
             if verbose:
                 debug(f"Writing GeoParquet version: {effective_version}")
@@ -2378,7 +2580,10 @@ def write_parquet_with_metadata(
                 "con": con,
                 "query": query,
                 "output_path": actual_output,
-                "geometry_column": geometry_column or "geometry",
+                # None (no geometry in the output) is meaningful: every strategy
+                # falls back to a plain-Parquet write rather than advertising a
+                # geometry column that is not there.
+                "geometry_column": geometry_column,
                 "original_metadata": original_metadata,
                 "geoparquet_version": effective_version,
                 "compression": compression,
@@ -2513,9 +2718,6 @@ def write_geoparquet_table(
         edges: Edge interpretation, "spherical" or "planar" (default None = planar).
                Use "spherical" for data from BigQuery or other S2-based sources.
     """
-    # Setup AWS profile if needed
-    setup_aws_profile_if_needed(profile, output_file)
-
     # Auto-detect geometry column if not provided
     if geometry_column is None:
         # Try to detect from table metadata
@@ -2563,6 +2765,9 @@ def write_geoparquet_table(
     # Normalize large_string/large_binary back to string/binary for Parquet compatibility
     table = _normalize_arrow_large_types(table)
 
+    # No AWS_PROFILE env mutation here: the write target inside this block is a
+    # local (temp) file, and the upload at the end is credentialed by passing
+    # profile= straight through to upload().
     with remote_write_context(output_file, is_directory=False, verbose=verbose) as (
         actual_output,
         is_remote,
@@ -2611,6 +2816,53 @@ def format_size(size_bytes):
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.2f} TB"
+
+
+#: Struct fields a bbox covering column must expose.
+_BBOX_REQUIRED_FIELDS = frozenset({"xmin", "ymin", "xmax", "ymax"})
+
+
+def _bbox_column_from_covering(geo_meta) -> str | None:
+    """Return the bbox column name referenced by GeoParquet ``covering.bbox``.
+
+    The covering metadata is the authoritative pointer to a file's bbox column
+    (its name need not follow any convention). Returns ``None`` when absent or
+    malformed.
+    """
+    if not isinstance(geo_meta, dict):
+        return None
+    columns = geo_meta.get("columns", {})
+    if not isinstance(columns, dict):
+        return None
+    for col_info in columns.values():
+        if not isinstance(col_info, dict):
+            continue
+        covering = col_info.get("covering")
+        bbox_refs = covering.get("bbox") if isinstance(covering, dict) else None
+        if (
+            isinstance(bbox_refs, dict)
+            and _BBOX_REQUIRED_FIELDS.issubset(bbox_refs)
+            and all(isinstance(ref, list) and len(ref) == 2 for ref in bbox_refs.values())
+        ):
+            return bbox_refs["xmin"][0]
+    return None
+
+
+def _schema_struct_child_names(schema_info, column_name) -> set | None:
+    """Child field names of struct column ``column_name`` from a flat
+    ``parquet_schema()`` listing; ``None`` if the column is absent or not a struct."""
+    for i, col in enumerate(schema_info):
+        if col.get("name") != column_name:
+            continue
+        num_children = col.get("num_children") or 0
+        if num_children < 1:
+            return None
+        return {
+            schema_info[i + j].get("name", "")
+            for j in range(1, num_children + 1)
+            if i + j < len(schema_info)
+        }
+    return None
 
 
 def _find_bbox_column_in_schema(schema_info, verbose):
@@ -2729,10 +2981,8 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata, get_schema_info
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
-
     # Get schema info using DuckDB
-    schema_info = get_schema_info(safe_url)
+    schema_info = get_schema_info(parquet_file)
 
     if verbose:
         debug("\nSchema fields:")
@@ -2742,12 +2992,22 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
             if name:  # Skip empty names
                 debug(f"  {name}: {col_type}")
 
-    # Find the bbox column in the schema
-    bbox_column_name = _find_bbox_column_in_schema(schema_info, verbose)
+    # Find the bbox column: the authoritative covering metadata first (spec-valid
+    # files may use non-conventional names), then the naming-convention fallback.
+    geo_meta = get_geo_metadata(parquet_file)
+    bbox_column_name = None
+    covering_column = _bbox_column_from_covering(geo_meta)
+    if covering_column:
+        children = _schema_struct_child_names(schema_info, covering_column)
+        if children and _BBOX_REQUIRED_FIELDS.issubset(children):
+            bbox_column_name = covering_column
+            if verbose:
+                debug(f"Found bbox column from covering metadata: {covering_column}")
+    if bbox_column_name is None:
+        bbox_column_name = _find_bbox_column_in_schema(schema_info, verbose)
     has_bbox_column = bbox_column_name is not None
 
-    # Get geo metadata and check for bbox covering
-    geo_meta = get_geo_metadata(safe_url)
+    # Check for bbox covering in the geo metadata
     has_bbox_metadata = _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose)
 
     # Determine status and message
@@ -2972,6 +3232,7 @@ def add_computed_column(
     profile=None,
     replace_column=None,
     geoparquet_version=None,
+    memory_limit: str | None = None,
 ):
     """
     Add a computed column to a GeoParquet file using SQL expression.
@@ -3001,6 +3262,8 @@ def add_computed_column(
         custom_metadata: Optional dict with custom metadata (e.g., H3 info)
         profile: AWS profile name (S3 only, optional)
         replace_column: Name of existing column to replace (uses EXCLUDE in query)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB');
+            None auto-detects based on available system/container memory
 
     Example:
         add_computed_column(
@@ -3043,7 +3306,7 @@ def add_computed_column(
 
         # Only check for column collision if not replacing
         if not replace_column:
-            column_names = get_column_names(input_url)
+            column_names = get_column_names(input_parquet)
             if column_name in column_names:
                 raise InvalidParameterError(
                     "column_name",
@@ -3079,7 +3342,7 @@ def add_computed_column(
 
     # Build the query
     # Quote column name to handle special characters (e.g., colons in "metrics:area")
-    quoted_col = f'"{column_name}"'
+    quoted_col = quote_identifier(column_name)
 
     # Use EXCLUDE to drop existing column when replacing
     if replace_column:
@@ -3135,6 +3398,7 @@ TO '{output_parquet}'
         verbose=verbose,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
 
@@ -3162,8 +3426,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
     from geoparquet_io.core.duckdb_metadata import get_column_names
 
     # Check if column already exists using DuckDB
-    safe_url = safe_file_url(parquet_file, verbose=False)
-    column_names = get_column_names(safe_url)
+    column_names = get_column_names(parquet_file)
 
     if bbox_column_name in column_names:
         raise InvalidParameterError(
@@ -3179,11 +3442,12 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         debug(f"Adding bbox column for geometry column: {geom_col}")
 
     # Define SQL expression
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Create temporary file path

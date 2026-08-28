@@ -16,12 +16,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.crs_utils import extract_crs_from_parquet, is_default_crs
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import (
     GeoParquetError,
     InvalidParameterError,
 )
-from geoparquet_io.core.file_utils import safe_file_url, validate_output_path
+from geoparquet_io.core.file_utils import resolve_file_url, safe_file_url, validate_output_path
 from geoparquet_io.core.geometry_detection import detect_parquet_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.remote import (
@@ -173,7 +177,8 @@ def write_gdal_format(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_path))
 
     try:
-        input_url = safe_file_url(input_path, verbose)
+        # Raw (validated) URL for direct reads; SQL-escaped only where interpolated.
+        input_url = resolve_file_url(input_path, verbose)
 
         # Extract CRS for SRS parameter
         srs_param = _get_srs_parameter(input_path, verbose)
@@ -200,7 +205,7 @@ def write_gdal_format(
         # Execute write with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
         # so we use SQL standard escaping (double single quotes)
-        safe_input_url = _escape_sql_string(input_url)
+        safe_input_url = safe_file_url(input_path, verbose=False)
         safe_output_path = _escape_sql_string(output_path)
 
         # GDAL formats don't support complex types (STRUCT, LIST, MAP), so select only compatible columns
@@ -238,7 +243,7 @@ def write_gdal_format(
                 or pa.types.is_list(field.type)
                 or pa.types.is_map(field.type)
             ):
-                compatible_cols.append(f'"{field.name}"')
+                compatible_cols.append(quote_identifier(field.name))
 
         if not compatible_cols:
             raise GeoParquetError(ERROR_NO_COMPATIBLE_COLUMNS.format(format=config["description"]))
@@ -321,7 +326,7 @@ def write_csv(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_path))
 
     try:
-        input_url = safe_file_url(input_path, verbose)
+        input_url = resolve_file_url(input_path, verbose)
 
         # Read parquet to inspect schema
         # Use fsspec to support remote URLs (HTTP/HTTPS)
@@ -343,10 +348,10 @@ def write_csv(
         for col in columns:
             if geom_col and col == geom_col:
                 if include_wkt:
-                    select_cols.append(f'ST_AsText("{col}") as wkt')
+                    select_cols.append(f"ST_AsText({quote_identifier(col)}) as wkt")
             elif col == "bbox":
                 if include_bbox:
-                    select_cols.append(f'to_json("{col}") as bbox')
+                    select_cols.append(f"to_json({quote_identifier(col)}) as bbox")
             else:
                 # Check if column is complex type, JSON-encode if needed
                 field = schema.field(col)
@@ -355,9 +360,11 @@ def write_csv(
                     or pa.types.is_list(field.type)
                     or pa.types.is_map(field.type)
                 ):
-                    select_cols.append(f'to_json("{col}") as "{col}"')
+                    select_cols.append(
+                        f"to_json({quote_identifier(col)}) as {quote_identifier(col)}"
+                    )
                 else:
-                    select_cols.append(f'"{col}"')
+                    select_cols.append(quote_identifier(col))
 
         if not select_cols:
             raise GeoParquetError("No columns to export after filtering geometry.")
@@ -365,7 +372,7 @@ def write_csv(
         # Write to CSV with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
         # so we use SQL standard escaping (double single quotes)
-        safe_input_url = _escape_sql_string(input_url)
+        safe_input_url = safe_file_url(input_path, verbose=False)
         safe_output_path = _escape_sql_string(output_path)
 
         query = f"""
@@ -448,7 +455,7 @@ def write_geojson(
     setup_aws_profile_if_needed(profile, input_path)
 
     # Check if input has geometry column using GeoParquet metadata first
-    input_url = safe_file_url(input_path, verbose)
+    input_url = resolve_file_url(input_path, verbose)
     has_geometry = detect_parquet_geometry_column(input_url, verbose=verbose) is not None
 
     if not has_geometry:

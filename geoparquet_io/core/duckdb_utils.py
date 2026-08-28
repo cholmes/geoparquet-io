@@ -5,6 +5,7 @@ This module provides functions for creating and managing DuckDB connections
 with appropriate extensions loaded for GeoParquet operations.
 """
 
+import re
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -98,14 +99,172 @@ def quote_identifier(name: str) -> str:
     This handles column/table names with spaces, special characters, reserved words,
     or uppercase letters that need to be preserved.
 
+    The input must be a **bare** identifier, exactly as it appears in the file's
+    schema (e.g. from ``find_primary_geometry_column`` or ``table.column_names``).
+    The function is deliberately not idempotent: quoting an already-quoted name
+    yields an identifier that literally contains double quotes, so never pass it
+    something already quoted.
+
+    For a SQL *string literal* (e.g. ``WHERE path_in_schema = '...'``) use
+    :func:`_escape_sql_string` instead; the two escapes are not interchangeable.
+
     Args:
         name: The identifier (column name, table name, etc.) to quote
 
     Returns:
         A safely quoted identifier string
+
+    Raises:
+        ValueError: If the name is empty or contains a NUL byte. Both are legal
+            Parquet field names but have no quoted SQL spelling: ``""`` is a
+            zero-length delimited identifier and a NUL truncates the identifier
+            inside DuckDB's parser, so emitting either produces unparsable SQL
+            rather than an actionable error.
     """
+    if not name:
+        raise ValueError(
+            "cannot quote an empty SQL identifier: DuckDB rejects the "
+            'zero-length delimited identifier ""'
+        )
+    if "\x00" in name:
+        raise ValueError(
+            "cannot quote a SQL identifier containing a NUL byte: DuckDB's "
+            "parser truncates the identifier there"
+        )
     escaped = name.replace('"', '""')
     return f'"{escaped}"'
+
+
+# SQL keywords that could be dangerous in a user-supplied WHERE clause.
+# These could modify data or database structure.
+#
+# REPLACE is deliberately absent: ``REPLACE(str, from, to)`` is a standard
+# scalar function in DuckDB, BigQuery Standard SQL and Carto/Postgres alike, so
+# blocking it rejects ordinary filters such as ``REPLACE(zip,'-','')='19104'``.
+# A function call cannot modify data; the statement gate below is what actually
+# stops DML. TRUNCATE is kept by the opposite half of the same argument: none of
+# those three backends spells its scalar truncation ``TRUNCATE`` (they all use
+# ``trunc``/``TRUNC``), so the word only ever shows up as the DDL statement, and
+# keeping it costs no legitimate clause.
+DANGEROUS_SQL_KEYWORDS = [
+    "DROP",
+    "DELETE",
+    "INSERT",
+    "UPDATE",
+    "CREATE",
+    "ALTER",
+    "TRUNCATE",
+    "EXEC",
+    "EXECUTE",
+    "MERGE",
+    "GRANT",
+    "REVOKE",
+]
+
+
+def where_condition_fragment(where_clause: str) -> str:
+    """Return ``(<clause>\\n)`` -- the clause as one AND-able boolean condition.
+
+    A newline is placed before the closing paren so a trailing ``--`` comment in
+    the clause cannot swallow the paren -- or whatever the caller appends next
+    (another AND-ed condition, ``LIMIT``, ``USING SAMPLE``, a JOIN, ...).
+    Callers are responsible for validating the clause with
+    :func:`validate_where_clause` first.
+    """
+    return f"({where_clause}\n)"
+
+
+def where_sql_fragment(where_clause: str | None) -> str:
+    """Return a `` WHERE (...)`` fragment for ``where_clause`` (empty if None)."""
+    if not where_clause:
+        return ""
+    return f" WHERE {where_condition_fragment(where_clause)}"
+
+
+def _dangerous_keywords_in(where_clause: str) -> list[str]:
+    """Return the blocklisted keywords that appear as real SQL words.
+
+    Keywords inside string literals (``name = 'Grant County'``), inside quoted
+    identifiers, or inside comments are *data*, not statements, and must not be
+    flagged. DuckDB's own lexer is used to find the word tokens, which handles
+    every literal form the SQL dialect has (``'...'``, ``E'...'``, ``$$...$$``)
+    plus ``--`` and ``/* */`` comments. If the lexer is unavailable, fall back to
+    a conservative whole-word regex over the raw clause.
+    """
+    try:
+        tokens = duckdb.tokenize(where_clause)
+        word_types = {duckdb.token_type.keyword, duckdb.token_type.identifier}
+        words = set()
+        for position, token_type in tokens:
+            if token_type not in word_types:
+                continue
+            match = re.match(r"\w+", where_clause[position:])
+            if match:
+                words.add(match.group(0).upper())
+        return [kw for kw in DANGEROUS_SQL_KEYWORDS if kw in words]
+    except Exception:  # pragma: no cover - lexer is part of the duckdb API
+        upper_clause = where_clause.upper()
+        return [kw for kw in DANGEROUS_SQL_KEYWORDS if re.search(rf"\b{kw}\b", upper_clause)]
+
+
+def validate_where_clause(where_clause: str) -> None:
+    """
+    Validate that a user-supplied WHERE clause is a single filter expression.
+
+    Two checks run:
+
+    1. A blocklist of keywords that could modify data or database structure,
+       matched against real SQL word tokens only (see
+       :func:`_dangerous_keywords_in`).
+    2. A parser-based statement gate. The clause is composed into the same
+       ``WHERE (<clause>\\n)`` shape the callers emit and handed to DuckDB's
+       parser; anything that parses as more than one statement is rejected.
+       DuckDB's ``execute()`` runs multi-statement strings, so a clause that
+       smuggles in a second statement could ``COPY`` data out or ``ATTACH`` a
+       database (gpio #612). Counting parsed statements -- rather than scanning
+       the text for ``;`` -- is what makes the gate hold: dollar quoting
+       (``$$'$$``), block comments, line comments and ``E'\\''`` escapes all hide
+       a ``;`` from a hand-rolled quote-state walker but not from the parser.
+
+    Note: this is a safety net for *trusted* input, not a security boundary. It
+    stops a clause from becoming extra statements; it cannot stop abuse that
+    stays inside one expression (e.g. reading a local file through a scalar
+    function). Untrusted input needs parameterized queries or a real allowlist.
+
+    Args:
+        where_clause: The WHERE clause string to validate
+
+    Raises:
+        ValidationError: If dangerous SQL keywords are found, if the clause does
+            not parse, or if it composes into more than one statement.
+    """
+    from geoparquet_io.core.exceptions import ValidationError
+
+    found_keywords = _dangerous_keywords_in(where_clause)
+    if found_keywords:
+        raise ValidationError(
+            f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
+            "Only SELECT-style filtering expressions are allowed in --where. "
+            "Run data-modifying statements against the source system directly."
+        )
+
+    probe_query = f"SELECT 1 WHERE {where_condition_fragment(where_clause)}"
+    try:
+        statements = duckdb.extract_statements(probe_query)
+    except Exception as e:
+        raise ValidationError(
+            f"WHERE clause is not a single filtering expression: it could not be parsed "
+            f"as SQL. {e}. Note that --where is parsed with DuckDB's SQL dialect even "
+            "when the query runs on another backend."
+        ) from e
+
+    if len(statements) > 1:
+        raise ValidationError(
+            f"WHERE clause is not a single filtering expression: it resolves to "
+            f"{len(statements)} SQL statements, separated by a ';' (possibly hidden in a "
+            "comment or a quoted string). Run additional statements against the source "
+            "system directly."
+        )
 
 
 def build_spatial_join_condition(
@@ -617,13 +776,10 @@ def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None)
         except Exception:
             pass
 
-    # Quote column name to handle special characters
-    quoted_geom = geometry_column.replace('"', '""')
-
     # Cast to BLOB to produce plain binary without geoarrow extension type
     # Use SELECT * REPLACE to preserve column order
     return f"""
         WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB("{quoted_geom}")::BLOB AS "{quoted_geom}")
+        SELECT * REPLACE (ST_AsWKB({quote_identifier(geometry_column)})::BLOB AS {quote_identifier(geometry_column)})
         FROM __arrow_source
     """

@@ -41,7 +41,40 @@ Rules of thumb:
 - **`sum` scales with `count`** — dense cells naturally get large sums. Use it for "total stuff here," and keep `count` alongside to interpret it.
 - **`avg` does *not* scale with count** — it isolates size/intensity, so a cell with 5 large fields is comparable to one with 5 000 small fields. Best for "typical value" maps.
 - **`min`/`max`** surface outliers; pair `min:year` with `max:year` to show the span of values in a cell.
+- **Don't request `count` via `--metric`** — every output row already includes a
+  `count` column automatically (`COUNT(*)` per bucket). For per-category counts see
+  [Which breakdown to use](#which-breakdown-to-use).
 - The column must already exist and be numeric. To aggregate a **geometry-derived** value like area, compute it first with `gpio add geometry-metrics` (writes `metrics:area` in m²), then `--metric "sum:metrics:area"`.
+- **NoData sentinels skew every metric.** Real-world numeric columns frequently
+  encode "no value" as a sentinel like `-999` or `-9999` rather than SQL `NULL`
+  (e.g. GlobalBuildingAtlas heights use `-999`). Fed to `--metric` directly, the
+  sentinel drags `avg`/`sum` toward garbage and `min` reports the sentinel
+  itself. Pass `--metric-nodata "-999"` (comma-separate multiple sentinels) to
+  map them to `NULL` before aggregation — `sum`/`avg`/`min`/`max` then ignore
+  those values while `count` still counts every feature. `nan` is accepted for
+  NaN-encoded nodata, and sentinels are compared at the metric column's own
+  precision, so the classic float32 nodata `-3.4028235e+38` matches `REAL`
+  (float32) columns correctly. Sentinels apply only to numeric metric columns.
+
+=== "CLI"
+
+    ```bash
+    gpio process aggregate a5 buildings.parquet cells.parquet --auto \
+        --metric "avg:height,max:height" --metric-nodata "-999"
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('buildings.parquet').aggregate_a5(
+        resolution=10,
+        metric="avg:height,max:height",
+        metric_nodata="-999",
+    )
+    result.write('cells.parquet')
+    ```
 
 ### Which breakdown to use
 
@@ -145,6 +178,102 @@ Use `--breakdown` to pivot a categorical column into per-category count columns 
     )
     result.write('cells.parquet')
     ```
+
+### Row Filtering
+
+Use `--where` to aggregate only a subset of rows — a year, a category, a confidence threshold — without a separate pre-filter/rewrite pass. The clause is standard DuckDB SQL and applies to the source scan, so counts, metrics, breakdowns, and `--auto` resolution sizing all reflect only the filtered rows. All three subcommands (`a5`, `h3`, `admin`) support it, with the same semantics as [`gpio extract --where`](extract.md).
+
+=== "CLI"
+
+    ```bash
+    # Only 2025 rows (column names with special characters need
+    # double quotes in SQL; shell escaping varies)
+    gpio process aggregate a5 fields.parquet cells.parquet --resolution 6 \
+        --where "year(\"determination:datetime\") = 2025"
+
+    # Category / attribute filters
+    gpio process aggregate h3 fields.parquet cells.parquet --resolution 8 \
+        --where "\"crop:name\" = 'wheat'"
+    gpio process aggregate admin fields.parquet by_country.parquet --level country \
+        --where "confidence >= 50"
+
+    # Hive partition columns are filterable too
+    gpio process aggregate h3 "fields/**/*.parquet" cells.parquet --resolution 8 \
+        --where "year = 2025"
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('fields.parquet').aggregate_a5(
+        resolution=6,
+        where="year(\"determination:datetime\") = 2025",
+    )
+    result.write('cells.parquet')
+    ```
+
+On a hive-partitioned input (`year=2025/...`), the partition columns are part of the scan, so `--where "year = 2025"` filters on them and DuckDB prunes the partitions it does not need. Partition columns never appear in the aggregated output.
+
+The clause must be a single filtering expression: a `;` statement separator outside a quoted string is rejected, as are keywords that modify data (`DROP`, `DELETE`, `INSERT`, ...).
+### Bucketing Point
+
+Grid keying reduces every feature to a single point (by default the geometry
+centroid) just to pick a cell — and with the default cell-polygon output, the
+input geometry is read *only* to compute that point. For large polygon datasets
+where geometry dominates file size, `--bucket-point bbox` derives the point from
+a [bbox covering column](add.md) instead and **skips reading the geometry column
+entirely**, cutting the scan to a small fraction:
+
+| Value | Keying point | Reads geometry column? |
+|-------|--------------|------------------------|
+| `geometry` *(default)* | `ST_Centroid(geometry)` | yes |
+| `bbox` | Center of the bbox covering column | **no** |
+| `<column>` | An existing point column | **no** |
+
+The bbox column is auto-detected from the file's GeoParquet `covering.bbox`
+metadata when present, falling back to naming conventions (`bbox`, `*_bbox`,
+`bounds`, `extent` structs with `xmin`/`ymin`/`xmax`/`ymax`); pass
+`--bbox-column NAME` for uncovered, nonconventional names. Bbox center differs from the true
+centroid only for L-shaped/very elongated features — negligible at aggregation
+resolutions, where keying by centroid is already an approximation.
+
+=== "CLI"
+
+    ```bash
+    # 225 GB of building polygons, but only the bbox + height columns are read
+    gpio process aggregate a5 buildings.parquet cells.parquet --auto \
+        --bucket-point bbox --metric "avg:height"
+
+    # Nonstandard bbox column name (not referenced by covering metadata and
+    # not matching the naming conventions, so it can't be auto-detected)
+    gpio process aggregate a5 buildings.parquet cells.parquet --resolution 8 \
+        --bucket-point bbox --bbox-column my_box
+
+    # Key from an existing point column
+    gpio process aggregate h3 parcels.parquet cells.parquet --resolution 8 \
+        --bucket-point anchor_point
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    result = gpio.read('buildings.parquet').aggregate_a5(
+        resolution=10,
+        metric="avg:height",
+        bucket_point="bbox",
+    )
+    result.write('cells.parquet')
+    ```
+
+!!! note "`--auto` still probes the geometry column"
+    Auto-resolution sizing samples geometry centroids over a bounded sample
+    (≤500k rows), so `--auto` reads a small slice of the geometry column even
+    with `--bucket-point bbox`. Pass `--resolution` explicitly to avoid touching
+    geometry altogether.
 
 ### Output Geometry
 
@@ -393,6 +522,8 @@ Regardless of the chosen bucket scheme, every output file contains:
 Both commands support the standard output options:
 
 ```bash
+--where "confidence >= 50"  # DuckDB WHERE clause filtering input rows
+--metric-nodata "-999"    # NoData sentinel(s) mapped to NULL in --metric columns
 --compression SNAPPY      # Output compression (default: ZSTD)
 --geoparquet-version 1.1  # GeoParquet spec version
 --show-sql                # Print the generated DuckDB SQL
@@ -401,6 +532,8 @@ Both commands support the standard output options:
 
 ## See Also
 
+- [Overview Levels](process-overview.md) — derive coarser levels from an aggregate output
+- [PMTiles Pyramids](geojson.md#pmtiles-pyramids) — bake all levels into one zoom-banded archive
 - [Adding Spatial Indices](add.md) — add A5/H3 columns before aggregating
 - [Partitioning Files](partition.md) — split large files by spatial index or admin region
 - [Python API Reference](../api/python-api.md#aggregation) — full API documentation

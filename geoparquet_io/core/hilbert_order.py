@@ -213,6 +213,7 @@ def hilbert_order(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Reorder a GeoParquet file using Hilbert curve ordering.
@@ -233,6 +234,7 @@ def hilbert_order(
         row_group_rows: Exact number of rows per row group
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB')
     """
     effective_version = geoparquet_version or DEFAULT_GEOPARQUET_VERSION
     if effective_version == "1.1":
@@ -267,6 +269,7 @@ def hilbert_order(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit,
         )
         return
 
@@ -284,6 +287,7 @@ def hilbert_order(
         profile,
         geoparquet_version,
         overwrite,
+        memory_limit,
     )
 
 
@@ -298,6 +302,7 @@ def _hilbert_order_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None = None,
 ) -> None:
     """Handle streaming input/output for hilbert_order."""
     # Suppress verbose when streaming to stdout
@@ -364,6 +369,7 @@ def _hilbert_order_streaming(
                 verbose=verbose,
                 profile=profile,
                 geoparquet_version=geoparquet_version,
+                memory_limit=memory_limit,
             )
             if not should_stream_output(output_path):
                 success(f"Wrote data without Hilbert ordering to: {output_path}")
@@ -409,6 +415,7 @@ def _hilbert_order_streaming(
             verbose=verbose,
             profile=profile,
             geoparquet_version=geoparquet_version,
+            memory_limit=memory_limit,
         )
 
         if not should_stream_output(output_path):
@@ -428,6 +435,7 @@ def _hilbert_order_file_based(
     profile: str | None,
     geoparquet_version: str | None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """Handle file-based hilbert_order operation."""
     # Check if output file exists and handle overwrite (fixes issue #278)
@@ -460,7 +468,7 @@ def _hilbert_order_file_based(
     # Count empty/null geometries
     empty_count_result = con.execute(f"""
         SELECT COUNT(*) FROM '{safe_url}'
-        WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
+        WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
     """).fetchone()
     empty_count = empty_count_result[0] if empty_count_result else 0
 
@@ -490,6 +498,7 @@ def _hilbert_order_file_based(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
+            memory_limit=memory_limit,
         )
         con.close()
         if temp_file_created and temp_file:
@@ -507,13 +516,13 @@ def _hilbert_order_file_based(
     order_query = f"""
         WITH non_empty AS (
             SELECT * FROM '{safe_url}'
-            WHERE "{geometry_column}" IS NOT NULL AND NOT ST_IsEmpty("{geometry_column}")
-            ORDER BY ST_Hilbert("{geometry_column}",
+            WHERE {quote_identifier(geometry_column)} IS NOT NULL AND NOT ST_IsEmpty({quote_identifier(geometry_column)})
+            ORDER BY ST_Hilbert({quote_identifier(geometry_column)},
                 ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
         ),
         empty_or_null AS (
             SELECT * FROM '{safe_url}'
-            WHERE "{geometry_column}" IS NULL OR ST_IsEmpty("{geometry_column}")
+            WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
         )
         SELECT * FROM non_empty
         UNION ALL
@@ -534,6 +543,7 @@ def _hilbert_order_file_based(
             profile=profile,
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
+            memory_limit=memory_limit,
         )
         if verbose:
             debug("Hilbert ordering completed successfully")

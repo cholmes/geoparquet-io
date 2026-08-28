@@ -14,6 +14,7 @@ from geoparquet_io.core.crs_utils import (
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
+    quote_identifier,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
@@ -81,8 +82,10 @@ def add_h3_table(
         if geom_is_blob and geom_col in table.column_names:
             # Create view with geometry conversion
             # Quote all column names for safety with special characters
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [
+                f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+            ]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -92,7 +95,7 @@ def add_h3_table(
             source_ref = "__input_table"
 
         # Build H3 column query (reproject to lon/lat when source is non-CRS84)
-        geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs)
+        geom_ref = transform_geom_sql(quote_identifier(geom_col), source_crs)
         h3_expr = f"""h3_latlng_to_cell_string(
             ST_Y(ST_Centroid({geom_ref})),
             ST_X(ST_Centroid({geom_ref})),
@@ -100,21 +103,21 @@ def add_h3_table(
         )"""
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build SELECT with geometry converted back to WKB
         if select_cols:
             query = f"""
                 SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {h3_expr} AS "{h3_column_name}"
+                       ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       {h3_expr} AS {quote_identifier(h3_column_name)}
                 FROM {source_ref}
             """
         else:
             query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {h3_expr} AS "{h3_column_name}"
+                SELECT ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)},
+                       {h3_expr} AS {quote_identifier(h3_column_name)}
                 FROM {source_ref}
             """
         result = con.execute(query).arrow().read_all()
@@ -140,13 +143,13 @@ def _make_add_h3_query(
     ``source_crs`` reprojects a non-CRS84 input to lon/lat before centroid keying
     (#525); ``None`` (CRS84 / CRS-less) leaves the geometry untouched.
     """
-    geom_ref = transform_geom_sql(f'"{geometry_column}"', source_crs)
+    geom_ref = transform_geom_sql(quote_identifier(geometry_column), source_crs)
     h3_expr = f"""h3_latlng_to_cell_string(
         ST_Y(ST_Centroid({geom_ref})),
         ST_X(ST_Centroid({geom_ref})),
         {resolution}
     )"""
-    return f'SELECT *, {h3_expr} AS "{h3_column_name}" FROM {source}'
+    return f"SELECT *, {h3_expr} AS {quote_identifier(h3_column_name)} FROM {source}"
 
 
 def add_h3_column(
@@ -163,6 +166,7 @@ def add_h3_column(
     profile: str | None = None,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add an H3 cell ID column to a GeoParquet file.
@@ -191,6 +195,7 @@ def add_h3_column(
         row_group_rows: Exact number of rows per row group
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     # Configure logging verbosity
     configure_verbose(verbose)
@@ -215,6 +220,7 @@ def add_h3_column(
             row_group_rows,
             profile,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -229,7 +235,9 @@ def add_h3_column(
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # H3 keying expects lon/lat degrees; reproject non-CRS84 input first (#525).
-    geom_ref = transform_geom_sql(f'"{geom_col}"', source_crs_string(input_parquet, verbose))
+    geom_ref = transform_geom_sql(
+        quote_identifier(geom_col), source_crs_string(input_parquet, verbose)
+    )
 
     # Define the H3 SQL expression (using string format for portability)
     sql_expression = f"""h3_latlng_to_cell_string(
@@ -261,6 +269,7 @@ def add_h3_column(
         custom_metadata=h3_metadata,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not dry_run:
@@ -282,6 +291,7 @@ def _add_h3_streaming(
     row_group_rows: int | None,
     profile: str | None,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_h3."""
     # Suppress verbose when streaming to stdout
@@ -326,6 +336,7 @@ def _add_h3_streaming(
         row_group_rows=row_group_rows,
         profile=profile,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):

@@ -9,7 +9,7 @@ from geoparquet_io.core.common import (
     check_bbox_structure,
     detect_geoparquet_file_type,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -25,14 +25,24 @@ from geoparquet_io.core.streaming import (
 )
 
 
-def _build_bbox_sql(geometry_column: str, bbox_column_name: str = "bbox") -> str:
-    """Build SQL expression for bbox struct column."""
-    return f"""STRUCT_PACK(
-        xmin := ST_XMin("{geometry_column}"),
-        ymin := ST_YMin("{geometry_column}"),
-        xmax := ST_XMax("{geometry_column}"),
-        ymax := ST_YMax("{geometry_column}")
-    ) AS "{bbox_column_name}" """
+def _bbox_metadata_advice(parquet_file: str) -> str:
+    """Advice for a file that has a bbox column but no covering metadata.
+
+    'covering' is 1.1-only, so a 1.0 file cannot be fixed by 'add bbox-metadata'
+    (which refuses) — it needs a version upgrade first.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+    from geoparquet_io.core.geo_metadata import covering_supported
+
+    geo_meta = get_geo_metadata(parquet_file) or {}
+    version = geo_meta.get("version", "")
+    if covering_supported(version):
+        return "Run 'gpio add bbox-metadata' to add metadata, or use --force to replace."
+    return (
+        f"'covering' requires GeoParquet 1.1+ (this file is {version}). Use --force to "
+        "rewrite the bbox column at 1.1 with covering, or convert first: "
+        "gpio convert geoparquet IN.parquet OUT.parquet --geoparquet-version 1.1"
+    )
 
 
 def add_bbox_table(
@@ -73,11 +83,15 @@ def add_bbox_table(
         columns_info = con.execute("DESCRIBE __input_table").fetchall()
         geom_is_blob = any(col[0] == geom_col and "BLOB" in col[1].upper() for col in columns_info)
 
+        quoted_geom_col = quote_identifier(geom_col)
+        quoted_bbox_col = quote_identifier(bbox_column_name)
+
         if geom_is_blob and geom_col in table.column_names:
             # Create view with geometry conversion
-            # Quote column names to handle special characters (colons, spaces, etc.)
-            other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-            col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+            # Quote column names to handle special characters (colons, spaces,
+            # embedded quotes, etc.)
+            other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+            col_defs = other_cols + [f"ST_GeomFromWKB({quoted_geom_col}) AS {quoted_geom_col}"]
             view_query = (
                 f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
             )
@@ -88,28 +102,28 @@ def add_bbox_table(
 
         # Build query to add bbox column
         bbox_expr = f"""STRUCT_PACK(
-            xmin := ST_XMin("{geom_col}"),
-            ymin := ST_YMin("{geom_col}"),
-            xmax := ST_XMax("{geom_col}"),
-            ymax := ST_YMax("{geom_col}")
+            xmin := ST_XMin({quoted_geom_col}),
+            ymin := ST_YMin({quoted_geom_col}),
+            xmax := ST_XMax({quoted_geom_col}),
+            ymax := ST_YMax({quoted_geom_col})
         )"""
 
         # Get non-geometry columns
-        other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
+        other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
         select_cols = ", ".join(other_cols) if other_cols else ""
 
         # Build SELECT with geometry converted back to WKB
         if select_cols:
             query = f"""
                 SELECT {select_cols},
-                       ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {bbox_expr} AS "{bbox_column_name}"
+                       ST_AsWKB({quoted_geom_col}) AS {quoted_geom_col},
+                       {bbox_expr} AS {quoted_bbox_col}
                 FROM {source_ref}
             """
         else:
             query = f"""
-                SELECT ST_AsWKB("{geom_col}") AS "{geom_col}",
-                       {bbox_expr} AS "{bbox_column_name}"
+                SELECT ST_AsWKB({quoted_geom_col}) AS {quoted_geom_col},
+                       {bbox_expr} AS {quoted_bbox_col}
                 FROM {source_ref}
             """
         result = con.execute(query).arrow().read_all()
@@ -130,17 +144,21 @@ def _make_add_bbox_query(
     replace_existing: bool = False,
 ) -> str:
     """Build query to add bbox column to a source."""
+    quoted_geom_col = quote_identifier(geometry_column)
+    quoted_bbox_col = quote_identifier(bbox_column_name)
     bbox_expr = f"""STRUCT_PACK(
-        xmin := ST_XMin("{geometry_column}"),
-        ymin := ST_YMin("{geometry_column}"),
-        xmax := ST_XMax("{geometry_column}"),
-        ymax := ST_YMax("{geometry_column}")
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     if replace_existing:
-        return f'SELECT * EXCLUDE ("{bbox_column_name}"), {bbox_expr} AS "{bbox_column_name}" FROM {source}'
+        return (
+            f"SELECT * EXCLUDE ({quoted_bbox_col}), {bbox_expr} AS {quoted_bbox_col} FROM {source}"
+        )
     else:
-        return f'SELECT *, {bbox_expr} AS "{bbox_column_name}" FROM {source}'
+        return f"SELECT *, {bbox_expr} AS {quoted_bbox_col} FROM {source}"
 
 
 def add_bbox_column(
@@ -157,6 +175,7 @@ def add_bbox_column(
     force: bool = False,
     geoparquet_version: str | None = None,
     overwrite: bool = False,
+    memory_limit: str | None = None,
 ) -> None:
     """
     Add a bbox struct column to a GeoParquet file.
@@ -184,9 +203,12 @@ def add_bbox_column(
         profile: AWS profile name (S3 only, optional)
         force: Whether to replace an existing bbox column
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
+        memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
 
     Note:
-        Bbox covering metadata is automatically added when the file is written.
+        Bbox covering metadata is automatically added when the file is written,
+        except for GeoParquet 1.0 output: 'covering' was introduced in 1.1, so a
+        1.0 file gets the bbox column without the covering key.
     """
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -204,6 +226,7 @@ def add_bbox_column(
             profile,
             force,
             geoparquet_version,
+            memory_limit=memory_limit,
         )
         return
 
@@ -222,6 +245,7 @@ def add_bbox_column(
         force,
         geoparquet_version,
         overwrite,
+        memory_limit=memory_limit,
     )
 
 
@@ -237,6 +261,7 @@ def _add_bbox_streaming(
     profile: str | None,
     force: bool,
     geoparquet_version: str | None,
+    memory_limit: str | None,
 ) -> None:
     """Handle streaming input/output for add_bbox."""
     # Suppress verbose when streaming to stdout
@@ -284,6 +309,7 @@ def _add_bbox_streaming(
         profile=profile,
         custom_metadata=covering_metadata,
         geoparquet_version=geoparquet_version,
+        memory_limit=memory_limit,
     )
 
     if not should_stream_output(output_path):
@@ -303,7 +329,8 @@ def _add_bbox_file_based(
     profile: str | None,
     force: bool,
     geoparquet_version: str | None,
-    overwrite: bool = False,
+    overwrite: bool,
+    memory_limit: str | None,
 ) -> None:
     """Handle file-based add_bbox operation."""
     # Check if output file exists and handle overwrite (fixes issue #278)
@@ -343,18 +370,19 @@ def _add_bbox_file_based(
                 replace_column = _handle_existing_bbox_force(bbox_column_name, existing_bbox_col)
             else:
                 progress(f"File has bbox column '{existing_bbox_col}' but lacks covering metadata.")
-                progress("Run 'gpio add bbox-metadata' to add metadata, or use --force to replace.")
+                progress(_bbox_metadata_advice(input_parquet))
                 return
 
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
 
     # Define the SQL expression (the only unique part)
+    quoted_geom_col = quote_identifier(geom_col)
     sql_expression = f"""STRUCT_PACK(
-        xmin := ST_XMin({geom_col}),
-        ymin := ST_YMin({geom_col}),
-        xmax := ST_XMax({geom_col}),
-        ymax := ST_YMax({geom_col})
+        xmin := ST_XMin({quoted_geom_col}),
+        ymin := ST_YMin({quoted_geom_col}),
+        xmax := ST_XMax({quoted_geom_col}),
+        ymax := ST_YMax({quoted_geom_col})
     )"""
 
     # Build covering metadata for the bbox column (GeoParquet 1.1+ spec)
@@ -387,6 +415,7 @@ def _add_bbox_file_based(
         replace_column=replace_column,
         geoparquet_version=geoparquet_version,
         custom_metadata=covering_metadata,
+        memory_limit=memory_limit,
     )
 
     if not dry_run:

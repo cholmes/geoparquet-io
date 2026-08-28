@@ -11,7 +11,6 @@ Also supports Arrow IPC streaming for Unix-style piping:
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -27,14 +26,20 @@ from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
+    quote_identifier,
+    validate_where_clause,
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     GeoParquetError,
     InvalidParameterError,
-    ValidationError,
 )
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import (
+    handle_output_overwrite,
+    is_partition_path,
+    safe_file_url,
+)
+from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -60,61 +65,6 @@ def get_parquet_row_count(parquet_file: str) -> int:
     from geoparquet_io.core.duckdb_metadata import get_row_count
 
     return get_row_count(parquet_file)
-
-
-# SQL keywords that could be dangerous in a WHERE clause
-# These could modify data or database structure
-DANGEROUS_SQL_KEYWORDS = [
-    "DROP",
-    "DELETE",
-    "INSERT",
-    "UPDATE",
-    "CREATE",
-    "ALTER",
-    "TRUNCATE",
-    "EXEC",
-    "EXECUTE",
-    "MERGE",
-    "REPLACE",
-    "GRANT",
-    "REVOKE",
-]
-
-
-def validate_where_clause(where_clause: str) -> None:
-    """
-    Validate WHERE clause for potentially dangerous SQL keywords.
-
-    This is a basic safety check to prevent accidental or intentional
-    SQL injection attacks. It checks for keywords that could modify
-    data or database structure.
-
-    Note: This feature is intended for trusted users. For untrusted input,
-    additional validation or parameterized queries would be required.
-
-    Args:
-        where_clause: The WHERE clause string to validate
-
-    Raises:
-        ValidationError: If dangerous SQL keywords are found
-    """
-    # Build pattern to match dangerous keywords as whole words (case-insensitive)
-    # Use word boundaries to avoid false positives (e.g., "UPDATED_AT" shouldn't match)
-    upper_clause = where_clause.upper()
-    found_keywords = []
-
-    for keyword in DANGEROUS_SQL_KEYWORDS:
-        # Match keyword as a whole word
-        pattern = rf"\b{keyword}\b"
-        if re.search(pattern, upper_clause):
-            found_keywords.append(keyword)
-
-    if found_keywords:
-        raise ValidationError(
-            f"WHERE clause contains potentially dangerous SQL keywords: {', '.join(found_keywords)}. "
-            "Only SELECT-style filtering expressions are allowed in --where. "
-            "If you need to perform data modifications, use DuckDB directly."
-        )
 
 
 def looks_like_latlong_bbox(bbox: tuple[float, float, float, float]) -> bool:
@@ -173,11 +123,9 @@ def _get_crs_from_file(input_parquet: str, geometry_col: str) -> dict | str | No
         parse_geometry_logical_type,
     )
 
-    safe_url = safe_file_url(input_parquet, verbose=False)
-
     # First try GeoParquet file-level metadata
     try:
-        geo_meta = get_geo_metadata(safe_url)
+        geo_meta = get_geo_metadata(input_parquet)
         if geo_meta:
             columns_meta = geo_meta.get("columns", {})
             if geometry_col in columns_meta:
@@ -190,7 +138,7 @@ def _get_crs_from_file(input_parquet: str, geometry_col: str) -> dict | str | No
 
     # Fall back to Parquet geo logical type (for GeoParquet 2.0 / parquet-geo)
     try:
-        schema_info = get_schema_info(safe_url)
+        schema_info = get_schema_info(input_parquet)
         for col in schema_info:
             name = col.get("name", "")
             if name != geometry_col:
@@ -218,10 +166,10 @@ def _get_data_bounds(input_parquet: str, geometry_col: str) -> tuple | None:
         safe_url = safe_file_url(input_parquet, verbose=False)
         result = con.execute(f"""
             SELECT
-                MIN(ST_XMin("{geometry_col}")) as xmin,
-                MIN(ST_YMin("{geometry_col}")) as ymin,
-                MAX(ST_XMax("{geometry_col}")) as xmax,
-                MAX(ST_YMax("{geometry_col}")) as ymax
+                MIN(ST_XMin({quote_identifier(geometry_col)})) as xmin,
+                MIN(ST_YMin({quote_identifier(geometry_col)})) as ymin,
+                MAX(ST_XMax({quote_identifier(geometry_col)})) as xmax,
+                MAX(ST_YMax({quote_identifier(geometry_col)})) as ymax
             FROM read_parquet('{safe_url}')
         """).fetchone()
         con.close()
@@ -592,12 +540,12 @@ def build_spatial_filter(
         if bbox_info.get("has_bbox_column"):
             bbox_col = bbox_info["bbox_column_name"]
             conditions.append(
-                f'("{bbox_col}".xmax >= {xmin} AND "{bbox_col}".xmin <= {xmax} '
-                f'AND "{bbox_col}".ymax >= {ymin} AND "{bbox_col}".ymin <= {ymax})'
+                f"({quote_identifier(bbox_col)}.xmax >= {xmin} AND {quote_identifier(bbox_col)}.xmin <= {xmax} "
+                f"AND {quote_identifier(bbox_col)}.ymax >= {ymin} AND {quote_identifier(bbox_col)}.ymin <= {ymax})"
             )
         else:
             conditions.append(
-                f'ST_Intersects("{geometry_col}", ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))'
+                f"ST_Intersects({quote_identifier(geometry_col)}, ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
             )
 
     if geometry_wkt:
@@ -619,7 +567,7 @@ def build_extract_query(
     """Build the complete extraction query."""
     from geoparquet_io.core.partition.reader import build_read_parquet_expr
 
-    col_list = ", ".join(f'"{c}"' for c in columns)
+    col_list = ", ".join(quote_identifier(c) for c in columns)
     # Use partition reader to build read_parquet expression with proper options
     read_expr = build_read_parquet_expr(
         input_path,
@@ -652,7 +600,7 @@ def _build_query_for_source(
     limit: int | None = None,
 ) -> str:
     """Build extraction query for a DuckDB source reference (table or read_parquet)."""
-    col_list = ", ".join(f'"{c}"' for c in columns)
+    col_list = ", ".join(quote_identifier(c) for c in columns)
     query = f"SELECT {col_list} FROM {source_ref}"
 
     conditions = []
@@ -709,8 +657,10 @@ def _setup_geometry_view(
         return "__input_table", False
 
     # Create view with geometry conversion (quote column names for special chars)
-    other_cols = [f'"{c}"' for c in table.column_names if c != geom_col]
-    col_defs = other_cols + [f'ST_GeomFromWKB("{geom_col}") AS "{geom_col}"']
+    other_cols = [quote_identifier(c) for c in table.column_names if c != geom_col]
+    col_defs = other_cols + [
+        f"ST_GeomFromWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+    ]
     view_query = f"CREATE VIEW __input_view AS SELECT {', '.join(col_defs)} FROM __input_table"
     con.execute(view_query)
     return "__input_view", True
@@ -726,7 +676,9 @@ def _build_query_with_wkb_conversion(
 ) -> str:
     """Build query with WKB conversion for geometry column."""
     cols_with_wkb = [
-        f'ST_AsWKB("{geom_col}") AS "{geom_col}"' if c == geom_col else f'"{c}"'
+        f"ST_AsWKB({quote_identifier(geom_col)}) AS {quote_identifier(geom_col)}"
+        if c == geom_col
+        else quote_identifier(c)
         for c in selected_columns
     ]
     col_list = ", ".join(cols_with_wkb)
@@ -814,6 +766,29 @@ def extract_table(
         con.close()
 
 
+def _output_stats_are_stale(
+    input_path: str,
+    spatial_filter: str | None,
+    where: str | None,
+    limit: int | None,
+) -> bool:
+    """True when the input's carried bbox/geometry_types cannot describe the output.
+
+    Two independent reasons:
+
+    * A row filter (``--bbox``/``--geometry``/``--where``/``--limit``) keeps only
+      part of the input, so the carried stats over-cover the result.
+    * A glob/directory input merges several files, but ``get_parquet_metadata``
+      reads the footer of the FIRST file only — carrying its stats would
+      UNDER-cover the merged output, which makes conformant readers skip data.
+
+    A single-file, unfiltered column projection keeps its stats.
+    """
+    if spatial_filter or where or limit is not None:
+        return True
+    return is_partition_path(input_path)
+
+
 def _extract_streaming(
     input_path: str,
     output_path: str | None,
@@ -877,6 +852,9 @@ def _extract_streaming(
 
         if verbose:
             debug(f"Streaming extraction query: {query}")
+
+        if _output_stats_are_stale(input_path, spatial_filter, where, limit):
+            metadata = strip_derived_stats(metadata)
 
         # Write output
         write_output(
@@ -1010,8 +988,15 @@ def _execute_extraction(
         metadata = None
         try:
             metadata, _ = get_parquet_metadata(input_parquet, verbose=False)
-        except Exception:
-            pass  # Metadata preservation is optional
+        except Exception as e:
+            # Preservation is best-effort (a corrupt footer surfaces as anything
+            # from OSError to GeoParquetError to an Arrow exception), but don't
+            # silently drop all geo/kv metadata: warn so it is visible.
+            warn(f"Could not read input metadata for preservation; skipping: {e}")
+
+        invalidate_derived_stats = _output_stats_are_stale(
+            input_parquet, spatial_filter, where, limit
+        )
 
         # Repair invalid geometry (issue #506). Auto-detects GEOMETRY vs WKB
         # encoding and rewrites the query to repair in place before the write.
@@ -1035,6 +1020,7 @@ def _execute_extraction(
             write_strategy=write_strategy,
             memory_limit=memory_limit,
             input_file=input_parquet,
+            invalidate_derived_stats=invalidate_derived_stats,
         )
 
         # Get extracted row count from output file metadata (fast - reads footer only)

