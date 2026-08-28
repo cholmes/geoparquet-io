@@ -53,6 +53,7 @@ long run of write-path, metadata and CRS correctness fixes.
 
 ### Fixed
 
+- **`gpio convert geojson - out.geojson` now reads stdin into a named output file** instead of failing with `File not found: -`. The other four converters still reject `-`; they have no stdin-consuming path to route to ([#749](https://github.com/geoparquet/geoparquet-io/issues/749)). ([#723](https://github.com/geoparquet/geoparquet-io/issues/723))
 - **`convert geojson --write-bbox` and `--id-field` no longer truncate every Feature,** and no longer abort the whole conversion on a NULL id value or an EMPTY geometry — each member is omitted instead. ([#726](https://github.com/geoparquet/geoparquet-io/issues/726))
 - **Windows native-geo statistics: the zeros are a read, not a write.** pyarrow reads the real bounds from the same file DuckDB's `parquet_metadata()` reports as `[0, 0, 0, 0]`, so files gpio writes on Windows are correct and it is gpio's own reader that misreports them. ([#721](https://github.com/geoparquet/geoparquet-io/issues/721), [#748](https://github.com/geoparquet/geoparquet-io/issues/748))
 - **Guide examples no longer use flags the CLI does not accept.** Nonexistent options are corrected and missing option-table rows filled in. ([#735](https://github.com/geoparquet/geoparquet-io/issues/735))
