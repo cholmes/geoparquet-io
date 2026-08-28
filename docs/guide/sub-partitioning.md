@@ -46,18 +46,17 @@ by_country/
 | `--resolution` / `--level` | Spatial index resolution (or use `--auto`) |
 | `--auto` | Auto-calculate optimal resolution |
 
+Sub-partitioning is available on `gpio partition h3`, `gpio partition s2`, and
+`gpio partition quadkey`. `gpio partition a5` does not accept `--min-size` or
+`--in-place` yet ([#733](https://github.com/geoparquet/geoparquet-io/issues/733));
+partition A5 files one at a time instead.
+
 ## Examples
 
 === "H3"
 
     ```bash
     gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
-    ```
-
-=== "A5"
-
-    ```bash
-    gpio partition a5 by_country/ --min-size 100MB --resolution 12 --in-place
     ```
 
 === "S2"
