@@ -323,7 +323,7 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
     geojson_str = gpio.read('data.parquet').to_geojson()
     ```
 
-File output uses DuckDB's GDAL integration to produce properly formatted GeoJSON with RFC 7946 compliance.
+File output is generated directly from query results as RFC 7946-compliant GeoJSON; no GDAL is involved.
 
 ## Options Reference
 
@@ -399,13 +399,14 @@ By default, streaming outputs newline-delimited GeoJSONSeq. To output a complete
 gpio convert geojson data.parquet --feature-collection > output.geojson
 ```
 
-### GDAL Layer Creation Options
+### No GDAL Layer Creation Options
 
-`gpio convert geojson` does not expose GDAL layer creation options. The GeoJSON
-writer sets them internally, and the settings that matter for GeoJSON output are
-available as dedicated flags (`--precision`, `--write-bbox`, `--id-field`,
-`--feature-collection`, `--pretty`). If you need a driver option that has no
-dedicated flag, use `ogr2ogr` directly on the output file.
+`gpio convert geojson` does not use GDAL, so there are no layer creation
+options to pass: the writer generates GeoJSON directly from query results. The
+settings that matter for GeoJSON output are available as dedicated flags
+(`--precision`, `--write-bbox`, `--id-field`, `--feature-collection`,
+`--pretty`). If you need a GDAL driver option that has no dedicated flag, run
+`ogr2ogr` on the output file.
 
 ## Performance Tips
 

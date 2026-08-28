@@ -393,7 +393,7 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   was stale to match. `docs/guide/geojson.md` and `docs/cli/convert.md`
   documented a `--lco KEY=VALUE` passthrough for GDAL layer creation options on
   `gpio convert geojson`; no such option has ever existed, so the section now
-  explains that the writer sets layer creation options internally and points at
+  explains that the GeoJSON writer does not use GDAL at all and points at
   `ogr2ogr` for driver options with no dedicated flag. `docs/guide/sub-partitioning.md`
   showed `gpio partition a5 DIR --min-size … --in-place`; `partition a5` supports
   neither flag (`sub_partition_directory` only registers `h3`, `s2` and
