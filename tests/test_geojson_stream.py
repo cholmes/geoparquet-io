@@ -431,6 +431,25 @@ class TestConvertToGeoJSONFile:
         assert "features" in geojson
         assert len(geojson["features"]) == count
 
+    @pytest.mark.parametrize("pretty", [False, True])
+    def test_file_output_uses_lf_on_every_platform(self, output_file, pretty):
+        """The same input must produce the same bytes on Windows as everywhere else.
+
+        Python text mode translates every "\\n" to ``os.linesep``, so without an
+        explicit ``newline="\\n"`` the writer emitted CRLF GeoJSON on Windows.
+        That is a different file for the same input: checksums stop matching
+        across platforms, byte offsets shift, and anything reading the stream as
+        bytes sees separators it did not ask for. This assertion is load-bearing
+        on the Windows CI lane; elsewhere it just documents the guarantee.
+        """
+        convert_to_geojson(str(PLACES_PARQUET), output_path=output_file, pretty=pretty)
+
+        raw = Path(output_file).read_bytes()
+        assert b"\r\n" not in raw, "GeoJSON output contains CRLF line endings"
+        assert raw.endswith(b"\n")
+        # Still parses, i.e. the newline argument did not cost us anything.
+        assert json.loads(raw.decode("utf-8"))["type"] == "FeatureCollection"
+
     def test_routing_based_on_output(self, output_file, capsys):
         """Test that convert_to_geojson routes correctly based on output."""
         # Without output - streams to stdout
