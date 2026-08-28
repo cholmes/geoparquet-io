@@ -129,7 +129,7 @@ comment on the line above the fence — `<!-- doctest: skip="why" -->`,
 `network`, `setup="…"`, `needs-tippecanoe`, and friends. The reason is
 mandatory and has to be true of the whole fence.
 
-**[`tests/docs_examples/README.md`](https://github.com/cholmes/geoparquet-io/blob/main/tests/docs_examples/README.md)
+**[`tests/docs_examples/README.md`](https://github.com/geoparquet/geoparquet-io/blob/main/tests/docs_examples/README.md)
 is the reference**: the full directive vocabulary, how the seeding works, what
 the meta-test rejects, and how to write a reason that will still mean something
 to the next person.

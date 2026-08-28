@@ -22,6 +22,7 @@ gpio skills --copy .
 Copy the skill content to your clipboard and paste it at the start of a conversation:
 
 === "macOS"
+    <!-- doctest: skip="uses pbcopy, which only exists on macOS" -->
     ```bash
     gpio skills --show | pbcopy
     ```

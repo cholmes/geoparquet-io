@@ -19,6 +19,7 @@ Install gpio with plugins in one command:
     ```
 
 === "pipx"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     # Install gpio with a plugin
     pipx install geoparquet-io --preinstall gpio-myplugin
@@ -56,7 +57,7 @@ For Python API usage, install plugins as regular dependencies:
     ```
 
 === "pip"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     pip install geoparquet-io gpio-myplugin
     ```
@@ -117,6 +118,7 @@ gpio myplugin --help
 ### From Tool Installation
 
 === "uv"
+    <!-- doctest: skip="uninstalls and reinstalls the developer's global gpio" -->
     ```bash
     # Reinstall without the plugin
     uv tool uninstall geoparquet-io
@@ -139,6 +141,7 @@ gpio myplugin --help
     ```
 
 === "pip"
+    <!-- doctest: skip="illustrates authoring a plugin package" -->
     ```bash
     pip uninstall gpio-myplugin
     ```

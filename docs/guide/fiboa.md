@@ -11,6 +11,7 @@ The `gpio-fiboa` plugin adds commands for working with field boundary datasets a
     ```
 
 === "pipx"
+    <!-- doctest: skip="requires the gpio-fiboa plugin" -->
     ```bash
     pipx install geoparquet-io --preinstall gpio-fiboa
     ```

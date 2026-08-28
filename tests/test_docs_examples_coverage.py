@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.docs_examples.collector import BASH, split_statements
 from tests.docs_examples.parser import iter_fences
 from tests.docs_examples.seeder import seed_workdir
 
@@ -36,55 +37,37 @@ GUIDE_PAGES = sorted(GUIDE_DIR.glob("*.md"))
 #: Fences this check cannot judge locally: they need the network, credentials, a
 #: plugin, or a tool that may not be installed. Their commands cannot be run
 #: here, so "would it pass?" is unanswerable and the skip stands on its own.
+#: Clipboard tools (pbcopy) and installer commands (uv tool, pipx, pip, sudo,
+#: brew, apt) are unjudgeable too — and the installers MUST stay here: this
+#: audit executes candidate statements for real, so judging a skipped
+#: ``uv tool uninstall`` fence would uninstall the developer's global gpio.
 UNJUDGEABLE = re.compile(
     r"s3://|gs://|az://|r2://|https?://|bigquery|carto|arcgis|wfs|source\.coop"
-    r"|docker|xclip|tippecanoe|fiboa|myplugin|pyproject|Set-Clipboard|uv (pip|add|init)",
+    r"|docker|xclip|tippecanoe|fiboa|myplugin|pyproject|Set-Clipboard|uv (pip|add|init)"
+    r"|pbcopy|uv tool|pipx|pip (install|uninstall)|sudo|brew|apt(-get)? ",
     re.I,
 )
 
 PER_COMMAND_TIMEOUT = 120
 
 
-def _continues(pending: list[str]) -> bool:
-    for line in reversed(pending):
-        if line.strip():
-            return line.rstrip().endswith(("\\", "|", "&&", "||"))
-    return False
-
-
 def statement_groups(source: str) -> list[list[str]]:
     """Split a fence into statements, the way the ``menu`` directive would.
 
-    Comment-only groups are dropped: a trailing ``# Error: ...`` is prose about
+    Delegates to the collector's :func:`split_statements` so this audit and the
+    ``menu`` directive cannot disagree about what "one command" is. Comment-only
+    groups are already dropped there: a trailing ``# Error: ...`` is prose about
     the command above it, and bash would exit 0 on it, which would look exactly
     like a passing command.
     """
-    out: list[list[str]] = []
-    pending: list[str] = []
-    for line in source.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            if pending:
-                pending.append(line)
-            continue
-        starts_new = not line[:1].isspace()
-        if (
-            starts_new
-            and any(not p.strip().startswith("#") for p in pending)
-            and not _continues(pending)
-        ):
-            out.append(pending)
-            pending = []
-        pending.append(line)
-    if pending:
-        out.append(pending)
-    return [g for g in out if any(x.strip() and not x.strip().startswith("#") for x in g)]
+    return [statement.split("\n") for statement in split_statements(source)]
 
 
 def _env() -> dict[str, str]:
     env = dict(os.environ)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["NO_COLOR"] = "1"
+    env["COLUMNS"] = "100"
     return env
 
 
@@ -92,29 +75,33 @@ def _passes(statement: str, setups: tuple[str, ...]) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         seed_workdir(work)
-        for command in setups:
-            subprocess.run(
-                ["bash", "-c", f"set -euo pipefail\n{command}"],
-                cwd=work,
-                env=_env(),
-                capture_output=True,
-                text=True,
-                timeout=PER_COMMAND_TIMEOUT,
-                check=False,
-            )
-        script = work / "statement.sh"
-        script.write_text(f"set -euo pipefail\n{statement}\n")
         try:
+            for command in setups:
+                subprocess.run(
+                    [BASH, "-c", f"set -euo pipefail\n{command}"],
+                    cwd=work,
+                    env=_env(),
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=PER_COMMAND_TIMEOUT,
+                    check=False,
+                )
+            script = work / "statement.sh"
+            script.write_text(f"set -euo pipefail\n{statement}\n", encoding="utf-8")
             done = subprocess.run(
-                ["bash", str(script)],
+                [BASH, str(script)],
                 cwd=work,
                 env=_env(),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=PER_COMMAND_TIMEOUT,
                 check=False,
             )
         except subprocess.TimeoutExpired:
+            # A hung setup or statement cannot be judged; err on the side of
+            # "does not pass" so the fence's skip stands.
             return False
         return done.returncode == 0
 
@@ -139,6 +126,8 @@ def _candidate_fences(page: Path):
 @pytest.mark.parametrize("page", GUIDE_PAGES, ids=lambda p: p.name)
 def test_no_skipped_fence_hides_a_working_command(page: Path):
     """A skipped fence must not contain a command that passes on its own."""
+    if BASH is None:
+        pytest.skip("no usable bash (the Windows WSL stub is not a shell)")
     offenders = []
     for block, groups in _candidate_fences(page):
         passing = [

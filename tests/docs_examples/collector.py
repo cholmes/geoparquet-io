@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,31 @@ FAST_PAGES = frozenset({"sort.md", "piping.md", "check.md"})
 #: Wall-clock ceiling for a single example. Generous — it exists to stop a
 #: prompting or hanging command from wedging CI, not to police runtimes.
 BLOCK_TIMEOUT_SECONDS = 120
+
+
+def find_bash() -> str | None:
+    """Locate a bash that can actually run scripts, or ``None``.
+
+    On Windows, ``bash`` on ``PATH`` usually resolves to the System32 WSL
+    stub, which is not a shell: without a WSL distribution installed it prints
+    an install hint and exits 1 (in UTF-16, for good measure). Git Bash is the
+    real thing and ships with the Git for Windows install every contributor
+    and CI runner already has, so prefer it by its well-known location.
+    """
+    if sys.platform != "win32":
+        return shutil.which("bash")
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+        candidate = Path(os.environ.get(env_var, "")) / "Git" / "bin" / "bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    return None
+
+
+#: Resolved once at import: every bash example in a run uses the same shell.
+BASH = find_bash()
 
 
 class DocExampleFile(pytest.File):
@@ -70,6 +96,10 @@ class DocExampleItem(pytest.Item):
             self.add_marker(pytest.mark.skip(reason="tippecanoe not installed"))
         if directives.needs_ogr and shutil.which("ogr2ogr") is None:
             self.add_marker(pytest.mark.skip(reason="ogr2ogr not installed"))
+        if self.block.lang == "bash" and BASH is None:
+            self.add_marker(
+                pytest.mark.skip(reason="no usable bash (the Windows WSL stub is not a shell)")
+            )
 
     def runtest(self) -> None:
         source = strip_prompts(self.block.source)
@@ -92,19 +122,29 @@ class DocExampleItem(pytest.Item):
 
     def _tmp_base(self) -> Path:
         slug = self.block.test_id.replace("/", "_").replace(":", "_").replace("[", "_")
-        return self.config._tmp_path_factory.mktemp(slug.rstrip("]")[:30], numbered=True)
+        # _tmp_path_factory is private pytest API; fall back to tempfile so a
+        # pytest bump that renames it degrades to unmanaged temp dirs instead of
+        # an AttributeError on every docs example.
+        factory = getattr(self.config, "_tmp_path_factory", None)
+        if factory is not None:
+            return factory.mktemp(slug.rstrip("]")[:30], numbered=True)
+        return Path(tempfile.mkdtemp(prefix=slug.rstrip("]")[:30]))
 
     def _run(self, lang: str, source: str, workdir: Path, *, phase: str) -> None:
         script = workdir / (".doctest_block.sh" if lang == "bash" else ".doctest_block.py")
-        script.write_text(source if lang == "python" else f"set -euo pipefail\n{source}\n")
-        argv = ["bash", str(script)] if lang == "bash" else [sys.executable, str(script)]
+        script.write_text(
+            source if lang == "python" else f"set -euo pipefail\n{source}\n",
+            encoding="utf-8",
+        )
+        argv = [BASH, str(script)] if lang == "bash" else [sys.executable, str(script)]
         try:
             completed = subprocess.run(
                 argv,
                 cwd=workdir,
                 env=_subprocess_env(),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=BLOCK_TIMEOUT_SECONDS,
                 check=False,
             )

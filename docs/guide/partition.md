@@ -528,6 +528,7 @@ This command performs **two operations**:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     import geoparquet_io as gpio
 

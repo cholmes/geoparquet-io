@@ -121,6 +121,7 @@ gpio publish stac data.parquet output.json --bucket s3://bucket/data/ --overwrit
 
 Complete workflow from partition to STAC:
 
+<!-- doctest: network -->
 ```bash
 # 1. Partition by admin boundaries
 gpio partition admin roads.parquet by_country/ --levels country

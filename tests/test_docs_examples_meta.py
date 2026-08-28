@@ -37,15 +37,33 @@ from tests.docs_examples.parser import (
 GUIDE_DIR = Path(__file__).resolve().parent.parent / "docs" / "guide"
 DOCS_ROOT = GUIDE_DIR.parent
 
-#: Ratchets, set ~15 blocks either side of the current counts (211 skipped, 249
-#: executed). The headroom keeps ordinary doc edits from tripping them while
+#: Ratchets, set ~15 blocks either side of the current counts (228 skipped, 232
+#: executed - review moved 17 fences to skip: illustrative WFS endpoints that
+#: could only fail, plus install/uninstall commands that mutate the real
+#: environment). The headroom keeps ordinary doc edits from tripping them while
 #: still catching a drift of any size; moving either number is a deliberate act
 #: that shows up in a diff and needs a justification in the pull request.
-MAX_SKIPPED_BLOCKS = 226
-MIN_EXECUTED_BLOCKS = 234
+MAX_SKIPPED_BLOCKS = 243
+MIN_EXECUTED_BLOCKS = 217
 
 #: Looks like a command rather than prose or sample output.
 _COMMAND_LIKE = re.compile(r"^\s*(gpio\s|import geoparquet_io|from geoparquet_io\s)")
+
+#: Commands that reach outside the seeded temp directory and mutate the real
+#: machine. The harness runs fences unconfined as the developer, so an
+#: unskipped fence with one of these does not test a doc example - it
+#: installs, uninstalls, or escalates on whoever runs the suite. This already
+#: happened three times before the guard existed (pipx installs from PyPI and
+#: a uv tool uninstall of the developer's global gpio).
+_MUTATES_ENVIRONMENT = re.compile(
+    r"^\s*(sudo\s"
+    r"|pipx\s+(install|uninstall|inject|uninject)\s"
+    r"|pip\s+(install|uninstall)\s"
+    r"|uv\s+tool\s"
+    r"|brew\s+(install|uninstall)\s"
+    r"|apt(-get)?\s+(install|remove)\s"
+    r"|rm\s+-[a-z]*rf?\s+[~/])"
+)
 
 GUIDE_PAGES = sorted(GUIDE_DIR.glob("*.md"))
 
@@ -148,6 +166,28 @@ def test_commands_are_not_hidden_in_inert_fences(page: Path):
         + "\n  ".join(hidden)
         + "\nEither fence it as ```bash/```python so it is executed, or mark it"
         ' <!-- doctest: skip="why this cannot run" -->.'
+    )
+
+
+@pytest.mark.parametrize("page", GUIDE_PAGES, ids=lambda p: p.name)
+def test_no_runnable_fence_mutates_the_real_environment(page: Path):
+    """A fence the harness will execute must stay inside its seeded directory.
+
+    Showing an install command in the docs is fine; running one is not. Any
+    fence that installs, uninstalls, or escalates must carry a ``skip``
+    directive so the harness never executes it.
+    """
+    offenders = [
+        f"{block.path.name}:{block.line}: {line.strip()}"
+        for block in iter_fences(page, DOCS_ROOT)
+        if block.executable and block.directives.runs and block.lang == "bash"
+        for line in block.source.split("\n")
+        if _MUTATES_ENVIRONMENT.match(line)
+    ]
+    assert not offenders, (
+        "Runnable fence(s) contain commands that mutate the real environment:\n  "
+        + "\n  ".join(offenders)
+        + '\nMark the fence <!-- doctest: skip="..." --> so the harness never runs it.'
     )
 
 

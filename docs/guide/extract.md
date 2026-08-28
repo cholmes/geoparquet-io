@@ -1204,7 +1204,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
 ### Basic Usage
 
 === "CLI"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```bash
     # List available layers
     gpio extract wfs https://geo.example.com/wfs
@@ -1220,7 +1220,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
     ```
 
 === "Python"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1236,7 +1236,7 @@ Web Feature Service (WFS) is an OGC standard for serving vector geospatial data 
 Spatial filtering can be applied server-side (pushed to WFS) or locally (after download):
 
 === "CLI"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```bash
     # Server-side bbox filter (default for WFS)
     gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1252,7 +1252,7 @@ Spatial filtering can be applied server-side (pushed to WFS) or locally (after d
     ```
 
 === "Python"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1268,7 +1268,7 @@ Spatial filtering can be applied server-side (pushed to WFS) or locally (after d
 For datasets with 1 million+ features, use parallel pagination to avoid server timeouts:
 
 === "CLI"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```bash
     # Parallel extraction with 4 workers
     gpio extract wfs https://geo.example.com/wfs large_layer output.parquet \
@@ -1283,7 +1283,7 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
     ```
 
 === "Python"
-    <!-- doctest: network -->
+    <!-- doctest: skip="illustrative endpoint" -->
     ```python
     from geoparquet_io.api import Table
 
@@ -1325,7 +1325,7 @@ For datasets with 1 million+ features, use parallel pagination to avoid server t
 
 By default, WFS extracts include Hilbert spatial ordering and bbox columns:
 
-<!-- doctest: network -->
+<!-- doctest: skip="illustrative endpoint" -->
 ```bash
 # Skip optimizations for faster extraction
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1342,7 +1342,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 gpio supports WFS 1.0.0, 1.1.0, and 2.0.0. By default, auto-negotiation tries the newest version first:
 
-<!-- doctest: network -->
+<!-- doctest: skip="illustrative endpoint" -->
 ```bash
 # Auto-negotiate (default) - tries 2.0.0, then 1.1.0, then 1.0.0
 gpio extract wfs https://geo.example.com/wfs cities output.parquet
@@ -1356,7 +1356,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 WFS 1.1.0+ with URN-format CRS (e.g., `urn:ogc:def:crs:EPSG::4326`) uses lat,lon axis order per OGC spec. gpio auto-detects this, but you can override:
 
-<!-- doctest: network -->
+<!-- doctest: skip="illustrative endpoint" -->
 ```bash
 # Force lon,lat (XY) axis order
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1372,7 +1372,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 gpio automatically negotiates the coordinate reference system with the WFS server:
 
-<!-- doctest: network -->
+<!-- doctest: skip="illustrative endpoint" -->
 ```bash
 # Request specific CRS from server
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1393,7 +1393,7 @@ gpio honors the real CRS rather than the one you asked for:
 - without `--output-crs`, it labels the output with the server's actual CRS and warns;
 - with `--strict-crs`, it fails instead of proceeding.
 
-<!-- doctest: network -->
+<!-- doctest: skip="illustrative endpoint" -->
 ```bash
 # Fail instead of warn when the server returns a different CRS than requested
 gpio extract wfs https://geo.example.com/wfs cities output.parquet \
@@ -1428,6 +1428,7 @@ Extract data from Carto SQL API endpoints directly to GeoParquet. Carto's SQL AP
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import ops
 
@@ -1472,6 +1473,7 @@ Filters are pushed to the Carto server for efficient querying:
 
 === "Python"
 
+    <!-- doctest: network -->
     ```python
     from geoparquet_io.api import ops
 

@@ -51,7 +51,7 @@ For a simpler PMTiles workflow, use the built-in `gpio pmtiles` command. It prov
 
 === "CLI"
 
-    <!-- doctest: menu -->
+    <!-- doctest: needs-tippecanoe, menu -->
     ```bash
     # Basic usage
     gpio pmtiles create buildings.parquet buildings.pmtiles
@@ -236,6 +236,7 @@ Because each zoom is served by exactly one band, no zoom-range filtering is need
 
 Use `gpio extract` to filter data before conversion to reduce output size:
 
+<!-- doctest: needs-tippecanoe -->
 ```bash
 # Limit rows for testing
 gpio extract data.parquet --limit 1000 | \
