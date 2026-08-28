@@ -120,7 +120,9 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   lane (~12s serial), 8 and 10 are slow-marked, 9 is network-marked; journey 6
   skips without tippecanoe (which also covers the Windows leg) and journey 8
   skips with a clear reason when the Overture boundary cache is cold, offline or
-  busy, so it still gates the blocking slow lane when warm. Journey 3b is a
+  busy — so it gates warm machines (typically developers'; CI's ephemeral
+  runners start cold and skip until the slow job caches the admin
+  directory). Journey 3b is a
   strict `xfail` pinning a real break, filed as #722: the documented
   `extract … - | add quadkey - | partition string - dir/` chain dies with an
   unhandled DuckDB error because `extract`'s Arrow IPC stream omits

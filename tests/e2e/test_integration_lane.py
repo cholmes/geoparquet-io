@@ -158,7 +158,12 @@ def test_fast_lane_runs_the_fast_journeys():
     fast = [e for e in _selections() if selects(e, {"integration"})]
     assert fast, "no CI selection admits plain integration-marked tests"
     fast_journeys = {name for name, marks in _journeys().items() if not marks & {"slow", "network"}}
-    assert len(fast_journeys) >= 7, f"expected journeys 1-7 in the fast lane, got {fast_journeys}"
+    # By name, not by count: a count would stay green if a journey were
+    # quietly slow-marked while some helper test padded the number back up.
+    for number in range(1, 8):
+        assert any(f"journey_{number:02d}" in name for name in fast_journeys), (
+            f"journey {number} is no longer in the fast lane: {sorted(fast_journeys)}"
+        )
 
 
 def test_marker_description_documents_the_lane():

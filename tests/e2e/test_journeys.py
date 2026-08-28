@@ -350,7 +350,10 @@ _BOUNDARIES_UNAVAILABLE = (
     # and bare "connection", which is a live DuckDB error prefix
     # ("Connection Error: ...").
     "could not resolve",
-    "network",
+    # Not bare "network": any real bug whose message merely mentions the word
+    # would be reported as an environmental skip.
+    "network error",
+    "network is unreachable",
     "timed out",
     "timeout",
     "failed to download",
@@ -405,8 +408,11 @@ def test_journey_08_admin_divisions_then_partition(tmp_path):
     out of the blocking slow job and into the network job, which never runs on
     PRs and is ``continue-on-error`` -- demoting a gate to an advisory signal.
     Instead the fetch is attempted and the test SKIPS with a clear reason when
-    the download or the cache is unavailable: warm runners gate on it, cold or
-    offline ones skip cleanly.
+    the download or the cache is unavailable. In practice that means warm
+    developer machines gate on it, while CI's ephemeral runners start cold and
+    will usually skip (the cold download exceeds the timeout) until the slow
+    job caches ``~/.geoparquet-io/cache/admin`` -- a follow-up, keyed on the
+    pinned Overture release.
 
     Not hermetic, and cannot be: ``gpio add admin-divisions`` caches datasets in
     the machine-global ``~/.geoparquet-io/cache/admin`` (~34MB for Overture

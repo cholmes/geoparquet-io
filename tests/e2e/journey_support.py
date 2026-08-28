@@ -123,7 +123,12 @@ def run_gpio(args: list[str | Path], journey: int, expect_success: bool = True):
 
 
 def run_pipeline(stages: list[str], journey: int, expect_success: bool = True):
-    """Run a real shell pipeline of ``gpio`` invocations (journeys 3 and 4)."""
+    """Run a real shell pipeline of ``gpio`` invocations (journeys 3 and 4).
+
+    No ``pipefail``: the returncode is the last stage's (and cmd.exe has no
+    equivalent anyway), so an early stage dying quietly is caught by the
+    callers' content assertions on the output, not by the exit code.
+    """
     pipeline = " | ".join(stages)
     result = subprocess.run(
         pipeline,
@@ -155,7 +160,10 @@ def q(path: Path | str) -> str:
 # no-op across the eight journeys it backs. The counts are what carry meaning.
 _SPEC_FAILED = re.compile(r"(\d+)\s+failed")
 _SPEC_PASSED = re.compile(r"(\d+)\s+checks passed")
-_SUMMARY = re.compile(r"Summary:\s+(\d+)\s+passed(?:,\s*(\d+)\s+failed)?")
+# The real summary line may carry a warnings segment between passed and failed
+# ("Summary: 2 passed, 1 warnings, 3 failed"); tolerate it so the failed count
+# is still captured when warnings are present.
+_SUMMARY = re.compile(r"Summary:\s+(\d+)\s+passed(?:,\s*\d+\s+warnings?)?(?:,\s*(\d+)\s+failed)?")
 
 
 def assert_check_all(target: Path, journey: int, *, all_files: bool = False) -> str:
@@ -181,7 +189,15 @@ def assert_check_all(target: Path, journey: int, *, all_files: bool = False) -> 
         assert summary is not None, f"no partition summary in:\n{report}"
         assert summary.group(2) is None, f"partition files failed the check:\n{report}"
     else:
-        assert _SPEC_PASSED.search(report), f"no spec-validation pass line in:\n{report}"
+        # Deliberately warning-intolerant: the CLI prints the plain "N checks
+        # passed" line only when there are zero warnings, so a journey output
+        # that starts warning fails here. That is the point - canonical journey
+        # outputs must be warning-clean, and a new warning deserves a look.
+        assert _SPEC_PASSED.search(report), (
+            f"no clean spec-validation pass line in the report for {target} - "
+            f"either validation failed or it passed with warnings, and journey "
+            f"outputs must be warning-clean:\n{report}"
+        )
         # Cross-check the CLI verdict against the in-process validator.
         validation = validate_geoparquet(str(target))
         assert validation.is_valid, (
