@@ -155,13 +155,12 @@ def _wrap_query_with_crs(
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
 
-
-
 def _build_copy_options(
     compression: str,
     row_group_rows: int | None,
     geo_meta_escaped: str | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    compression_level: int | None = None,
 ) -> list[str]:
     """Build COPY TO options list."""
     options = [
@@ -169,6 +168,13 @@ def _build_copy_options(
         f"COMPRESSION {compression}",
         "GEOPARQUET_VERSION 'NONE'",
     ]
+    # DuckDB accepts COMPRESSION_LEVEL for ZSTD only ("Compression level is only
+    # supported for the ZSTD compression codec"); naming any other codec with a
+    # level is a binder error. Omitting it entirely silently dropped the user's
+    # --compression-level and fell back to DuckDB's ZSTD default of 3 against
+    # gpio's default of 15 -- ~15% larger output on every write through here.
+    if compression_level is not None and compression.upper() == "ZSTD":
+        options.append(f"COMPRESSION_LEVEL {compression_level}")
     kv_pairs = {}
     if geo_meta_escaped:
         kv_pairs["geo"] = geo_meta_escaped
@@ -241,7 +247,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             )
             return
 
-        self._configure_duckdb_memory(con, memory_limit, verbose)
+        saved_settings = self._configure_duckdb_memory(con, memory_limit, verbose)
 
         is_remote = is_remote_url(output_path)
         local_path = self._get_local_path(output_path, is_remote)
@@ -284,16 +290,63 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                 upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
 
         finally:
+            self._restore_duckdb_settings(con, saved_settings, verbose)
             if is_remote and Path(local_path).exists():
                 Path(local_path).unlink()
+
+    #: Session settings this strategy overrides for the duration of one write.
+    _MANAGED_SETTINGS = ("threads", "preserve_insertion_order", "memory_limit")
+
+    def _restore_duckdb_settings(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        saved: dict[str, object],
+        verbose: bool,
+    ) -> None:
+        """Put back the session settings this strategy clamped.
+
+        The connection belongs to the caller, not to this write. Leaving
+        threads=1 and a halved memory_limit behind meant one write pinned every
+        later query on that connection -- partition loops finalize N files on a
+        shared connection, so the first partition throttled the whole run, and
+        the Python API holds a connection across operations.
+        """
+        for key, value in saved.items():
+            try:
+                if isinstance(value, str):
+                    con.execute(f"SET {key} = '{_escape_sql_string(value)}'")
+                else:
+                    con.execute(f"SET {key} = {value}")
+                # DuckDB reports sizes as rounded display strings ("14.3 GiB"),
+                # so writing one back can land a hair off and drift further on
+                # every write in a partition loop. A value that will not
+                # round-trip was the engine's own default, so ask for that
+                # instead of an approximation of it.
+                if con.execute(f"SELECT current_setting('{key}')").fetchone()[0] != value:
+                    con.execute(f"RESET {key}")
+            except duckdb.Error as e:  # pragma: no cover - defensive
+                if verbose:
+                    debug(f"Could not restore DuckDB setting {key}: {e}")
 
     def _configure_duckdb_memory(
         self,
         con: duckdb.DuckDBPyConnection,
         memory_limit: str | None,
         verbose: bool,
-    ) -> None:
-        """Configure DuckDB memory settings for streaming."""
+    ) -> dict[str, object]:
+        """Configure DuckDB memory settings for streaming.
+
+        Returns the prior values so the caller can restore them; see
+        ``_restore_duckdb_settings``.
+        """
+        saved: dict[str, object] = {}
+        for key in self._MANAGED_SETTINGS:
+            try:
+                saved[key] = con.execute(f"SELECT current_setting('{key}')").fetchone()[0]
+            except duckdb.Error as e:  # pragma: no cover - defensive
+                if verbose:
+                    debug(f"Could not read DuckDB setting {key}: {e}")
+
         con.execute("SET threads = 1")  # Required for memory control (DuckDB #8270)
         # Let COPY TO parquet flush row groups to disk instead of buffering the
         # entire result to preserve order. Without this the writer holds the whole
@@ -307,6 +360,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         con.execute(f"SET memory_limit = '{effective_limit}'")
         if verbose:
             debug(f"DuckDB memory limit: {effective_limit}")
+        return saved
 
     def _get_local_path(self, output_path: str, is_remote: bool) -> str:
         """Get local path for writing (temp file if remote)."""
@@ -341,7 +395,10 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         escaped_path = _escape_sql_string(local_path)
 
         copy_options = _build_copy_options(
-            compression, row_group_rows, extra_kv_metadata=extra_kv_metadata
+            compression,
+            row_group_rows,
+            extra_kv_metadata=extra_kv_metadata,
+            compression_level=compression_level,
         )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
         con.execute(copy_query)
@@ -396,7 +453,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geo_meta_escaped = _escape_sql_string(json.dumps(geo_meta))
 
         copy_options = _build_copy_options(
-            compression, row_group_rows, geo_meta_escaped, extra_kv_metadata
+            compression, row_group_rows, geo_meta_escaped, extra_kv_metadata, compression_level
         )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
 

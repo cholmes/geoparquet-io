@@ -117,10 +117,22 @@ Verifies:
 - GeoParquet metadata version
 - Bbox covering metadata
 
-A bbox column is optional in GeoParquet 2.0, but it must be declared: a bbox
-column that no `covering` entry points at costs file size and cannot be used by
-any reader, so `check bbox` fails the file and suggests `gpio add bbox-metadata`
-(or `--fix` to drop the column).
+A bbox column is optional in GeoParquet 2.0, but it must be declared, and the
+declaration must be true:
+
+- A bbox column that no `covering` entry points at costs file size and cannot be
+  used by any reader, so `check bbox` fails the file and suggests
+  `gpio add bbox-metadata` (or `--fix` to drop the column). `--fix` only ever
+  removes an *undeclared* column — a covering the file legitimately declares is
+  never deleted.
+- A `covering` that names a column the file does not contain is treated as
+  undeclared rather than accepted. Such a covering makes readers prune away rows
+  that genuinely match, so it is worse than none at all.
+
+`check spec` runs its four `covering` checks — paths well-formed, column
+present, struct shape, field types — at GeoParquet 1.1 **and** 2.0. They were
+previously gated to 1.1 only, so an identical broken covering failed at 1.1 and
+passed at 2.0.
 
 ### Row Groups
 

@@ -324,11 +324,13 @@ def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, 
     issues = []
     recommendations = []
 
-    # GeoParquet 2.0 keeps 1.1's optional bbox covering
-    # (opengeospatial/geoparquet#302): the native geo types give row group
-    # statistics, while a covering also prunes pages within a row group. So a
-    # bbox column is a legitimate choice here -- but only if a `covering` entry
-    # declares it. An undeclared one costs bytes and no reader can use it (#738).
+    # `covering` is not in the 2.0 spec text -- it was introduced in 1.1 and
+    # dropped in 2.0 in favour of the native statistics -- but 2.0 readers must
+    # tolerate unknown fields, and opengeospatial/geoparquet#302 proposes
+    # reinstating it (still open). Since files carrying one exist and the
+    # motivation holds (native stats prune row groups, a covering also prunes
+    # pages within one), a declared bbox column is not a defect here. An
+    # *undeclared* one is: it costs bytes and no reader can use it (#738).
     undeclared_bbox = bbox_info["has_bbox_column"] and not bbox_info["has_bbox_metadata"]
     if undeclared_bbox:
         issues.append(

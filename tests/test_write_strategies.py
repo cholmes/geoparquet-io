@@ -910,3 +910,81 @@ class TestDiskRewriteRowGroupSizing:
         sizes = self._row_group_sizes(output_file)
         assert sum(sizes) == 40
         assert len(sizes) == 4, f"expected 4 row groups of 10 rows, got {sizes}"
+
+
+class TestDuckDBKVWriteConfiguration:
+    """The duckdb-kv strategy must not silently change the write it was asked for."""
+
+    @staticmethod
+    def _points_query(con, path: str, rows: int = 60000) -> str:
+        """A compressible table on disk; returns a query selecting from it."""
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute(
+            f"""COPY (SELECT (i % 50)::VARCHAR AS cat, 'region_' || (i % 20) AS reg,
+                    ST_Point((i % 500) * 0.001, (i % 499) * 0.001) AS geometry
+                FROM range({rows}) t(i))
+                TO '{path}' (FORMAT PARQUET)"""
+        )
+        return f"SELECT * FROM read_parquet('{path}')"
+
+    def test_compression_level_reaches_the_writer(self, tmp_path):
+        """`--compression-level` must not be dropped on this path.
+
+        `_build_copy_options` never emitted COMPRESSION_LEVEL, so every write
+        through this strategy silently fell back to DuckDB's ZSTD default of 3
+        while gpio's own default is 15 — materially larger files, with no
+        indication the option had been ignored.
+        """
+        from geoparquet_io.core.common import write_parquet_with_metadata
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        con = get_duckdb_connection()
+        query = self._points_query(con, str(tmp_path / "src.parquet"))
+
+        sizes = {}
+        for level in (1, 22):
+            out = tmp_path / f"out{level}.parquet"
+            write_parquet_with_metadata(
+                con,
+                query,
+                str(out),
+                geoparquet_version="1.1",
+                compression="ZSTD",
+                compression_level=level,
+                verbose=False,
+            )
+            sizes[level] = out.stat().st_size
+
+        assert sizes[22] < sizes[1], (
+            f"compression level ignored: level 1 = {sizes[1]}, level 22 = {sizes[22]}"
+        )
+
+    def test_session_settings_are_restored_after_a_write(self, tmp_path):
+        """The connection belongs to the caller, not to one write.
+
+        The strategy clamps threads=1, preserve_insertion_order=false and
+        memory_limit for its own COPY. Leaving them behind meant one write
+        throttled every later query on a shared connection — partition loops
+        finalize N files on one connection, and the Python API holds a
+        connection across operations.
+        """
+        from geoparquet_io.core.common import write_parquet_with_metadata
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        con = get_duckdb_connection()
+        query = self._points_query(con, str(tmp_path / "src.parquet"), rows=500)
+
+        managed = ("threads", "preserve_insertion_order", "memory_limit")
+
+        def snapshot():
+            return {
+                key: con.execute(f"SELECT current_setting('{key}')").fetchone()[0]
+                for key in managed
+            }
+
+        before = snapshot()
+        write_parquet_with_metadata(
+            con, query, str(tmp_path / "out.parquet"), geoparquet_version="1.1", verbose=False
+        )
+
+        assert snapshot() == before

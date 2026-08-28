@@ -52,10 +52,10 @@ Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wik
     gpio sort hilbert input.parquet output.parquet --geoparquet-version 2.0
 
     # A bbox covering column instead (or as well — it also prunes pages within a row group)
-    gpio sort hilbert input.parquet output.parquet --add-bbox
+    gpio sort hilbert input.parquet output-bbox.parquet --add-bbox
     ```
 
-    `--add-bbox` writes the column *and* the `covering` metadata that points at it, at every output version. GeoParquet 2.0 keeps 1.1's optional bbox covering ([geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302)) precisely because the native statistics only prune whole row groups, while a covering column's page index prunes pages inside one.
+    `--add-bbox` writes the column *and* the `covering` metadata that points at it, because gpio computed that column from the geometry here and can vouch for it. The `covering` key is not part of the GeoParquet 2.0 specification text — it was introduced in 1.1 and removed in 2.0 in favour of the native statistics. 2.0 readers must tolerate unknown fields, so a covering stays legal to carry, and [geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302) *proposes* reinstating it as an option (still open at time of writing). The motivation is real either way: native statistics prune whole row groups, while a bbox column's page index also prunes pages within one.
 
 ## Options
 

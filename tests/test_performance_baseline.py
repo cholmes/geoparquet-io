@@ -266,8 +266,15 @@ class TestFileSize:
             print(f"  {version:20s}: {size:,} bytes ({size / 1024:.1f} KB)")
 
         # DuckDB 1.5+ native geometry shredding compresses v2.0/parquet-geo-only
-        # ~30% smaller than v1.x WKB blobs. Split assertions to distinguish
-        # expected cross-encoding variance from unexpected regressions.
+        # smaller than v1.x WKB blobs. Split assertions to distinguish expected
+        # cross-encoding variance from unexpected regressions.
+        #
+        # The lower bound was 10% while the duckdb-kv write path silently dropped
+        # `--compression-level`: v1.x files were written at DuckDB's ZSTD default
+        # of 3 against gpio's default of 15, so part of the measured "shredding
+        # benefit" was really v1.x being under-compressed. With the level
+        # honored on both paths the honest margin on this fixture is ~9%, so the
+        # bound is set below that rather than restored by re-inflating v1.x.
 
         # 1. Expected: v2/parquet-geo-only should be smaller than v1.x (shredding benefit)
         v1_sizes = [s for v, s in sizes.items() if v in ("1.0", "1.1")]
@@ -277,7 +284,7 @@ class TestFileSize:
             avg_v2 = sum(v2_sizes) / len(v2_sizes)
             if avg_v1 > 0:
                 improvement = (avg_v1 - avg_v2) / avg_v1
-                assert improvement > 0.10, (
+                assert improvement > 0.05, (
                     f"Expected v2 to be smaller than v1 due to geometry shredding, "
                     f"but improvement is only {improvement:.1%}"
                 )

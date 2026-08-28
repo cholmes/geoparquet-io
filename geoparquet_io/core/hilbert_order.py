@@ -9,6 +9,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.common import (
     add_bbox,
+    extract_version_from_metadata,
     get_bbox_advice,
     get_dataset_bounds,
     get_parquet_metadata,
@@ -44,26 +45,37 @@ def _resolve_output_version(
     input_parquet: str,
     geoparquet_version: str | None,
     verbose: bool,
-) -> str:
-    """The GeoParquet version this run will actually write.
+    profile: str | None = None,
+) -> str | None:
+    """The GeoParquet version this run will actually write, or None if unknowable.
 
-    Mirrors ``write_parquet_with_metadata``: an explicit version wins, auto mode
-    preserves the input's version, and anything unreadable falls back to the
-    default. Guessing "1.1" for auto mode instead told users sorting a 2.0 file
-    to "consider --geoparquet-version 2.0" -- noise that hides real gaps (#738).
+    Mirrors ``write_parquet_with_metadata``: an explicit version wins, and auto
+    mode preserves the input's version. Guessing "1.1" for auto mode instead
+    told users sorting a 2.0 file to "consider --geoparquet-version 2.0" --
+    noise that hides real gaps (#738).
+
+    Returns None rather than a default when the version cannot be established:
+    a stdin stream (whose version the writer resolves from the stream's own
+    metadata, not from anything visible here) or an input that will not open.
+    Callers use None to stay silent. Defaulting instead is what produced the
+    original wrong warning -- a failed read is not evidence of a 1.1 input.
     """
     if geoparquet_version:
         return geoparquet_version
     if is_stdin(input_parquet):
-        return DEFAULT_GEOPARQUET_VERSION
+        return None
 
-    from geoparquet_io.core.common import extract_version_from_metadata
+    # Authenticate before probing: the probe reads the input, and without the
+    # profile a remote read fails, which previously degraded to "1.1" and
+    # printed the very warning this function exists to suppress.
+    if profile:
+        setup_aws_profile_if_needed(profile, input_parquet, None)
 
     try:
         metadata, _ = get_parquet_metadata(input_parquet, verbose)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - any read failure means "stay quiet"
         debug(f"Could not read {input_parquet} to resolve output version: {e}")
-        return DEFAULT_GEOPARQUET_VERSION
+        return None
     return extract_version_from_metadata(metadata) or DEFAULT_GEOPARQUET_VERSION
 
 
@@ -263,7 +275,7 @@ def hilbert_order(
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB')
     """
-    effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose)
+    effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose, profile)
     if effective_version == "1.1":
         warn(
             "Hilbert sorting to GeoParquet v1.1 provides no spatial filter pushdown benefit. "
@@ -480,7 +492,12 @@ def _hilbert_order_file_based(
     show_remote_read_message(working_parquet, verbose)
 
     safe_url = safe_file_url(working_parquet, verbose)
-    metadata, _ = get_parquet_metadata(input_parquet, verbose)
+    # Read the metadata of the file the query actually reads. With --add-bbox
+    # that is the working copy, whose `geo` block `add_bbox` just extended with
+    # the `covering` describing the column it wrote. Reading the *original*
+    # input here threw that covering away before the write could carry it, so
+    # the output shipped a bbox column nothing declared (#738).
+    metadata, _ = get_parquet_metadata(working_parquet, verbose)
 
     if geometry_column == "geometry":
         geometry_column = find_primary_geometry_column(working_parquet, verbose)
