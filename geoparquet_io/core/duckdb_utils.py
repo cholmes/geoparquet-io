@@ -12,6 +12,8 @@ from contextvars import ContextVar
 
 import duckdb
 
+from geoparquet_io.core.logging_config import warn
+
 # Per-bucket cache for S3 buckets that require authentication
 # Buckets not in this set are accessed without credentials (works for public buckets)
 _s3_cache_lock = threading.Lock()
@@ -412,6 +414,30 @@ def spatial_join_strategy(
     return SPATIAL_JOIN_NO_BBOX
 
 
+def _install_and_load_extension(con, name: str) -> None:
+    """INSTALL (best-effort) then LOAD a DuckDB extension.
+
+    An INSTALL failure alone is tolerated silently: parallel installs race
+    with each other (https://github.com/duckdb/duckdb/issues/12589), and a
+    cached copy of the extension may load fine even when the extension
+    directory is not writable. But if the LOAD then also fails, the install
+    error is what explains it (issue #574), so surface it as a warning
+    before propagating the LOAD error instead of hiding it behind an opaque
+    'Extension "..." not found'.
+    """
+    install_error = None
+    try:
+        con.execute(f"INSTALL {name};")
+    except Exception as e:
+        install_error = e
+    try:
+        con.execute(f"LOAD {name};")
+    except Exception:
+        if install_error is not None:
+            warn(f"could not install the DuckDB '{name}' extension: {install_error}")
+        raise
+
+
 def get_duckdb_connection(
     load_spatial=True,
     load_httpfs=None,
@@ -471,35 +497,19 @@ def get_duckdb_connection(
 
     # Always load spatial extension by default (core use case)
     if load_spatial:
-        try:
-            con.execute("INSTALL spatial;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
-            # See: https://github.com/duckdb/duckdb/issues/12589
-            pass
-        con.execute("LOAD spatial;")
+        _install_and_load_extension(con, "spatial")
         # DuckDB 1.5+: ensure lon/lat = x/y axis order globally.
         # Replaces per-call always_xy := true in ST_Transform.
         con.execute("SET geometry_always_xy = true;")
 
     # Load httpfs for cloud storage support
     if load_httpfs:
-        try:
-            con.execute("INSTALL httpfs;")
-        except Exception:
-            # Ignore race conditions during parallel extension installation
-            pass
-        con.execute("LOAD httpfs;")
+        _install_and_load_extension(con, "httpfs")
 
         # Only configure AWS credentials if explicitly requested (for private buckets)
         # Public buckets work without any secret - DuckDB handles them automatically
         if use_s3_auth:
-            try:
-                con.execute("INSTALL aws;")
-            except Exception:
-                # Ignore race conditions during parallel extension installation
-                pass
-            con.execute("LOAD aws;")
+            _install_and_load_extension(con, "aws")
             con.execute("""
                 CREATE OR REPLACE SECRET (
                     TYPE s3,
