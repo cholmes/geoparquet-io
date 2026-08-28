@@ -6,10 +6,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
+
+# Repo tooling checks: these shell out to codespell and duplicate what the CI
+# lint job already runs via pre-commit, so they live in the meta lane instead
+# of the fast suite.
+pytestmark = pytest.mark.meta
 
 # Resolve project root relative to this test file, so tests work
 # regardless of the working directory pytest is invoked from.

@@ -22,7 +22,11 @@ from geoparquet_io.core.common import (
     write_geoparquet_table,
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    quote_identifier,
+    validate_where_clause,
+    where_condition_fragment,
+)
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -138,8 +142,8 @@ def _build_carto_query(
 
     Note:
         The table_name is quoted using PostgreSQL identifier quoting.
-        The where clause is user-provided and passed through - Carto's
-        server-side validation handles SQL injection for WHERE clauses.
+        The where clause is validated upstream in ``carto_to_table()`` via
+        ``validate_where_clause`` before it reaches this function.
     """
     # Validate and quote table name to prevent SQL injection
     _validate_table_name(table_name)
@@ -159,8 +163,10 @@ def _build_carto_query(
     # Build WHERE clause
     conditions = []
     if where:
-        # WHERE clause is user-provided - Carto validates on server side
-        conditions.append(f"({where})")
+        # Already validated upstream in carto_to_table() via validate_where_clause.
+        # where_condition_fragment() closes the paren on its own line so a trailing
+        # '--' in the clause cannot comment out the bbox condition or the LIMIT.
+        conditions.append(where_condition_fragment(where))
     if bbox and include_geom:
         minx, miny, maxx, maxy = bbox
         # Use ST_Intersects with ST_MakeEnvelope for spatial filter
@@ -175,6 +181,40 @@ def _build_carto_query(
 
     if limit is not None:
         sql += f" LIMIT {limit}"
+
+    return sql
+
+
+def _build_carto_count_query(
+    table_name: str,
+    where: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> str:
+    """Build the COUNT(*) query for a Carto table with the same filters as the scan.
+
+    Note:
+        The where clause is validated upstream in ``carto_to_table()`` via
+        ``validate_where_clause`` before it reaches this function, and is wrapped
+        with :func:`where_condition_fragment` so a trailing ``--`` comment cannot
+        swallow the bbox condition that follows it.
+    """
+    _validate_table_name(table_name)
+    quoted_table = quote_identifier(table_name)
+
+    sql = f"SELECT COUNT(*) as count FROM {quoted_table}"
+
+    conditions = []
+    if where:
+        conditions.append(where_condition_fragment(where))
+    if bbox:
+        minx, miny, maxx, maxy = bbox
+        conditions.append(
+            f"ST_Intersects({quote_identifier('the_geom')}, "
+            f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
+        )
+
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
 
     return sql
 
@@ -200,25 +240,7 @@ def _get_row_count(
     Returns:
         Number of rows matching the filter
     """
-    # Validate and quote table name
-    _validate_table_name(table_name)
-    quoted_table = quote_identifier(table_name)
-
-    # Build count query with same filters
-    sql = f"SELECT COUNT(*) as count FROM {quoted_table}"
-
-    conditions = []
-    if where:
-        conditions.append(f"({where})")
-    if bbox:
-        minx, miny, maxx, maxy = bbox
-        conditions.append(
-            f"ST_Intersects({quote_identifier('the_geom')}, "
-            f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}, 4326))"
-        )
-
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
+    sql = _build_carto_count_query(table_name, where=where, bbox=bbox)
 
     full_url = f"{url}?q={quote(sql)}"
     if api_key:
@@ -563,6 +585,13 @@ def carto_to_table(
         InvalidParameterError: If URL or table name is invalid
     """
     configure_verbose(verbose)
+
+    # Validate --where before it is interpolated into any query, and before any
+    # network probe/request is made (gpio #612 parity). This is the single
+    # choke point every carto_to_table caller (geometry and plain/tabular
+    # extraction alike) funnels through.
+    if where:
+        validate_where_clause(where)
 
     # Validate URL
     url = _validate_carto_url(url)

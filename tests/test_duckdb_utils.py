@@ -18,8 +18,11 @@ from geoparquet_io.core.duckdb_utils import (
     quote_identifier,
     s3_config_scope,
     spatial_join_strategy,
+    validate_where_clause,
+    where_condition_fragment,
+    where_sql_fragment,
 )
-from geoparquet_io.core.exceptions import ExtensionUnavailableError
+from geoparquet_io.core.exceptions import ExtensionUnavailableError, ValidationError
 
 
 class TestEscapeSqlString:
@@ -411,3 +414,97 @@ class TestAmbientS3Config:
             result = con.execute("SELECT current_setting('s3_region')").fetchone()
             assert result[0] == "eu-west-1"
             con.close()
+
+
+# Payloads that defeat a hand-rolled quote-state walker: each hides the ';'
+# statement separator behind lexical syntax the walker does not model
+# (dollar quoting, block comment, line comment, E-string escape). Every one of
+# them parses as three statements, the second of which writes a file via COPY.
+BYPASS_PAYLOADS = {
+    "dollar_quote": "1=1 OR $$'$$='a'); COPY (SELECT 42 AS p) TO '/tmp/pwn.csv'; SELECT 1 WHERE (1=1",
+    "block_comment": "1=1 /* ' */); COPY (SELECT 42 AS p) TO '/tmp/pwn.csv'; SELECT 1 WHERE (1=1",
+    "line_comment": "1=1 -- '\n); COPY (SELECT 42 AS p) TO '/tmp/pwn.csv'; SELECT 1 WHERE (1=1",
+    "e_string": "1=1 OR 'x'=E'\\''); COPY (SELECT 42 AS p) TO '/tmp/pwn.csv'; SELECT 1 WHERE (1=1",
+}
+
+# Legitimate filters that each embed a blocklisted keyword inside a quoted
+# string literal (or use REPLACE(), a standard scalar function).
+LEGITIMATE_CLAUSES = [
+    "name = 'Grant County'",
+    "street LIKE '%Alter Markt%'",
+    "descr ILIKE '%drop off%'",
+    "status = 'DELETE'",
+    "name = 'Merge Lane'",
+    "REPLACE(zip, '-', '') = '19104'",
+]
+
+
+class TestValidateWhereClauseStatementGate:
+    """The statement gate must be parser-based, not a quote-state walker."""
+
+    @pytest.mark.parametrize("payload", BYPASS_PAYLOADS.values(), ids=list(BYPASS_PAYLOADS))
+    def test_bypass_payload_rejected(self, payload):
+        """Each payload smuggles a ';' past naive quote tracking and must be rejected."""
+        with pytest.raises(ValidationError):
+            validate_where_clause(payload)
+
+    @pytest.mark.parametrize("payload", BYPASS_PAYLOADS.values(), ids=list(BYPASS_PAYLOADS))
+    def test_bypass_payload_really_is_multi_statement(self, payload):
+        """Guard the premise: these payloads genuinely compose 3 SQL statements."""
+        probe = f"SELECT 1 WHERE {where_condition_fragment(payload)}"
+        assert len(duckdb.extract_statements(probe)) == 3
+
+    def test_plain_semicolon_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_where_clause("1=1;")
+
+    def test_copy_injection_rejected(self):
+        with pytest.raises(ValidationError, match=";"):
+            validate_where_clause("1=1); COPY (SELECT 42 AS x) TO '/tmp/pwned.csv'; SELECT (1=1")
+
+    def test_unparseable_clause_rejected_cleanly(self):
+        """A clause that cannot be parsed raises ValidationError, not a duckdb error."""
+        with pytest.raises(ValidationError, match="single filtering expression"):
+            validate_where_clause("1=1 AND (((")
+
+    def test_semicolon_inside_literal_still_allowed(self):
+        validate_where_clause("name = 'a;b'")
+        validate_where_clause("note = 'it''s; fine'")
+        validate_where_clause('"weird;col" = 5')
+
+
+class TestValidateWhereClauseQuotedLiterals:
+    """Blocklisted keywords inside string literals must not trigger a rejection."""
+
+    @pytest.mark.parametrize("clause", LEGITIMATE_CLAUSES)
+    def test_legitimate_clause_accepted(self, clause):
+        validate_where_clause(clause)
+
+    def test_keyword_outside_literal_still_blocked(self):
+        with pytest.raises(ValidationError, match="DELETE"):
+            validate_where_clause("DELETE FROM users WHERE 1=1")
+
+    def test_keyword_in_comment_not_flagged(self):
+        """A comment is inert; it must not trip the keyword scan."""
+        validate_where_clause("pop > 10 /* drop this later */")
+
+
+class TestWhereConditionFragment:
+    """The condition fragment must survive a trailing line comment."""
+
+    def test_trailing_comment_cannot_swallow_closing_paren(self):
+        fragment = where_condition_fragment("1=1 --")
+        # Everything after the clause's own line is still live SQL.
+        assert fragment.splitlines()[-1].strip() == ")"
+
+    def test_appended_condition_survives_trailing_comment(self):
+        sql = f"SELECT 1 WHERE {where_condition_fragment('1=1 --')} AND 2=2"
+        rows = duckdb.sql(sql).fetchall()
+        assert rows == [(1,)]
+        # And a falsifying appended condition is genuinely applied.
+        sql_false = f"SELECT 1 WHERE {where_condition_fragment('1=1 --')} AND 1=2"
+        assert duckdb.sql(sql_false).fetchall() == []
+
+    def test_where_sql_fragment_uses_condition_fragment(self):
+        assert where_sql_fragment("a = 1") == f" WHERE {where_condition_fragment('a = 1')}"
+        assert where_sql_fragment(None) == ""

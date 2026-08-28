@@ -14,7 +14,12 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import write_geoparquet_table
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    validate_where_clause,
+    where_condition_fragment,
+)
 from geoparquet_io.core.extract import parse_bbox
 from geoparquet_io.core.file_utils import handle_output_overwrite
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
@@ -25,6 +30,7 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
+from geoparquet_io.core.write_strategies.duckdb_kv import validate_memory_limit
 
 # Regex patterns for GCP resource validation
 # Project IDs: 6-30 chars, lowercase letters, digits, hyphens, must start with letter
@@ -229,44 +235,6 @@ def _setup_bigquery_connection() -> duckdb.DuckDBPyConnection:
 
         # Note: bq_geography_as_geometry is NOT set — deprecated in DuckDB 1.5.
         # GEOGRAPHY columns map to GEOMETRY automatically (core type).
-
-        return con
-    except Exception:
-        con.close()
-        raise
-
-
-def get_bigquery_connection(
-    project: str | None = None,
-    credentials_file: str | None = None,
-) -> duckdb.DuckDBPyConnection:
-    """
-    Create DuckDB connection with BigQuery extension loaded.
-
-    NOTE: This function mutates GOOGLE_APPLICATION_CREDENTIALS environment variable.
-    For proper cleanup, use BigQueryConnection context manager instead.
-
-    Args:
-        project: Default GCP project ID (optional, uses gcloud default if not set)
-        credentials_file: Path to service account JSON file (optional)
-
-    Returns:
-        Configured DuckDB connection with BigQuery extension
-    """
-
-    con = _setup_bigquery_connection()
-
-    try:
-        # Configure authentication via environment variable if credentials file provided
-        if credentials_file:
-            # Expand user paths like ~/
-            credentials_file = os.path.expanduser(credentials_file)
-            if not os.path.exists(credentials_file):
-                raise FileNotFoundError(f"Credentials file not found: {credentials_file}")
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_file
-
-        # Note: project ID is specified in the fully-qualified table name
-        # (project.dataset.table) passed to bigquery_scan(), not as a SET parameter
 
         return con
     except Exception:
@@ -540,12 +508,12 @@ def _build_geometry_select_expr(
         SQL expression string for the SELECT clause
     """
     if "GEOMETRY" in column_type:
-        return f'ST_AsWKB("{column_name}") AS "{column_name}"'
+        return f"ST_AsWKB({quote_identifier(column_name)}) AS {quote_identifier(column_name)}"
     elif geometry_format == "geojson":
-        return f'ST_AsWKB(ST_GeomFromGeoJSON("{column_name}")) AS "{column_name}"'
+        return f"ST_AsWKB(ST_GeomFromGeoJSON({quote_identifier(column_name)})) AS {quote_identifier(column_name)}"
     else:
         # Default: WKT
-        return f'ST_AsWKB(ST_GeomFromText("{column_name}")) AS "{column_name}"'
+        return f"ST_AsWKB(ST_GeomFromText({quote_identifier(column_name)})) AS {quote_identifier(column_name)}"
 
 
 def _build_select_with_wkb(
@@ -591,7 +559,7 @@ def _build_select_with_wkb(
         if geometry_column and col.lower() == geometry_column.lower():
             select_parts.append(_build_geometry_select_expr(col, geom_col_type, geometry_format))
         else:
-            select_parts.append(f'"{col}"')
+            select_parts.append(quote_identifier(col))
 
     return ", ".join(select_parts), columns
 
@@ -607,18 +575,17 @@ def _handle_dry_run(
 ) -> None:
     """Handle dry_run mode by printing the SQL query without executing."""
     if include_list:
-        select_cols = ", ".join(f'"{c}"' for c in include_list)
+        select_cols = ", ".join(quote_identifier(c) for c in include_list)
     else:
         select_cols = "*"
 
     query = _build_dry_run_query(validated_table_id, select_cols, bbox, bbox_mode, bbox_threshold)
 
-    # Add DuckDB-side conditions
+    # Add DuckDB-side conditions. where_condition_fragment() closes the paren on
+    # its own line so a trailing '--' in the clause cannot comment out the LIMIT.
     if where:
-        if "WHERE" in query:
-            query += f" AND ({where})"
-        else:
-            query += f" WHERE ({where})"
+        keyword = " AND " if "WHERE" in query else " WHERE "
+        query += keyword + where_condition_fragment(where)
     if limit is not None:
         query += f" LIMIT {limit}"
 
@@ -812,6 +779,7 @@ def extract_bigquery(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     repair_geometry: bool = True,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """
     Extract data from BigQuery table to GeoParquet or plain Parquet.
@@ -866,6 +834,11 @@ def extract_bigquery(
     """
     configure_verbose(verbose)
 
+    # Validate --where before it is interpolated into any query (dry-run or
+    # real), and before any network connection is established (gpio #612 parity).
+    if where:
+        validate_where_clause(where)
+
     # Normalize table_id early - validates format and applies project override
     # This ensures validated_table_id is always project.dataset.table format
     validated_table_id = _normalize_table_id(table_id, project)
@@ -912,6 +885,7 @@ def extract_bigquery(
         geoparquet_version=geoparquet_version,
         verbose=verbose,
         repair_geometry=repair_geometry,
+        memory_limit=memory_limit,
     )
 
 
@@ -939,6 +913,7 @@ def _execute_bigquery_extraction(
     geoparquet_version: str | None,
     verbose: bool,
     repair_geometry: bool = True,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """Execute the BigQuery extraction with the given parameters."""
     debug("Connecting to BigQuery...")
@@ -946,6 +921,14 @@ def _execute_bigquery_extraction(
         project=project,
         credentials_file=credentials_file,
     ) as con:
+        # The BigQuery scan is what actually consumes memory here (the result is
+        # materialised as an Arrow table before the PyArrow write), so apply the
+        # user's limit to this connection. validate_memory_limit guards the
+        # interpolation — a SET value cannot be parameterised.
+        if memory_limit is not None:
+            con.execute(f"SET memory_limit = '{validate_memory_limit(memory_limit)}'")
+            debug(f"DuckDB memory limit: {memory_limit}")
+
         # Detect geometry column from schema (native GEOMETRY type only)
         geom_col = _detect_geometry_column_from_schema(con, validated_table_id, geography_column)
         is_native_geometry = geom_col is not None  # Track whether geometry is native GEOGRAPHY type
@@ -1099,7 +1082,9 @@ def _build_bigquery_query(
     # Add WHERE clause
     conditions = local_conditions.copy()
     if where:
-        conditions.append(f"({where})")
+        # Validated upstream in extract_bigquery(); wrapped so a trailing '--'
+        # cannot comment out a following condition or the LIMIT.
+        conditions.append(where_condition_fragment(where))
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 

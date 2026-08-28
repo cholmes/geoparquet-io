@@ -22,9 +22,10 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
+from geoparquet_io.core.write_strategies.row_group_sizing import _resolve_row_group_rows
 
 if TYPE_CHECKING:
     import duckdb
@@ -32,6 +33,38 @@ if TYPE_CHECKING:
 
 # Valid compression values whitelist (prevents injection via compression param)
 VALID_COMPRESSIONS = frozenset({"ZSTD", "SNAPPY", "GZIP", "LZ4", "UNCOMPRESSED", "BROTLI"})
+
+# DuckDB's memory_limit is a SET value, which cannot be parameterised, so the
+# value has to be interpolated into SQL. Only accept a plain size literal: a
+# decimal number with an optional decimal (KB/MB/GB/TB) or binary (KiB/…) unit.
+_MEMORY_LIMIT_RE = re.compile(r"^\d+(\.\d+)?\s*(K|M|G|T)?i?B$", re.IGNORECASE)
+
+
+def validate_memory_limit(value: str) -> str:
+    """Validate/normalize a DuckDB memory limit before interpolating it into SQL.
+
+    ``memory_limit`` originates from ``--write-memory`` (or from a library
+    caller's config) and ends up inside ``SET memory_limit = '…'``. DuckDB's
+    ``execute`` runs multi-statement strings, so an unvalidated value can close
+    the string literal and append arbitrary SQL. Reject anything that is not a
+    plain size.
+
+    Args:
+        value: Candidate memory limit, e.g. "512MB", "2GB", "4.5 GB", "1GiB"
+
+    Returns:
+        The normalized value (whitespace removed, unit upper-cased).
+
+    Raises:
+        ValueError: If the value is not a plain size literal.
+    """
+    text = str(value).strip()
+    if not _MEMORY_LIMIT_RE.match(text):
+        raise ValueError(
+            f"Invalid memory_limit {value!r}; expected a size like "
+            f"'512MB', '2GB', '4.5GB', or '1GiB'."
+        )
+    return text.upper().replace(" ", "")
 
 
 def _get_available_memory() -> int | None:
@@ -128,115 +161,6 @@ def _detect_bbox_column_name(schema_names: list[str]) -> str | None:
         if name in ["bbox", "bounds", "extent"] or name.endswith("_bbox"):
             return name
     return None
-
-
-# Rows sampled to estimate average row size when converting an MB target to a
-# row count. Large enough to be representative, small enough to stay cheap.
-_MB_ESTIMATE_SAMPLE_ROWS = 20000
-
-# Clauses that must not follow a trailing ORDER BY for it to be safely strippable
-# (they change which/how many rows a LIMIT would return).
-_ORDER_BY_TAIL_STOPWORDS = re.compile(r"(?i)\b(limit|offset|union|except|intersect|fetch)\b")
-
-
-def _strip_trailing_order_by(query: str) -> str:
-    """Drop a trailing top-level ``ORDER BY`` clause for cheap row sampling.
-
-    Estimating bytes-per-row does not need ordered rows, and a ``LIMIT`` layered
-    over an ``ORDER BY`` forces DuckDB to scan (and sort) the *entire* source —
-    re-downloading remote inputs and recomputing expensive ordering keys (e.g.
-    ``ST_Hilbert``) just to size row groups. Without the ordering the sample's
-    ``LIMIT`` pushes down, so DuckDB stops after a few row groups.
-
-    Returns the query unchanged when no strippable top-level trailing ORDER BY is
-    found, so estimation still works — it just skips the speed-up.
-    """
-    depth = 0
-    in_single = in_double = False
-    last_order_by = -1
-    i, n = 0, len(query)
-    while i < n:
-        ch = query[i]
-        if in_single:
-            in_single = ch != "'"
-        elif in_double:
-            in_double = ch != '"'
-        elif ch == "'":
-            in_single = True
-        elif ch == '"':
-            in_double = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif depth == 0 and ch in "oO":
-            match = re.match(r"order\s+by\b", query[i:], re.IGNORECASE)
-            prev = query[i - 1] if i else " "
-            if match and not (prev.isalnum() or prev == "_"):
-                last_order_by = i
-                i += match.end()
-                continue
-        i += 1
-
-    if last_order_by == -1:
-        return query
-    # Bail if anything follows the ORDER BY that would alter the sampled rows.
-    if _ORDER_BY_TAIL_STOPWORDS.search(query[last_order_by:]):
-        return query
-    return query[:last_order_by].rstrip()
-
-
-def _resolve_row_group_rows(
-    con: duckdb.DuckDBPyConnection,
-    query: str,
-    row_group_size_mb: float | None,
-    row_group_rows: int | None,
-    verbose: bool,
-) -> int | None:
-    """Resolve an MB row-group target to a row count for DuckDB COPY TO.
-
-    DuckDB's ``ROW_GROUP_SIZE`` is expressed in rows, so a ``--row-group-size-mb``
-    target has to be converted before it can take effect on this strategy (the
-    bytes-based ``ROW_GROUP_SIZE_BYTES`` option is unusable here because it
-    requires disabling insertion-order preservation, which would undo any
-    spatial ordering already applied). An explicit row count always wins; when
-    only an MB target is given we estimate bytes-per-row from a sample and mirror
-    the arrow write path (see ``_write_table_with_settings``).
-    """
-    if row_group_rows:
-        return row_group_rows
-    if not row_group_size_mb:
-        return None
-
-    from geoparquet_io.core.common import _estimate_row_size
-
-    # Sample without the ORDER BY so the LIMIT streams (a LIMIT over an ORDER BY
-    # would rescan/sort the whole source — re-downloading remote inputs and
-    # recomputing the ordering key — just to size row groups).
-    sample_query = _strip_trailing_order_by(query)
-    try:
-        sample = (
-            con.execute(f"SELECT * FROM ({sample_query}) LIMIT {_MB_ESTIMATE_SAMPLE_ROWS}")
-            .arrow()
-            .read_all()
-        )
-    except Exception as exc:  # pragma: no cover - defensive, fall back to default
-        if verbose:
-            debug(f"Could not sample rows for --row-group-size-mb estimate: {exc}")
-        return None
-
-    if sample.num_rows == 0:
-        return None
-
-    bytes_per_row = _estimate_row_size(sample)
-    target_bytes = row_group_size_mb * 1024 * 1024
-    rows = max(1, int(target_bytes // bytes_per_row))
-    if verbose:
-        debug(
-            f"Resolved --row-group-size-mb {row_group_size_mb} to {rows:,} rows/group "
-            f"(~{bytes_per_row} bytes/row)"
-        )
-    return rows
 
 
 def _build_copy_options(
@@ -384,7 +308,8 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         # spilling). Safe because threads=1 already makes the single pipeline emit
         # rows in order, so output ordering (e.g. sorted files) is preserved.
         con.execute("SET preserve_insertion_order = false")
-        effective_limit = memory_limit or get_default_memory_limit()
+        # Validate before interpolation: a SET value cannot be parameterised.
+        effective_limit = validate_memory_limit(memory_limit or get_default_memory_limit())
         con.execute(f"SET memory_limit = '{effective_limit}'")
         if verbose:
             debug(f"DuckDB memory limit: {effective_limit}")
@@ -463,7 +388,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         col_meta = geo_meta["columns"][geometry_column]
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
-        self._add_bbox_covering_if_present(con, query, col_meta, verbose)
+        self._add_bbox_covering_if_present(con, query, col_meta, verbose, geoparquet_version)
 
         # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB.
         # For v2.0: Keep native GEOMETRY type with CRS — DuckDB writes native
@@ -497,21 +422,31 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         col_meta: dict,
         verbose: bool,
     ) -> None:
-        """Compute missing bbox and geometry_types metadata."""
-        from geoparquet_io.core.common import compute_geometry_types_via_sql
-        from geoparquet_io.core.geo_metadata import compute_bbox_via_sql
+        """Compute whichever of bbox/geometry_types the carried metadata lacks.
 
-        if "bbox" not in col_meta:
-            if verbose:
-                debug("Computing bbox via SQL...")
-            bbox = compute_bbox_via_sql(con, query, geometry_column)
-            if bbox:
-                col_meta["bbox"] = bbox
+        Both come out of one scan, so a caller that invalidated both (a row
+        filter, a reprojection, a multi-file merge) pays for a single pass.
+        """
+        from geoparquet_io.core.geo_metadata import compute_geo_stats_via_sql
 
-        if "geometry_types" not in col_meta:
-            if verbose:
-                debug("Computing geometry types via SQL...")
-            col_meta["geometry_types"] = compute_geometry_types_via_sql(con, query, geometry_column)
+        need_bbox = "bbox" not in col_meta
+        need_types = "geometry_types" not in col_meta
+        if not (need_bbox or need_types):
+            return
+
+        if verbose:
+            debug("Computing bbox/geometry types via SQL...")
+        bbox, geometry_types = compute_geo_stats_via_sql(
+            con,
+            query,
+            geometry_column,
+            need_bbox=need_bbox,
+            need_geometry_types=need_types,
+        )
+        if need_bbox and bbox:
+            col_meta["bbox"] = bbox
+        if need_types:
+            col_meta["geometry_types"] = geometry_types
 
     def _add_bbox_covering_if_present(
         self,
@@ -519,8 +454,19 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         query: str,
         col_meta: dict,
         verbose: bool,
+        geoparquet_version: str,
     ) -> None:
-        """Add bbox covering metadata if bbox column is present."""
+        """Add bbox covering metadata if a bbox column is present and the version allows it.
+
+        The bbox column is still written for 1.0 — only the 'covering' key is 1.1+.
+        """
+        from geoparquet_io.core.geo_metadata import covering_supported
+
+        if not covering_supported(geoparquet_version):
+            if verbose:
+                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+            return
+
         schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
         bbox_col_name = _detect_bbox_column_name(schema_result.schema.names)
 
@@ -549,6 +495,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         verbose: bool,
         input_crs: dict | None = None,
         custom_metadata: dict | None = None,
+        extra_kv_metadata: dict[str, str] | None = None,
     ) -> None:
         """Write Arrow table to GeoParquet using DuckDB COPY TO with KV_METADATA."""
         from geoparquet_io.core.common import _detect_version_from_table
@@ -573,12 +520,17 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         try:
             con.register("input_table", table)
 
-            # Convert WKB bytes to GEOMETRY for proper spatial processing
-            escaped_geom = geometry_column.replace('"', '""')
-            query = f"""
-                SELECT * REPLACE (ST_GeomFromWKB("{escaped_geom}") AS "{escaped_geom}")
-                FROM input_table
-            """
+            # Convert WKB bytes to GEOMETRY for proper spatial processing.
+            # geoarrow.wkb extension columns already register as GEOMETRY in
+            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error.
+            geom_type = table.schema.field(geometry_column).type
+            if getattr(geom_type, "extension_name", None) == "geoarrow.wkb":
+                query = "SELECT * FROM input_table"
+            else:
+                query = f"""
+                    SELECT * REPLACE (ST_GeomFromWKB({quote_identifier(geometry_column)}) AS {quote_identifier(geometry_column)})
+                    FROM input_table
+                """
 
             self.write_from_query(
                 con=con,
@@ -594,6 +546,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                 input_crs=input_crs,
                 verbose=verbose,
                 custom_metadata=custom_metadata,
+                extra_kv_metadata=extra_kv_metadata,
             )
         finally:
             con.close()

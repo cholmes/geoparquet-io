@@ -373,6 +373,7 @@ def _check_geoparquet_v2(parquet_file, file_type_info, verbose, return_results, 
 def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, quiet=False):
     """Check GeoParquet 1.x file (existing logic, bbox IS recommended)."""
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+    from geoparquet_io.core.geo_metadata import covering_supported
 
     geo_meta = get_geo_metadata(parquet_file)
     version = geo_meta.get("version", "0.0.0") if geo_meta else "0.0.0"
@@ -387,7 +388,13 @@ def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, 
         recommendations.append("Upgrade to version 1.1.0+")
 
     needs_bbox_column = not bbox_info["has_bbox_column"]
-    needs_bbox_metadata = bbox_info["has_bbox_column"] and not bbox_info["has_bbox_metadata"]
+    # 'covering' is 1.1-only, so a 1.0 file with a bbox column is not missing anything
+    # it is allowed to have — the "outdated version" issue above is the actionable one.
+    needs_bbox_metadata = (
+        covering_supported(version)
+        and bbox_info["has_bbox_column"]
+        and not bbox_info["has_bbox_metadata"]
+    )
 
     if needs_bbox_column:
         issues.append("No bbox column found")
@@ -396,6 +403,13 @@ def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, 
     if needs_bbox_metadata:
         issues.append("Bbox column exists but missing metadata covering")
         recommendations.append("Add bbox covering to metadata")
+
+    # The inverse mismatch: a pre-1.1 file that carries the 1.1-only key anyway.
+    # 'gpio check spec' rejects such a file, so don't affirm it here.
+    has_illegal_covering = bbox_info["has_bbox_metadata"] and not covering_supported(version)
+    if has_illegal_covering:
+        issues.append(f"Metadata covering present but version {version} predates 'covering' (1.1)")
+        recommendations.append("Upgrade to version 1.1.0+ to keep the bbox covering")
 
     passed = version >= "1.1.0" and not needs_bbox_column and not needs_bbox_metadata
 
@@ -415,15 +429,26 @@ def _check_geoparquet_v1(parquet_file, file_type_info, verbose, return_results, 
             warn(f"⚠️ Version {version} (upgrade to 1.1.0+ recommended)")
 
         if bbox_info["has_bbox_column"]:
-            if bbox_info["has_bbox_metadata"]:
+            if has_illegal_covering:
+                error(
+                    f"❌ Found bbox column '{bbox_info['bbox_column_name']}' with covering "
+                    f"metadata, but 'covering' requires GeoParquet 1.1+ (this file is {version}) "
+                    "— run 'gpio check spec' for details"
+                )
+            elif bbox_info["has_bbox_metadata"]:
                 success(
                     f"✓ Found bbox column '{bbox_info['bbox_column_name']}' "
                     "with proper metadata covering"
                 )
-            else:
+            elif needs_bbox_metadata:
                 warn(
                     f"⚠️  Found bbox column '{bbox_info['bbox_column_name']}' but missing "
                     "bbox covering metadata (add to metadata to help inform clients)"
+                )
+            else:
+                info(
+                    f"ℹ️  Found bbox column '{bbox_info['bbox_column_name']}'; the 'covering' "
+                    f"key that advertises it needs GeoParquet 1.1+ (this file is {version})"
                 )
         else:
             error("❌ No bbox column found (recommended for better performance)")

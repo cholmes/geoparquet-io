@@ -343,29 +343,38 @@ def _wkb_chunk_data_nbytes(arr: pa.Array) -> int:
     return int(total or 0)
 
 
-def _split_array_under_byte_limit(arr: pa.Array, max_bytes: int) -> list[pa.Array]:
+def byte_limited_spans(arr: pa.Array, max_bytes: int) -> list[tuple[int, int]]:
     """
-    Split a binary array into slices whose cumulative value bytes stay under a limit.
+    Return ``(offset, length)`` row spans whose cumulative value bytes stay under a limit.
 
     Bounds on bytes rather than rows because per-row WKB size varies wildly
     (a point is ~21 bytes, a detailed field-boundary polygon can be kilobytes).
-    A single value larger than ``max_bytes`` is emitted in its own slice; the
+    A single value larger than ``max_bytes`` is emitted in its own span; the
     caller surfaces a clear error if even that one row overflows the 32-bit
     ceiling on conversion.
+
+    Shared by the two places that must respect Arrow's 32-bit binary ceiling:
+    IPC streaming (:func:`_split_array_under_byte_limit`) and the arrow-streaming
+    Parquet writer, which narrows ``large_binary`` WKB to plain ``binary``.
     """
     lengths = pc.binary_length(arr).to_pylist()
-    slices: list[pa.Array] = []
+    spans: list[tuple[int, int]] = []
     start = 0
     running = 0
     for i, length in enumerate(lengths):
         length = length or 0  # null geometries contribute no value bytes
         if i > start and running + length > max_bytes:
-            slices.append(arr.slice(start, i - start))
+            spans.append((start, i - start))
             start = i
             running = 0
         running += length
-    slices.append(arr.slice(start, len(arr) - start))
-    return slices
+    spans.append((start, len(arr) - start))
+    return spans
+
+
+def _split_array_under_byte_limit(arr: pa.Array, max_bytes: int) -> list[pa.Array]:
+    """Split a binary array into slices whose cumulative value bytes stay under a limit."""
+    return [arr.slice(offset, length) for offset, length in byte_limited_spans(arr, max_bytes)]
 
 
 def _rebatch_wkb_under_byte_limit(
@@ -613,6 +622,11 @@ def extract_version_from_metadata(metadata: dict | None) -> str | None:
                     # Upgrade all 1.x versions to 1.1 (backwards compatible)
                     if major == "1":
                         return "1.1"
+                    # Flatten any 2.x to "2.0" — the highest 2.x this writer
+                    # knows — so this path agrees with its file-based twin,
+                    # resolve_geoparquet_version_from_file (common.py).
+                    if major == "2":
+                        return "2.0"
                     return f"{major}.{parts[1]}"
         return None
     except (json.JSONDecodeError, UnicodeDecodeError):

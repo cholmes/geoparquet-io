@@ -12,6 +12,11 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
+# Repo tooling checks: these shell out to mypy and duplicate the CI lint job,
+# so they run in the meta lane instead of the fast suite. The full package
+# type-check keeps its own `slow` mark on top of this.
+pytestmark = pytest.mark.meta
+
 # Timeout in seconds for subprocess calls
 _SUBPROCESS_TIMEOUT = 120
 

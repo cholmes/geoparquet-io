@@ -193,6 +193,50 @@ def repair_geometry_option(func):
     )(func)
 
 
+def linearize_curves_options(func):
+    """
+    Add --linearize-curves/--no-linearize-curves and --max-angle-deg options.
+
+    Curved geometries (CircularString through MultiSurface) cannot be
+    represented in GeoParquet, so they are stroked into line segments by
+    default. Users who want curved input to fail instead can opt out.
+    """
+    func = click.option(
+        "--max-angle-deg",
+        type=click.FloatRange(min=0, min_open=True),
+        default=None,
+        help="Maximum degrees per stroked arc segment when linearizing curves (default: 4).",
+    )(func)
+    return click.option(
+        "--linearize-curves/--no-linearize-curves",
+        default=True,
+        help=(
+            "Stroke curved geometries (CircularString..MultiSurface) into line "
+            "segments (default: on). Use --no-linearize-curves to fail on curved input."
+        ),
+    )(func)
+
+
+def _validate_write_memory(ctx, param, value):
+    """Reject a --write-memory value that isn't a plain size.
+
+    The value is interpolated into DuckDB's ``SET memory_limit = '…'``, so
+    validating here both blocks SQL injection and turns garbage input into a
+    clean parameter error instead of a raw DuckDB ParserException traceback.
+    One shared decorator means one place to fix.
+    """
+    if value is None:
+        return None
+
+    from geoparquet_io.core.write_strategies.duckdb_kv import validate_memory_limit
+
+    try:
+        validate_memory_limit(value)
+    except ValueError as e:
+        raise click.BadParameter(str(e), ctx=ctx, param=param) from None
+    return value
+
+
 def write_memory_option(func):
     """
     Add --write-memory option to a command.
@@ -205,8 +249,11 @@ def write_memory_option(func):
         "--write-memory",
         type=str,
         default=None,
+        callback=_validate_write_memory,
+        # Click does not printf-format help text, so a literal "%%" would be
+        # rendered verbatim.
         help="Memory limit for streaming writes (e.g., '512MB', '2GB'). "
-        "Default: 50%% of available RAM (container-aware).",
+        "Default: 50% of available RAM (container-aware).",
     )(func)
 
 
@@ -270,16 +317,17 @@ def geoparquet_version_option(func):
     - 2.0: GeoParquet 2.0 with native Parquet geo types
     - parquet-geo-only: Native Parquet geo types without GeoParquet metadata
 
-    If not specified, auto-detects from input: preserves input version,
-    upgrades native geo types to 2.0, defaults to 1.1.
+    If not specified, auto-detects from input: preserves 2.0, writes 1.1 for
+    1.x inputs (1.0 upgrades to 1.1), upgrades bare native geo types to 2.0,
+    defaults to 1.1.
     """
     return click.option(
         "--geoparquet-version",
         type=click.Choice(["1.0", "1.1", "1.1-geoarrow", "2.0", "parquet-geo-only"]),
         default=None,
         help="GeoParquet version to write (1.0, 1.1, 1.1-geoarrow, 2.0, parquet-geo-only). "
-        "Auto-detects from input if not specified: preserves input version, "
-        "upgrades native geo types to 2.0, defaults to 1.1.",
+        "Auto-detects from input if not specified: preserves 2.0; 1.x inputs "
+        "write 1.1; bare native geo types upgrade to 2.0; defaults to 1.1.",
     )(func)
 
 
@@ -352,15 +400,53 @@ def partition_options_base(func):
     return func
 
 
+def where_option(func):
+    """Add the ``--where`` row-filter option (same wording as `gpio extract`)."""
+    return click.option(
+        "--where",
+        help="DuckDB WHERE clause for filtering rows. Column names with special "
+        'characters need double quotes in SQL (e.g., "crop:name"). Shell escaping varies.',
+    )(func)
+
+
+def metric_nodata_option(func):
+    """Add the ``--metric-nodata`` NoData sentinel option for aggregate commands."""
+    return click.option(
+        "--metric-nodata",
+        default=None,
+        help='NoData sentinel value(s) in --metric columns, e.g. "-999" or "-999,-9999" '
+        '("nan" matches NaN). Mapped to NULL before sum/avg/min/max; count is unaffected.',
+    )(func)
+
+
+def bucket_point_options(func):
+    """Add the ``--bucket-point`` / ``--bbox-column`` keying options (#567)."""
+    func = click.option(
+        "--bbox-column",
+        default=None,
+        help="Bbox covering column for --bucket-point bbox (auto-detected if omitted).",
+    )(func)
+    func = click.option(
+        "--bucket-point",
+        default="geometry",
+        help="Where the bucketing point comes from: 'geometry' (centroid, default), "
+        "'bbox' (center of a bbox covering column -- skips reading the geometry "
+        "column), or the name of an existing point column.",
+    )(func)
+    return func
+
+
 def grid_aggregate_options(func):
     """Add the options shared by `gpio process aggregate <grid>` commands.
 
     Adds (the per-scheme ``--resolution`` is declared on each command, since its
     valid range differs between grids):
     - --auto, --target-per-cell, --max-cells
-    - --metric, --breakdown, --breakdown-limit
-    - --out-geometry
+    - --metric, --metric-nodata, --breakdown, --breakdown-limit
+    - --out-geometry, --where, --bucket-point, --bbox-column
     """
+    func = bucket_point_options(func)
+    func = where_option(func)
     func = click.option(
         "--out-geometry",
         type=click.Choice(["polygon", "centroid", "both", "none"]),
@@ -378,6 +464,7 @@ def grid_aggregate_options(func):
         default=None,
         help="Categorical column to pivot count by (one count_<value> column each).",
     )(func)
+    func = metric_nodata_option(func)
     func = click.option(
         "--metric",
         default=None,

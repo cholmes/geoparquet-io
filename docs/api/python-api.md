@@ -290,7 +290,7 @@ table = ops.from_wfs('https://geo.example.com/wfs', 'cities', limit=100)
 | `max_workers` | int | Number of parallel fetch workers (default: 1) |
 | `page_size` | int | Features per WFS request page (default: 100000) |
 | `axis_order` | str | Bbox axis order: `auto` (default), `xy`, `latlon`. Auto detects from CRS format. |
-| `auto_tile` | bool | Auto-subdivide bbox when server caps response (default: False) |
+| `auto_tile` | bool | Auto-subdivide bbox when server caps response (default: True) |
 | `strict_crs` | bool | Fail when the server returns a different CRS than requested (default: False, warns and uses the server's actual CRS instead). gpio trusts the CRS the server declares in its GeoJSON response and never guesses from coordinates. |
 
 !!! note "No automatic Hilbert sorting"
@@ -580,23 +580,38 @@ table = gpio.read('input.parquet').add_geometry_metrics(vecorel=False)
 
 Adds `metrics:area` and `metrics:perimeter` columns. With `vecorel=True` (default), also writes Vecorel schema metadata and ensures `id`/`geometry` are present and non-nullable.
 
-#### `add_admin_divisions(dataset='overture', levels=None, vecorel=False)`
+#### `add_admin_divisions(dataset='gaul', levels=None, vecorel=False, prefix=None)`
 
 Add administrative division columns via spatial join with remote boundary datasets.
+Defaults match the CLI (`gpio add admin-divisions`).
 
 ```python
-# Add country codes using Overture dataset
+# Every level the dataset provides -- GAUL continent, country, department
+table = gpio.read('input.parquet').add_admin_divisions()
+
+# A single level from the default GAUL dataset
 table = gpio.read('input.parquet').add_admin_divisions(levels=['country'])
+
+# Overture dataset with multiple levels
+table = gpio.read('input.parquet').add_admin_divisions(
+    dataset='overture',
+    levels=['country', 'region']
+)
 
 # Vecorel-compliant output (forces Overture with country,region)
 table = gpio.read('input.parquet').add_admin_divisions(vecorel=True)
-
-# GAUL dataset with multiple levels
-table = gpio.read('input.parquet').add_admin_divisions(
-    dataset='gaul',
-    levels=['continent', 'country', 'department']
-)
 ```
+
+**Parameters:**
+
+- `dataset` (str): Boundaries dataset — `"gaul"` (default) or `"overture"`, or a custom URL
+- `levels` (list[str] | None): Levels to add. `None` adds every level the dataset
+  provides — `["continent", "country", "department"]` for GAUL,
+  `["country", "region"]` for Overture — matching the CLI with no `--levels`
+- `vecorel` (bool): Emit Vecorel-compliant columns; forces Overture with country,region
+- `prefix` (str | None): Column name prefix, as with the CLI's `--prefix`. `None` uses the
+  dataset's own name, so columns are `gaul_country` under the default dataset and
+  `overture_country` under Overture. Pass `prefix='overture'` to keep the pre-1.4 names
 
 #### `add_kdtree(column_name='kdtree_cell', iterations=9, sample_size=100000)`
 
@@ -786,9 +801,11 @@ arrow_table = table.to_arrow()
 
 All spatial partitioning methods support automatic resolution calculation via CLI (`--auto` flag). Python API currently requires explicit resolution specification; auto-resolution support is planned.
 
-#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by quadkey.
+Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
+
+With `hive=False` the partition value lives only in the file name, so the generated `quadkey` column is dropped from the output. Pass `keep_quadkey_column=True` to keep it (mirrors the CLI's `--keep-*-column`).
 
 ```python
 # Partition to a directory
@@ -804,9 +821,11 @@ stats = table.partition_by_quadkey(
 )
 ```
 
-#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by H3 cell.
+Partition the table into a directory by H3 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
+
+With `hive=False` the partition value lives only in the file name, so the generated `h3_cell` column is dropped from the output. Pass `keep_h3_column=True` to keep it (mirrors the CLI's `--keep-*-column`).
 
 ```python
 # Partition by H3
@@ -814,9 +833,11 @@ stats = table.partition_by_h3('output/', resolution=6)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by S2 cell.
+Partition the table into a directory by S2 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
+
+With `hive=False` the partition value lives only in the file name, so the generated `s2_cell` column is dropped from the output. Pass `keep_s2_column=True` to keep it (mirrors the CLI's `--keep-*-column`).
 
 ```python
 # Partition by S2
@@ -824,9 +845,11 @@ stats = table.partition_by_s2('output/', level=10)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=True, overwrite=False)`
+#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False)`
 
-Partition the table into a Hive-partitioned directory by A5 cell.
+Partition the table into a directory by A5 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
+
+With `hive=False` the partition value lives only in the file name, so the generated `a5_cell` column is dropped from the output. Pass `keep_a5_column=True` to keep it (mirrors the CLI's `--keep-*-column`).
 
 ```python
 # Partition by A5
@@ -834,7 +857,7 @@ stats = table.partition_by_a5('output/', resolution=12)
 print(f"Created {stats['file_count']} files")
 ```
 
-#### `partition_by_string(output_dir, column, chars=None, hive=True, overwrite=False)`
+#### `partition_by_string(output_dir, column, chars=None, hive=False, overwrite=False)`
 
 Partition by string column values or prefixes.
 
@@ -846,9 +869,13 @@ stats = table.partition_by_string('output/', column='category')
 stats = table.partition_by_string('output/', column='mgrs_code', chars=2)
 ```
 
-#### `partition_by_kdtree(output_dir, iterations=9, hive=True, overwrite=False)`
+#### `partition_by_kdtree(output_dir, iterations=9, hive=False, keep_kdtree_column=None, overwrite=False)`
 
 Partition by KD-tree spatial cells.
+
+With `hive=False` the partition value lives only in the file name, so the generated
+`kdtree_cell` column is dropped from the output. Pass `keep_kdtree_column=True` to
+keep it (mirrors the CLI's `--keep-kdtree-column`).
 
 ```python
 # Default (512 partitions = 2^9)
@@ -858,7 +885,7 @@ stats = table.partition_by_kdtree('output/')
 stats = table.partition_by_kdtree('output/', iterations=6)
 ```
 
-#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=True, overwrite=False, vecorel=False)`
+#### `partition_by_admin(output_dir, dataset='gaul', levels=None, hive=False, overwrite=False, vecorel=False)`
 
 Partition by administrative boundaries.
 
@@ -884,7 +911,7 @@ stats = table.partition_by_admin('output/', vecorel=True)
 
 ### Aggregation Methods {#aggregation}
 
-#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_a5(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into A5 grid cells with per-cell statistics for low-zoom visualization.
 
@@ -904,6 +931,13 @@ result = gpio.read('fields.parquet').aggregate_a5(
 )
 result.write('cells.parquet')
 
+# Aggregate only a subset of rows
+result = gpio.read('fields.parquet').aggregate_a5(
+    resolution=8,
+    where="\"crop:name\" = 'wheat'",
+)
+result.write('wheat_cells.parquet')
+
 # No geometry — plain Parquet (re-join a5_cell to geometry later)
 result = gpio.read('fields.parquet').aggregate_a5(
     resolution=8,
@@ -922,10 +956,14 @@ result.write('cells_stats.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per cell: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
+| `metric_nodata` | str | None | NoData sentinel value(s) mapped to NULL in metric columns, e.g. `"-999"` or `"-999,-9999"` (`"nan"` matches NaN) |
+| `bucket_point` | str | `"geometry"` | Keying point source: `"geometry"` (centroid), `"bbox"` (bbox covering column center, skips reading geometry), or a point column name |
+| `bbox_column` | str | None | Bbox covering column for `bucket_point="bbox"` (auto-detected when omitted) |
 
 Every output row carries `a5_cell` (UBIGINT) as the bucket identifier.
 
-#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_h3(resolution, metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into H3 hexagonal grid cells. Same options as `aggregate_a5`,
 but the resolution range is **0–15** and the bucket id column is `h3_cell` (a
@@ -944,7 +982,7 @@ result.write('cells.parquet')
 
 Every output row carries `h3_cell` (string) as the bucket identifier.
 
-#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon')`
+#### `aggregate_admin(level='country', metric=None, breakdown=None, breakdown_limit=20, out_geometry='polygon', where=None, metric_nodata=None, bucket_point='geometry', bbox_column=None)`
 
 Aggregate features into administrative regions (Overture Maps) with per-region statistics.
 
@@ -973,11 +1011,43 @@ result.write('by_region.parquet')
 | `breakdown` | str | None | Categorical column to pivot into `count_<value>` columns |
 | `breakdown_limit` | int | 20 | Max categories; remainder goes into `count_other` |
 | `out_geometry` | str | `"polygon"` | Geometry per region: `"polygon"`, `"centroid"`, `"both"`, or `"none"` |
+| `where` | str | None | DuckDB WHERE clause filtering input rows before aggregation |
 
 Every output row carries `admin_code` and `admin_name` bucket identifiers. Features outside all regions go into an `unassigned` bucket.
 
 !!! note "Known limitation"
     `admin_name` currently equals the ISO code (same as `admin_code`).
+
+#### `overview(level, cell_column=None)`
+
+Roll an aggregate table up to a coarser overview level by true cell hierarchy
+(`a5_cell_to_parent` / `h3_cell_to_parent`; admin region codes collapse to
+their ISO country prefix). The table must be a `process aggregate` output.
+
+```python
+import geoparquet_io as gpio
+
+# Grid aggregate: roll res-10 cells up to res 6
+coarse = gpio.read('cells.parquet').overview(6)
+coarse.write('cells_r6.parquet')
+
+# Region-level admin aggregate: roll up to country
+by_country = gpio.read('by_region.parquet').overview('country')
+by_country.write('by_region_country.parquet')
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `level` | int or str | required | Coarser grid resolution, or `"country"` for admin |
+| `cell_column` | str | None | Cell id column when auto-detection fails |
+| `scheme` | str | None | Bucketing scheme (`a5`/`h3`/`admin`) when inference is ambiguous, e.g. H3 ids stored as integers |
+
+`count`, `sum_*`, `min_*`, `max_*`, and breakdown `count_*` columns roll up
+exactly; `avg_*` is count-weighted (exact when the metric had no NULLs). For
+file-based batch building of several levels (with auto level selection), use
+`ops.create_overviews`.
 
 ### Sub-Partitioning Utilities
 
@@ -1004,7 +1074,7 @@ for file_path in large_files:
 
 **Returns:** List of file paths sorted by size (largest first)
 
-#### `sub_partition_directory(directory, partition_type, min_size_bytes, resolution=None, level=None, in_place=False, hive=False, overwrite=False, verbose=False, force=False, skip_analysis=True, compression='ZSTD', compression_level=15, auto=False, target_rows=100000, max_partitions=10000)`
+#### `sub_partition_directory(directory, partition_type, min_size_bytes, resolution=None, level=None, in_place=False, hive=False, overwrite=False, verbose=False, force=False, skip_analysis=True, compression='ZSTD', compression_level=None, auto=False, target_rows=100000, max_partitions=10000)`
 
 Sub-partition large files in a directory using spatial indexing.
 
@@ -1057,7 +1127,7 @@ result = sub_partition_directory(
 - `force` (bool): Force operation even with warnings (default: False)
 - `skip_analysis` (bool): Skip partition analysis for performance (default: True)
 - `compression` (str): Compression codec (default: "ZSTD")
-- `compression_level` (int): Compression level (default: 15)
+- `compression_level` (int | None): Compression level (default: None — the codec picks its own; a fixed value is rejected by codecs whose range excludes it, e.g. GZIP is 1-9)
 - `auto` (bool): Auto-calculate resolution (default: False)
 - `target_rows` (int): Target rows per partition for auto mode (default: 100000)
 - `max_partitions` (int): Max partitions for auto mode (default: 10000)
@@ -1068,25 +1138,6 @@ result = sub_partition_directory(
 - `errors` (list): List of dicts with keys `file` and `error`
 
 **Note:** When `auto=True`, the function automatically calculates the best resolution based on data distribution. Use `skip_analysis=True` for faster batch processing when you trust the resolution settings.
-
-#### `add_admin_divisions(dataset='overture', levels=None, country_filter=None, use_centroid=False)`
-
-Add administrative division columns via spatial join.
-
-```python
-# Add country codes
-enriched = table.add_admin_divisions(
-    dataset='overture',
-    levels=['country']
-)
-
-# Add multiple levels with country filter
-enriched = table.add_admin_divisions(
-    dataset='gaul',
-    levels=['continent', 'country', 'department'],
-    country_filter='US'
-)
-```
 
 #### `add_bbox_metadata(bbox_column='bbox')`
 
@@ -1099,6 +1150,10 @@ table_with_bbox = table.add_bbox().add_bbox_metadata()
 # Or add metadata to existing bbox column
 table_with_meta = table.add_bbox_metadata()
 ```
+
+Raises `ValueError` when the table declares GeoParquet 1.0: the `covering` key was
+introduced in 1.1, so writing it at 1.0 would produce a file that fails validation.
+Write the table at 1.1 first (`table.write(path, geoparquet_version='1.1')`).
 
 #### `check()` / `check_spatial()` / `check_compression()` / `check_bbox()` / `check_row_groups()`
 
@@ -1397,7 +1452,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.add_a5(table, column_name='a5_cell', resolution=15, geometry_column=None)` | Add A5 cell column |
 | `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column |
 | `ops.add_geometry_metrics(table, vecorel=True)` | Add geodesic area and perimeter columns |
-| `ops.add_admin_divisions(table, dataset='overture', levels=None, vecorel=False)` | Add admin division columns via spatial join |
+| `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |
@@ -1411,8 +1466,10 @@ pq.write_table(table, 'output.parquet')
 | `ops.convert_to_flatgeobuf(table, output)` | Convert to FlatGeobuf |
 | `ops.convert_to_csv(table, output, include_wkt=True, include_bbox=True)` | Convert to CSV |
 | `ops.convert_to_shapefile(table, output, encoding='UTF-8', overwrite=False)` | Convert to Shapefile |
-| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=False, ...)` | Fetch from WFS service |
+| `ops.from_wfs(service_url, typename, version='auto', bbox=None, limit=None, max_workers=1, page_size=100000, auto_tile=True, ...)` | Fetch from WFS service |
 | `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
+| `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, scheme=None, output_dir=None, force=False, ...)` | Build coarser overview levels from an aggregate file |
+| `ops.create_pmtiles_pyramid(input_path, output_path, levels=None, max_tile_kb=500, layer_mode='grouped', include_features=False, features_source=None, max_zoom=None, ...)` | Build a zoom-banded multi-level PMTiles archive from an aggregate file (requires tippecanoe + tile-join) |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

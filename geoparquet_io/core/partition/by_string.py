@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.partition.common import partition_by_column, preview_partition
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
@@ -23,8 +22,7 @@ def validate_column_exists(parquet_file: str, column_name: str, verbose: bool = 
     """
     from geoparquet_io.core.duckdb_metadata import get_column_names, get_schema_info
 
-    safe_url = safe_file_url(parquet_file, verbose)
-    column_names = get_column_names(safe_url)
+    column_names = get_column_names(parquet_file)
 
     if column_name not in column_names:
         available_columns = ", ".join(column_names)
@@ -34,7 +32,7 @@ def validate_column_exists(parquet_file: str, column_name: str, verbose: bool = 
         )
 
     if verbose:
-        schema_info = get_schema_info(safe_url)
+        schema_info = get_schema_info(parquet_file)
         for col in schema_info:
             if col.get("name") == column_name:
                 column_type = col.get("type", "unknown")

@@ -5,12 +5,14 @@ Tests use mocked HTTP responses to avoid network dependencies.
 Network tests are marked separately for optional integration testing.
 """
 
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Module-level imports for WFS functions (avoids per-test imports)
+from geoparquet_io.core import wfs as wfs_module
 from geoparquet_io.core.wfs import (
     EmptyLayerError,
     LayerNotFoundError,
@@ -30,6 +32,57 @@ from geoparquet_io.core.wfs import (
     get_wfs_capabilities,
     list_available_layers,
 )
+
+
+@pytest.fixture
+def offline_wfs_probes():
+    """Complete the mock for the WFS entry points so they stop reaching the network.
+
+    Mocking ``negotiate_wfs_version`` / ``get_layer_info`` /
+    ``fetch_all_features_duckdb`` is *not* enough to take ``wfs_to_table``
+    offline. Before it reaches the mocked fetch, its auto-tiling logic calls
+    ``_get_feature_count`` twice (once for WFS 2.0.0, then for the requested
+    version), and those calls are unmocked. Against a fake host they resolve to
+    real DNS lookups that fail, and ``_get_feature_count`` swallows every
+    exception -- so the tests still passed while quietly burning the 1s+2s
+    retry backoff twice, ~6s per test.
+
+    ``_probe_startindex_limit`` is the same trap one level down, and it is
+    load-bearing for a different caller: ``fetch_all_features_duckdb`` probes
+    the server's startIndex support before paging, so tests that call it
+    directly (``TestAutoPageSingleWorker``) leak even though they mock the page
+    fetcher. It swallows ``httpx.HTTPError`` the same way.
+
+    Stubbing both probes to ``None`` reproduces exactly what the failed requests
+    already returned, so no assertion changes meaning. ``_make_request`` is
+    additionally replaced with a tripwire, and the recorded calls are asserted
+    on teardown so a *future* unmocked network path fails loudly instead of
+    silently sleeping.
+
+    Scope note: the tripwire covers only ``_make_request``-mediated traffic.
+    ``_fetch_wfs_page`` and ``_probe_startindex_limit`` drive httpx directly and
+    bypass it; they are covered by the explicit stubs above, not by the
+    tripwire. A new httpx-driven helper would therefore escape silently -- add
+    it to this fixture rather than assuming the tripwire caught it.
+    """
+    escaped_requests: list[str] = []
+
+    def _blocked_request(url, *args, **kwargs):
+        escaped_requests.append(url)
+        raise AssertionError(f"unmocked WFS HTTP request to {url}")
+
+    with (
+        patch.object(wfs_module, "_get_feature_count", return_value=None),
+        patch.object(wfs_module, "_probe_startindex_limit", return_value=None),
+        patch.object(wfs_module, "_make_request", side_effect=_blocked_request),
+    ):
+        yield
+
+    assert not escaped_requests, (
+        f"wfs_to_table made unmocked HTTP request(s): {escaped_requests}. "
+        "Extend the offline_wfs_probes fixture to cover the new call."
+    )
+
 
 # =============================================================================
 # Mock WFS Response Data
@@ -1713,8 +1766,17 @@ class TestEmptyProperties:
         assert result.column_names == ["geometry"]
 
 
+@pytest.mark.usefixtures("offline_wfs_probes")
 class TestAutoPageSingleWorker:
-    """Test that single-worker mode auto-paginates for large datasets."""
+    """Test that single-worker mode auto-paginates for large datasets.
+
+    These call ``fetch_all_features_duckdb`` directly, which probes the server's
+    startIndex support before paging. That probe drives httpx itself, so mocking
+    the page fetcher does not cover it -- the three tests here reached
+    ``mock.wfs:443`` on every run. Stubbing the probe to ``None`` reproduces what
+    the failed request already returned (``_probe_startindex_limit`` swallows
+    ``httpx.HTTPError``), so no assertion changes meaning.
+    """
 
     def test_single_worker_paginates_when_count_exceeds_page_size(self):
         """With max_workers=1 and total > page_size, should paginate sequentially."""
@@ -2435,6 +2497,7 @@ class TestCRSValidation:
         assert 0 < x < 10, f"Expected longitude ~4-6, got {x}"
         assert 45 < y < 55, f"Expected latitude ~50, got {y}"
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_reprojects_on_mismatch(self):
         """wfs_to_table should reproject when output_crs set and server returns different CRS."""
         from unittest.mock import MagicMock, patch
@@ -2493,6 +2556,7 @@ class TestCRSValidation:
         assert -180 <= x <= 180, f"X {x} not in WGS84 range"
         assert -90 <= y <= 90, f"Y {y} not in WGS84 range"
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_reproject_error_wrapped_in_wfs_error(self):
         """Reprojection errors should be wrapped in WFSError with context."""
         from unittest.mock import MagicMock, patch
@@ -2780,6 +2844,7 @@ class TestResolveCRSForOutput:
         # The fallback to coordinate inference is announced (visible under --verbose).
         assert any("declared no CRS" in str(call.args[0]) for call in mock_debug.call_args_list)
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_trusts_server_crs_end_to_end(self):
         """End-to-end #499 regression: declared EPSG:22174 stays EPSG:22174."""
         import json
@@ -2818,6 +2883,7 @@ class TestResolveCRSForOutput:
         expected = parse_crs_string_to_projjson("EPSG:22174")
         assert geo["columns"]["geometry"]["crs"] == expected
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_preserves_server_crs_through_local_bbox_filter(self):
         """Issue #499: local bbox filtering must not drop the server CRS.
 
@@ -2863,6 +2929,7 @@ class TestResolveCRSForOutput:
         geo = json.loads(result.schema.metadata[b"geo"])
         assert geo["columns"]["geometry"]["crs"] == parse_crs_string_to_projjson("EPSG:22174")
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_local_bbox_filter_reprojects_bbox_to_server_crs(self):
         """Issue #499: a bbox in the requested CRS must be aligned to the CRS the
         server actually returned, or local filtering drops valid rows.
@@ -2904,6 +2971,7 @@ class TestResolveCRSForOutput:
         # The point is retained because the bbox was reprojected to EPSG:22174.
         assert result.num_rows == 1
 
+    @pytest.mark.usefixtures("offline_wfs_probes")
     def test_wfs_to_table_strips_server_crs_marker_when_no_projjson(self):
         """The internal server-CRS marker never leaks into the output schema.
 
@@ -3596,6 +3664,197 @@ class TestGetFeatureCountWithBbox:
         assert "bbox" not in call_params
 
 
+class TestGetFeatureCountErrorVisibility:
+    """A failed count probe must be visible, not silently degrade auto-tiling (#678)."""
+
+    def test_wfs_error_returns_none_and_warns(self, caplog):
+        """A WFSError from the probe returns None but logs a warning naming the cause."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=WFSError("Request failed after 3 attempts: connection refused"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("connection refused" in m for m in warnings), warnings
+        assert any("count" in m.lower() for m in warnings), warnings
+
+    def test_transport_error_returns_none_and_warns(self, caplog):
+        """An httpx transport error is expected — warn and degrade, do not raise."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=httpx.ConnectError("nodename nor servname provided"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("nodename nor servname provided" in m for m in warnings), warnings
+
+    def test_programming_error_propagates(self):
+        """A TypeError is a bug in gpio, not a server problem — it must surface."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=TypeError("_make_request() got an unexpected keyword argument"),
+            ),
+            pytest.raises(TypeError),
+        ):
+            _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+    def test_successful_probe_does_not_warn(self, caplog):
+        """The happy path is unchanged and silent."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", return_value=b'numberMatched="7"'),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0")
+
+        assert result == 7
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_server_without_count_returns_none_without_warning(self, caplog):
+        """ "Server reports no count" is a normal answer, distinct from a failed probe."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", return_value=b"<wfs:FeatureCollection/>"),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
+
+        assert result is None
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_auto_tiling_still_engages_when_probe_succeeds(self):
+        """Regression guard: a working probe still drives the auto-tiling decision."""
+        from geoparquet_io.core.wfs import _refine_tiles_adaptive
+
+        seen = []
+
+        def fake_request(url, params=None, **kwargs):
+            # Root tile is over the limit; every quadrant is under it.
+            seen.append(params.get("bbox", ""))
+            n = 500 if len(seen) == 1 else 10
+            return f'numberOfFeatures="{n}"'.encode()
+
+        with patch("geoparquet_io.core.wfs._make_request", side_effect=fake_request):
+            tiles = _refine_tiles_adaptive(
+                [(0.0, 0.0, 4.0, 4.0)],
+                "http://mock/wfs",
+                "layer",
+                "1.1.0",
+                "EPSG:4326",
+                "xy",
+                max_per_tile=100,
+            )
+
+        assert len(tiles) == 4
+
+    def test_warn_on_failure_false_stays_silent(self):
+        """Speculative callers can opt out of the warning but still get None."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._make_request",
+                side_effect=WFSError("HTTP error 400: version not supported"),
+            ),
+            patch("geoparquet_io.core.wfs.warn") as mock_warn,
+        ):
+            result = _get_feature_count("http://mock/wfs", "layer", "2.0.0", warn_on_failure=False)
+
+        assert result is None
+        mock_warn.assert_not_called()
+
+
+def _mock_layer_info():
+    """Minimal layer info for driving wfs_to_table in tests."""
+    return MagicMock(
+        typename="layer",
+        title="Layer",
+        crs_list=["EPSG:4326"],
+        default_crs="EPSG:4326",
+        available_formats=["application/json"],
+        bbox=(3.0, 50.0, 7.0, 54.0),
+    )
+
+
+class TestSpeculativeCountProbeIsQuiet:
+    """wfs_to_table probes at 2.0.0 first and falls back to the negotiated
+    version by construction. A 1.1.0-only server rejecting the 2.0.0 probe is a
+    healthy extraction, not a degradation — it must not warn (#678 review)."""
+
+    def _run_wfs_to_table(self, fake_request, caplog):
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import wfs_to_table
+
+        mock_table = pa.table(
+            {
+                "geometry": pa.array([b"\x01"], type=pa.binary()),
+                "name": pa.array(["a"]),
+            }
+        )
+
+        with (
+            patch("geoparquet_io.core.wfs._make_request", side_effect=fake_request),
+            patch(
+                "geoparquet_io.core.wfs.negotiate_wfs_version", return_value=("1.1.0", MagicMock())
+            ),
+            patch("geoparquet_io.core.wfs.get_layer_info", return_value=_mock_layer_info()),
+            patch("geoparquet_io.core.wfs._probe_startindex_limit", return_value=None),
+            patch("geoparquet_io.core.wfs.fetch_all_features_duckdb", return_value=mock_table),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            wfs_to_table("http://mock/wfs", "layer", auto_tile=True)
+
+        return [
+            r.message
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "Feature count probe" in r.message
+        ]
+
+    def test_healthy_2_0_0_fallback_does_not_warn(self, caplog):
+        """2.0.0 rejected, negotiated 1.1.0 answers: no probe warning at all."""
+
+        def fake_request(url, params=None, **kwargs):
+            if params.get("version") == "2.0.0":
+                raise WFSError("HTTP error 400: version 2.0.0 not supported")
+            return b'numberOfFeatures="42"'
+
+        assert self._run_wfs_to_table(fake_request, caplog) == []
+
+    def test_real_probe_failure_still_warns(self, caplog):
+        """When the negotiated-version probe fails too, the count is genuinely
+        lost — that one must still be loud."""
+
+        def fake_request(url, params=None, **kwargs):
+            raise WFSError("Request failed after 3 attempts: connection refused")
+
+        warnings = self._run_wfs_to_table(fake_request, caplog)
+        assert len(warnings) == 1, warnings
+        assert "connection refused" in warnings[0]
+        assert "1.1.0" in warnings[0]
+
+
 class TestDeduplicateTiles:
     """Test deduplication of features across tile boundaries."""
 
@@ -4148,3 +4407,82 @@ class TestMultiLayerExtraction:
 
         # Colons should be replaced with underscores in filename
         assert (output_dir / "ns_layer_name.parquet").exists()
+
+
+class TestStartIndexProbeErrorVisibility:
+    """The sibling probe swallowed failures the same way `_get_feature_count` did.
+
+    `_probe_startindex_limit` detects servers that reject a `startIndex` above
+    some cap. Returning a silent `None` on a failed probe means "no cap known",
+    which re-enables unbounded pagination against a server that will reject or
+    truncate the later pages — the same silently-wrong-output failure mode as a
+    lost feature count (#678), reached by a different route.
+    """
+
+    def test_transport_error_returns_none_and_warns(self, caplog):
+        """A transport failure degrades to "no cap known" but says so."""
+        import httpx
+
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        with (
+            patch(
+                "geoparquet_io.core.wfs._get_shared_http_client",
+                side_effect=httpx.ConnectError("nodename nor servname provided"),
+            ),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("nodename nor servname provided" in m for m in warnings), warnings
+        assert any("startindex" in m.lower() for m in warnings), warnings
+
+    def test_programming_error_propagates(self):
+        """A bug inside the probe must surface, not be reported as "no cap"."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        with patch(
+            "geoparquet_io.core.wfs._build_wfs_url",
+            side_effect=AttributeError("'NoneType' object has no attribute 'rstrip'"),
+        ):
+            with pytest.raises(AttributeError, match="rstrip"):
+                _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+    def test_server_without_a_cap_returns_none_without_warning(self, caplog):
+        """A healthy server that imposes no cap is not a failure — stay quiet."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        response = MagicMock()
+        response.status_code = 200
+        client = MagicMock()
+        client.get.return_value = response
+
+        with (
+            patch("geoparquet_io.core.wfs._get_shared_http_client", return_value=client),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result is None
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_detected_cap_is_returned_without_warning(self, caplog):
+        """The success path still parses the cap out of the 400 body."""
+        from geoparquet_io.core.wfs import _probe_startindex_limit
+
+        response = MagicMock()
+        response.status_code = 400
+        response.text = "startIndex must not exceed 50,000"
+        client = MagicMock()
+        client.get.return_value = response
+
+        with (
+            patch("geoparquet_io.core.wfs._get_shared_http_client", return_value=client),
+            caplog.at_level(logging.WARNING, logger="geoparquet_io"),
+        ):
+            result = _probe_startindex_limit("http://mock/wfs", "layer", "2.0.0")
+
+        assert result == 50000
+        assert [r.message for r in caplog.records if r.levelno >= logging.WARNING] == []

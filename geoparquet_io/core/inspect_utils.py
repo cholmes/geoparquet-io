@@ -10,7 +10,6 @@ import os
 import struct
 from typing import Any
 
-import duckdb
 import pyarrow as pa
 from rich.console import Console
 from rich.table import Table
@@ -18,11 +17,12 @@ from rich.text import Text
 
 from geoparquet_io.core.common import format_size
 from geoparquet_io.core.crs_utils import _extract_crs_identifier, is_default_crs
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
 )
-from geoparquet_io.core.remote import is_remote_url
+from geoparquet_io.core.remote import is_remote_url, needs_httpfs
 
 
 def extract_file_info(parquet_file: str, con=None) -> dict[str, Any]:
@@ -449,10 +449,7 @@ def wkb_to_wkt_preview(wkb_bytes: bytes, max_length: int = 45) -> str:
         return "<GEOMETRY>"
 
     try:
-        with duckdb.connect() as con:
-            con.execute("LOAD spatial;")
-            con.execute("SET geometry_always_xy = true;")
-
+        with get_duckdb_connection(load_httpfs=False) as con:
             # Check if this is DuckDB's internal GEOMETRY format (starts with 0x02)
             # vs standard ISO WKB (starts with 0x00 or 0x01 for byte order)
             if wkb_bytes[0] == 0x02:
@@ -616,14 +613,12 @@ def get_preview_data(
         get_geo_metadata,
         get_row_count,
     )
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.remote import needs_httpfs
 
     safe_url = safe_file_url(parquet_file, verbose=False)
     total_rows = get_row_count(parquet_file)
 
     # Create DuckDB connection
-    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(parquet_file))
+    con = get_duckdb_connection(load_httpfs=needs_httpfs(parquet_file))
 
     try:
         # Detect geometry columns from native Parquet types
@@ -651,13 +646,12 @@ def get_preview_data(
         # Build column list, converting serialized geometry columns to WKT in SQL
         column_expressions = []
         for col in all_columns:
-            # Escape double quotes in column names for SQL identifiers
-            escaped_col = col.replace('"', '""')
+            quoted_col = quote_identifier(col)
             if col in geo_columns and col not in native_geo_columns:
                 # Convert serialized geometry to WKT for display
-                column_expressions.append(f'ST_AsText("{escaped_col}") AS "{escaped_col}"')
+                column_expressions.append(f"ST_AsText({quoted_col}) AS {quoted_col}")
             else:
-                column_expressions.append(f'"{escaped_col}"')
+                column_expressions.append(quoted_col)
 
         select_clause = ", ".join(column_expressions)
 
@@ -750,13 +744,9 @@ def get_column_statistics(
         dict: Statistics per column
     """
     safe_url = safe_file_url(parquet_file, verbose=False)
-    con = duckdb.connect()
+    con = get_duckdb_connection(load_httpfs=needs_httpfs(parquet_file))
 
     try:
-        con.execute("INSTALL spatial;")
-        con.execute("LOAD spatial;")
-        con.execute("SET geometry_always_xy = true;")
-
         stats = {}
 
         for col in columns_info:
@@ -768,7 +758,7 @@ def get_column_statistics(
                 # For geometry columns, only count nulls
                 query = f"""
                     SELECT
-                        COUNT(*) FILTER (WHERE "{col_name}" IS NULL) as null_count
+                        COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL) as null_count
                     FROM '{safe_url}'
                 """
                 result = con.execute(query).fetchone()
@@ -782,10 +772,10 @@ def get_column_statistics(
                 # For non-geometry columns, get full stats
                 query = f"""
                     SELECT
-                        COUNT(*) FILTER (WHERE "{col_name}" IS NULL) as null_count,
-                        MIN("{col_name}") as min_val,
-                        MAX("{col_name}") as max_val,
-                        APPROX_COUNT_DISTINCT("{col_name}") as unique_count
+                        COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL) as null_count,
+                        MIN({quote_identifier(col_name)}) as min_val,
+                        MAX({quote_identifier(col_name)}) as max_val,
+                        APPROX_COUNT_DISTINCT({quote_identifier(col_name)}) as unique_count
                     FROM '{safe_url}'
                 """
                 try:

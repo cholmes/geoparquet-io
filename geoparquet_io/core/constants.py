@@ -121,8 +121,7 @@ def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
     from geoparquet_io.core.duckdb_metadata import get_column_names
     from geoparquet_io.core.file_utils import safe_file_url
 
-    url = safe_file_url(parquet_file, verbose=False)
-    columns = get_column_names(url)
+    columns = get_column_names(parquet_file)
 
     # Add id column if missing
     if "id" not in columns:

@@ -20,7 +20,8 @@ The `convert` command transforms between GeoParquet and other vector formats wit
     - 100,000 row groups
     - Bbox column with proper metadata
     - Hilbert spatial ordering
-    - GeoParquet 1.1.0 metadata
+    - GeoParquet metadata (version auto-detected — see
+      [GeoParquet Version](#geoparquet-version); 1.1 for non-GeoParquet inputs)
 
 === "Python"
 
@@ -298,6 +299,42 @@ GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `
     gpio.convert('input.parquet', geometry_column='the_geom').write('output.parquet')
     ```
 
+### Edges Metadata Preservation
+
+Non-planar edges metadata (`"edges": "spherical"`, e.g. from BigQuery
+GEOGRAPHY extracts) survives every rewrite: `convert`, `extract`, `sort`,
+`convert reproject`, and `partition` all carry it through to the output —
+including remote (S3/GCS/Azure) outputs.
+
+=== "CLI"
+
+    ```bash
+    # Input with edges: "spherical" keeps it in the output
+    gpio convert geography.parquet output.parquet
+    gpio sort hilbert geography.parquet sorted.parquet
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # edges metadata is preserved through the pipeline
+    gpio.read('geography.parquet').sort_hilbert().write('output.parquet')
+    ```
+
+When a GeoParquet 2.0 input declares an ellipsoidal edges algorithm
+(`vincenty`, `karney`, `andoyer`, `thomas`) and the output is 1.x, the
+algorithm is mapped to `"spherical"` — the only non-planar value 1.x supports
+— with a warning. 2.0 outputs keep the algorithm verbatim.
+
+### Z and M Dimensions
+
+Geometries with Z (elevation) and/or M (measure) values are preserved, and the
+written `geometry_types` metadata carries the spec's dimension suffixes
+(`"Point Z"`, `"LineString ZM"`). `gpio check spec` validates these suffixes
+against the actual coordinate dimensions in both directions.
+
 ## Remote Files
 
 Read from cloud storage or HTTPS:
@@ -358,6 +395,58 @@ Only invalid geometry is touched: valid geometry is byte-identical, NULL is
 preserved, and bounding boxes stay correct (`ST_MakeValid` never expands an
 envelope).
 
+### Curved Geometries
+
+GeoParquet cannot represent curved geometry types (CircularString,
+CompoundCurve, CurvePolygon, MultiCurve, MultiSurface — common in GeoPackage
+and FileGDB exports from CAD or ArcGIS), so by default gpio strokes arcs into
+line segments on read, the same operation as `ogr2ogr -nlt CONVERT_TO_LINEAR`
+or PostGIS `ST_CurveToLine`. A warning reports how many features were
+linearized.
+
+Note this **alters the geometry**: arcs become chains of straight segments,
+sampled every 4° of arc by default (GDAL's default; ~0.08% area error on a
+full circle). Earlier gpio versions failed on curved input — opt out with
+`--no-linearize-curves` to keep that strict behavior.
+
+=== "CLI"
+
+    ```bash
+    # Default: linearizes and warns ("Linearized 66 curved geometries ...")
+    gpio convert curved.gpkg output.parquet
+
+    # Denser sampling: 1 degree per segment
+    gpio convert curved.gpkg output.parquet --max-angle-deg 1
+
+    # Opt out: curved input fails with an actionable error
+    gpio convert curved.gpkg output.parquet --no-linearize-curves
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Default: linearizes curved geometries
+    gpio.convert("curved.gpkg").write("output.parquet")
+
+    # Denser sampling: 1 degree per segment
+    gpio.convert("curved.gpkg", max_angle_deg=1.0).write("output.parquet")
+
+    # Opt out: raise on curved input instead
+    gpio.convert("curved.gpkg", linearize_curves=False)
+    ```
+
+Linear geometries pass through untouched, NULL is preserved, and empty curves
+become their empty linear counterpart. The surface family (PolyhedralSurface,
+TIN, Triangle) is not linearized and still raises an error.
+
+Curved input is spotted either by a header scan of local GeoPackages or on the
+first pass that parses geometry. `--skip-hilbert` removes that pass, so a
+curved source which is not a local `.gpkg` (FileGDB, a GeoPackage on S3) still
+errors under `--skip-hilbert` — drop the flag, or linearize with `ogr2ogr`
+first.
+
 ### Skip Hilbert Ordering
 
 For faster conversion when spatial ordering isn't critical:
@@ -390,7 +479,50 @@ Available compression types:
 
 ### GeoParquet Version
 
-Control the GeoParquet encoding version written to output:
+Control the GeoParquet encoding version written to output.
+
+**Auto-detection (default):** when `--geoparquet-version` is not specified, the
+output version is resolved from the input:
+
+- **GeoParquet 2.0 input** → stays 2.0 (no silent downgrade to 1.1)
+- **Bare native geo types** (Parquet `GEOMETRY`/`GEOGRAPHY` columns without
+  `geo` metadata) → upgraded to 2.0
+- **GeoParquet 1.x input** → written as 1.1
+- **Non-GeoParquet input** (Shapefile, GeoJSON, ...) → written as 1.1
+
+Auto-detection applies to both `gpio convert` and `gpio convert reproject`. An
+explicit `--geoparquet-version` always wins. The Python API resolves the
+version the same way, so `gpio.read('native.parquet').write('out.parquet')`
+writes true 2.0 native output just like the CLI.
+
+=== "CLI"
+
+    ```bash
+    # Auto mode: a 2.0 input stays 2.0
+    gpio convert input_v2.parquet output.parquet
+
+    # Auto mode: reproject preserves the input version too
+    gpio convert reproject input_v2.parquet output.parquet --dst-crs EPSG:3857
+
+    # Explicit version always wins
+    gpio convert input_v2.parquet output.parquet --geoparquet-version 1.1
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    # Auto mode: a 2.0 or native-geo input stays/becomes 2.0
+    gpio.read('input_v2.parquet').write('output.parquet')
+
+    # Explicit version always wins
+    gpio.read('input_v2.parquet').write(
+        'output.parquet', geoparquet_version='1.1'
+    )
+    ```
+
+**Explicit versions:**
 
 === "CLI"
 
@@ -427,7 +559,7 @@ Control the GeoParquet encoding version written to output:
 
 Available versions:
 - `1.0` — GeoParquet 1.0 with WKB encoding
-- `1.1` — GeoParquet 1.1 with WKB encoding (default)
+- `1.1` — GeoParquet 1.1 with WKB encoding (default for 1.x and non-GeoParquet inputs)
 - `1.1-geoarrow` — GeoParquet 1.1 with native GeoArrow (nested-coordinate) encoding; no bbox
   column; compatible geometry type mixes are promoted (e.g. Polygon + MultiPolygon →
   MultiPolygon); incompatible mixes fall back to WKB
@@ -546,11 +678,17 @@ Validates lat/lon ranges (-90 to 90, -180 to 180). Warns on large coordinates su
 
 ### Invalid Geometries
 
-Fails on invalid WKT by default. Skip with `--skip-invalid`:
+Fails on invalid WKT by default. Skip the unparsable rows with
+`--skip-invalid`:
 
 ```bash
 gpio convert messy.csv out.parquet --skip-invalid
 ```
+
+A row whose geometry column is *empty* is not invalid — it is a row without
+geometry. Those rows are kept either way, with NULL geometry, so their
+attributes survive the conversion; they sort after the ordered rows, as they do
+for every other input format.
 
 Skips invalid rows, disables Hilbert ordering. Mixed geometry types supported.
 

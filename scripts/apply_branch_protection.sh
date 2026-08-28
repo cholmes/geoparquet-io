@@ -13,13 +13,12 @@ set -euo pipefail
 #   Concretely it:
 #     1. Enables auto-merge on the repository.
 #     2. Deletes the classic branch-protection rule on `main` (if present).
-#     3. Creates (or updates) TWO branch rulesets targeting `main`:
+#     3. Creates (or updates) ONE branch ruleset targeting `main`:
 #          A. "main: PR + green checks" - forces PR + passing status checks
 #             for EVERYONE (no bypass actors, including admins).
-#          B. "main: review required"  - requires 1 approving review, but the
-#             repository-admin role can bypass it (so admin merges and
-#             auto-approved bot PRs don't get blocked on human review).
-#     4. Prints a verification summary.
+#     4. Deletes the retired "main: review required" ruleset if it is still
+#        present. See section 3b for why it went away.
+#     5. Prints a verification summary.
 #
 # REQUIREMENTS
 #   - `gh` CLI authenticated as a user with ADMIN permission on the repo.
@@ -86,7 +85,7 @@ apply_ruleset() {
   local existing_id
 
   existing_id="$(
-    gh api "repos/${REPO}/rulesets" \
+    gh api --paginate "repos/${REPO}/rulesets" \
       --jq ".[] | select(.name == \"${name}\") | .id" 2>/dev/null || true
   )"
 
@@ -100,6 +99,29 @@ apply_ruleset() {
     printf '%s' "${payload}" \
       | gh api -X POST "repos/${REPO}/rulesets" \
           --input - >/dev/null
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Helper: delete a ruleset by name, if it exists.
+#   $1 = ruleset name
+# Used to retire rulesets this script no longer declares, so that a re-run
+# converges an older configuration instead of leaving orphans behind.
+# -----------------------------------------------------------------------------
+delete_ruleset() {
+  local name="$1"
+  local existing_id
+
+  existing_id="$(
+    gh api --paginate "repos/${REPO}/rulesets" \
+      --jq ".[] | select(.name == \"${name}\") | .id" 2>/dev/null || true
+  )"
+
+  if [[ -n "${existing_id}" ]]; then
+    echo ">> Deleting retired ruleset '${name}' (id ${existing_id}) ..."
+    gh api -X DELETE "repos/${REPO}/rulesets/${existing_id}" >/dev/null
+  else
+    echo ">> Retired ruleset '${name}' not present (nothing to delete)."
   fi
 }
 
@@ -168,67 +190,39 @@ RULESET_A_PAYLOAD="$(
 )"
 
 # -----------------------------------------------------------------------------
-# 3b. Ruleset B: "main: review required"
+# 3b. (removed) Ruleset B: "main: review required"
 #
-#     enforcement: active, with a bypass actor for the repository-admin role
-#     (actor_id 5 = the built-in "admin" RepositoryRole, bypass_mode always).
-#     Requires 1 approving review from everyone EXCEPT admins.
+#     A second ruleset used to require 1 approving review, with bypass actors
+#     for the admin role. It was deleted on 2026-08-13. This repository has a
+#     single active reviewer, and GitHub disables self-approval, so the rule
+#     could never be satisfied on that reviewer's own PRs. Every merge became
+#     a "merge without waiting for requirements" click, which is a step
+#     rather than a second opinion.
+#
+#     Neither bot nor draft PRs depended on it. Dependabot auto-merge is
+#     controlled by .github/workflows/dependabot-automerge.yml, and GitHub
+#     refuses to enable auto-merge on a draft PR at all.
+#
+#     To reinstate a review requirement, build a second payload here, call
+#     apply_ruleset with it, and drop the delete_ruleset call below.
 # -----------------------------------------------------------------------------
-RULESET_B_NAME="main: review required"
-RULESET_B_PAYLOAD="$(
-  jq -n --arg name "${RULESET_B_NAME}" '
-  {
-    name: $name,
-    target: "branch",
-    enforcement: "active",
-    bypass_actors: [
-      {
-        actor_id: 5,
-        actor_type: "RepositoryRole",
-        bypass_mode: "always"
-      }
-    ],
-    conditions: {
-      ref_name: {
-        include: ["~DEFAULT_BRANCH"],
-        exclude: []
-      }
-    },
-    rules: [
-      {
-        type: "pull_request",
-        parameters: {
-          required_approving_review_count: 1,
-          dismiss_stale_reviews_on_push: false,
-          require_code_owner_review: false,
-          require_last_push_approval: false,
-          required_review_thread_resolution: false
-        }
-      }
-    ]
-  }'
-)"
+STALE_RULESET_NAME="main: review required"
 
 # -----------------------------------------------------------------------------
-# NET EFFECT of A + B together
-#   * Ruleset A has NO bypass, so absolutely everyone - contributors AND
-#     admins - must open a PR and get all 13 checks green before merging to
-#     main. Nobody can push straight to main or force-push/delete it.
-#   * Ruleset B additionally demands 1 approving review, but the admin role
-#     bypasses B. So:
-#       - regular collaborators: PR + green checks + 1 approval;
-#       - repo admins and the auto-approved security-audit bot PRs (merged by
-#         an admin / with the admin-bypass token): PR + green checks, no
-#         second human approval required.
-#   Because rulesets are additive, the strictest applicable rule wins for each
-#   actor - exactly the layered policy we want.
+# NET EFFECT
+#   Ruleset A carries no bypass actors, so everyone - contributors and admins
+#   alike - must open a PR and get all 13 checks green before anything lands
+#   on main. Nobody pushes straight to main, force-pushes it, or deletes it.
+#
+#   No approving review is required. Contributors without write access still
+#   cannot merge their own PRs, because merging needs write access.
 # -----------------------------------------------------------------------------
 
 apply_ruleset "${RULESET_A_NAME}" "${RULESET_A_PAYLOAD}"
-apply_ruleset "${RULESET_B_NAME}" "${RULESET_B_PAYLOAD}"
+delete_ruleset "${STALE_RULESET_NAME}"
 
 # -----------------------------------------------------------------------------
-# 4. Verification.
+# 5. Verification.
 # -----------------------------------------------------------------------------
 echo ""
 echo ">> Rulesets now on ${REPO}:"

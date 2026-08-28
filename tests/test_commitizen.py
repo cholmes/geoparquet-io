@@ -11,6 +11,13 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+# Repo tooling checks: these spawn `uv run cz` subprocesses, the fast suite's
+# main source of contention flakes, so they run in the meta lane instead.
+# Unlike most of the lane they are NOT redundant with the lint job: the
+# commitizen hook is `stages: [commit-msg]`, which `pre-commit run --all-files`
+# never invokes, so the meta lane is the only place this is checked.
+pytestmark = pytest.mark.meta
+
 # Root of the repository - resolve once, use everywhere.
 # This avoids dependence on the working directory at test time.
 _REPO_ROOT = Path(__file__).resolve().parent.parent

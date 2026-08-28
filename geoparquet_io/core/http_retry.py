@@ -150,13 +150,27 @@ def make_request_with_retry(
                 try:
                     return cast(dict[str, Any], response.json())
                 except json.JSONDecodeError as e:
-                    # Server returned non-JSON (likely HTML error page)
+                    # Server returned non-JSON (likely HTML error page).
+                    # Don't include response content in error - may contain
+                    # sensitive tokens; the status code and Content-Type are
+                    # safe and make a WAF/proxy block page distinguishable
+                    # from a genuine payload-size truncation.
+                    content_type = response.headers.get("content-type", "unknown")
+                    detail = (
+                        f"Server returned non-JSON response "
+                        f"(Content-Type: {content_type}, HTTP {response.status_code}), "
+                        f"likely an HTML error or block page"
+                    )
+                    if batch_size is None:
+                        # No batch was requested (e.g. a feature-count or
+                        # layer-info query), so reducing the batch size cannot
+                        # help and BatchTooLargeError would be misleading.
+                        raise RemoteAccessError(url, detail) from e
                     # This is NOT retryable with same params - batch is too large
-                    # Don't include response content in error - may contain sensitive tokens
                     raise BatchTooLargeError(
                         url=url,
-                        batch_size=batch_size or 0,
-                        reason="Server returned non-JSON response (likely HTML error page)",
+                        batch_size=batch_size,
+                        reason=detail,
                     ) from e
             else:
                 return bytes(response.content)

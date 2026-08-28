@@ -389,32 +389,30 @@ class TestTableUpload:
     def test_upload_writes_temp_and_calls_upload(self, sample_table):
         """Test that upload() writes to temp file and calls core upload."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
-                # Make upload a no-op
-                mock_upload.return_value = None
+            # Make upload a no-op
+            mock_upload.return_value = None
 
-                sample_table.upload("s3://test-bucket/test.parquet")
+            sample_table.upload("s3://test-bucket/test.parquet")
 
-                # Verify upload was called
-                mock_upload.assert_called_once()
-                call_args = mock_upload.call_args
-                assert call_args.kwargs["destination"] == "s3://test-bucket/test.parquet"
+            # Verify upload was called
+            mock_upload.assert_called_once()
+            call_args = mock_upload.call_args
+            assert call_args.kwargs["destination"] == "s3://test-bucket/test.parquet"
 
     def test_upload_with_s3_endpoint(self, sample_table):
         """Test upload() with custom S3 endpoint."""
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
-                mock_upload.return_value = None
+            mock_upload.return_value = None
 
-                sample_table.upload(
-                    "s3://test-bucket/test.parquet",
-                    s3_endpoint="minio.example.com:9000",
-                    s3_use_ssl=False,
-                )
+            sample_table.upload(
+                "s3://test-bucket/test.parquet",
+                s3_endpoint="minio.example.com:9000",
+                s3_use_ssl=False,
+            )
 
-                call_args = mock_upload.call_args
-                assert call_args.kwargs["s3_endpoint"] == "minio.example.com:9000"
-                assert call_args.kwargs["s3_use_ssl"] is False
+            call_args = mock_upload.call_args
+            assert call_args.kwargs["s3_endpoint"] == "minio.example.com:9000"
+            assert call_args.kwargs["s3_use_ssl"] is False
 
     def test_upload_cleans_up_temp_file(self, sample_table):
         """Test that upload() cleans up temp file even on error."""
@@ -425,16 +423,15 @@ class TestTableUpload:
             raise Exception("Upload failed")
 
         with patch("geoparquet_io.core.upload.upload") as mock_upload:
-            with patch("geoparquet_io.core.common.setup_aws_profile_if_needed"):
-                mock_upload.side_effect = capture_and_raise
+            mock_upload.side_effect = capture_and_raise
 
-                with pytest.raises(Exception, match="Upload failed"):
-                    sample_table.upload("s3://test-bucket/test.parquet")
+            with pytest.raises(Exception, match="Upload failed"):
+                sample_table.upload("s3://test-bucket/test.parquet")
 
-                # Verify the temp file path was captured and cleaned up
-                assert len(captured_paths) == 1
-                temp_path = captured_paths[0]
-                assert not Path(temp_path).exists(), "Temp file should be deleted after error"
+            # Verify the temp file path was captured and cleaned up
+            assert len(captured_paths) == 1
+            temp_path = captured_paths[0]
+            assert not Path(temp_path).exists(), "Temp file should be deleted after error"
 
 
 class TestTableMetadataProperties:
@@ -632,6 +629,90 @@ class TestTablePartitionByA5:
         assert any("a5_cell=" in d.name for d in subdirs)
 
 
+class TestPartitionKeepColumn:
+    """The index column gpio generates must survive a non-Hive partition run.
+
+    Without ``--hive`` / ``hive=True`` the partition value is encoded only in
+    the file name, and the generating column is excluded from the output. The
+    CLI offers ``--keep-<scheme>-column`` to override that; the Python API must
+    offer the same escape hatch or an API caller cannot produce the column at
+    all.
+    """
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.fixture
+    def output_dir(self):
+        tmp_dir = Path(tempfile.gettempdir()) / f"test_part_keep_{uuid.uuid4()}"
+        yield tmp_dir
+        if tmp_dir.exists():
+            import shutil
+
+            shutil.rmtree(tmp_dir)
+
+    @staticmethod
+    def _column_names(output_dir):
+        files = sorted(Path(output_dir).rglob("*.parquet"))
+        assert files, f"no parquet files written to {output_dir}"
+        return set(pq.ParquetFile(files[0]).schema_arrow.names)
+
+    def test_non_hive_drops_the_quadkey_column_by_default(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(output_dir, partition_resolution=3, overwrite=True)
+        assert "quadkey" not in self._column_names(output_dir)
+
+    def test_keep_quadkey_column_restores_it_without_hive(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(
+            output_dir,
+            partition_resolution=3,
+            overwrite=True,
+            keep_quadkey_column=True,
+        )
+        assert "quadkey" in self._column_names(output_dir)
+        # Still flat files, not key=value/ directories.
+        assert not [d for d in Path(output_dir).iterdir() if d.is_dir()]
+
+    def test_hive_keeps_the_quadkey_column(self, sample_table, output_dir):
+        sample_table.partition_by_quadkey(
+            output_dir, partition_resolution=3, overwrite=True, hive=True
+        )
+        assert "quadkey" in self._column_names(output_dir)
+
+
+class TestPartitionCompressionLevel:
+    """Partition methods must let each codec resolve its own default level.
+
+    A pinned ``compression_level=15`` is out of range for every codec but ZSTD
+    (GZIP accepts 1-9), so it turned a valid CLI invocation into an API error.
+    """
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.fixture
+    def output_dir(self):
+        tmp_dir = Path(tempfile.gettempdir()) / f"test_part_codec_{uuid.uuid4()}"
+        yield tmp_dir
+        if tmp_dir.exists():
+            import shutil
+
+            shutil.rmtree(tmp_dir)
+
+    @pytest.mark.parametrize("compression", ["GZIP", "ZSTD"])
+    def test_partition_by_kdtree_accepts_any_codec(self, sample_table, output_dir, compression):
+        result = sample_table.partition_by_kdtree(
+            output_dir, iterations=2, overwrite=True, compression=compression
+        )
+        assert isinstance(result, dict)
+        assert list(Path(output_dir).rglob("*.parquet"))
+
+
 class TestReadPartition:
     """Tests for the read_partition() function."""
 
@@ -642,14 +723,16 @@ class TestReadPartition:
             pytest.skip("Test data not available")
         return read(PLACES_PARQUET)
 
-    @pytest.fixture
-    def partition_dir(self, sample_table):
-        """Create a temporary partitioned directory."""
+    @pytest.fixture(params=[False, True], ids=["flat", "hive"])
+    def partition_dir(self, request, sample_table):
+        """Create a temporary partitioned directory, flat and Hive-style."""
         tmp_dir = Path(tempfile.gettempdir()) / f"test_partition_{uuid.uuid4()}"
         tmp_dir.mkdir(exist_ok=True)
 
         # Use the full table (766 rows) which is above the minimum threshold
-        sample_table.partition_by_quadkey(tmp_dir, overwrite=True, partition_resolution=3)
+        sample_table.partition_by_quadkey(
+            tmp_dir, overwrite=True, partition_resolution=3, hive=request.param
+        )
 
         yield tmp_dir
 
@@ -1170,10 +1253,16 @@ class TestTableAddBboxMetadata:
         with pytest.raises(ValueError, match="not found"):
             sample_table.add_bbox_metadata(bbox_column="nonexistent_bbox")
 
-    def test_add_bbox_metadata_with_bbox_column(self, sample_table):
+    def test_add_bbox_metadata_with_bbox_column(self, sample_table, tmp_path):
         """Test add_bbox_metadata() works with bbox column."""
+        # The places fixture declares GeoParquet 1.0.0, which cannot carry the
+        # 1.1-only covering key (gpio #686) — restate it at 1.1 first.
+        v11_path = tmp_path / "places_v11.parquet"
+        sample_table.write(str(v11_path), geoparquet_version="1.1")
+        table_v11 = read(str(v11_path))
+
         # First add the bbox column, then add metadata
-        with_bbox = sample_table.add_bbox()
+        with_bbox = table_v11.add_bbox()
         with_meta = with_bbox.add_bbox_metadata()
         assert isinstance(with_meta, Table)
 

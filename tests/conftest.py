@@ -45,8 +45,40 @@ import time  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+import click  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 import pytest  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Click "no default declared" sentinel
+# ---------------------------------------------------------------------------
+# Click 8.2 added ``click.core.UNSET`` to distinguish "no default was declared"
+# from an explicitly declared ``None``. On click 8.1 the two are
+# indistinguishable and ``param.default`` is plain ``None``. Tests that
+# introspect Click defaults share this shim instead of each carrying a copy.
+try:
+    from click.core import UNSET  # noqa: E402
+
+    CLICK_HAS_UNSET = True
+except ImportError:  # pragma: no cover - click < 8.2
+    UNSET = object()
+    CLICK_HAS_UNSET = False
+
+
+def walk_cli_commands(cmd, path: tuple[str, ...] = ()):
+    """Yield ``(path, command)`` for every leaf command in a Click tree.
+
+    Shared by the two CLI/API parity modules
+    (``test_cli_api_default_parity.py`` and
+    ``test_cli_api_call_parity_scaffold.py``), which both derive their coverage
+    from the live command tree rather than a hand-maintained list of names.
+    """
+    if isinstance(cmd, click.Group):
+        for sub_name, sub in cmd.commands.items():
+            yield from walk_cli_commands(sub, (*path, sub_name))
+    else:
+        yield path, cmd
+
 
 # Test data directory
 TEST_DATA_DIR = Path(__file__).parent / "data"
@@ -65,6 +97,54 @@ def test_data_dir():
 def places_test_file():
     """Return the path to the places test parquet file."""
     return str(PLACES_TEST_FILE)
+
+
+@pytest.fixture
+def places_v11_file(tmp_path):
+    """A real GeoParquet 1.1 copy of the places file: bbox column, no covering key.
+
+    ``places_test.parquet`` declares 1.0.0, which cannot carry the 1.1-only
+    ``covering`` key (gpio #686). Tests that exercise *adding* a covering need a
+    1.1 input.
+
+    Written through DuckDB's KV_METADATA rather than pyarrow: ``write_table``
+    with ``store_schema=False`` drops the whole schema-metadata block (geo key
+    included, leaving plain Parquet that silently exercises the synthetic-metadata
+    fallback), while the default ``store_schema=True`` adds an ``ARROW:schema``
+    key that ``add bbox-metadata``'s unquoted KV_METADATA clause cannot survive.
+    The connection deliberately does not load the spatial extension, so the WKB
+    geometry column is copied as BLOB instead of being auto-converted to a native
+    GEOMETRY type.
+    """
+    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.geo_metadata import parse_geo_metadata
+
+    path = tmp_path / "places_v11.parquet"
+
+    source_meta = pq.read_metadata(str(PLACES_TEST_FILE)).metadata
+    geo = json.loads(source_meta[b"geo"].decode("utf-8"))
+    geo["version"] = "1.1.0"
+    geo["columns"][geo["primary_column"]].pop("covering", None)
+    geo_json = json.dumps(geo).replace("'", "''")
+
+    con = get_duckdb_connection(load_spatial=False)
+    con.execute(f"""
+        COPY (SELECT * FROM '{PLACES_TEST_FILE.as_posix()}')
+        TO '{path.as_posix()}'
+        (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE', KV_METADATA {{geo: '{geo_json}'}})
+    """)
+    con.close()
+
+    # Non-vacuity: this must be a real 1.1 GeoParquet file with a bbox column and
+    # no covering, not plain Parquet that quietly takes a fallback path.
+    written = pq.read_metadata(str(path)).metadata
+    written_geo = parse_geo_metadata(written, False)
+    assert written_geo, "places_v11_file lost its geo metadata"
+    assert written_geo["version"].startswith("1.1"), written_geo["version"]
+    primary = written_geo["primary_column"]
+    assert "covering" not in written_geo["columns"][primary]
+    assert "bbox" in pq.ParquetFile(str(path)).schema_arrow.names
+    return str(path)
 
 
 @pytest.fixture
@@ -390,3 +470,82 @@ def crs_srid_file(test_data_dir):
     indicating EPSG:5070.
     """
     return str(test_data_dir / "crs-srid.parquet")
+
+
+# ---------------------------------------------------------------------------
+# Graceful skip when an optional DuckDB community extension is unavailable
+# ---------------------------------------------------------------------------
+# Community extensions (e.g. 'geography' for S2 support) are built per DuckDB
+# release. When a DuckDB version ships before an extension has been rebuilt for
+# it, `INSTALL ... FROM community` returns HTTP 404 and gpio raises
+# ExtensionUnavailableError -- the correct production behaviour, which we keep.
+#
+# We pin DuckDB (pyproject) to a version that publishes 'geography', so in CI
+# the S2 tests run for real. This hook is a defensive safety net: if a test
+# environment ever ends up on a DuckDB whose optional extension is genuinely
+# unpublished, the affected tests SKIP instead of hard-failing and reddening
+# the whole matrix.
+#
+# Tests that deliberately assert ExtensionUnavailableError catch it themselves
+# (via pytest.raises), so the exception never escapes to this hook -- only
+# feature tests that hit an unavailable extension are converted to skips.
+#
+# IMPORTANT: only the *unpublished / 404* case is skip-worthy. gpio raises
+# ExtensionUnavailableError for ANY INSTALL/LOAD failure (it always says the
+# extension "may not be published"), so the type alone is not the signal -- a
+# genuine LOAD failure, a corrupt extension, or a permission/IO error must
+# still FAIL the test. We narrow on the underlying DuckDB download-failure
+# signature, which the unpublished case carries as a chained HTTP 404
+# ("Failed to download extension ... (HTTP 404)"). gpio wraps the original
+# error via `raise ... from e` and also folds its text into the message, so we
+# scan both the message and the __cause__/__context__ chain for that signature.
+
+
+def _is_unpublished_extension_error(exc) -> bool:
+    """True only if `exc` is an ExtensionUnavailableError caused by a 404/download.
+
+    Matches the DuckDB "extension not built/published for this version" signature
+    (a community-extensions download that 404s). Deliberately does NOT match
+    gpio's own "may not be published" boilerplate, which is present on every
+    ExtensionUnavailableError regardless of the real underlying cause.
+    """
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    if not isinstance(exc, ExtensionUnavailableError):
+        return False
+
+    # Collect text from the exception and its cause/context chain.
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parts.append(str(cur))
+        cur = cur.__cause__ or cur.__context__
+    blob = " ".join(parts).lower()
+
+    # The only signals we treat as "unavailable": DuckDB's download-failure text.
+    return "failed to download extension" in blob or "http 404" in blob
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Convert an unpublished-extension (404) failure into a clean skip.
+
+    Any other DuckDB error in the extension-loading path propagates unchanged
+    and fails the test.
+    """
+    outcome = yield
+    excinfo = outcome.excinfo
+    if excinfo is None:
+        return
+
+    exc = excinfo[1]
+    if _is_unpublished_extension_error(exc):
+        outcome.force_exception(
+            pytest.skip.Exception(
+                f"Optional DuckDB community extension '{exc.name}' is not "
+                f"available for DuckDB {exc.duckdb_version} in this environment "
+                f"(community extensions are built per DuckDB release)."
+            )
+        )

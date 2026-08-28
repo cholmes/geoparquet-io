@@ -31,14 +31,18 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # No direct git push happens here (create-pull-request uses its own
           # token input), so don't leave GITHUB_TOKEN credentials in .git/config.
           persist-credentials: false
+          # The verification pytest run includes the corpus conformance suite,
+          # which lives in the geoparquet-testing submodule — without it those
+          # tests silently skip and an upgrade could be "verified" untested.
+          submodules: true
 
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
 
@@ -117,7 +121,7 @@ jobs:
           fi
 
           # Run the fast suite to confirm the upgrade didn't break anything.
-          uv run pytest -n 4 -m "not slow and not network" -q --tb=short --no-cov -p no:cacheprovider
+          uv run pytest -n 4 -m "not slow and not network and not meta" -q --tb=short --no-cov -p no:cacheprovider
           TEST_EXIT=$?
 
           if [ $TEST_EXIT -eq 0 ]; then

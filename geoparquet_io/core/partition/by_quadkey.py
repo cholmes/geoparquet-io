@@ -11,7 +11,6 @@ from geoparquet_io.core.constants import (
     DEFAULT_QUADKEY_COLUMN_NAME,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
-from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import (
     configure_verbose,
     debug,
@@ -55,8 +54,7 @@ def _ensure_quadkey_column(
     """
     from geoparquet_io.core.duckdb_metadata import get_column_names
 
-    safe_url = safe_file_url(input_parquet, verbose)
-    column_names = get_column_names(safe_url)
+    column_names = get_column_names(input_parquet)
 
     if quadkey_column_name in column_names:
         if verbose:

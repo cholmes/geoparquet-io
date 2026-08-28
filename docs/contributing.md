@@ -65,17 +65,35 @@ uv run pre-commit install
 ## Tests
 
 ```bash
-uv run pytest                                          # Full suite
-uv run pytest tests/test_yourfile.py -v               # Single file
-uv run pytest -m "not slow and not network"           # Fast tests only
+uv run pytest                                              # Full suite
+uv run pytest tests/test_yourfile.py -v                   # Single file
+uv run pytest -m "not slow and not network and not meta"  # Fast tests only
+uv run pytest -m meta                                     # Repo tooling checks
+uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0  # With coverage
 ```
+
+Local runs are **not** instrumented for coverage — pass `--cov` yourself when you
+want a report. Instrumenting every run slowed single-file runs by 39-49%, and a
+partial run can never clear a whole-suite floor, so the default invocation used to
+exit 1 on a gate that measured nothing. Both gates below still run in CI.
+
+Add `--cov-fail-under=0` when you opt in on a subset: `[tool.coverage.report]`
+sets `fail_under = 67`, so coverage re-arms the floor on any `--cov` run even
+though `addopts` no longer requests one.
 
 CI runs three test tiers:
 
-- **Fast tests** (`not slow and not network`) — run on every PR across the full
-  OS/Python matrix and **block merging**.
-- **Slow tests** (`slow and not network`) — run after merge to main and nightly;
-  opt in on a PR by adding the `run-slow-tests` label.
+- **Fast tests** (`not slow and not network and not meta`) — run on every PR
+  across the full OS/Python matrix and **block merging**.
+- **Slow tests** (`(slow or meta) and not network`) — run after merge to main
+  and nightly; opt in on a PR by adding the `run-slow-tests` label. This tier
+  also carries the `meta` lane: repo-tooling checks (codespell, commitizen,
+  doc-sync, mutmut, mypy, validate-claude-md, security tool availability) that
+  shell out to subprocesses. Most re-check something the lint job already runs
+  via pre-commit, so `uv run pytest -m meta` is mainly for when you skip
+  pre-commit — except commitizen (a `commit-msg`-stage hook, which
+  `pre-commit run --all-files` never runs) and mutmut (no hook at all), where
+  it is the only local check.
 - **Network tests** (`network`) — hit live third-party services (ArcGIS, WFS,
   Carto, ...). They are **non-blocking**: failures open/update a tracking issue
   instead of failing CI, because a remote server's behavior is not something a
@@ -97,6 +115,8 @@ Coverage gates (both enforced in CI):
 | `@pytest.mark.slow` | marks tests as slow (deselect with '-m "not slow"') |
 | `@pytest.mark.network` | marks tests requiring network access (deselect with '-m "not network"') |
 | `@pytest.mark.integration` | marks end-to-end integration tests |
+| `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
+| `@pytest.mark.meta` | repo tooling checks, excluded from the fast suite |
 <!-- END GENERATED: test-markers -->
 
 ## Code Quality

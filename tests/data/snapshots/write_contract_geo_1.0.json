@@ -1,0 +1,18 @@
+{
+  "columns": {
+    "geometry": {
+      "bbox": [
+        -122.4,
+        -33.9,
+        151.2,
+        48.86
+      ],
+      "encoding": "WKB",
+      "geometry_types": [
+        "Point"
+      ]
+    }
+  },
+  "primary_column": "geometry",
+  "version": "1.0.0"
+}

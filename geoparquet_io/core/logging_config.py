@@ -208,20 +208,56 @@ def verbose_logging():
         logger.setLevel(original_level)
 
 
+def _bootstrap_default_handler(verbose: bool) -> None:
+    """Attach a default handler for non-CLI usage without hijacking the host's.
+
+    ``setup_cli_logging()`` installs a stream handler *and* sets a level, which
+    is right at a CLI entry point but wrong when the first thing that touches
+    logging is a library call inside somebody else's application.
+
+    Two cases:
+
+    * The host has already configured logging (the root logger has handlers).
+      Library convention then applies: attach a :class:`logging.NullHandler`
+      only, so this bootstrap does not run again, and let records propagate to
+      the host's handlers exactly once at whatever level the host chose.
+      Installing a second stream handler here made every gpio message appear
+      twice in an embedding application.
+    * Nothing has configured logging at all — a bare script importing gpio.
+      Install the CLI handler so output is not silently dropped, but put back a
+      level the caller explicitly chose for the ``geoparquet_io`` logger.
+    """
+    if logging.getLogger().handlers:
+        logger.addHandler(logging.NullHandler())
+        return
+
+    chosen_level = logger.level  # NOTSET unless something explicitly set it
+    setup_cli_logging(verbose=verbose, show_timestamps=False, use_colors=False)
+    if chosen_level != logging.NOTSET:
+        logger.setLevel(chosen_level)
+
+
 def configure_verbose(verbose: bool) -> None:
     """
-    Configure the logger's verbosity level.
+    Raise the package logger to DEBUG for a verbose call.
 
     Call this at the start of a function that has a verbose parameter.
     Also ensures a handler is attached if none exists (for non-CLI usage).
+
+    Deliberately one-way: this is called from ~60 nested core functions, nearly
+    all of which default to ``verbose=False``. Lowering the level on a
+    non-verbose call would (a) truncate an outer ``--verbose`` run the moment it
+    reached a nested default call, and (b) stamp gpio's idea of a level onto an
+    embedding application's logger on every single default call. Use
+    :func:`verbose_logging` when a raise has to be undone again.
 
     Args:
         verbose: If True, set logger to DEBUG level
     """
     # Ensure at least a basic handler exists for non-CLI usage (e.g., tests, library usage)
     if not logger.handlers:
-        setup_cli_logging(verbose=verbose, show_timestamps=False, use_colors=False)
-    elif verbose:
+        _bootstrap_default_handler(verbose)
+    if verbose:
         logger.setLevel(logging.DEBUG)
 
 

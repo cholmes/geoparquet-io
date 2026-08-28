@@ -24,6 +24,7 @@ import pyarrow as pa
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.streaming import (
     apply_geoarrow_extension_type,
@@ -187,9 +188,10 @@ def _wrap_query_with_wkb_conversion(
     if not geometry_column:
         return query
 
+    quoted_geom = quote_identifier(geometry_column)
     return f"""
         WITH __stream_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB({geometry_column}) AS {geometry_column})
+        SELECT * REPLACE (ST_AsWKB({quoted_geom}) AS {quoted_geom})
         FROM __stream_source
     """
 
@@ -209,6 +211,7 @@ def write_output(
     custom_metadata: dict | None = None,
     geoparquet_version: str | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """
     Execute query and write result to file or stream.
@@ -232,6 +235,8 @@ def write_output(
         profile: AWS profile for S3 output
         custom_metadata: Optional dict with custom metadata
         geoparquet_version: GeoParquet version to write
+        memory_limit: DuckDB memory limit for file writes (e.g., '2GB', '512MB');
+            ignored for stream output
 
     Returns:
         Table if streaming output, None if file output
@@ -242,6 +247,13 @@ def write_output(
     validate_output(output_path)
 
     if should_stream_output(output_path):
+        # Arrow IPC to stdout has no DuckDB write engine to configure, so a
+        # memory limit cannot be applied. Say so rather than dropping it silently.
+        if memory_limit is not None:
+            warn(
+                "--write-memory is ignored when streaming to stdout "
+                "(it only applies to file outputs)."
+            )
         return _write_stream_output(con, query, original_metadata, geometry_column)
     else:
         _write_file_output(
@@ -258,6 +270,7 @@ def write_output(
             custom_metadata,
             geoparquet_version,
             extra_kv_metadata,
+            memory_limit,
         )
         return None
 
@@ -331,6 +344,7 @@ def _write_file_output(
     custom_metadata: dict | None,
     geoparquet_version: str | None,
     extra_kv_metadata: dict[str, str] | None = None,
+    memory_limit: str | None = None,
 ) -> None:
     """Write output to Parquet file."""
     # Auto-detect version from input metadata if not explicitly provided
@@ -351,6 +365,7 @@ def _write_file_output(
         profile=profile,
         geoparquet_version=geoparquet_version,
         extra_kv_metadata=extra_kv_metadata,
+        memory_limit=memory_limit,
     )
 
 
@@ -409,6 +424,7 @@ def execute_transform(
     custom_metadata: dict | None = None,
     geoparquet_version: str | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    memory_limit: str | None = None,
 ) -> pa.Table | None:
     """
     Execute a transformation with unified streaming/file I/O.
@@ -429,6 +445,8 @@ def execute_transform(
         profile: AWS profile for remote I/O
         custom_metadata: Optional dict with custom metadata
         geoparquet_version: GeoParquet version to write
+        memory_limit: DuckDB memory limit for file writes (e.g., '2GB', '512MB');
+            ignored for stream output
 
     Returns:
         Table if streaming output, None if file output or dry_run
@@ -439,7 +457,7 @@ def execute_transform(
 
         execute_transform("input.parquet", None, make_query, verbose=True)
     """
-    from geoparquet_io.core.logging_config import progress, warn
+    from geoparquet_io.core.logging_config import progress
 
     # Suppress verbose when streaming to stdout (would corrupt the stream)
     if should_stream_output(output_path):
@@ -472,4 +490,5 @@ def execute_transform(
             custom_metadata=custom_metadata,
             geoparquet_version=geoparquet_version,
             extra_kv_metadata=extra_kv_metadata,
+            memory_limit=memory_limit,
         )

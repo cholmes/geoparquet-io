@@ -8,6 +8,11 @@ from pathlib import Path
 
 import pytest
 
+# Repo tooling checks: these exercise the doc_sync script that the CI lint job
+# already runs via pre-commit, several of them through subprocesses, so they
+# live in the meta lane instead of the fast suite.
+pytestmark = pytest.mark.meta
+
 # Project root for import resolution
 PROJECT_ROOT = Path(__file__).parent.parent
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "doc_sync.py"

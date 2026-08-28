@@ -168,3 +168,96 @@ def test_repair_arrow_table_geometry_tolerates_malformed_wkb():
     # Unparsable bytes are reported as 0 invalid and passed through unchanged.
     assert n == 0
     assert result.num_rows == 3
+
+
+def _wkb_table_with_nulls(con, *wkts, geom_col="geometry"):
+    """Like _wkb_table, but WKT None entries become NULL geometry rows."""
+    rows = "\n UNION ALL ".join(
+        (
+            f'SELECT {i} AS id, NULL::BLOB AS "{geom_col}"'
+            if w is None
+            else f"SELECT {i} AS id, ST_AsWKB(ST_GeomFromText('{w}')) AS \"{geom_col}\""
+        )
+        for i, w in enumerate(wkts)
+    )
+    return con.execute(rows).arrow().read_all()
+
+
+def test_repair_arrow_table_geometry_with_null_rows(caplog):
+    """NULL geometry rows must not crash the repair pass and must survive it.
+
+    Issue #642: the previous single-WHERE invalid count segfaulted DuckDB's
+    spatial extension on real-world tables containing NULL geometry rows
+    (selection-vector misalignment under conditional execution). The layered
+    count shape is logically identical and crash-free; NULL rows pass through.
+    """
+    con = _con()
+    table = _wkb_table_with_nulls(con, SQUARE_WKT, None, BOWTIE_WKT, None, SQUARE_WKT)
+
+    with caplog.at_level(logging.WARNING):
+        repaired, n = repair_arrow_table_geometry(table, "geometry")
+
+    assert n == 1  # only the bowtie; NULLs are neither invalid nor repaired
+    assert repaired.num_rows == 5
+    null_count = sum(1 for v in repaired.column("geometry").to_pylist() if v is None)
+    assert null_count == 2
+
+
+def test_repair_query_geometry_with_null_rows():
+    """The query path's layered count also tolerates NULL geometry rows."""
+    con = _con()
+    query = (
+        f"SELECT 1 AS id, ST_AsWKB(ST_GeomFromText('{BOWTIE_WKT}')) AS geometry"
+        " UNION ALL SELECT 2, NULL::BLOB"
+        f" UNION ALL SELECT 3, ST_AsWKB(ST_GeomFromText('{SQUARE_WKT}'))"
+    )
+    repaired_query = repair_query_geometry(con, query, "geometry")
+
+    assert repaired_query != query  # the bowtie triggers a repair rewrite
+    rows = con.execute(
+        f"SELECT id, geometry IS NULL FROM ({repaired_query}) ORDER BY id"
+    ).fetchall()
+    assert [r[1] for r in rows] == [False, True, False]
+    valid = con.execute(
+        f"SELECT bool_and(ST_IsValid(TRY(ST_GeomFromWKB(geometry)))) "
+        f"FROM ({repaired_query}) WHERE geometry IS NOT NULL"
+    ).fetchone()[0]
+    assert valid is True
+
+
+def test_repair_arrow_table_geometry_null_rows_at_scale():
+    """The #642 segfault only reproduces at scale — keep one big case.
+
+    Review probing on #645 crashed the old single-WHERE count from ~8k rows
+    with this exact recipe (NULL every 997 rows, invalid every 13), while the
+    small fixtures above pass either form. Being memory corruption, the crash
+    is environment-dependent (it does not reproduce on every machine), so this
+    catches a regression where it manifests rather than everywhere — the best
+    a test can do for an upstream crash — and pins the counts at scale
+    regardless.
+    """
+    con = _con()
+    n = 10_000
+    table = (
+        con.execute(
+            f"""
+            SELECT i AS id, CASE
+                WHEN i % 997 = 0 THEN NULL
+                WHEN i % 13 = 0 THEN ST_AsWKB(ST_GeomFromText('{BOWTIE_WKT}'))
+                ELSE ST_AsWKB(ST_GeomFromText('{SQUARE_WKT}'))
+            END AS geometry
+            FROM range({n}) t(i)
+            """
+        )
+        .arrow()
+        .read_all()
+    )
+    expected_nulls = sum(1 for i in range(n) if i % 997 == 0)
+    expected_invalid = sum(1 for i in range(n) if i % 13 == 0 and i % 997 != 0)
+
+    repaired, count = repair_arrow_table_geometry(table, "geometry")
+
+    assert repaired.num_rows == n
+    assert count == expected_invalid
+    nulls = sum(1 for v in repaired.column("geometry").to_pylist() if v is None)
+    assert nulls == expected_nulls

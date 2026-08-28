@@ -235,9 +235,9 @@ def analyze_partition_strategy(
 
     # Build the column expression for partitioning
     if column_prefix_length is not None:
-        column_expr = f'LEFT("{column_name}", {column_prefix_length})'
+        column_expr = f"LEFT({quote_identifier(column_name)}, {column_prefix_length})"
     else:
-        column_expr = f'"{column_name}"'
+        column_expr = quote_identifier(column_name)
 
     if verbose:
         debug("\n📊 Analyzing partition strategy...")
@@ -249,7 +249,7 @@ def analyze_partition_strategy(
                 {column_expr} as partition_value,
                 COUNT(*) as row_count
             FROM '{input_url}'
-            WHERE "{column_name}" IS NOT NULL
+            WHERE {quote_identifier(column_name)} IS NOT NULL
             GROUP BY partition_value
         )
         SELECT
@@ -519,10 +519,10 @@ def preview_partition(
 
     # Build the column expression for partitioning
     if column_prefix_length is not None:
-        column_expr = f'LEFT("{column_name}", {column_prefix_length})'
+        column_expr = f"LEFT({quote_identifier(column_name)}, {column_prefix_length})"
         partition_description = f"first {column_prefix_length} character(s) of '{column_name}'"
     else:
-        column_expr = f'"{column_name}"'
+        column_expr = quote_identifier(column_name)
         partition_description = f"'{column_name}'"
 
     # Get partition counts
@@ -531,7 +531,7 @@ def preview_partition(
             {column_expr} as partition_value,
             COUNT(*) as record_count
         FROM '{input_url}'
-        WHERE "{column_name}" IS NOT NULL
+        WHERE {quote_identifier(column_name)} IS NOT NULL
         GROUP BY partition_value
         ORDER BY record_count DESC
     """
@@ -604,10 +604,10 @@ def _run_partition_analysis(
 def _build_column_expression(column_name, column_prefix_length):
     """Build column expression for partitioning."""
     if column_prefix_length is not None:
-        column_expr = f'LEFT("{column_name}", {column_prefix_length})'
+        column_expr = f"LEFT({quote_identifier(column_name)}, {column_prefix_length})"
         partition_description = f"first {column_prefix_length} characters of {column_name}"
     else:
-        column_expr = f'"{column_name}"'
+        column_expr = quote_identifier(column_name)
         partition_description = column_name
     return column_expr, partition_description
 

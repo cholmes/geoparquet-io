@@ -62,8 +62,8 @@ geoparquet_io/
 | `gpio extract` | arcgis, bigquery, carto, geoparquet, wfs | Extract data from files and services to GeoParquet |
 | `gpio inspect` | head, layers, meta, stats, summary, tail | Inspect GeoParquet files and show metadata, previews, or statistics |
 | `gpio partition` | a5, admin, h3, kdtree, quadkey, s2, string | Commands for partitioning GeoParquet files |
-| `gpio pmtiles` | create | PMTiles generation commands |
-| `gpio process` | aggregate | Transform or reduce GeoParquet data (aggregate, |
+| `gpio pmtiles` | create, pyramid | PMTiles generation commands |
+| `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview, |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata, cloud uploads) |
 | `gpio skills` |  | List and access LLM skills for gpio |
 | `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files |
@@ -125,6 +125,15 @@ from pathlib import Path  # Prefer over os.path
 | `.fetch_arrow_table()` | `.arrow().read_all()` |
 | `.to_arrow_table()` | `.arrow().read_all()` |
 | `TRY_CAST(x AS GEOMETRY)` | `TRY(ST_GeomFromText(x))` |
+| `f'"{col}"'` / `col.replace('"', '""')` | `quote_identifier(col)` |
+| `WHERE path = '{value}'` | `_escape_sql_string(value)` |
+
+Never hand-roll SQL escaping. `quote_identifier()` is for **identifiers**
+(column/table names — doubles embedded `"`); `_escape_sql_string()` is for SQL
+**string literals** (doubles embedded `'`). Both live in `core/duckdb_utils.py`
+and take a RAW value — escaping is not idempotent, so escape exactly once.
+Column names arrive from a file's own `geo.primary_column` and from
+`--column`/`--bbox-name`, so this is an injection surface, not a style nit.
 
 Additional patterns (not yet enforced):
 - `ST_Transform(..., always_xy := true)` → `SET geometry_always_xy = true` at session level
@@ -135,11 +144,27 @@ Additional patterns (not yet enforced):
 <!-- freshness: last-verified: 2026-04-03, maps-to: pyproject.toml -->
 ## Testing
 
-Config in `pyproject.toml [tool.pytest.ini_options]`. Coverage: 67% minimum (enforced).
+Config in `pyproject.toml [tool.pytest.ini_options]`.
 
 ```bash
-uv run pytest -n auto -m "not slow and not network"  # Fast tests
+uv run pytest -n auto -m "not slow and not network and not meta"  # Fast tests (no coverage)
+uv run pytest -m meta                                             # Repo tooling checks
+uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0  # opt into coverage
 ```
+
+`--cov-fail-under=0` is needed on partial runs: `[tool.coverage.report].fail_under`
+re-arms the 67% floor whenever you opt into `--cov`, and a subset never clears it.
+
+Local runs are uninstrumented: `addopts` carries no `--cov`, so a single-file run
+is fast and a partial run can't fail a whole-suite gate. The 67% floor and the 90%
+diff-cover gate on changed lines are enforced in CI (the ubuntu/3.11 job in
+`.github/workflows/tests.yml`), which passes the coverage flags explicitly.
+
+The `meta` lane (codespell, commitizen, doc-sync, mutmut, mypy,
+validate-claude-md, security tool checks) is excluded from the fast suite and
+runs in the slow/nightly job instead. Pre-commit covers most of it locally, but
+not all: commitizen is a `commit-msg`-stage hook and mutmut has no hook, so
+`uv run pytest -m meta` is the only local way to check those two.
 
 <!-- BEGIN GENERATED: test-markers -->
 ### Test Markers
@@ -149,6 +174,8 @@ uv run pytest -n auto -m "not slow and not network"  # Fast tests
 | `@pytest.mark.slow` | marks tests as slow (deselect with '-m "not slow"') |
 | `@pytest.mark.network` | marks tests requiring network access (deselect with '-m "not network"') |
 | `@pytest.mark.integration` | marks end-to-end integration tests |
+| `@pytest.mark.corpus` | tests against the official geoparquet-testing corpus (requires git submodule) |
+| `@pytest.mark.meta` | repo tooling checks, excluded from the fast suite |
 <!-- END GENERATED: test-markers -->
 
 ---
