@@ -236,10 +236,7 @@ class TestCountryCodesLocalCountriesFile:
         """Build a countries file from ``source_parquet``'s geometries.
 
         Reusing the input's own geometries guarantees every feature joins, so
-        the assertions below are about plumbing rather than spatial luck. Both a
-        country and a subdivision column are present because
-        ``_print_results_summary`` queries ``admin:subdivision_code``
-        unconditionally.
+        the assertions below are about plumbing rather than spatial luck.
         """
         con = duckdb.connect()
         try:
@@ -299,3 +296,92 @@ class TestCountryCodesLocalCountriesFile:
         assert "input features..." in caplog.text
         assert "Added country codes to" in caplog.text
         assert "Found 1 unique countries" in caplog.text
+
+    @staticmethod
+    def _make_countries_file_without_subdivision(source_parquet, dest):
+        """Build a countries file with a country column but no subdivision column."""
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL spatial; LOAD spatial;")
+            con.execute(
+                f"COPY (SELECT geometry, 'US' AS country_code "
+                f"FROM read_parquet('{source_parquet}')) "
+                f"TO '{dest}' (FORMAT PARQUET)"
+            )
+        finally:
+            con.close()
+        return str(dest)
+
+    def test_countries_file_without_subdivision_column(self, fields_v2_file, tmp_path):
+        """A countries file with no subdivision column must not crash the summary.
+
+        Regression test for #672: ``_print_results_summary`` hardcoded
+        ``"admin:subdivision_code"`` in its stats query, so a countries file
+        without a subdivision column raised a DuckDB BinderException *after*
+        the output had already been written -- a successful run reported as a
+        failure.
+        """
+        countries = self._make_countries_file_without_subdivision(
+            fields_v2_file, tmp_path / "countries.parquet"
+        )
+        output = tmp_path / "out.parquet"
+
+        add_country_codes(
+            input_parquet=fields_v2_file,
+            countries_parquet=countries,
+            output_parquet=str(output),
+            add_bbox_flag=False,
+            dry_run=False,
+            verbose=True,
+        )
+
+        table = pq.read_table(output)
+        assert "admin:country_code" in table.column_names
+        assert "admin:subdivision_code" not in table.column_names
+        assert set(table.column("admin:country_code").to_pylist()) == {"US"}
+
+    def test_summary_reports_only_country_stats_without_subdivision(
+        self, fields_v2_file, tmp_path, caplog
+    ):
+        """The summary omits subdivision lines when there is no subdivision column."""
+        countries = self._make_countries_file_without_subdivision(
+            fields_v2_file, tmp_path / "countries.parquet"
+        )
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=fields_v2_file,
+                countries_parquet=countries,
+                output_parquet=str(output),
+                add_bbox_flag=False,
+                dry_run=False,
+                verbose=True,
+            )
+
+        assert "Added country codes to" in caplog.text
+        assert "Found 1 unique countries" in caplog.text
+        assert "subdivision" not in caplog.text
+
+    def test_output_path_with_apostrophe(self, fields_v2_file, tmp_path):
+        """An output directory containing an apostrophe must not break the summary.
+
+        The summary query interpolates the output path as a SQL string literal;
+        an unescaped ``'`` broke it the same way #672 did -- after the file was
+        already written.
+        """
+        countries = self._make_countries_file(fields_v2_file, tmp_path / "countries.parquet")
+        odd_dir = tmp_path / "o'brien"
+        odd_dir.mkdir()
+        output = odd_dir / "out.parquet"
+
+        add_country_codes(
+            input_parquet=fields_v2_file,
+            countries_parquet=countries,
+            output_parquet=str(output),
+            add_bbox_flag=False,
+            dry_run=False,
+            verbose=True,
+        )
+
+        assert pq.read_table(output).num_rows == pq.read_table(fields_v2_file).num_rows

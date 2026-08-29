@@ -54,6 +54,7 @@ long run of write-path, metadata and CRS correctness fixes.
 ### Fixed
 
 - **`convert geojson --write-bbox` and `--id-field` no longer truncate every Feature,** and no longer abort the whole conversion on a NULL id value or an EMPTY geometry — each member is omitted instead. ([#726](https://github.com/geoparquet/geoparquet-io/issues/726))
+- **`gpio add country-codes` no longer exits non-zero after writing a good file** when the countries file has no subdivision column; the results summary is now built from the columns actually written, and the output path is escaped exactly once. ([#672](https://github.com/geoparquet/geoparquet-io/issues/672))
 - **Windows native-geo statistics: the zeros are a read, not a write.** pyarrow reads the real bounds from the same file DuckDB's `parquet_metadata()` reports as `[0, 0, 0, 0]`, so files gpio writes on Windows are correct and it is gpio's own reader that misreports them. ([#721](https://github.com/geoparquet/geoparquet-io/issues/721), [#748](https://github.com/geoparquet/geoparquet-io/issues/748))
 - **Guide examples no longer use flags the CLI does not accept.** Nonexistent options are corrected and missing option-table rows filled in. ([#735](https://github.com/geoparquet/geoparquet-io/issues/735))
 - **`tests/test_wfs.py` no longer reaches the network.** Nine tests silently made live requests; a tripwire now fails any unmocked request. ([#676](https://github.com/geoparquet/geoparquet-io/issues/676))

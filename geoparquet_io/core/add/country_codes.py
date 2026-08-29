@@ -12,6 +12,7 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.duckdb_utils import (
     SPATIAL_JOIN_BBOX_PREFILTER,
     SPATIAL_JOIN_NATIVE,
+    _escape_sql_string,
     build_spatial_join_condition,
     get_duckdb_connection,
     quote_identifier,
@@ -386,25 +387,38 @@ TO '{output_parquet}'
     info("-- Original metadata would also be preserved in the output file")
 
 
-def _print_results_summary(con, output_parquet):
-    """Print the results summary after processing."""
+def _print_results_summary(con, output_parquet, has_subdivision=True):
+    """Print the results summary after processing.
+
+    ``has_subdivision`` must reflect whether a subdivision column was actually
+    written. The countries file may legitimately have none, in which case
+    ``_build_select_clause`` omits ``admin:subdivision_code`` from the output
+    and a query that references it fails to bind (#672).
+    """
+    subdivision_selects = (
+        """,
+        COUNT(CASE WHEN "admin:subdivision_code" IS NOT NULL THEN 1 END)
+            as features_with_subdivision,
+        COUNT(DISTINCT "admin:subdivision_code") as unique_subdivisions"""
+        if has_subdivision
+        else ""
+    )
     stats_query = f"""
     SELECT
         COUNT(*) as total_features,
         COUNT(CASE WHEN "admin:country_code" IS NOT NULL THEN 1 END) as features_with_country,
-        COUNT(CASE WHEN "admin:subdivision_code" IS NOT NULL THEN 1 END) as features_with_subdivision,
-        COUNT(DISTINCT "admin:country_code") as unique_countries,
-        COUNT(DISTINCT "admin:subdivision_code") as unique_subdivisions
-    FROM '{output_parquet}';
+        COUNT(DISTINCT "admin:country_code") as unique_countries{subdivision_selects}
+    FROM '{_escape_sql_string(str(output_parquet))}';
     """
     stats = con.execute(stats_query).fetchone()
+    total, with_country, unique_countries = stats[0], stats[1], stats[2]
 
     progress("\nResults:")
-    progress(f"- Added country codes to {stats[1]:,} of {stats[0]:,} features")
-    if stats[2] > 0:
-        progress(f"- Added subdivision codes to {stats[2]:,} of {stats[0]:,} features")
-    progress(f"- Found {stats[3]:,} unique countries")
-    if stats[4] > 0:
+    progress(f"- Added country codes to {with_country:,} of {total:,} features")
+    if has_subdivision and stats[3] > 0:
+        progress(f"- Added subdivision codes to {stats[3]:,} of {total:,} features")
+    progress(f"- Found {unique_countries:,} unique countries")
+    if has_subdivision and stats[4] > 0:
         progress(f"- Found {stats[4]:,} unique subdivisions")
     success(f"\nSuccessfully wrote output to: {output_parquet}")
 
@@ -673,7 +687,7 @@ def add_country_codes(
             verbose=verbose,
         )
 
-        _print_results_summary(con, output_parquet)
+        _print_results_summary(con, output_parquet, has_subdivision=bool(subdivision_code_col))
 
 
 if __name__ == "__main__":
