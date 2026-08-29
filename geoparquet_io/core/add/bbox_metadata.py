@@ -23,6 +23,7 @@ from geoparquet_io.core.common import (
     get_duckdb_connection,
     get_parquet_metadata,
 )
+from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import covering_supported, parse_geo_metadata
@@ -167,8 +168,19 @@ def add_bbox_metadata(
     metadata, _ = get_parquet_metadata(safe_url)
     geo_meta = parse_geo_metadata(metadata, False)
 
+    # A file with no `geo` key is not GeoParquet, and this command cannot make it
+    # one: it writes `covering` and nothing else, so the synthesised block used to
+    # go out with no `encoding` and no `geometry_types` — a file that claims to be
+    # GeoParquet 1.1.0 and fails five of its own spec checks (#713). Refuse, the
+    # same way a 1.0 input is refused (#686), and name the command that does
+    # produce valid metadata.
     if not geo_meta:
-        geo_meta = {"version": "1.1.0", "primary_column": "geometry", "columns": {}}
+        raise GeoParquetError(
+            f"Cannot add bbox covering metadata: {parquet_file} has no GeoParquet "
+            "metadata, so there is nothing to describe the geometry column "
+            "(encoding, geometry types) that the 'covering' key attaches to.\n"
+            f"Convert it first: gpio convert geoparquet {parquet_file} out.parquet"
+        )
 
     # 'covering' was introduced in GeoParquet 1.1. Unlike the write paths — where
     # covering is an implicit side effect of writing a bbox column and is simply
@@ -237,9 +249,12 @@ def add_bbox_metadata(
         # Build KV_METADATA clause preserving all existing metadata
         kv_metadata_clause = _build_kv_metadata_clause(existing_kv, geo_meta)
 
-        # Build COPY options
-        # Use GEOPARQUET_VERSION 'V2' if native geometry, 'NONE' otherwise
-        # (NONE means "don't touch the geometry column, just copy as-is with custom metadata")
+        # Build COPY options.
+        # 'V2' keeps the native GEOMETRY logical type of a 2.0 input. 'NONE' means
+        # "don't manage geo metadata" — without it DuckDB writes its own V1 geo
+        # block and clobbers the covering this command exists to add. Note 'NONE'
+        # governs the *metadata* only; keeping the v1.x geometry column physically
+        # unchanged is what the spatial-free connection above is for (#712).
         geoparquet_version = "V2" if has_native_geometry else "NONE"
 
         copy_options = [
@@ -250,8 +265,21 @@ def add_bbox_metadata(
             f"ROW_GROUP_SIZE {row_group_size}",
         ]
 
+        # This command is documented as metadata-only, so the geometry column's
+        # physical type has to survive it. With the spatial extension loaded --
+        # and GEOPARQUET_VERSION above loads it whether or not we ask -- DuckDB
+        # reads a v1.x WKB column as its own GEOMETRY type, and the COPY then
+        # writes a native Parquet GEOMETRY logical type back out while the declared
+        # version stays 1.1.0. gpio's own validator rejects that combination
+        # (#712). Casting straight back to BLOB keeps the column plain WKB, which
+        # is what a 1.x file must carry. A file that is *already* native is left
+        # alone: there the native type is the correct output.
+        source_query = f"SELECT * FROM '{safe_url}'"
+        if not has_native_geometry:
+            source_query = _wrap_query_with_blob_conversion(source_query, primary_col, conn)
+
         copy_sql = f"""
-            COPY (SELECT * FROM '{safe_url}')
+            COPY ({source_query})
             TO '{temp_file}'
             ({", ".join(copy_options)})
         """

@@ -91,6 +91,13 @@ If your file already has a bbox column but lacks covering metadata (e.g., from e
         file declaring 1.0 rather than writing metadata that version cannot carry.
         Convert it first: `gpio convert geoparquet in.parquet out.parquet --geoparquet-version 1.1`.
 
+    !!! note "Requires existing GeoParquet metadata"
+
+        The command adds a `covering` key to metadata that already describes the
+        geometry column. On plain Parquet with no `geo` key it fails rather than
+        inventing a `geo` block with no `encoding` and no `geometry_types`. Make it
+        GeoParquet first: `gpio convert geoparquet in.parquet out.parquet`.
+
 === "Python"
 
     <!-- doctest: skip="needs file_with_bbox.parquet, which the harness does not seed" -->
