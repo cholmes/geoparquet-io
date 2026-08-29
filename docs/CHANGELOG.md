@@ -43,10 +43,6 @@ improvements.
 - **`gpio process aggregate a5/h3/admin`.** Aggregate large datasets into A5, H3 or admin-region buckets with `count`, `--metric` rollups and `--breakdown` pivots. ([#529](https://github.com/geoparquet/geoparquet-io/issues/529))
 - **`gpio convert reproject --assume-crs84`.** Treat an unknown (explicit `crs: null`) CRS as OGC:CRS84 and rewrite only the metadata. ([#471](https://github.com/geoparquet/geoparquet-io/issues/471))
 
-#### New Spatial Indexing Systems
-- **S2 support**: spherical S2 cell indexing with `gpio add s2` and `gpio partition s2`, with auto-resolution
-- **A5Geo support**: A5 pentagonal/hexagonal global-grid indexing with `gpio add a5` and `gpio partition a5`, with auto-resolution
-
 #### Auto-Resolution Partitioning
 - Automatic resolution selection for H3, S2, A5, and quadkey partitioning — `--resolution auto` (or omitting it) analyzes data extent and density
 
