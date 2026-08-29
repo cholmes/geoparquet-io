@@ -244,9 +244,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   xfailed: auto-version resolution splitting four ways on a native-geo input
   (#600), and the validator's `crs_valid` check flipping with geoarrow
   registration (the #603 family). The oracle also excuses
-  `native_geo_stats_contains_data` on Windows only, where pyarrow's wheel
-  writes all-zero geospatial statistics for native GEOMETRY columns (#721);
-  every other oracle check stays enforced on every platform.
+  `native_geo_stats_contains_data` on Windows only, where DuckDB's
+  `parquet_metadata()` misreads native GEOMETRY geospatial statistics as all
+  zeros (#721 — the file on disk is correct; see below); every other oracle
+  check stays enforced on every platform.
 
 - **`gpio pmtiles pyramid` (#570)**: bake an aggregate and its overview levels
   into a single zoom-banded PMTiles archive. Each level is tiled once with
@@ -479,6 +480,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
 
 ### Fixed
 
+- **Windows native-geo statistics: the zeros are a read, not a write (#721).**
+  `gpio check spec` reported `native_geo_stats_contains_data_geometry` failures
+  on Windows for files gpio had just written, and the standing explanation was
+  that pyarrow's Windows wheel wrote all-zero geospatial statistics. It does
+  not. `tests/test_native_geo_statistics.py` reads the *same file* through both
+  readers and asserts each separately; on windows-latest, across Python 3.11,
+  3.12 and 3.13 and both pyarrow write paths, pyarrow reads back the real
+  bounds while DuckDB's `parquet_metadata()` reports `[0, 0, 0, 0]`. A
+  committed corpus fixture — written by neither gpio nor the runner — rules out
+  a symmetrically-wrong write/read pair. **Files gpio writes on Windows are
+  correct and need no rewriting**; what misreports them is gpio's own reader,
+  which takes these statistics from DuckDB (`get_native_geo_statistics`,
+  `get_aggregated_native_geo_stats` and `get_per_row_group_native_geo_stats` in
+  `core/duckdb_metadata.py`). The reader-side fix is tracked in #721; the
+  pyarrow assertion is enforced on every platform, and the two DuckDB-dependent
+  ones are strict xfails on Windows so CI turns red the day the misread stops.
+
 - **Guide examples no longer use flags the CLI does not accept.** Three
   documented examples failed immediately with `No such option`. `docs/guide/check.md`
   advertised `gpio check all DIR --check-all` and `--check-sample N`; the real
@@ -633,9 +651,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   spelling of the set and that both write paths reference it.
 
   The new validator-oracle test excludes `native_geo_stats_contains_data` on
-  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
-  for a native GEOMETRY column, so that check fails there for a platform reason
-  unrelated to this fix (#721). Every other validator check stays enforced on
+  Windows only: DuckDB's `parquet_metadata()` misreads a native GEOMETRY
+  column's geospatial statistics as all zeros there, so that check fails for a
+  platform reason unrelated to this fix (#721 — the statistics in the file are
+  correct; it is the read that is wrong). Every other validator check stays enforced on
   every platform.
 
 - **The arrow-streaming write strategy no longer emits a different file
@@ -663,9 +682,10 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   storage is 32-bit too. (#688)
 
   The validator assertions here exclude `native_geo_stats_contains_data` on
-  Windows only: pyarrow's Windows wheel writes all-zero geospatial statistics
-  for a native GEOMETRY column, so that check fails there for a platform reason
-  unrelated to this fix (#721). Every other validator check stays enforced on
+  Windows only: DuckDB's `parquet_metadata()` misreads a native GEOMETRY
+  column's geospatial statistics as all zeros there, so that check fails for a
+  platform reason unrelated to this fix (#721 — the statistics in the file are
+  correct; it is the read that is wrong). Every other validator check stays enforced on
   every platform.
 
 - **`gpio convert geoparquet` and `Table.write` keep the input's non-geo
