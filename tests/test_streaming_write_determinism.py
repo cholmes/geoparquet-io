@@ -146,24 +146,9 @@ def _wkb_values(table: pa.Table, column: str) -> list[bytes]:
 
 
 def _failed_checks(path: str) -> list[str]:
-    """Validator failures, minus the one Windows fails for a platform reason.
-
-    pyarrow's Windows wheel writes all-zero geospatial statistics for a native
-    GEOMETRY column, so `native_geo_stats_contains_data_*` reports every
-    geometry as outside them (issue #721). The identical write path produces
-    correct statistics on macOS and Linux, and uv.lock pins the same pyarrow
-    everywhere, so this is a wheel difference rather than anything the
-    canonicalization here touches.
-
-    Excused by name and only on win32: every other validator check stays
-    enforced on every platform, which xfailing the affected tests would not
-    have preserved.
-    """
+    """Every validator failure, on every platform."""
     result = validate_geoparquet(path)
-    failed = [f"{c.name}: {c.message}" for c in result.checks if c.status.value == "failed"]
-    if sys.platform == "win32":
-        failed = [f for f in failed if not f.startswith("native_geo_stats_contains_data")]
-    return failed
+    return [f"{c.name}: {c.message}" for c in result.checks if c.status.value == "failed"]
 
 
 class TestCanonicalStreamingSchema:

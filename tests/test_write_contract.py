@@ -52,7 +52,6 @@ from __future__ import annotations
 import json
 import os
 import struct
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -418,18 +417,7 @@ def assert_valid_geoparquet_output(path: str, expect: Expect) -> list[str]:
             )
 
     result = validate_geoparquet(path, validate_data=True, sample_size=0)
-    failed = [c.name for c in result.checks if c.status == CheckStatus.FAILED]
-    if sys.platform == "win32":
-        # pyarrow's Windows wheel writes all-zero geospatial statistics for a
-        # native GEOMETRY column, so this check reports every geometry as
-        # outside them (issue #721). The identical write path produces correct
-        # statistics on macOS and Linux and uv.lock pins the same pyarrow
-        # everywhere, so it says nothing about the write contract this suite
-        # exists to pin. Excused by name and only on win32 -- every other
-        # oracle check stays enforced on Windows, which skipping the affected
-        # matrix cells would not have preserved.
-        failed = [n for n in failed if not n.startswith("native_geo_stats_contains_data")]
-    return failed
+    return [c.name for c in result.checks if c.status == CheckStatus.FAILED]
 
 
 def _adjudicate(failed: list[str], divergence: Divergence | None) -> None:

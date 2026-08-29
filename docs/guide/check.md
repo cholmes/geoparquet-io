@@ -293,6 +293,14 @@ Validates file structure and metadata against the GeoParquet specification:
   scans read GeoArrow coordinates directly. GeoParquet 1.0 and 2.0 are
   WKB-only per their spec text, so a file claiming a GeoArrow encoding under
   either version fails.
+- **Native geospatial statistics** — for files using the Parquet `GEOMETRY` or
+  `GEOGRAPHY` logical types, `native_geo_stats_*` reports the bounds a file
+  declares and `native_geo_stats_contains_data_*` checks its geometries against
+  them. Both use the whole file's statistics — the union over every row group,
+  not the first one's — so a correctly written multi-row-group file passes. The
+  statistics are read with pyarrow, which reads them correctly on every
+  platform; DuckDB's `parquet_metadata()` reports all-zero bounds for them on
+  Windows, which used to make good files look wrong there (#721).
 
 **Exit codes:**
 
