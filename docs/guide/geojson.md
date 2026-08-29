@@ -321,7 +321,6 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
     gpio convert geojson data.parquet output.geojson
     ```
 
-    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
     ```bash
     # With options
     gpio convert geojson data.parquet output.geojson --precision 5 --write-bbox
@@ -329,7 +328,6 @@ To write a standard GeoJSON FeatureCollection, specify an output file:
 
 === "Python"
 
-    <!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
     ```python
     import geoparquet_io as gpio
 
@@ -397,7 +395,6 @@ This is useful for feature state in map rendering or for joining data.
 
 Include per-feature bounding boxes with `--write-bbox`:
 
-<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
 ```bash
 gpio convert geojson data.parquet output.geojson --write-bbox
 ```

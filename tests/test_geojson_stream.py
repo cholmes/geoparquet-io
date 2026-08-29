@@ -637,3 +637,120 @@ class TestRepairAfterReprojection:
         rows = con.execute(query).fetchall()
         assert len(rows) == 1
         assert json.loads(rows[0][0])["properties"]["name"] == "kept"
+
+
+class TestFeatureMembersEmitValidJson:
+    """#726: --write-bbox and --id-field appended a comma *outside* the SQL
+    string literal, so it split the feature SELECT into two columns instead of
+    landing in the JSON. Every Feature came out truncated after the option's
+    own member, and the writer failed to parse its own output."""
+
+    @staticmethod
+    def _convert(tmp_path, places_test_file, *extra_args):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        out = tmp_path / "out.geojson"
+        result = CliRunner().invoke(
+            cli, ["convert", "geojson", places_test_file, str(out), *extra_args]
+        )
+        assert result.exit_code == 0, result.output
+        return json.loads(out.read_text())
+
+    def test_write_bbox_emits_parseable_features(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--write-bbox")
+
+        assert data["type"] == "FeatureCollection"
+        assert data["features"]
+        for feature in data["features"]:
+            assert len(feature["bbox"]) == 4
+            assert feature["geometry"] is not None
+            assert "properties" in feature
+
+    def test_id_field_emits_parseable_features(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--id-field", "name")
+
+        assert data["features"]
+        for feature in data["features"]:
+            assert feature["id"] == feature["properties"]["name"]
+            assert feature["geometry"] is not None
+
+    def test_bbox_and_id_field_together(self, tmp_path, places_test_file):
+        data = self._convert(tmp_path, places_test_file, "--write-bbox", "--id-field", "name")
+
+        assert data["features"]
+        for feature in data["features"]:
+            assert "id" in feature
+            assert len(feature["bbox"]) == 4
+            assert feature["geometry"] is not None
+
+    def test_feature_query_is_one_column_in_every_option_combination(self):
+        """The regression itself: a stray comma makes this several columns."""
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute("CREATE TABLE t AS SELECT ST_Point(1, 2) AS geometry, 'a' AS name")
+
+        for options in (
+            {},
+            {"write_bbox": True},
+            {"id_field": "name"},
+            {"write_bbox": True, "id_field": "name"},
+        ):
+            query = _build_feature_query("t", "geometry", ["name"], **options)
+            assert len(con.execute(query).description) == 1, options
+
+    def test_null_id_value_omits_the_member(self):
+        """A NULL id must not null the whole Feature (`||` propagates NULL).
+
+        An optional key with a missing value is ordinary data, and the failure
+        was not a bad `id` -- it aborted the entire conversion, because the
+        writer got `None` where it expected a Feature string.
+        """
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES "
+            "(ST_Point(1, 2), 'has-id'), "
+            "(ST_Point(3, 4), NULL)) AS v(geometry, name)"
+        )
+        query = _build_feature_query("t", "geometry", ["name"], id_field="name")
+
+        rows = [row[0] for row in con.execute(query).fetchall()]
+
+        assert len(rows) == 2
+        assert all(row is not None for row in rows), "a NULL id nulled the Feature"
+        features = [json.loads(row) for row in rows]
+        assert features[0]["id"] == "has-id"
+        # RFC 7946 wants `id` to be a string or a number, so omit rather than null.
+        assert "id" not in features[1]
+        assert features[1]["geometry"] is not None
+
+    def test_empty_geometry_omits_the_bbox(self):
+        """ST_XMin of an EMPTY geometry is NULL, which nulled the whole Feature.
+
+        EMPTY is not NULL, so it passes the query's `IS NOT NULL` filter, and
+        --precision or geometry repair can produce it from valid input.
+        """
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES "
+            "(ST_Point(1, 2), 'point'), "
+            "(ST_GeomFromText('POLYGON EMPTY'), 'empty')) AS v(geometry, name)"
+        )
+        query = _build_feature_query("t", "geometry", ["name"], write_bbox=True)
+
+        rows = [row[0] for row in con.execute(query).fetchall()]
+
+        assert len(rows) == 2
+        assert all(row is not None for row in rows), "an EMPTY geometry nulled the Feature"
+        features = [json.loads(row) for row in rows]
+        assert features[0]["bbox"] == [1, 2, 1, 2]
+        assert "bbox" not in features[1]
