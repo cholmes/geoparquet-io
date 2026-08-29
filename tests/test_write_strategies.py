@@ -8,6 +8,7 @@ Tests the Strategy Pattern for GeoParquet writes including:
 """
 
 import json
+import logging
 import struct
 import tempfile
 import uuid
@@ -818,6 +819,27 @@ class TestDiskRewriteRowGroupCoarsening:
         self._rewrite(source_of_ten_row_groups, out, 100)
 
         assert pq.read_table(str(out)).column("id").to_pylist() == list(range(400))
+
+    @pytest.mark.parametrize("row_group_rows", [100, None], ids=["coarsen", "no_request"])
+    def test_verbose_progress_reports_every_ten_source_groups(
+        self, source_of_ten_row_groups, tmp_path, caplog, row_group_rows
+    ):
+        """Both loops report progress; 40 source groups means four reports."""
+        out = tmp_path / f"verbose_{row_group_rows}.parquet"
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)._rewrite_with_metadata(
+                input_path=str(source_of_ten_row_groups),
+                output_path=str(out),
+                geo_meta=self.GEO_META,
+                compression="ZSTD",
+                compression_level=None,
+                verbose=True,
+                row_group_rows=row_group_rows,
+            )
+
+        assert "Rewrote 10/40 row groups" in caplog.text
+        assert "Rewrote 40/40 row groups" in caplog.text
+        assert self._row_group_sizes(out) == ([100] * 4 if row_group_rows else [10] * 40)
 
     def test_geo_metadata_is_written_when_coarsening(self, source_of_ten_row_groups, tmp_path):
         """The rewrite's actual job still happens on the merging path."""
