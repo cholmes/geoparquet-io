@@ -8,9 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-Major new spatial indexing systems, auto-resolution partitioning, comprehensive
-`--overwrite` support, a test-infrastructure overhaul, and significant performance
-improvements.
+A test-infrastructure overhaul, aggregate overviews and PMTiles pyramids, and a
+long run of write-path, metadata and CRS correctness fixes.
 
 ### Breaking
 
@@ -41,39 +40,6 @@ improvements.
 - **`--metric-nodata` sentinel handling in `gpio process aggregate`.** Map sentinel values like `-999` to `NULL` before aggregation. ([#566](https://github.com/geoparquet/geoparquet-io/issues/566), [#613](https://github.com/geoparquet/geoparquet-io/issues/613))
 - **New spec-validation checks in `gpio check spec`.** Fails on unknown `geo` versions, version/feature mismatches, malformed PROJJSON `crs` and invalid `geo` JSON. ([#586](https://github.com/geoparquet/geoparquet-io/issues/586))
 - **`gpio process aggregate a5/h3/admin`.** Aggregate large datasets into A5, H3 or admin-region buckets with `count`, `--metric` rollups and `--breakdown` pivots. ([#529](https://github.com/geoparquet/geoparquet-io/issues/529))
-- **`gpio convert reproject --assume-crs84`.** Treat an unknown (explicit `crs: null`) CRS as OGC:CRS84 and rewrite only the metadata. ([#471](https://github.com/geoparquet/geoparquet-io/issues/471))
-
-#### Auto-Resolution Partitioning
-- Automatic resolution selection for H3, S2, A5, and quadkey partitioning — `--resolution auto` (or omitting it) analyzes data extent and density
-
-#### Sub-Partitioning for Large Files
-- `--min-size` option to find and re-partition oversized partition files
-- `--in-place` option for in-place sub-partitioning
-- Directory input support for batch sub-partitioning operations
-- New `find_large_files()` and `sub_partition_directory()` Python API functions
-
-#### Admin Dataset Caching
-- `--cache` / `--no-cache` options for `gpio add admin-divisions`
-- Automatic caching of downloaded admin boundary datasets
-- `--prefix` option for custom column naming in admin-divisions
-
-#### CLI Improvements
-- `--show-sql` option on all DuckDB-based commands for query transparency
-- `--verbose` option added to inspect subcommands and publish upload
-- Progress reporting for add h3, add quadkey, and sort column commands
-- `--row-group-size` and `--row-group-size-mb` options for convert command
-- `--overwrite` option added to all extract, sort, and add commands
-- Shell completion documentation for bash, zsh, and fish
-
-#### Performance & Benchmarking
-- Comprehensive benchmark suite for performance testing
-- Persistent baseline storage and trend analysis for releases
-- Profiling integration with benchmark suite
-
-#### Spatial Order Detection
-- `bbox-stats` based spatial order checking
-- Auto-detection of spatial clustering in check command
-- Bbox overlap detection for order validation
 
 #### Testing
 - **Geo-metadata reader agreement suite.** Pins the five `geo`-metadata call sites and the CRS-equality helpers against shared fixtures. ([#699](https://github.com/geoparquet/geoparquet-io/issues/699), [#664](https://github.com/geoparquet/geoparquet-io/issues/664), [#681](https://github.com/geoparquet/geoparquet-io/issues/681))
@@ -84,20 +50,10 @@ improvements.
 - **Repo-tooling tests moved to a `meta` lane, out of the fast suite.** Run them locally with `uv run pytest -m meta`. ([#665](https://github.com/geoparquet/geoparquet-io/issues/665), [#684](https://github.com/geoparquet/geoparquet-io/issues/684))
 - **Coordinate/CRS mismatch heuristic downgraded to WARNING.** Affected files now exit `2` instead of `1`; callers gating on exit codes should update. ([#586](https://github.com/geoparquet/geoparquet-io/issues/586))
 - **`--geoparquet-version` auto mode preserves the input version.** 2.0 inputs stay 2.0 (previously silently downgraded to 1.1), bare native-geo Parquet upgrades to 2.0, 1.x inputs write 1.1. ([#587](https://github.com/geoparquet/geoparquet-io/issues/587), [#594](https://github.com/geoparquet/geoparquet-io/issues/594))
-- **BREAKING: renamed `--profile` to `--aws-profile`**; only affects AWS S3 operations (convert, extract, upload commands).
-- **BREAKING: removed the `--profile` flag from local commands** (add, partition, sort, check, inspect, publish stac).
-- Improved inspect performance via DuckDB connection reuse
-- Set `arrow_large_buffer_size=true` by default for large dataset support
-- Better handling of larger files with faster writes
-
-### Removed
-
-- **BREAKING**: Removed `gpio inspect legacy` command; use `gpio inspect head/tail/stats/meta`
-- Removed deprecated CLI commands and guide documentation
 
 ### Fixed
-- **Windows native-geo statistics: the zeros are a read, not a write.** pyarrow reads the real bounds from the same file DuckDB's `parquet_metadata()` reports as `[0, 0, 0, 0]`, so files gpio writes on Windows are correct and it is gpio's own reader that misreports them. ([#721](https://github.com/geoparquet/geoparquet-io/issues/721), [#748](https://github.com/geoparquet/geoparquet-io/issues/748))
 
+- **Windows native-geo statistics: the zeros are a read, not a write.** pyarrow reads the real bounds from the same file DuckDB's `parquet_metadata()` reports as `[0, 0, 0, 0]`, so files gpio writes on Windows are correct and it is gpio's own reader that misreports them. ([#721](https://github.com/geoparquet/geoparquet-io/issues/721), [#748](https://github.com/geoparquet/geoparquet-io/issues/748))
 - **Guide examples no longer use flags the CLI does not accept.** Nonexistent options are corrected and missing option-table rows filled in. ([#735](https://github.com/geoparquet/geoparquet-io/issues/735))
 - **`tests/test_wfs.py` no longer reaches the network.** Nine tests silently made live requests; a tripwire now fails any unmocked request. ([#676](https://github.com/geoparquet/geoparquet-io/issues/676))
 - **`gpio add quadkey --quadkey-name` now accepts any column name Parquet accepts.** Output and bbox column names now go through `quote_identifier()`. ([#695](https://github.com/geoparquet/geoparquet-io/issues/695))
@@ -127,17 +83,8 @@ improvements.
 - **Z/M geometry types written and validated dimension-aware;** metadata carries the spec's dimension suffixes (`"Point Z"`), checked in both directions. ([#583](https://github.com/geoparquet/geoparquet-io/issues/583), [#589](https://github.com/geoparquet/geoparquet-io/issues/589))
 - **`gpio partition … --auto` is now extent-aware,** probing a sample of the actual data instead of assuming globally uniform coverage. ([#524](https://github.com/geoparquet/geoparquet-io/issues/524), [#526](https://github.com/geoparquet/geoparquet-io/issues/526))
 - **Spatial operations are now CRS-aware;** non-CRS84 inputs are detected and reprojected before grid operations and admin joins. ([#525](https://github.com/geoparquet/geoparquet-io/issues/525), [#530](https://github.com/geoparquet/geoparquet-io/issues/530))
-- **Partition commands route all rows in a single `COPY … PARTITION_BY` scan** instead of re-scanning the input per partition value. ([#478](https://github.com/geoparquet/geoparquet-io/issues/478), [#480](https://github.com/geoparquet/geoparquet-io/issues/480))
-- **Explicit `crs: null` (CRS unknown) is distinguished from an omitted `crs` key (defaults to OGC:CRS84)** per spec. ([#471](https://github.com/geoparquet/geoparquet-io/issues/471))
-- **Fixed out-of-memory crash in `gpio add admin-divisions --dataset overture`** on large inputs. ([#461](https://github.com/geoparquet/geoparquet-io/issues/461))
-- **Overture admin joins no longer multiply rows ~2.6x;** per-level caches are filtered to land polygons so maritime (EEZ) polygons stop double-matching. ([#474](https://github.com/geoparquet/geoparquet-io/issues/474))
-- **Fixed out-of-memory crash when writing large results with the default `duckdb-kv` write strategy;** the writer now streams row groups to disk. ([#461](https://github.com/geoparquet/geoparquet-io/issues/461))
 - Fix CRS export for GDAL formats — projected CRS now roundtrips through FlatGeobuf and GeoPackage (fixes [#189](https://github.com/geoparquet/geoparquet-io/issues/189), [#190](https://github.com/geoparquet/geoparquet-io/issues/190))
-- Fix crash on non-numeric CRS codes like IGNF:LAMB93 ([#193](https://github.com/geoparquet/geoparquet-io/issues/193))
 - Fix inspect metadata performance regression ([#232](https://github.com/geoparquet/geoparquet-io/issues/232))
-- Fix CRS extraction when geoarrow-pyarrow is imported
-- Fix Windows file locking errors in tests
-- Fix DuckDB connection leak in convert_to_geoparquet
 - Improved error messages for common user mistakes — invalid Parquet files now show helpful hints ([#140](https://github.com/geoparquet/geoparquet-io/issues/140))
 
 ### Internal
