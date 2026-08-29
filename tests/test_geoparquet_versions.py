@@ -1828,6 +1828,102 @@ class TestWriteGeoParquetTableParquetGeoOnly:
         assert get_geoparquet_version(output_file).startswith(version)
 
 
+class TestParquetGeoOnlyWithoutGeometryColumn:
+    """parquet-geo-only must drop the carried geo key with no geometry column too (#701).
+
+    #687 fixed the geometry-present case. The strip sat inside geometry-present
+    guards, so a table whose geometry column was dropped by a projection still
+    wrote the carried `geo` key -- and that key names a `primary_column` the file
+    does not contain.
+    """
+
+    @staticmethod
+    def _attributes_only_table_with_geo(extra_keys=None):
+        """Attributes only: the geometry column is gone, but the geo key rode along."""
+        import json
+
+        import pyarrow as pa
+
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        metadata = {b"geo": json.dumps(geo).encode("utf-8")}
+        metadata.update(extra_keys or {})
+        return pa.table({"id": pa.array([1, 2])}).replace_schema_metadata(metadata)
+
+    def test_pgo_strips_geo_key_when_geometry_column_is_absent(self, tmp_path):
+        """The reproducer from #701."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / "pgo_no_geom.parquet")
+        write_geoparquet_table(
+            self._attributes_only_table_with_geo(),
+            output_file,
+            geoparquet_version="parquet-geo-only",
+        )
+
+        assert pq.read_table(output_file).column_names == ["id"]
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" not in out_metadata, (
+            "parquet-geo-only was explicitly requested but the carried geo key was written"
+        )
+
+    def test_pgo_without_geometry_keeps_non_geo_kv_metadata(self, tmp_path):
+        """Stripping must not take unrelated sidecar keys with it."""
+        import json
+
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        table = self._attributes_only_table_with_geo(
+            {b"fiboa": json.dumps({"schemas": ["example"]}).encode("utf-8")}
+        )
+        output_file = str(tmp_path / "pgo_no_geom_kv.parquet")
+        write_geoparquet_table(table, output_file, geoparquet_version="parquet-geo-only")
+
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" not in out_metadata
+        assert b"fiboa" in out_metadata
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1", "2.0"])
+    def test_other_versions_without_geometry_are_unchanged(self, version, tmp_path):
+        """Only parquet-geo-only strips; the other explicit versions still no-op.
+
+        The geometry-absent branch is a no-op for them, and this pins that the
+        new strip did not widen into one.
+        """
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / f"nogeom_{version}.parquet")
+        write_geoparquet_table(
+            self._attributes_only_table_with_geo(),
+            output_file,
+            geoparquet_version=version,
+        )
+
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" in out_metadata
+
+    def test_apply_metadata_helper_strips_directly(self):
+        """The helper itself honors the request, so every caller inherits the fix."""
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        result = _apply_geoparquet_metadata(
+            self._attributes_only_table_with_geo(),
+            geometry_column="geometry",
+            geoparquet_version="parquet-geo-only",
+        )
+
+        assert b"geo" not in (result.schema.metadata or {})
+
+
 class TestCarriedSchemaMetadataKeysHasOneDefinition:
     """The two write paths must exclude the same keys, structurally.
 

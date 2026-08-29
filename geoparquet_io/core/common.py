@@ -1470,6 +1470,18 @@ def _apply_geoparquet_metadata(
 
     # Check if geometry column exists in table
     if geometry_column not in table.column_names:
+        # An explicit parquet-geo-only request still has to drop a carried geo
+        # key, even with nothing to convert: the key names a primary_column the
+        # file does not contain (issue #701). Restricted to the explicit request
+        # so auto mode (geoparquet_version=None) keeps whatever it resolves to,
+        # which is issue #600's territory.
+        if geoparquet_version == "parquet-geo-only":
+            if verbose:
+                debug(
+                    f"Geometry column '{geometry_column}' not found in table; "
+                    "dropping carried geo metadata for parquet-geo-only"
+                )
+            return _strip_geo_metadata_key(table, verbose)
         if verbose:
             debug(f"Geometry column '{geometry_column}' not found in table, skipping metadata")
         return table
@@ -2821,8 +2833,10 @@ def write_geoparquet_table(
         actual_output,
         is_remote,
     ):
-        # Apply GeoParquet metadata only if geometry column exists
-        if has_geometry:
+        # Apply GeoParquet metadata if the geometry column exists, or when
+        # parquet-geo-only was explicitly requested: that request has to strip a
+        # carried geo key whether or not the column survived a projection (#701).
+        if has_geometry or geoparquet_version == "parquet-geo-only":
             table = _apply_geoparquet_metadata(
                 table,
                 geometry_column=geometry_column,
