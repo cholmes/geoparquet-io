@@ -241,7 +241,7 @@ class TestExtraKvMetadata:
         options = _build_copy_options(
             compression="ZSTD",
             row_group_rows=None,
-            geo_meta_escaped='{"version": "1.1"}',
+            geo_meta_json='{"version": "1.1"}',
             extra_kv_metadata={"vecorel": '{"schemas": {}}'},
         )
         kv_option = [o for o in options if "KV_METADATA" in o]
@@ -255,7 +255,7 @@ class TestExtraKvMetadata:
         options = _build_copy_options(
             compression="ZSTD",
             row_group_rows=None,
-            geo_meta_escaped=None,
+            geo_meta_json=None,
             extra_kv_metadata={"vecorel": '{"schemas": {}}'},
         )
         kv_option = [o for o in options if "KV_METADATA" in o]
