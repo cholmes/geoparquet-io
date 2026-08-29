@@ -731,6 +731,103 @@ def _write_points_geoparquet(path: Path, num_rows: int) -> str:
     return str(path)
 
 
+class TestDiskRewriteRowGroupCoarsening:
+    """The metadata rewrite must be able to MERGE source row groups (#697).
+
+    ``_rewrite_with_metadata`` issued one ``write_table`` per source row group,
+    and each of those starts a new row group, so it could only ever make groups
+    smaller than the source's. A request larger than the source's groups came
+    back as the source's shape, silently.
+
+    These call the helper directly: the query path pre-sizes the temporary file
+    through DuckDB's ``ROW_GROUP_SIZE``, so end-to-end the request is normally
+    already satisfied before the rewrite runs. That masking is exactly why the
+    limitation survived -- the helper's own contract is what these pin.
+    """
+
+    GEO_META = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+    }
+
+    @staticmethod
+    def _row_group_sizes(path) -> list[int]:
+        pf = pq.ParquetFile(str(path))
+        return [pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups)]
+
+    @pytest.fixture
+    def source_of_ten_row_groups(self, tmp_path):
+        """400 rows in 40 groups of 10 — the shape from the issue."""
+        path = tmp_path / "small_groups.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(400)]
+        table = pa.table({"id": list(range(400)), "geometry": points})
+        pq.write_table(table, path, row_group_size=10)
+        assert self._row_group_sizes(path) == [10] * 40
+        return path
+
+    def _rewrite(self, source, out, row_group_rows):
+        WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)._rewrite_with_metadata(
+            input_path=str(source),
+            output_path=str(out),
+            geo_meta=self.GEO_META,
+            compression="ZSTD",
+            compression_level=None,
+            verbose=False,
+            row_group_rows=row_group_rows,
+        )
+
+    def test_request_larger_than_source_groups_coarsens(self, source_of_ten_row_groups, tmp_path):
+        """The reproducer: 10-row source groups, request 100."""
+        out = tmp_path / "coarsened.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        assert self._row_group_sizes(out) == [100] * 4
+
+    def test_request_smaller_than_source_groups_still_splits(
+        self, source_of_ten_row_groups, tmp_path
+    ):
+        """The direction that already worked must keep working."""
+        out = tmp_path / "split.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 5)
+
+        assert self._row_group_sizes(out) == [5] * 80
+
+    def test_no_request_preserves_the_source_shape(self, source_of_ten_row_groups, tmp_path):
+        """No sizing request means no reshaping."""
+        out = tmp_path / "unchanged.parquet"
+        self._rewrite(source_of_ten_row_groups, out, None)
+
+        assert self._row_group_sizes(out) == [10] * 40
+
+    def test_uneven_remainder_is_flushed(self, tmp_path):
+        """A trailing partial group must still be written, not dropped."""
+        source = tmp_path / "uneven.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(25)]
+        pq.write_table(
+            pa.table({"id": list(range(25)), "geometry": points}), source, row_group_size=5
+        )
+        out = tmp_path / "uneven_out.parquet"
+        self._rewrite(source, out, 10)
+
+        assert self._row_group_sizes(out) == [10, 10, 5]
+
+    def test_rows_and_values_survive_coarsening(self, source_of_ten_row_groups, tmp_path):
+        """Merging groups must not reorder or lose rows."""
+        out = tmp_path / "values.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        assert pq.read_table(str(out)).column("id").to_pylist() == list(range(400))
+
+    def test_geo_metadata_is_written_when_coarsening(self, source_of_ten_row_groups, tmp_path):
+        """The rewrite's actual job still happens on the merging path."""
+        out = tmp_path / "meta.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        metadata = pq.ParquetFile(str(out)).schema_arrow.metadata
+        assert json.loads(metadata[b"geo"].decode("utf-8"))["version"] == "1.1.0"
+
+
 class TestDiskRewriteRowGroupSizing:
     """disk-rewrite must honour row-group sizing requests (issue #689).
 
