@@ -1,51 +1,69 @@
 """Native Parquet geospatial statistics must describe the data they ship with.
 
-Issue #721: on Windows, a file gpio writes with a native GEOMETRY logical type
-through the **pyarrow** writer comes back with geospatial statistics of
-``[0, 0, 0, 0]`` while the geometries are elsewhere. The statistics are
-*present* (``is_geo_stats_set`` is true) — they are just all zeros. Any reader
-using them for predicate pushdown skips row groups that actually match, so the
-result is silently wrong query results rather than an error. The same write path
-produces correct statistics on macOS and Linux, and the DuckDB ``COPY`` write
-strategy is correct on Windows too, which is why only the pyarrow path is
-implicated.
+Issue #721 asked which side zeroes the geospatial statistics of a native
+GEOMETRY column on Windows: pyarrow writing them, or DuckDB's
+``parquet_metadata()`` reading them. CI answered it — run 33193858561, Python
+3.11/3.12/3.13, both pyarrow write paths, 6 of 6 consistent:
 
-The open question the issue poses is **which side the zeros come from**: pyarrow
-writing them, or DuckDB's ``parquet_metadata()`` reading them. Neither can be
-settled on a machine where the bug does not reproduce, so these tests settle it
-in CI instead. They read the *same file* through both readers and assert each
-one separately. On Windows they are non-strict xfail, so CI stays green while
-recording which of the two fails:
+- ``..._via_pyarrow``         XPASS — pyarrow reads back the real bounds
+- ``..._via_duckdb``          XFAIL — DuckDB reports [0, 0, 0, 0] for that same file
+- ``..._both_readers_agree``  XFAIL
 
-- only ``via_duckdb`` xfails  -> pyarrow wrote correct statistics and DuckDB
-  misreads them; the fix belongs in gpio's stats-reading path
-- both xfail                  -> pyarrow wrote zeros; the fix (or workaround)
-  belongs upstream, or in routing Windows native-geo writes through DuckDB COPY
-- both xpass                  -> the platform bug is gone; delete the markers
-  and this docstring's question with them
+So the files gpio writes on Windows are correct on disk; gpio's *reader* is not.
+Everything gpio reports and validates from these statistics goes through DuckDB
+``parquet_metadata()`` — ``get_native_geo_statistics``,
+``get_aggregated_native_geo_stats`` and ``get_per_row_group_native_geo_stats``
+in ``core/duckdb_metadata.py`` — so on Windows those misreport bounds that are
+fine in the file. ``native_geo_stats_contains_data_*`` was flagging a real
+discrepancy all along; it pointed at the reader, not at the file. No rewrite of
+Windows-written files is needed, and routing Windows native-geo writes through
+DuckDB ``COPY`` would have fixed nothing.
+
+``test_duckdb_reads_a_file_it_did_not_write`` closes the one branch the pair
+above leaves open: a writer and reader that are wrong *symmetrically* would also
+agree. It reads a committed corpus fixture, written by neither gpio nor the
+Windows runner, so a failure there is the reader's alone.
+
+The pyarrow assertion is enforced on every platform, Windows included: now that
+the write path is known good there, it is the guard that keeps it good. The
+DuckDB-dependent assertions stay xfail on Windows until the reader is fixed
+(#721). They are strict, so the day DuckDB stops zeroing them CI turns red and
+names the markers — and this docstring — to delete.
 """
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import shapely
 
-from geoparquet_io.core.common import write_geoparquet_table
+from geoparquet_io.core.common import get_duckdb_connection, write_geoparquet_table
 
 # Far from the origin in every direction, so all-zero statistics cannot contain
-# the data by accident, and a zeroed *single* bound is still caught.
+# the data by accident, and a zeroed *single* bound is still caught. The
+# assertions below assume plain min/max bounds; the Parquet geospatial spec also
+# permits xmin > xmax for antimeridian-wrapping bounds, which these points would
+# qualify for if a writer ever chose to emit them.
 POINTS = [(-122.4, 37.8), (151.2, -33.9), (2.35, 48.85)]
 EXPECTED = {"xmin": -122.4, "ymin": -33.9, "xmax": 151.2, "ymax": 48.85}
 
-windows_xfail = pytest.mark.xfail(
+# A native-geo file written by the geoparquet-testing corpus, not by gpio and not
+# on the runner reading it. Bounds are the file's own, verified from the fixture.
+CORPUS_NATIVE_GEO = Path(__file__).parent / "data" / "geoparquet-testing" / "data" / "encodings"
+CORPUS_EXPECTED = {"xmin": 30.0, "ymin": 10.0, "xmax": 40.0, "ymax": 40.0}
+
+duckdb_windows_xfail = pytest.mark.xfail(
     sys.platform == "win32",
-    reason="#721: pyarrow-written native GEOMETRY carries all-zero geospatial stats on Windows",
-    strict=False,
+    reason=(
+        "#721: DuckDB parquet_metadata() reports [0, 0, 0, 0] on Windows for "
+        "native GEOMETRY columns whose statistics pyarrow reads back correctly "
+        "from the very same file"
+    ),
+    strict=True,
 )
 
 
@@ -129,7 +147,6 @@ def test_native_geo_file_uses_the_geometry_logical_type(native_geo_file):
     assert "Geometry" in schema or "Geography" in schema
 
 
-@windows_xfail
 def test_native_geo_statistics_contain_the_data_via_pyarrow(native_geo_file):
     """The writer's own reader: what pyarrow believes it wrote."""
     pf = pq.ParquetFile(native_geo_file)
@@ -146,10 +163,10 @@ def test_native_geo_statistics_contain_the_data_via_pyarrow(native_geo_file):
         )
 
 
-@windows_xfail
+@duckdb_windows_xfail
 def test_native_geo_statistics_contain_the_data_via_duckdb(native_geo_file):
     """The reader gpio itself uses when it reports and validates these statistics."""
-    con = duckdb.connect()
+    con = get_duckdb_connection()
     try:
         rows = con.execute(
             "SELECT geo_bbox FROM parquet_metadata(?) WHERE path_in_schema = 'geometry'",
@@ -166,25 +183,72 @@ def test_native_geo_statistics_contain_the_data_via_duckdb(native_geo_file):
         )
 
 
-@windows_xfail
+@duckdb_windows_xfail
 def test_both_readers_agree_on_the_statistics(native_geo_file):
     """Whichever side is wrong, the two readers disagreeing is itself the signal."""
     pf = pq.ParquetFile(native_geo_file)
     index = pf.schema_arrow.names.index("geometry")
-    stats = pf.metadata.row_group(0).column(index).geo_statistics
 
-    con = duckdb.connect()
+    con = get_duckdb_connection()
     try:
-        bbox = con.execute(
-            "SELECT geo_bbox FROM parquet_metadata(?) WHERE path_in_schema = 'geometry'",
+        # One row per column chunk, so order it: the comparison below is
+        # positional, and parquet_metadata() promises no ordering of its own.
+        rows = con.execute(
+            "SELECT geo_bbox FROM parquet_metadata(?) "
+            "WHERE path_in_schema = 'geometry' ORDER BY row_group_id",
             [native_geo_file],
-        ).fetchone()[0]
+        ).fetchall()
     finally:
         con.close()
 
-    assert (stats.xmin, stats.ymin, stats.xmax, stats.ymax) == (
-        bbox["xmin"],
-        bbox["ymin"],
-        bbox["xmax"],
-        bbox["ymax"],
+    assert len(rows) == pf.metadata.num_row_groups, (
+        f"DuckDB reported {len(rows)} geometry chunks for {pf.metadata.num_row_groups} row groups"
     )
+
+    for rg, (bbox,) in enumerate(rows):
+        stats = pf.metadata.row_group(rg).column(index).geo_statistics
+        # Exact equality is the property under test, not an approximation of it:
+        # both readers decode the same IEEE-754 doubles out of the same thrift
+        # footer, with no arithmetic in between. Do not relax this to approx().
+        assert (stats.xmin, stats.ymin, stats.xmax, stats.ymax) == (
+            bbox["xmin"],
+            bbox["ymin"],
+            bbox["xmax"],
+            bbox["ymax"],
+        ), f"row group {rg}: pyarrow and DuckDB disagree"
+
+
+@pytest.mark.corpus
+@duckdb_windows_xfail
+def test_duckdb_reads_a_file_it_did_not_write():
+    """Isolate the reader from the writer, on a file neither gpio nor CI wrote.
+
+    The tests above compare pyarrow against DuckDB on files pyarrow just wrote
+    on the same machine. A writer and reader wrong *symmetrically* would agree,
+    which is the one reading under which the zeros would still be a write-side
+    bug. This fixture is committed to the geoparquet-testing submodule and was
+    produced elsewhere, so whatever DuckDB reports about it is the reader's
+    doing alone.
+    """
+    fixture = CORPUS_NATIVE_GEO / "point-native-geometry.parquet"
+    if not fixture.exists():
+        pytest.skip("run: git submodule update --init")
+
+    con = get_duckdb_connection()
+    try:
+        bbox = con.execute(
+            "SELECT geo_bbox FROM parquet_metadata(?) WHERE path_in_schema = 'geometry'",
+            [str(fixture)],
+        ).fetchone()
+    finally:
+        con.close()
+
+    assert bbox is not None, "DuckDB reported no geometry column chunk"
+    bbox = bbox[0]
+    assert bbox is not None, "DuckDB reported no geospatial statistics"
+    assert (bbox["xmin"], bbox["ymin"], bbox["xmax"], bbox["ymax"]) == (
+        CORPUS_EXPECTED["xmin"],
+        CORPUS_EXPECTED["ymin"],
+        CORPUS_EXPECTED["xmax"],
+        CORPUS_EXPECTED["ymax"],
+    ), f"DuckDB reports {bbox} for a fixture whose bounds are {CORPUS_EXPECTED}"
