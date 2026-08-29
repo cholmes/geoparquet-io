@@ -109,6 +109,12 @@ class TestTable:
         assert isinstance(result, Table)
         assert result.num_rows == 766
 
+    def test_sort_str(self, sample_table):
+        """Test sort_str() method."""
+        result = sample_table.sort_str(tile_size=100)
+        assert isinstance(result, Table)
+        assert result.num_rows == 766
+
     def test_extract_columns(self, sample_table):
         """Test extract() with column selection."""
         result = sample_table.extract(columns=["name", "address"])
@@ -250,6 +256,12 @@ class TestOps:
     def test_sort_hilbert(self, arrow_table):
         """Test ops.sort_hilbert()."""
         result = ops.sort_hilbert(arrow_table)
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 766
+
+    def test_sort_str(self, arrow_table):
+        """Test ops.sort_str()."""
+        result = ops.sort_str(arrow_table, tile_size=100)
         assert isinstance(result, pa.Table)
         assert result.num_rows == 766
 

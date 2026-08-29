@@ -90,6 +90,7 @@ from geoparquet_io.core.process.overview import create_overviews as create_overv
 from geoparquet_io.core.reproject import reproject as reproject_core
 from geoparquet_io.core.sort_by_column import sort_by_column as sort_by_column_impl
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey as sort_by_quadkey_impl
+from geoparquet_io.core.str_order import str_order as str_impl
 from geoparquet_io.core.upload import check_credentials
 from geoparquet_io.core.upload import upload as upload_impl
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
@@ -3695,6 +3696,76 @@ def hilbert_order(
         row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
 
         hilbert_impl(
+            input_parquet,
+            output_parquet,
+            geometry_column,
+            add_bbox,
+            verbose,
+            compression.upper(),
+            compression_level,
+            row_group_mb,
+            row_group_size,
+            None,
+            geoparquet_version,
+            overwrite,
+            memory_limit=write_memory,
+        )
+
+
+@sort.command(name="str", cls=SingleFileCommand)
+@click.argument("input_parquet")
+@click.argument("output_parquet", type=click.Path(), required=False, default=None)
+@click.option(
+    "--geometry-column",
+    "-g",
+    default="geometry",
+    help="Name of the geometry column (default: geometry)",
+)
+@click.option(
+    "--add-bbox", is_flag=True, help="Automatically add bbox column and metadata if missing."
+)
+@output_format_options
+@geoparquet_version_option
+@overwrite_option
+@verbose_option
+@any_extension_option
+@show_sql_option
+@click.pass_context
+def str_order_command(
+    ctx,
+    input_parquet,
+    output_parquet,
+    geometry_column,
+    add_bbox,
+    compression,
+    compression_level,
+    row_group_size,
+    row_group_size_mb,
+    write_memory,
+    geoparquet_version,
+    overwrite,
+    verbose,
+    any_extension,
+    show_sql,
+):
+    """Pack GeoParquet rows with Sort-Tile-Recursive ordering.
+
+    STR builds approximately square X strips from geometry bounding-box
+    centers, sorts each strip on Y, and aligns spatial tiles to Parquet row
+    groups. This can produce tighter row-group bounds than a space-filling
+    curve for uneven spatial distributions.
+    """
+    with _activate_s3(ctx):
+        from geoparquet_io.core.streaming import StreamingError, validate_output
+
+        try:
+            validate_output(output_parquet)
+        except StreamingError as e:
+            raise click.ClickException(str(e)) from None
+
+        validate_parquet_extension(output_parquet, any_extension)
+        row_group_mb = parse_row_group_options(row_group_size, row_group_size_mb)
+        str_impl(
             input_parquet,
             output_parquet,
             geometry_column,

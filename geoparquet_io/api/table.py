@@ -460,6 +460,7 @@ class Table:
     - add_bbox(): Add bounding box column
     - add_quadkey(): Add quadkey column
     - sort_hilbert(): Reorder by Hilbert curve
+    - sort_str(): Reorder with Sort-Tile-Recursive packing
     - extract(): Filter columns and rows
 
     All methods return a new Table, preserving immutability.
@@ -1348,6 +1349,25 @@ class Table:
         result = hilbert_order_table(
             self._table,
             geometry_column=self._geometry_column,
+        )
+        return self._wrap(result, self._geometry_column)
+
+    def sort_str(self, tile_size: int = 100_000) -> Table:
+        """Reorder rows using Sort-Tile-Recursive packing.
+
+        Args:
+            tile_size: Target rows per spatial tile. Match this to the Parquet
+                row group size used when writing (default: 100,000).
+
+        Returns:
+            New Table with rows packed into spatially compact tiles
+        """
+        from geoparquet_io.core.str_order import str_order_table
+
+        result = str_order_table(
+            self._table,
+            geometry_column=self._geometry_column,
+            tile_size=tile_size,
         )
         return self._wrap(result, self._geometry_column)
 

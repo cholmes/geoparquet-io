@@ -66,7 +66,7 @@ geoparquet_io/
 | `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview, |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata, cloud uploads) |
 | `gpio skills` |  | List and access LLM skills for gpio |
-| `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files |
+| `gpio sort` | column, hilbert, quadkey, str | Commands for sorting GeoParquet files |
 <!-- END GENERATED: cli-commands -->
 
 <!-- BEGIN GENERATED: core-modules -->

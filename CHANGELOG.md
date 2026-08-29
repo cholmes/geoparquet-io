@@ -24,6 +24,7 @@ long run of write-path, metadata and CRS correctness fixes.
 
 ### Added
 
+- **Sort-Tile-Recursive spatial ordering.** `gpio sort str`, `ops.sort_str`, and `Table.sort_str` pack geometry-envelope centers into row-group-sized X/Y tiles as an alternative to Hilbert ordering.
 - **The guides' examples now run as tests.** Every fenced bash/python block in `docs/guide/*.md` runs verbatim as a pytest item, which found and fixed real bugs in the docs. ([#667](https://github.com/geoparquet/geoparquet-io/issues/667), [#732](https://github.com/geoparquet/geoparquet-io/issues/732))
 - **Honest notebook CI signal.** The `notebooks` job no longer reports green for notebooks that execute no real `gpio` call. ([#667](https://github.com/geoparquet/geoparquet-io/issues/667), [#720](https://github.com/geoparquet/geoparquet-io/issues/720))
 - **Canonical sample dataset.** `tests/data/canonical/` holds one small, spec-clean dataset (~405 KB) shared by the docs examples, e2e journeys and notebooks. ([#667](https://github.com/geoparquet/geoparquet-io/issues/667), [#719](https://github.com/geoparquet/geoparquet-io/issues/719))

@@ -636,6 +636,16 @@ Reorder rows using Hilbert curve ordering for better spatial locality.
 table = gpio.read('input.parquet').sort_hilbert()
 ```
 
+#### `sort_str(tile_size=100000)`
+
+Pack rows into spatially compact Sort-Tile-Recursive tiles. Match `tile_size`
+to the row-group rows used when writing.
+
+```python
+table = gpio.read('input.parquet').sort_str(tile_size=50000)
+table.write('output.parquet', row_group_rows=50000)
+```
+
 #### `sort_column(column_name, descending=False)`
 
 Sort rows by a specified column.
@@ -1455,6 +1465,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
+| `ops.sort_str(table, geometry_column=None, tile_size=100000)` | Pack rows with Sort-Tile-Recursive ordering |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |
 | `ops.sort_quadkey(table, column_name='quadkey', resolution=13, use_centroid=False, remove_column=False)` | Sort by quadkey |
 | `ops.reproject(table, target_crs='EPSG:4326', source_crs=None, geometry_column=None, assume_crs84=False)` | Reproject geometry (`assume_crs84` treats an unknown/null CRS as OGC:CRS84) |

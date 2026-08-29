@@ -40,7 +40,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview,... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
-| `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
+| `gpio sort` | column, hilbert, quadkey, str | Commands for sorting GeoParquet files. |
 <!-- END GENERATED: skill-commands -->
 
 ---

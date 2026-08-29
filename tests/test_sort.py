@@ -140,6 +140,24 @@ class TestSortCommands:
         # Should fail with non-zero exit code
         assert result.exit_code != 0
 
+    def test_str_sort_places(self, places_test_file, temp_output_file):
+        """STR is exposed as a file-producing sort alternative."""
+        runner = CliRunner()
+        result = runner.invoke(
+            sort,
+            [
+                "str",
+                places_test_file,
+                temp_output_file,
+                "--row-group-size",
+                "100",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert os.path.exists(temp_output_file)
+        assert pq.read_table(temp_output_file).num_rows == 766
+
 
 class TestSortColumnCommands:
     """Test suite for column sort commands."""

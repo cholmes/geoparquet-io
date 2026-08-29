@@ -5,6 +5,7 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
 ## Sorting Methods
 
 - **Hilbert curve** - Optimal spatial ordering using Hilbert space-filling curve
+- **Sort-Tile-Recursive (STR)** - Pack approximately square spatial tiles aligned to row groups
 - **Column** - Sort by any column(s) for non-spatial ordering needs
 
 ## Hilbert Curve Ordering
@@ -100,6 +101,53 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 1GB
 
 !!! tip "Optimal row group size for spatial queries"
     For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, use **10,000-50,000 rows per group**. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups.
+
+## Sort-Tile-Recursive Ordering
+
+STR is an alternative spatial packing strategy that explicitly builds tiles at
+the output row-group capacity. It sorts geometry bounding-box centers into
+approximately square X strips, sorts each strip on Y, and alternates the Y
+direction between strips to keep neighboring tiles close.
+
+=== "CLI"
+
+    ```bash
+    gpio sort str input.parquet output.parquet --row-group-size 50000
+    ```
+
+=== "Python"
+
+    ```python
+    import geoparquet_io as gpio
+
+    gpio.read('input.parquet') \
+        .sort_str(tile_size=50000) \
+        .write('output.parquet', row_group_rows=50000)
+    ```
+
+The tile size and written row-group size should match. The CLI derives STR's
+tile capacity from `--row-group-size`; both default to 100,000 rows when the
+option is omitted. With `--row-group-size-mb`, STR still uses 100,000 rows per
+tile because the final number of rows in a byte-sized group cannot be known
+before writing; set an exact row count when strict alignment matters.
+
+STR is especially useful for uneven spatial distributions where rectangular
+row-group tiles have less overlap than a single space-filling-curve order. The
+[benchmark linked from the design presentation](https://github.com/Kanahiro/spatial-sort-benchmark)
+reports lower row-group bbox overlap and fewer candidate row groups than
+Hilbert on its 30-million-row POI dataset. Results depend on the dataset, so
+Hilbert remains a good general default.
+
+Like Hilbert sorting, STR places empty and NULL geometries at the end and can
+write GeoParquet 2.0 native row-group statistics or add a bbox covering:
+
+```bash
+gpio sort str input.parquet output.parquet \
+  --row-group-size 50000 \
+  --geoparquet-version 2.0
+
+gpio sort str input.parquet output-bbox.parquet --add-bbox
+```
 
 ## Column Ordering
 

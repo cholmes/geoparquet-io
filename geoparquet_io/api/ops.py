@@ -30,6 +30,7 @@ from geoparquet_io.core.hilbert_order import hilbert_order_table
 from geoparquet_io.core.reproject import reproject_table
 from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
+from geoparquet_io.core.str_order import DEFAULT_STR_TILE_SIZE, str_order_table
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 
@@ -181,6 +182,29 @@ def sort_hilbert(
     return hilbert_order_table(
         table,
         geometry_column=geometry_column,
+    )
+
+
+def sort_str(
+    table: pa.Table,
+    geometry_column: str | None = None,
+    tile_size: int = DEFAULT_STR_TILE_SIZE,
+) -> pa.Table:
+    """Reorder table rows using Sort-Tile-Recursive packing.
+
+    Args:
+        table: Input PyArrow Table
+        geometry_column: Geometry column name (auto-detected if None)
+        tile_size: Target rows per spatial tile; match this to the output row
+            group size (default: 100,000)
+
+    Returns:
+        New table with rows reordered into spatially compact tiles
+    """
+    return str_order_table(
+        table,
+        geometry_column=geometry_column,
+        tile_size=tile_size,
     )
 
 

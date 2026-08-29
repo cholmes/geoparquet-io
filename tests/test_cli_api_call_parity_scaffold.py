@@ -87,6 +87,7 @@ from geoparquet_io.core import extract as core_extract
 from geoparquet_io.core import hilbert_order as core_hilbert
 from geoparquet_io.core import sort_by_column as core_sort_column
 from geoparquet_io.core import sort_quadkey as core_sort_quadkey
+from geoparquet_io.core import str_order as core_str
 from geoparquet_io.core import write_strategies as core_write_strategies
 from geoparquet_io.core.add import a5 as core_a5
 from geoparquet_io.core.add import bbox as core_bbox
@@ -367,6 +368,29 @@ CASES: list[ParityCase] = [
         normalize={"geometry_column": ("geometry_column", "geometry_column")},
     ),
     ParityCase(
+        id="sort str",
+        cli=_cli(
+            "str_impl",
+            core_str.str_order,
+            lambda c: ["sort", "str", c.input_file, c.output_file],
+        ),
+        ops=_ops(
+            "str_order_table",
+            core_str.str_order_table,
+            lambda c: ops.sort_str(c.table),
+        ),
+        table=_table(
+            core_str,
+            "str_order_table",
+            core_str.str_order_table,
+            lambda c: c.gpio_table.sort_str(),
+        ),
+        normalize={
+            "geometry_column": ("geometry_column", "geometry_column"),
+            "tile_size": ("row_group_rows", "tile_size"),
+        },
+    ),
+    ParityCase(
         id="sort column",
         cli=_cli(
             "sort_by_column_impl",
@@ -547,6 +571,36 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "CLI --geometry-column defaults to the conventional name 'geometry'; ops.sort_hilbert "
         "passes None so core auto-detects. Table.sort_hilbert does not have this gap because a "
         "Table already knows its geometry column. Also listed in the #661 allowlist."
+    ),
+    (
+        "sort str",
+        "ops",
+        "geometry_column",
+        "'geometry'",
+        "None",
+    ): (
+        "CLI --geometry-column defaults to the conventional name 'geometry'; ops.sort_str "
+        "passes None so core auto-detects. Table.sort_str already knows its geometry column."
+    ),
+    (
+        "sort str",
+        "ops",
+        "tile_size",
+        "None",
+        "100000",
+    ): (
+        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
+        "in-memory API spells the same effective default explicitly as tile_size=100000."
+    ),
+    (
+        "sort str",
+        "table",
+        "tile_size",
+        "None",
+        "100000",
+    ): (
+        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
+        "fluent API spells the same effective default explicitly as tile_size=100000."
     ),
     (
         "add kdtree",
@@ -770,6 +824,7 @@ def test_case_table_covers_the_commands_the_refactors_touch():
         "add quadkey",
         "add kdtree",
         "sort hilbert",
+        "sort str",
         "sort column",
         "sort quadkey",
         "extract geoparquet",
