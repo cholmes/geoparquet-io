@@ -1911,6 +1911,23 @@ class TestParquetGeoOnlyWithoutGeometryColumn:
         out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
         assert b"geo" in out_metadata
 
+    def test_verbose_reports_the_drop(self, caplog):
+        """The verbose path names what it dropped and why."""
+        import logging
+
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            _apply_geoparquet_metadata(
+                self._attributes_only_table_with_geo(),
+                geometry_column="geometry",
+                geoparquet_version="parquet-geo-only",
+                verbose=True,
+            )
+
+        assert "not found in table" in caplog.text
+        assert "parquet-geo-only" in caplog.text
+
     def test_apply_metadata_helper_strips_directly(self):
         """The helper itself honors the request, so every caller inherits the fix."""
         from geoparquet_io.core.common import _apply_geoparquet_metadata
