@@ -179,8 +179,12 @@ def write_gdal_format(
 
     config = GDAL_FORMATS[format_name]
 
+    # str(): GDAL_FORMATS mixes str/bool/None values, so mypy infers `object`.
     _reject_stdin_input(
-        input_path, config["description"], config["cli_command"], config["sample_output"]
+        input_path,
+        str(config["description"]),
+        str(config["cli_command"]),
+        str(config["sample_output"]),
     )
 
     # Validate inputs
