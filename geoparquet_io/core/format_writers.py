@@ -43,22 +43,49 @@ ERROR_NO_GEOMETRY = "No geometry column found. Expected 'geometry', 'geom', or '
 ERROR_NO_COMPATIBLE_COLUMNS = (
     "No compatible columns for {format} format. All columns are complex types (STRUCT, LIST, MAP)."
 )
+# `-` reaches these writers as an ordinary path and dies inside GDAL/DuckDB as
+# "File not found: -", which describes neither what happened nor what to do.
+# Only `convert geojson` can consume an Arrow IPC stream (#723); the GDAL and CSV
+# writers hand a URL to GDAL/DuckDB and have no stdin-consuming path (#749).
+ERROR_STDIN_UNSUPPORTED = (
+    "reading stdin ('-') is not supported for {format} output.\n"
+    "Materialize the stream first:\n"
+    "  gpio convert geoparquet - tmp.parquet && "
+    "gpio convert {command} tmp.parquet {output}"
+)
+
+
+def _reject_stdin_input(input_path: str, description: str, command: str, output: str) -> None:
+    """Fail early and legibly when a non-streaming writer is handed ``-``."""
+    from geoparquet_io.core.streaming import is_stdin
+
+    if is_stdin(input_path):
+        raise GeoParquetError(
+            ERROR_STDIN_UNSUPPORTED.format(format=description, command=command, output=output)
+        )
+
 
 # Format configuration for GDAL-based writers
 GDAL_FORMATS = {
     "geopackage": {
+        "cli_command": "geopackage",
+        "sample_output": "out.gpkg",
         "driver": "GPKG",
         "description": "GeoPackage",
         "check_overwrite": True,
         "layer_option": "LAYER_NAME",
     },
     "flatgeobuf": {
+        "cli_command": "flatgeobuf",
+        "sample_output": "out.fgb",
         "driver": "FlatGeobuf",
         "description": "FlatGeobuf",
         "check_overwrite": True,
         "layer_option": None,
     },
     "shapefile": {
+        "cli_command": "shapefile",
+        "sample_output": "out.shp",
         "driver": "ESRI Shapefile",
         "description": "Shapefile",
         "check_overwrite": True,
@@ -151,6 +178,10 @@ def write_gdal_format(
         )
 
     config = GDAL_FORMATS[format_name]
+
+    _reject_stdin_input(
+        input_path, config["description"], config["cli_command"], config["sample_output"]
+    )
 
     # Validate inputs
     if is_remote_url(output_path):
@@ -308,6 +339,8 @@ def write_csv(
     from pathlib import Path
 
     configure_verbose(verbose)
+
+    _reject_stdin_input(input_path, "CSV", "csv", "out.csv")
 
     if is_remote_url(output_path):
         raise InvalidParameterError("output_path", ERROR_REMOTE_OUTPUT.format(format="CSV"))
