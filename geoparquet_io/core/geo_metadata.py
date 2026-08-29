@@ -767,6 +767,18 @@ _BBOX_COLUMN_SUFFIXES = ("_bbox",)
 _BBOX_STRUCT_FIELDS = frozenset({"xmin", "ymin", "xmax", "ymax"})
 
 
+def build_bbox_covering(column: str) -> dict:
+    """The ``covering.bbox`` entry describing ``column``'s four struct fields.
+
+    One constructor so every writer emits the same shape. Callers must only use
+    it for a column whose values are known to bound the geometry -- one gpio
+    computed in this write, or one the input's own metadata already declared.
+    A covering derived from a column *name* asserts a relationship nothing
+    checked, and readers prune on it (#738).
+    """
+    return {axis: [column, axis] for axis in ("xmin", "ymin", "xmax", "ymax")}
+
+
 def _is_bbox_column_name(name: str) -> bool:
     """Whether ``name`` conventionally denotes a bbox covering column."""
     return name in _BBOX_COLUMN_NAMES or name.endswith(_BBOX_COLUMN_SUFFIXES)

@@ -152,8 +152,14 @@ def _make_mixed_types(path):
 
 
 def _make_bbox_column_file(path):
-    """Write a file with a struct ``bbox`` column so covering metadata is added."""
+    """Write a file with a struct ``bbox`` column and the covering describing it.
+
+    The covering is declared explicitly, the way production callers do: the
+    query below computes the bbox from the geometry, so this fixture can vouch
+    for it. Writers no longer infer a covering from a column's name (#738).
+    """
     from geoparquet_io.core.common import write_parquet_with_metadata
+    from geoparquet_io.core.geo_metadata import build_bbox_covering
 
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
@@ -174,7 +180,13 @@ def _make_bbox_column_file(path):
         ) AS t(id, geometry)
     """
     try:
-        write_parquet_with_metadata(con, query, str(path), geoparquet_version="1.1")
+        write_parquet_with_metadata(
+            con,
+            query,
+            str(path),
+            geoparquet_version="1.1",
+            custom_metadata={"covering": {"bbox": build_bbox_covering("bbox")}},
+        )
     finally:
         con.close()
 

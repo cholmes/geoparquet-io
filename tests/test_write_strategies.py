@@ -988,3 +988,44 @@ class TestDuckDBKVWriteConfiguration:
         )
 
         assert snapshot() == before
+
+
+class TestCompressionLevelValidation:
+    """`COMPRESSION_LEVEL` is formatted into SQL, so the value must be checked."""
+
+    @pytest.mark.parametrize("bad", ["1; DROP TABLE t", 3.5, True, 0, 23, -1, "15", None, object()])
+    def test_rejects_values_that_are_not_a_duckdb_level(self, bad):
+        from geoparquet_io.core.duckdb_utils import validate_compression_level
+
+        with pytest.raises(ValueError):
+            validate_compression_level(bad)
+
+    @pytest.mark.parametrize("level", [1, 15, 22])
+    def test_accepts_the_documented_range(self, level):
+        from geoparquet_io.core.duckdb_utils import validate_compression_level
+
+        assert validate_compression_level(level) == level
+
+    def test_library_callers_are_checked_not_just_the_cli(self, tmp_path):
+        """The CLI has IntRange(1, 22); a Python caller reaches the writer directly."""
+        from geoparquet_io.core.common import write_parquet_with_metadata
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        con = get_duckdb_connection()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        src = tmp_path / "src.parquet"
+        con.execute(
+            f"""COPY (SELECT ST_Point(i * 0.1, i * 0.1) AS geometry FROM range(10) t(i))
+                TO '{src}' (FORMAT PARQUET)"""
+        )
+
+        with pytest.raises(ValueError, match="compression_level"):
+            write_parquet_with_metadata(
+                con,
+                f"SELECT * FROM read_parquet('{src}')",
+                str(tmp_path / "out.parquet"),
+                geoparquet_version="1.1",
+                compression="ZSTD",
+                compression_level="1; DROP TABLE t",
+                verbose=False,
+            )

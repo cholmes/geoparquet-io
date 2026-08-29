@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    quote_identifier,
+    validate_compression_level,
+)
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 from geoparquet_io.core.write_strategies.row_group_sizing import _resolve_row_group_rows
@@ -174,7 +178,7 @@ def _build_copy_options(
     # --compression-level and fell back to DuckDB's ZSTD default of 3 against
     # gpio's default of 15 -- ~15% larger output on every write through here.
     if compression_level is not None and compression.upper() == "ZSTD":
-        options.append(f"COMPRESSION_LEVEL {compression_level}")
+        options.append(f"COMPRESSION_LEVEL {validate_compression_level(compression_level)}")
     kv_pairs = {}
     if geo_meta_escaped:
         kv_pairs["geo"] = geo_meta_escaped
@@ -362,6 +366,58 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             debug(f"DuckDB memory limit: {effective_limit}")
         return saved
 
+    #: The only column name a writer will treat as self-evidently the geometry's
+    #: bounding box. `covering` asserts that a column's values bound the
+    #: geometry, and a name is weak evidence -- but `bbox`, as a struct of
+    #: xmin/ymin/xmax/ymax, is the universal GeoParquet convention and is what
+    #: every 1.0-era writer emitted before `covering` existed. Broader matching
+    #: (`bounds`, `extent`, `*_bbox`) let an unrelated `tile_bounds` column
+    #: become the declared covering, so readers pruned away rows that genuinely
+    #: matched; those names now require explicit provenance (#738).
+    _SELF_EVIDENT_BBOX_COLUMN = "bbox"
+
+    def _declare_carried_bbox_column(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        query: str,
+        col_meta: dict,
+        verbose: bool,
+        geoparquet_version: str,
+    ) -> None:
+        """Declare a conventional ``bbox`` column the output carries but nothing declared.
+
+        This is the 1.0 -> 1.1 upgrade path: a 1.0 file cannot declare a
+        covering, so its bbox column arrives undeclared and would otherwise stay
+        that way forever. Callers that *computed* a bbox column, or read a
+        covering from the input, supply it through ``custom_metadata`` instead
+        and never reach the branch below.
+        """
+        import pyarrow as pa
+
+        from geoparquet_io.core.geo_metadata import build_bbox_covering, covering_supported
+
+        if not covering_supported(geoparquet_version):
+            if verbose:
+                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+            return
+        # Never override a covering that arrived with provenance.
+        if isinstance(col_meta.get("covering"), dict) and "bbox" in col_meta["covering"]:
+            return
+
+        name = self._SELF_EVIDENT_BBOX_COLUMN
+        schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
+        if name not in schema.names:
+            return
+        field = schema.field(name)
+        if not pa.types.is_struct(field.type):
+            return
+        if not {"xmin", "ymin", "xmax", "ymax"}.issubset({f.name for f in field.type}):
+            return
+
+        col_meta.setdefault("covering", {})["bbox"] = build_bbox_covering(name)
+        if verbose:
+            debug(f"Declared the carried conventional bbox column '{name}'")
+
     def _get_local_path(self, output_path: str, is_remote: bool) -> str:
         """Get local path for writing (temp file if remote)."""
         if is_remote:
@@ -439,7 +495,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         col_meta = geo_meta["columns"][geometry_column]
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
-        self._add_bbox_covering_if_present(con, query, col_meta, verbose, geoparquet_version)
+        self._declare_carried_bbox_column(con, query, col_meta, verbose, geoparquet_version)
 
         # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB.
         # For v2.0: Keep native GEOMETRY type with CRS — DuckDB writes native
@@ -498,52 +554,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             col_meta["bbox"] = bbox
         if need_types:
             col_meta["geometry_types"] = geometry_types
-
-    def _add_bbox_covering_if_present(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        query: str,
-        col_meta: dict,
-        verbose: bool,
-        geoparquet_version: str,
-    ) -> None:
-        """Add bbox covering metadata if a bbox column is present and the version allows it.
-
-        The bbox column is still written for 1.0 — only the 'covering' key is 1.1+.
-        """
-        from geoparquet_io.core.geo_metadata import (
-            covering_supported,
-            detect_bbox_column_from_schema,
-        )
-
-        if not covering_supported(geoparquet_version):
-            if verbose:
-                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
-            return
-
-        schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-        bbox_col_name = detect_bbox_column_from_schema(schema_result.schema, verbose)
-
-        if bbox_col_name:
-            # Merge, never replace: `covering` also carries non-bbox entries
-            # (h3/s2/a5/quadkey), and assigning a fresh dict destroyed an h3
-            # covering the input declared. Do not overwrite an existing `bbox`
-            # entry either -- one carried in or supplied through custom_metadata
-            # came from something that could vouch for it, unlike this
-            # name-based detection.
-            covering = col_meta.setdefault("covering", {})
-            if "bbox" in covering:
-                if verbose:
-                    debug(f"Keeping the bbox covering already declared for '{bbox_col_name}'")
-                return
-            covering["bbox"] = {
-                "xmin": [bbox_col_name, "xmin"],
-                "ymin": [bbox_col_name, "ymin"],
-                "xmax": [bbox_col_name, "xmax"],
-                "ymax": [bbox_col_name, "ymax"],
-            }
-            if verbose:
-                debug(f"Added bbox covering metadata for column '{bbox_col_name}'")
 
     def write_from_table(
         self,

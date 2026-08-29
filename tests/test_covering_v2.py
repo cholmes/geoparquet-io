@@ -519,3 +519,62 @@ def test_a_non_bbox_covering_survives_a_write_that_adds_a_bbox_covering(tmp_path
 
     covering = _geometry_column_meta(out)["covering"]
     assert covering.get("h3") == {"column": "h3", "resolution": 9}
+
+
+def test_convert_to_1_1_declares_the_bbox_column_it_computes(tmp_path):
+    """Convert computes the bbox column itself, so it can vouch for the covering."""
+    src = _write_v2_wkb(tmp_path / "in.parquet")
+    out = tmp_path / "out.parquet"
+
+    _run("convert", "geoparquet", src, out, "--geoparquet-version", "1.1")
+
+    assert "bbox" in pq.ParquetFile(str(out)).schema_arrow.names
+    assert _geometry_column_meta(out)["covering"]["bbox"] == BBOX_COVERING
+
+
+def test_convert_to_1_1_leaves_a_preserved_undeclared_bbox_column_undeclared(tmp_path):
+    """A preserved bbox column gpio did not compute gains no covering.
+
+    Convert passes it through untouched; nothing established that its values
+    bound the geometry, so gpio does not assert that they do.
+    """
+    src = _write_v2_wkb(
+        tmp_path / "in.parquet", with_bbox_column=True, with_covering=False, bbox_name="bounds"
+    )
+    out = tmp_path / "out.parquet"
+
+    _run("convert", "geoparquet", src, out, "--geoparquet-version", "1.1")
+
+    assert "covering" not in _geometry_column_meta(out)
+
+
+@pytest.mark.parametrize("bbox_name", ["tile_bounds", "parcel_extent", "mybbox", "geom_bbox"])
+def test_only_a_column_named_bbox_is_self_evident_at_1_1(tmp_path, bbox_name):
+    """The 1.0 -> 1.1 upgrade declares a carried `bbox`, and nothing else.
+
+    `bbox` as a struct of xmin/ymin/xmax/ymax is the universal GeoParquet
+    convention and is what every 1.0-era writer emitted before `covering`
+    existed, so upgrading declares it. Any other name -- including the
+    `tile_bounds` that made readers prune away matching rows -- needs a caller
+    that can vouch for it (#738).
+    """
+    src = _write_v2_wkb(
+        tmp_path / "in.parquet",
+        with_bbox_column=True,
+        with_covering=False,
+        bbox_name=bbox_name,
+    )
+    out = tmp_path / "out.parquet"
+
+    _run("extract", "geoparquet", src, out, "--geoparquet-version", "1.1")
+
+    assert "covering" not in _geometry_column_meta(out)
+
+
+def test_a_carried_conventional_bbox_column_is_declared_at_1_1(tmp_path):
+    src = _write_v2_wkb(tmp_path / "in.parquet", with_bbox_column=True, with_covering=False)
+    out = tmp_path / "out.parquet"
+
+    _run("extract", "geoparquet", src, out, "--geoparquet-version", "1.1")
+
+    assert _geometry_column_meta(out)["covering"]["bbox"] == BBOX_COVERING

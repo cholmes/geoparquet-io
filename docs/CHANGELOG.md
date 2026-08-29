@@ -699,14 +699,23 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   metadata of the *original* input while the query read the working copy that
   `add_bbox` had just extended with the covering.
 
-  A covering is only ever written for a bbox column gpio computed in that same
-  statement, or one the input's own metadata already declared. gpio does not
-  infer a covering from a column's name: a `covering` asserts that a column's
-  values bound the geometry, and a covering pointing at unrelated values makes
-  readers prune away rows that genuinely match — worse than declaring nothing.
-  An undeclared bbox column is therefore left undeclared, and `gpio check`
-  flags it and points at `gpio add bbox-metadata`, where that assertion is made
-  deliberately.
+  A covering is written only where gpio can stand behind the claim: for a bbox
+  column it computed from the geometry in that same statement, for one the
+  input's own metadata already declared, or for a carried conventional `bbox`
+  struct column — the shape every GeoParquet 1.0 writer emitted before
+  `covering` existed, which is what lets a 1.0 → 1.1 upgrade declare it. Any
+  other name is left undeclared. A `covering` asserts that a column's values
+  bound the geometry, and one pointing at unrelated values makes readers prune
+  away rows that genuinely match, which is worse than declaring nothing:
+  matching *anything* ending in `bbox`/`bounds`/`extent` had let an unrelated
+  `tile_bounds` column become a geometry's declared covering. `gpio check`
+  flags an undeclared bbox column and points at `gpio add bbox-metadata`, where
+  that assertion is made deliberately.
+
+  `compression_level` is validated (integer, 1–22) before it reaches SQL:
+  the CLI constrains it with `IntRange`, but `write_parquet_with_metadata` and
+  the write strategies are public entry points a Python caller reaches directly,
+  where nothing had checked it.
 
   `gpio check` now accepts a *declared* bbox covering on a 2.0 file instead of
   flagging it and offering to delete it, and `--fix` only removes undeclared

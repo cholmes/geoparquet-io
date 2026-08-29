@@ -297,6 +297,24 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
 !!! note "Bbox and Hilbert Ordering"
     Bbox computation and Hilbert spatial ordering use the **primary geometry column only**. Secondary geometry columns are preserved but do not influence spatial indexing.
 
+!!! note "When the `covering` metadata is written"
+    A `covering` entry tells readers that a bbox column's values bound the
+    geometry, so engines prune on it. `gpio convert` declares one only when it
+    can stand behind the claim:
+
+    - it computed the bbox column itself, from the geometry, during this convert
+    - the input's own metadata already declared a covering for the column being
+      preserved
+    - the output carries a conventional `bbox` struct column (the shape every
+      GeoParquet 1.0 writer emitted, before `covering` existed) — this is what
+      makes a 1.0 → 1.1 upgrade declare it
+
+    A preserved column with any other name — `bounds`, `parcel_extent`,
+    `tile_bounds` — is left undeclared, because its name is not evidence that
+    its values bound the geometry, and a wrong covering makes readers skip rows
+    that genuinely match. Declare such a column deliberately with
+    [`gpio add bbox-metadata`](add.md); `gpio check bbox` will point this out.
+
 ### Custom Geometry Column Names
 
 GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:

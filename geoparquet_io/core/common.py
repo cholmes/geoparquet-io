@@ -24,6 +24,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
+    validate_compression_level,
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
@@ -39,6 +40,7 @@ from geoparquet_io.core.file_utils import (
 from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
+    build_bbox_covering,
     create_geo_metadata,
     detect_bbox_column_from_schema,
     prune_geo_metadata_to_columns,
@@ -2217,7 +2219,7 @@ def _plain_copy_to(
     # DuckDB accepts COMPRESSION_LEVEL for ZSTD only; pairing it with GZIP or
     # BROTLI is a binder error, not a silently ignored option.
     if compression_level is not None and duckdb_compression.upper() == "ZSTD":
-        options.append(f"COMPRESSION_LEVEL {compression_level}")
+        options.append(f"COMPRESSION_LEVEL {validate_compression_level(compression_level)}")
     if row_group_rows is not None:
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
     if carry_geo_metadata is not None:
@@ -3524,16 +3526,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
         # geometry" is one we can actually make here -- and nowhere else (#738).
         # `custom_metadata` is the existing route for that, and it is already
         # version-gated: strip_unsupported_covering drops the key for 1.0 output.
-        bbox_covering = {
-            "covering": {
-                "bbox": {
-                    "xmin": [bbox_column_name, "xmin"],
-                    "ymin": [bbox_column_name, "ymin"],
-                    "xmax": [bbox_column_name, "xmax"],
-                    "ymax": [bbox_column_name, "ymax"],
-                }
-            }
-        }
+        bbox_covering = {"covering": {"bbox": build_bbox_covering(bbox_column_name)}}
 
         add_computed_column(
             input_parquet=parquet_file,
