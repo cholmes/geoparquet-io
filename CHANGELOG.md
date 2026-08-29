@@ -83,9 +83,6 @@ long run of write-path, metadata and CRS correctness fixes.
 - **Z/M geometry types written and validated dimension-aware;** metadata carries the spec's dimension suffixes (`"Point Z"`), checked in both directions. ([#583](https://github.com/geoparquet/geoparquet-io/issues/583), [#589](https://github.com/geoparquet/geoparquet-io/issues/589))
 - **`gpio partition … --auto` is now extent-aware,** probing a sample of the actual data instead of assuming globally uniform coverage. ([#524](https://github.com/geoparquet/geoparquet-io/issues/524), [#526](https://github.com/geoparquet/geoparquet-io/issues/526))
 - **Spatial operations are now CRS-aware;** non-CRS84 inputs are detected and reprojected before grid operations and admin joins. ([#525](https://github.com/geoparquet/geoparquet-io/issues/525), [#530](https://github.com/geoparquet/geoparquet-io/issues/530))
-- Fix CRS export for GDAL formats — projected CRS now roundtrips through FlatGeobuf and GeoPackage (fixes [#189](https://github.com/geoparquet/geoparquet-io/issues/189), [#190](https://github.com/geoparquet/geoparquet-io/issues/190))
-- Fix inspect metadata performance regression ([#232](https://github.com/geoparquet/geoparquet-io/issues/232))
-- Improved error messages for common user mistakes — invalid Parquet files now show helpful hints ([#140](https://github.com/geoparquet/geoparquet-io/issues/140))
 
 ### Internal
 
@@ -336,6 +333,10 @@ BREAKING CHANGE: `gt` CLI alias removed, use `gpio` instead.
 ### Fix
 
 - add min_size and in_place params to all partition function signatures
+- Fix CRS export for GDAL formats — projected CRS now roundtrips through FlatGeobuf and GeoPackage (fixes [#189](https://github.com/geoparquet/geoparquet-io/issues/189), [#190](https://github.com/geoparquet/geoparquet-io/issues/190))
+- Fix crash on non-numeric CRS codes like IGNF:LAMB93 ([#193](https://github.com/geoparquet/geoparquet-io/issues/193))
+- Fix inspect metadata performance regression ([#232](https://github.com/geoparquet/geoparquet-io/issues/232))
+- Improved error messages for common user mistakes — invalid Parquet files now show helpful hints ([#140](https://github.com/geoparquet/geoparquet-io/issues/140))
 
 ## v0.9.0 (2026-01-17)
 
