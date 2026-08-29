@@ -145,6 +145,15 @@ Override auto-detection when needed:
         (`-`) also has no write engine to configure, so the limit is ignored
         with a warning — `--write-memory` only applies to file outputs.
 
+    !!! note "On `gpio extract bigquery` the limit applies to the scan"
+        That command writes through PyArrow, so there is no DuckDB write engine
+        to configure. `--write-memory` is applied to the DuckDB connection
+        running the BigQuery scan instead — which is where the memory actually
+        goes for that command, since the whole result set is materialized before
+        it is written. The value is honoured, not dropped; it just governs the
+        read side. Whether the flag should be renamed or removed there is
+        tracked separately.
+
 === "Python"
 
     The fluent API auto-detects DuckDB's memory limit (respecting container
