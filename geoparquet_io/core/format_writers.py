@@ -417,7 +417,9 @@ def write_geojson(
     Automatically reprojects to WGS84 unless keep_crs is True.
 
     Args:
-        input_path: Path to input GeoParquet file
+        input_path: Path to input GeoParquet file, or "-" to read an Arrow
+            IPC stream from stdin (the FeatureCollection is still written
+            to output_path)
         output_path: Path to output GeoJSON file (must be local)
         precision: Coordinate decimal precision (default: 7)
         write_bbox: Include bbox property for features (default: False)

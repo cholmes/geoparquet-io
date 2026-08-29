@@ -207,9 +207,10 @@ def test_journey_04_stdout_format_bridge(tmp_path):
     # Shape taken from piping.md's "Supported Commands" table, which records
     # `convert geojson` as stdin-capable but stdout-only ("No (outputs GeoJSON
     # to stdout)"); the redirect is this test's own, not a quoted example.
-    # `convert geojson -` reads stdin only in that streaming mode: passing an
-    # OUTPUT argument alongside `-` fails with a misleading "File not found: -"
-    # (error-message bug #723), so the bridge is a redirect.
+    # The redirect is what makes this a *streaming* bridge: it is the GeoJSONSeq
+    # record-separator stream that the assertions below check. `convert geojson
+    # - out.geojson` also works now (#723) but writes a FeatureCollection, which
+    # would not exercise this path; tests/test_pipe_integration.py covers it.
     run_pipeline(
         [
             f"gpio add bbox --force {q(PLACES)} -",
