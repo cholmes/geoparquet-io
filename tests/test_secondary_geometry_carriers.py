@@ -106,7 +106,25 @@ def _carriers(path: str) -> dict[str, str]:
 
 
 def _failed_checks(path: str) -> list[str]:
-    return sorted({c.name for c in validate_geoparquet(path).checks if c.status.value == "failed"})
+    """Validator failures, minus the one Windows fails for a platform reason.
+
+    On win32 `native_geo_stats_contains_data_*` reports every geometry as
+    outside its own column's geospatial statistics, for any native GEOMETRY
+    column written by any code path (#721, #748). The identical write produces a
+    clean result on macOS and Linux, and uv.lock pins the same versions
+    everywhere, so it is a platform read/write gap rather than anything the
+    carrier decision here touches. `tests/test_geoparquet_versions.py` and
+    `tests/test_streaming_write_determinism.py` excuse it the same way.
+
+    Excused by name and only on win32: every other check stays enforced
+    everywhere, which skipping the affected tests would not have preserved.
+    """
+    failed = sorted(
+        {c.name for c in validate_geoparquet(path).checks if c.status.value == "failed"}
+    )
+    if sys.platform == "win32":
+        failed = [f for f in failed if not f.startswith("native_geo_stats_contains_data")]
+    return failed
 
 
 def _write_via_query(source: str, out: str, version: str, strategy: str) -> None:
@@ -335,3 +353,97 @@ class TestResolveGeometryColumns:
     def test_tolerates_empty_inputs(self):
         assert resolve_geometry_columns("geometry", {}, {}) == {"geometry"}
         assert resolve_geometry_columns("geometry", {"secondary": None}, None) == {"geometry"}
+
+
+class TestCarrierHelperDefensivePaths:
+    """The error and empty-input branches of the helpers this PR adds or fixes."""
+
+    def test_parse_geo_metadata_quietly_handles_every_absent_shape(self):
+        from geoparquet_io.core.common import _parse_geo_metadata_quietly
+
+        assert _parse_geo_metadata_quietly(None) == {}
+        assert _parse_geo_metadata_quietly({}) == {}
+        assert _parse_geo_metadata_quietly({b"other": b"x"}) == {}
+
+    def test_parse_geo_metadata_quietly_accepts_a_str_key(self):
+        from geoparquet_io.core.common import _parse_geo_metadata_quietly
+
+        assert _parse_geo_metadata_quietly({"geo": json.dumps(_geo_dict())})["primary_column"] == (
+            "geometry"
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [b"{not json", b"\xff\xfe not utf8", b'"a string, not an object"', b"[1, 2]"],
+        ids=["bad_json", "bad_utf8", "json_string", "json_list"],
+    )
+    def test_parse_geo_metadata_quietly_swallows_unreadable_values(self, raw):
+        """An unreadable geo key must not break a write; it just names no columns."""
+        from geoparquet_io.core.common import _parse_geo_metadata_quietly
+
+        assert _parse_geo_metadata_quietly({b"geo": raw}) == {}
+
+    def test_strip_geoarrow_returns_the_table_when_conversion_fails(self, monkeypatch):
+        """A conversion failure must leave the table alone, not raise mid-write."""
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core import common
+
+        table = pa.table(
+            {"geometry": ga.as_wkb(pa.array([_wkb_point(1.0, 2.0)], type=pa.binary()))}
+        )
+        monkeypatch.setattr(
+            "geoparquet_io.core.write_strategies.arrow_streaming._to_plain_wkb_array",
+            lambda array: (_ for _ in ()).throw(ValueError("boom")),
+        )
+
+        result = common._strip_geoarrow_to_plain_wkb(table, "geometry", verbose=True)
+
+        assert result is table
+
+    def test_canonicalize_skips_a_column_it_cannot_convert(self, monkeypatch):
+        """Same contract for the field-metadata canonicalization pass."""
+        from geoparquet_io.core import common
+
+        field = pa.field(
+            "geometry", pa.large_binary(), metadata={b"ARROW:extension:name": b"geoarrow.wkb"}
+        )
+        table = pa.Table.from_arrays(
+            [pa.array([_wkb_point(1.0, 2.0)], type=pa.large_binary())],
+            schema=pa.schema([field]),
+        )
+        monkeypatch.setattr(
+            "geoparquet_io.core.write_strategies.arrow_streaming._to_plain_wkb_array",
+            lambda array: (_ for _ in ()).throw(ValueError("boom")),
+        )
+
+        result = common._canonicalize_wkb_columns(table, {"geometry"}, verbose=True)
+
+        assert result.schema.field("geometry").type == pa.large_binary()
+
+    def test_canonicalize_is_a_no_op_when_nothing_needs_changing(self):
+        from geoparquet_io.core.common import _canonicalize_wkb_columns
+
+        table = pa.table({"geometry": pa.array([_wkb_point(1.0, 2.0)], type=pa.binary())})
+
+        assert _canonicalize_wkb_columns(table, {"geometry"}) is table
+
+    def test_a_declared_column_missing_from_the_table_is_skipped(self, tmp_path):
+        """geo metadata can name a column a projection has already dropped."""
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        table = pa.table(
+            {
+                "id": [1],
+                "geometry": pa.array([_wkb_point(1.0, 2.0)], type=pa.binary()),
+            }
+        ).replace_schema_metadata({b"geo": json.dumps(_geo_dict()).encode()})
+
+        result = _apply_geoparquet_metadata(
+            table,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            geometry_info=_geometry_info(),
+        )
+
+        assert result.column_names == ["id", "geometry"]
