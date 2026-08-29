@@ -88,7 +88,7 @@ long run of write-path, metadata and CRS correctness fixes.
 
 ### Internal
 
-- **The `disk-rewrite` metadata rewrite can now merge row groups, not only split them.** It issued one `write_table` per *source* row group, and each of those starts a new group, so a `row_group_rows` request larger than the source's groups returned the source's shape. Reachable only through the helper today — the query path pre-sizes its temporary file through DuckDB's `ROW_GROUP_SIZE`, which is what masked it — and the "coarsen" direction is now pinned for all four strategies in the write-contract suite. ([#697](https://github.com/geoparquet/geoparquet-io/issues/697))
+- **The `disk-rewrite` metadata rewrite can now merge row groups, not only split them.** It issued one `write_table` per *source* row group, and each of those starts a new group, so a `row_group_rows` request larger than the source's groups returned the source's shape. Reachable only through the helper today — the query path pre-sizes its temporary file through DuckDB's `ROW_GROUP_SIZE`, which is what masked it — and the "coarsen" direction is now pinned for all four strategies in the write-contract suite. ([#697](https://github.com/geoparquet/geoparquet-io/issues/697), [#757](https://github.com/geoparquet/geoparquet-io/issues/757))
 - Reduced complexity in 6 functions from Grade E/D to Grade C
 - Comprehensive test coverage improvements
 - Plugin system documentation
