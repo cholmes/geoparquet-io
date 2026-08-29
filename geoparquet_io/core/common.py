@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
+    validate_compression_level,
 )
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
@@ -38,7 +40,9 @@ from geoparquet_io.core.file_utils import (
 from geoparquet_io.core.geo_metadata import (
     DEFAULT_GEOPARQUET_VERSION,
     GEOPARQUET_VERSIONS,
+    build_bbox_covering,
     create_geo_metadata,
+    detect_bbox_column_from_schema,
     prune_geo_metadata_to_columns,
     strip_derived_stats,
 )
@@ -1014,8 +1018,6 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
     Returns:
         str: Name of bbox column if found, None otherwise
     """
-    import pyarrow as pa
-
     from geoparquet_io.core.crs_utils import parse_geo_metadata_from_schema
 
     geo_meta = parse_geo_metadata_from_schema(table.schema.metadata)
@@ -1025,27 +1027,7 @@ def _detect_bbox_column_from_table(table, verbose: bool = False) -> str | None:
             debug(f"Found bbox column from covering metadata: {covering_column}")
         return covering_column
 
-    conventional_suffixes = ["bbox", "bounds", "extent"]
-    required_fields = {"xmin", "ymin", "xmax", "ymax"}
-
-    for field in table.schema:
-        name = field.name
-        field_type = field.type
-
-        # Check if column name ends with conventional suffixes
-        is_bbox_name = any(name.endswith(suffix) for suffix in conventional_suffixes)
-        if not is_bbox_name:
-            continue
-
-        # Check if it's a struct with the required fields
-        if pa.types.is_struct(field_type):
-            struct_field_names = {f.name for f in field_type}
-            if required_fields.issubset(struct_field_names):
-                if verbose:
-                    debug(f"Found bbox column in table: {name}")
-                return name
-
-    return None
+    return detect_bbox_column_from_schema(table.schema, verbose)
 
 
 # WKB geometry type codes to GeoParquet base names (2D types)
@@ -2178,6 +2160,7 @@ def _plain_copy_to(
     row_group_rows: int | None = None,
     input_crs: dict | None = None,
     geometry_column: str | None = None,
+    carry_geo_metadata: dict | None = None,
 ) -> None:
     """
     Execute a plain DuckDB COPY TO without geo metadata manipulation.
@@ -2199,6 +2182,12 @@ def _plain_copy_to(
         row_group_rows: Target number of rows per row group
         input_crs: PROJJSON dict with CRS information (optional)
         geometry_column: Name of the geometry column (required if input_crs is set)
+        carry_geo_metadata: A `geo` block to write verbatim instead of the one
+            DuckDB would generate. Used to preserve a `covering` the input
+            declared, which DuckDB's own generated metadata does not include.
+            Supplying it alongside GEOPARQUET_VERSION 'V2' keeps the native
+            GEOMETRY logical type and its geospatial statistics — only the KV
+            entry is replaced.
     """
     compression_map = {
         "zstd": "ZSTD",
@@ -2227,11 +2216,15 @@ def _plain_copy_to(
         f"COMPRESSION {duckdb_compression}",
         f"GEOPARQUET_VERSION '{duckdb_version}'",
     ]
-    # Only add compression level for codecs that support it (ZSTD, GZIP, BROTLI)
-    if compression_level is not None and duckdb_compression in ("ZSTD", "GZIP", "BROTLI"):
-        options.append(f"COMPRESSION_LEVEL {compression_level}")
+    # DuckDB accepts COMPRESSION_LEVEL for ZSTD only; pairing it with GZIP or
+    # BROTLI is a binder error, not a silently ignored option.
+    if compression_level is not None and duckdb_compression.upper() == "ZSTD":
+        options.append(f"COMPRESSION_LEVEL {validate_compression_level(compression_level)}")
     if row_group_rows is not None:
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
+    if carry_geo_metadata is not None:
+        geo_json = _escape_sql_string(json.dumps(carry_geo_metadata))
+        options.append(f"KV_METADATA {{'geo': '{geo_json}'}}")
 
     copy_query = f"""
         COPY ({final_query})
@@ -2359,6 +2352,59 @@ def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict
     if verbose and preserved:
         debug(f"Preserving input KV metadata keys: {sorted(preserved)}")
     return preserved
+
+
+# Fields a carried `geo` block must still have for the 2.0 fast path to be able
+# to write it verbatim. When a caller invalidated the derived stats (reproject,
+# a row filter, a multi-file merge) they are stripped, and only the rewrite path
+# can recompute them — so we fall back to it rather than ship a thinner block
+# than DuckDB would have generated.
+_REQUIRED_CARRIED_GEO_FIELDS = ("encoding", "geometry_types")
+
+
+def _covering_to_carry_on_fast_path(
+    original_metadata: dict | None,
+    geometry_column: str | None,
+    effective_version: str,
+) -> dict | None:
+    """The `geo` block the 2.0 fast path must write to keep a declared covering.
+
+    DuckDB regenerates the `geo` key on the fast path and its generated block
+    has no `covering`, so a covering the input declared is silently dropped
+    (#738). Returning the carried block here lets `_plain_copy_to` write it
+    verbatim, keeping the fast path's write configuration intact — forcing the
+    rewrite instead would clamp threads and memory, drop `--compression-level`,
+    and can add a full stats rescan.
+
+    Returns None when nothing needs carrying, when the version is not 2.0 (1.x
+    already rewrites), or when the carried block is too thin to stand in for
+    DuckDB's — the caller then keeps its existing behaviour.
+
+    A covering is only ever taken from the input's own metadata: it asserts a
+    relationship between a bbox column and the geometry that gpio cannot verify
+    from a column name, and a covering pointing at unrelated values makes
+    readers prune away rows that genuinely match.
+    """
+    from geoparquet_io.core.geo_metadata import _decode_geo_value
+
+    if effective_version != "2.0" or not geometry_column or not original_metadata:
+        return None
+
+    for geo_key in ("geo", b"geo"):
+        if geo_key not in original_metadata:
+            continue
+        geo_dict = _decode_geo_value(original_metadata[geo_key])
+        if not geo_dict:
+            return None
+        col_meta = (geo_dict.get("columns") or {}).get(geometry_column)
+        if not isinstance(col_meta, dict) or not col_meta.get("covering"):
+            return None
+        if any(field not in col_meta for field in _REQUIRED_CARRIED_GEO_FIELDS):
+            return None
+        carried = copy.deepcopy(geo_dict)
+        carried["version"] = "2.0.0"
+        return carried
+    return None
 
 
 def write_parquet_with_metadata(
@@ -2524,6 +2570,9 @@ def write_parquet_with_metadata(
                 geoparquet_version=effective_version,
                 input_crs=input_crs,
                 geometry_column=geometry_column,
+                carry_geo_metadata=_covering_to_carry_on_fast_path(
+                    original_metadata, geometry_column, effective_version
+                ),
             )
         else:
             # Metadata rewrite needed - use strategy pattern
@@ -2908,13 +2957,19 @@ def _find_bbox_column_in_schema(schema_info, verbose):
     return None
 
 
-def _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose):
+def _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose, bbox_column_name=None):
     """Check if geo metadata contains proper bbox covering.
 
     Args:
         geo_meta: Parsed geo metadata dict (from get_geo_metadata())
         has_bbox_column: Whether a bbox column was found in schema
         verbose: Whether to print verbose output
+        bbox_column_name: The bbox column actually present in the file. A
+            covering only counts as declaring *this* file's bbox column when it
+            names it; a covering pointing at some other (or absent) column is a
+            dangling reference, and treating it as "declared" let a broken file
+            pass `check` while the success message named a different column
+            entirely (#738).
     """
     if not (geo_meta and has_bbox_column):
         return False
@@ -2935,6 +2990,14 @@ def _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose):
                     and all(isinstance(ref, list) and len(ref) == 2 for ref in bbox_refs.values())
                 ):
                     referenced_bbox_column = bbox_refs["xmin"][0]
+                    if bbox_column_name is not None and referenced_bbox_column != bbox_column_name:
+                        if verbose:
+                            debug(
+                                f"Covering references column '{referenced_bbox_column}', "
+                                f"but the file's bbox column is '{bbox_column_name}' - "
+                                "treating the bbox column as undeclared"
+                            )
+                        continue
                     if verbose:
                         debug(
                             f"Found bbox covering in metadata referencing column: {referenced_bbox_column}"
@@ -3008,7 +3071,9 @@ def check_bbox_structure(parquet_file, verbose=False) -> BboxInfo:
     has_bbox_column = bbox_column_name is not None
 
     # Check for bbox covering in the geo metadata
-    has_bbox_metadata = _check_bbox_metadata_covering(geo_meta, has_bbox_column, verbose)
+    has_bbox_metadata = _check_bbox_metadata_covering(
+        geo_meta, has_bbox_column, verbose, bbox_column_name
+    )
 
     # Determine status and message
     status, message = _determine_bbox_status(has_bbox_column, bbox_column_name, has_bbox_metadata)
@@ -3455,6 +3520,14 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
 
     try:
         # Use add_computed_column to write to temp file
+        # Declare the covering explicitly rather than leaving a writer to infer
+        # it from the column's name. gpio computed this column from the geometry
+        # in this same statement, so the assertion "these values bound that
+        # geometry" is one we can actually make here -- and nowhere else (#738).
+        # `custom_metadata` is the existing route for that, and it is already
+        # version-gated: strip_unsupported_covering drops the key for 1.0 output.
+        bbox_covering = {"covering": {"bbox": build_bbox_covering(bbox_column_name)}}
+
         add_computed_column(
             input_parquet=parquet_file,
             output_parquet=temp_file,
@@ -3468,6 +3541,7 @@ def add_bbox(parquet_file, bbox_column_name="bbox", verbose=False):
             row_group_size_mb=None,
             row_group_rows=None,
             dry_run_description=None,
+            custom_metadata=bbox_covering,
         )
 
         # Replace original file with updated file

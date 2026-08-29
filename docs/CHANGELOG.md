@@ -685,6 +685,59 @@ This is the first beta release of geoparquet-io 1.0, featuring major new spatial
   are is the single `_CARRIED_SCHEMA_METADATA_KEYS` constant the
   parquet-geo-only path already uses, not a second copy of the same list.
 
+- **GeoParquet 2.0 output no longer drops the `bbox` covering (#738).** A 2.0
+  write whose input was already 2.x took a fast path that let DuckDB regenerate
+  the `geo` key from scratch, discarding every `covering` entry. So
+  `gpio sort hilbert --add-bbox` on a 2.0 file wrote the bbox column, reported
+  success, and declared nothing — bytes on disk no reader could use — and any
+  2.0→2.0 operation silently stripped a covering the input carried. The fast
+  path now writes the input's own `geo` block verbatim when it declares a
+  covering, alongside DuckDB's native geo types: the covering survives, and so
+  do the native GEOMETRY logical type and its geospatial statistics, with no
+  change to threads, memory or `--compression-level`.
+  `gpio sort hilbert --add-bbox` is fixed at its actual source — it read the
+  metadata of the *original* input while the query read the working copy that
+  `add_bbox` had just extended with the covering.
+
+  A covering is written only where gpio can stand behind the claim: for a bbox
+  column it computed from the geometry in that same statement, for one the
+  input's own metadata already declared, or for a carried conventional `bbox`
+  struct column — the shape every GeoParquet 1.0 writer emitted before
+  `covering` existed, which is what lets a 1.0 → 1.1 upgrade declare it. Any
+  other name is left undeclared. A `covering` asserts that a column's values
+  bound the geometry, and one pointing at unrelated values makes readers prune
+  away rows that genuinely match, which is worse than declaring nothing:
+  matching *anything* ending in `bbox`/`bounds`/`extent` had let an unrelated
+  `tile_bounds` column become a geometry's declared covering. `gpio check`
+  flags an undeclared bbox column and points at `gpio add bbox-metadata`, where
+  that assertion is made deliberately.
+
+  `compression_level` is validated (integer, 1–22) before it reaches SQL:
+  the CLI constrains it with `IntRange`, but `write_parquet_with_metadata` and
+  the write strategies are public entry points a Python caller reaches directly,
+  where nothing had checked it.
+
+  `gpio check` now accepts a *declared* bbox covering on a 2.0 file instead of
+  flagging it and offering to delete it, and `--fix` only removes undeclared
+  columns, so a legitimate covering is never deleted. A covering is only counted
+  as declaring the file's bbox column when it actually names it — a covering
+  pointing at a missing column used to pass `check` while the success message
+  named a different column entirely. `gpio check spec` now runs its four
+  covering checks at 1.1 *and* 2.0; they were gated "1.1 only", so gpio
+  validated a dangling covering at 1.1 and waved the identical file through at
+  2.0. `gpio sort hilbert` no longer advises "consider `--geoparquet-version
+  2.0`" when auto mode is already writing 2.0, and stays silent rather than
+  guessing when the version cannot be established (a stdin stream, or an input
+  that will not open — a failed read is not evidence of a 1.1 input).
+
+  `covering` is not part of the GeoParquet 2.0 specification text: it was
+  introduced in 1.1 and removed in 2.0 in favour of the native statistics.
+  2.0 readers must tolerate unknown fields, so carrying one stays legal, and
+  [geoparquet#302](https://github.com/opengeospatial/geoparquet/pull/302)
+  proposes reinstating it as an option (open at time of writing). The
+  motivation holds either way: native statistics prune whole row groups, while
+  a bbox column's page index also prunes pages within one.
+
 - **Six internal DuckDB connections now route through the shared connection
   factory.** `benchmark_duckdb`, `get_file_info`, `wkb_to_wkt_preview`,
   `get_column_statistics`, `add country-codes`'s connection setup, and the

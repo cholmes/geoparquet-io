@@ -752,15 +752,57 @@ def _detect_version_from_table(table: pa.Table, verbose: bool = False) -> str | 
         return None
 
 
-def _detect_bbox_column_from_table(table: pa.Table, verbose: bool = False) -> str | None:
-    """
-    Detect bbox struct column from Arrow table schema.
+# What makes a column a bbox covering column: a conventional name, and the
+# struct fields GeoParquet's "Bounding Box Columns" requires.
+#
+# The name rule is deliberately conservative — exact `bbox`/`bounds`/`extent`,
+# or an explicit `_bbox` suffix. A bare `endswith(("bbox","bounds","extent"))`
+# also swallows unrelated columns like `tile_bounds` or `parcel_extent`, and a
+# `covering` is an assertion that those values bound the geometry. gpio cannot
+# verify that from a name, and a covering pointing at unrelated values makes
+# readers prune away rows that genuinely match — strictly worse than declaring
+# nothing (#738).
+_BBOX_COLUMN_NAMES = frozenset({"bbox", "bounds", "extent"})
+_BBOX_COLUMN_SUFFIXES = ("_bbox",)
+_BBOX_STRUCT_FIELDS = frozenset({"xmin", "ymin", "xmax", "ymax"})
 
-    Looks for columns with conventional names (bbox, bounds, extent) that have
-    the required struct fields (xmin, ymin, xmax, ymax).
+
+def build_bbox_covering(column: str) -> dict:
+    """The ``covering.bbox`` entry describing ``column``'s four struct fields.
+
+    One constructor so every writer emits the same shape. Callers must only use
+    it for a column whose values are known to bound the geometry -- one gpio
+    computed in this write, or one the input's own metadata already declared.
+    A covering derived from a column *name* asserts a relationship nothing
+    checked, and readers prune on it (#738).
+    """
+    return {axis: [column, axis] for axis in ("xmin", "ymin", "xmax", "ymax")}
+
+
+def _is_bbox_column_name(name: str) -> bool:
+    """Whether ``name`` conventionally denotes a bbox covering column."""
+    return name in _BBOX_COLUMN_NAMES or name.endswith(_BBOX_COLUMN_SUFFIXES)
+
+
+def detect_bbox_column_from_schema(schema: pa.Schema, verbose: bool = False) -> str | None:
+    """
+    Detect a bbox covering column in an Arrow schema.
+
+    Looks for a column with a conventional name (see ``_is_bbox_column_name``)
+    that is a struct carrying the required xmin/ymin/xmax/ymax fields.
+
+    Shared by every writer so that where a covering *is* written, the entry and
+    the column it names cannot disagree. It is deliberately not used to decide
+    *whether* to declare a covering: that requires knowing the values bound the
+    geometry, which only the input's own metadata or a gpio-computed column can
+    establish.
+
+    When several columns qualify, an exact ``bbox`` wins — it is the name gpio
+    itself writes, so preferring it avoids picking some other file's
+    ``centroid_bbox`` over the geometry's real envelope.
 
     Args:
-        table: PyArrow Table to check
+        schema: PyArrow Schema to check
         verbose: Whether to print verbose output
 
     Returns:
@@ -768,27 +810,31 @@ def _detect_bbox_column_from_table(table: pa.Table, verbose: bool = False) -> st
     """
     import pyarrow as pa
 
-    conventional_suffixes = ["bbox", "bounds", "extent"]
-    required_fields = {"xmin", "ymin", "xmax", "ymax"}
+    matches = [
+        field.name
+        for field in schema
+        if _is_bbox_column_name(field.name)
+        and pa.types.is_struct(field.type)
+        and _BBOX_STRUCT_FIELDS.issubset({f.name for f in field.type})
+    ]
+    if not matches:
+        return None
 
-    for field in table.schema:
-        name = field.name
-        field_type = field.type
+    name = "bbox" if "bbox" in matches else matches[0]
+    if verbose:
+        debug(f"Found bbox column in table: {name}")
+    return name
 
-        # Check if column name ends with conventional suffixes
-        is_bbox_name = any(name.endswith(suffix) for suffix in conventional_suffixes)
-        if not is_bbox_name:
-            continue
 
-        # Check if it's a struct with the required fields
-        if pa.types.is_struct(field_type):
-            struct_field_names = {f.name for f in field_type}
-            if required_fields.issubset(struct_field_names):
-                if verbose:
-                    debug(f"Found bbox column in table: {name}")
-                return name
+def _detect_bbox_column_by_convention(table: pa.Table, verbose: bool = False) -> str | None:
+    """Detect a bbox struct column from an Arrow table's schema, by name convention only.
 
-    return None
+    Distinct from ``common._detect_bbox_column_from_table``, which consults the
+    table's ``covering`` metadata first and only falls back to the convention.
+    The two answer different questions and used to share a name, which is a
+    trap when both are imported from sibling modules.
+    """
+    return detect_bbox_column_from_schema(table.schema, verbose)
 
 
 # =============================================================================
@@ -1105,7 +1151,7 @@ def _apply_geoparquet_metadata(
         return table
 
     # Detect bbox column from table schema
-    bbox_column = _detect_bbox_column_from_table(table, verbose)
+    bbox_column = _detect_bbox_column_by_convention(table, verbose)
     bbox_info = {
         "has_bbox_column": bbox_column is not None,
         "bbox_column_name": bbox_column,

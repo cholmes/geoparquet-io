@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    quote_identifier,
+    validate_compression_level,
+)
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
 from geoparquet_io.core.write_strategies.row_group_sizing import _resolve_row_group_rows
@@ -155,19 +159,12 @@ def _wrap_query_with_crs(
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
 
 
-def _detect_bbox_column_name(schema_names: list[str]) -> str | None:
-    """Detect bbox column name from schema using common naming conventions."""
-    for name in schema_names:
-        if name in ["bbox", "bounds", "extent"] or name.endswith("_bbox"):
-            return name
-    return None
-
-
 def _build_copy_options(
     compression: str,
     row_group_rows: int | None,
     geo_meta_escaped: str | None = None,
     extra_kv_metadata: dict[str, str] | None = None,
+    compression_level: int | None = None,
 ) -> list[str]:
     """Build COPY TO options list."""
     options = [
@@ -175,6 +172,13 @@ def _build_copy_options(
         f"COMPRESSION {compression}",
         "GEOPARQUET_VERSION 'NONE'",
     ]
+    # DuckDB accepts COMPRESSION_LEVEL for ZSTD only ("Compression level is only
+    # supported for the ZSTD compression codec"); naming any other codec with a
+    # level is a binder error. Omitting it entirely silently dropped the user's
+    # --compression-level and fell back to DuckDB's ZSTD default of 3 against
+    # gpio's default of 15 -- ~15% larger output on every write through here.
+    if compression_level is not None and compression.upper() == "ZSTD":
+        options.append(f"COMPRESSION_LEVEL {validate_compression_level(compression_level)}")
     kv_pairs = {}
     if geo_meta_escaped:
         kv_pairs["geo"] = geo_meta_escaped
@@ -247,7 +251,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             )
             return
 
-        self._configure_duckdb_memory(con, memory_limit, verbose)
+        saved_settings = self._configure_duckdb_memory(con, memory_limit, verbose)
 
         is_remote = is_remote_url(output_path)
         local_path = self._get_local_path(output_path, is_remote)
@@ -290,16 +294,63 @@ class DuckDBKVStrategy(BaseWriteStrategy):
                 upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
 
         finally:
+            self._restore_duckdb_settings(con, saved_settings, verbose)
             if is_remote and Path(local_path).exists():
                 Path(local_path).unlink()
+
+    #: Session settings this strategy overrides for the duration of one write.
+    _MANAGED_SETTINGS = ("threads", "preserve_insertion_order", "memory_limit")
+
+    def _restore_duckdb_settings(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        saved: dict[str, object],
+        verbose: bool,
+    ) -> None:
+        """Put back the session settings this strategy clamped.
+
+        The connection belongs to the caller, not to this write. Leaving
+        threads=1 and a halved memory_limit behind meant one write pinned every
+        later query on that connection -- partition loops finalize N files on a
+        shared connection, so the first partition throttled the whole run, and
+        the Python API holds a connection across operations.
+        """
+        for key, value in saved.items():
+            try:
+                if isinstance(value, str):
+                    con.execute(f"SET {key} = '{_escape_sql_string(value)}'")
+                else:
+                    con.execute(f"SET {key} = {value}")
+                # DuckDB reports sizes as rounded display strings ("14.3 GiB"),
+                # so writing one back can land a hair off and drift further on
+                # every write in a partition loop. A value that will not
+                # round-trip was the engine's own default, so ask for that
+                # instead of an approximation of it.
+                if con.execute(f"SELECT current_setting('{key}')").fetchone()[0] != value:
+                    con.execute(f"RESET {key}")
+            except duckdb.Error as e:  # pragma: no cover - defensive
+                if verbose:
+                    debug(f"Could not restore DuckDB setting {key}: {e}")
 
     def _configure_duckdb_memory(
         self,
         con: duckdb.DuckDBPyConnection,
         memory_limit: str | None,
         verbose: bool,
-    ) -> None:
-        """Configure DuckDB memory settings for streaming."""
+    ) -> dict[str, object]:
+        """Configure DuckDB memory settings for streaming.
+
+        Returns the prior values so the caller can restore them; see
+        ``_restore_duckdb_settings``.
+        """
+        saved: dict[str, object] = {}
+        for key in self._MANAGED_SETTINGS:
+            try:
+                saved[key] = con.execute(f"SELECT current_setting('{key}')").fetchone()[0]
+            except duckdb.Error as e:  # pragma: no cover - defensive
+                if verbose:
+                    debug(f"Could not read DuckDB setting {key}: {e}")
+
         con.execute("SET threads = 1")  # Required for memory control (DuckDB #8270)
         # Let COPY TO parquet flush row groups to disk instead of buffering the
         # entire result to preserve order. Without this the writer holds the whole
@@ -313,6 +364,59 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         con.execute(f"SET memory_limit = '{effective_limit}'")
         if verbose:
             debug(f"DuckDB memory limit: {effective_limit}")
+        return saved
+
+    #: The only column name a writer will treat as self-evidently the geometry's
+    #: bounding box. `covering` asserts that a column's values bound the
+    #: geometry, and a name is weak evidence -- but `bbox`, as a struct of
+    #: xmin/ymin/xmax/ymax, is the universal GeoParquet convention and is what
+    #: every 1.0-era writer emitted before `covering` existed. Broader matching
+    #: (`bounds`, `extent`, `*_bbox`) let an unrelated `tile_bounds` column
+    #: become the declared covering, so readers pruned away rows that genuinely
+    #: matched; those names now require explicit provenance (#738).
+    _SELF_EVIDENT_BBOX_COLUMN = "bbox"
+
+    def _declare_carried_bbox_column(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        query: str,
+        col_meta: dict,
+        verbose: bool,
+        geoparquet_version: str,
+    ) -> None:
+        """Declare a conventional ``bbox`` column the output carries but nothing declared.
+
+        This is the 1.0 -> 1.1 upgrade path: a 1.0 file cannot declare a
+        covering, so its bbox column arrives undeclared and would otherwise stay
+        that way forever. Callers that *computed* a bbox column, or read a
+        covering from the input, supply it through ``custom_metadata`` instead
+        and never reach the branch below.
+        """
+        import pyarrow as pa
+
+        from geoparquet_io.core.geo_metadata import build_bbox_covering, covering_supported
+
+        if not covering_supported(geoparquet_version):
+            if verbose:
+                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+            return
+        # Never override a covering that arrived with provenance.
+        if isinstance(col_meta.get("covering"), dict) and "bbox" in col_meta["covering"]:
+            return
+
+        name = self._SELF_EVIDENT_BBOX_COLUMN
+        schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
+        if name not in schema.names:
+            return
+        field = schema.field(name)
+        if not pa.types.is_struct(field.type):
+            return
+        if not {"xmin", "ymin", "xmax", "ymax"}.issubset({f.name for f in field.type}):
+            return
+
+        col_meta.setdefault("covering", {})["bbox"] = build_bbox_covering(name)
+        if verbose:
+            debug(f"Declared the carried conventional bbox column '{name}'")
 
     def _get_local_path(self, output_path: str, is_remote: bool) -> str:
         """Get local path for writing (temp file if remote)."""
@@ -347,7 +451,10 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         escaped_path = _escape_sql_string(local_path)
 
         copy_options = _build_copy_options(
-            compression, row_group_rows, extra_kv_metadata=extra_kv_metadata
+            compression,
+            row_group_rows,
+            extra_kv_metadata=extra_kv_metadata,
+            compression_level=compression_level,
         )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
         con.execute(copy_query)
@@ -388,7 +495,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         col_meta = geo_meta["columns"][geometry_column]
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
-        self._add_bbox_covering_if_present(con, query, col_meta, verbose, geoparquet_version)
+        self._declare_carried_bbox_column(con, query, col_meta, verbose, geoparquet_version)
 
         # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB.
         # For v2.0: Keep native GEOMETRY type with CRS — DuckDB writes native
@@ -402,7 +509,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         geo_meta_escaped = _escape_sql_string(json.dumps(geo_meta))
 
         copy_options = _build_copy_options(
-            compression, row_group_rows, geo_meta_escaped, extra_kv_metadata
+            compression, row_group_rows, geo_meta_escaped, extra_kv_metadata, compression_level
         )
         copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
 
@@ -447,40 +554,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             col_meta["bbox"] = bbox
         if need_types:
             col_meta["geometry_types"] = geometry_types
-
-    def _add_bbox_covering_if_present(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        query: str,
-        col_meta: dict,
-        verbose: bool,
-        geoparquet_version: str,
-    ) -> None:
-        """Add bbox covering metadata if a bbox column is present and the version allows it.
-
-        The bbox column is still written for 1.0 — only the 'covering' key is 1.1+.
-        """
-        from geoparquet_io.core.geo_metadata import covering_supported
-
-        if not covering_supported(geoparquet_version):
-            if verbose:
-                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
-            return
-
-        schema_result = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow()
-        bbox_col_name = _detect_bbox_column_name(schema_result.schema.names)
-
-        if bbox_col_name:
-            col_meta["covering"] = {
-                "bbox": {
-                    "xmin": [bbox_col_name, "xmin"],
-                    "ymin": [bbox_col_name, "ymin"],
-                    "xmax": [bbox_col_name, "xmax"],
-                    "ymax": [bbox_col_name, "ymax"],
-                }
-            }
-            if verbose:
-                debug(f"Added bbox covering metadata for column '{bbox_col_name}'")
 
     def write_from_table(
         self,

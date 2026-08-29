@@ -665,7 +665,7 @@ def _check_version_known(geo_meta: dict) -> ValidationCheck:
 
 
 def _columns_declaring_covering(geo_meta: dict) -> list[str]:
-    """Names of geometry columns whose metadata declares the 1.1-only 'covering' key."""
+    """Names of geometry columns whose metadata declares the 'covering' key (added in 1.1)."""
     return sorted(
         name
         for name, col in (geo_meta.get("columns") or {}).items()
@@ -3584,8 +3584,14 @@ def _run_geoparquet_checks(
 
     # Version-specific checks
     # GeoParquet 1.1 checks - covering was removed in 2.0, so only run for 1.x
-    is_v1_1 = _version_at_least(geo_version, 1, 1) and not _version_at_least(geo_version, 2, 0)
-    if is_v1_1:
+    # `covering` was introduced in 1.1 and is not part of the 2.0 spec text, but
+    # 2.0 readers must tolerate unknown fields -- so a 2.0 file may still carry
+    # one. Where it does, it has to be *correct*: a covering naming a column that
+    # does not exist makes readers prune away rows that genuinely match. Gating
+    # these checks at "1.1 only" meant gpio validated coverings at 1.1 and
+    # skipped the identical defect at 2.0 (#738).
+    covering_checks_apply = _version_at_least(geo_version, 1, 1)
+    if covering_checks_apply:
         for col_name, col_meta in columns.items():
             checks.append(_check_covering_is_object(col_meta, col_name))
 

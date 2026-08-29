@@ -36,6 +36,7 @@ from geoparquet_io.core.file_utils import (
     safe_file_url,
     validate_output_path,
 )
+from geoparquet_io.core.geo_metadata import build_bbox_covering
 from geoparquet_io.core.geometry_repair import (
     repair_arrow_table_geometry,
     repair_query_geometry,
@@ -1047,7 +1048,7 @@ def _convert_csv_path(
         con, input_file, delimiter, wkt_column, lat_column, lon_column, verbose
     )
     if geom_info is None:
-        return None
+        return None, None
 
     # Validate geometry
     if geom_info["type"] == "wkt":
@@ -1103,7 +1104,10 @@ def _convert_csv_path(
         con.execute(f"CREATE OR REPLACE TEMP TABLE _gpio_csv_parsed AS {query}")
         query = "SELECT * FROM _gpio_csv_parsed"
 
-    return query
+    # The bbox column, when written, is computed from the geometry right here,
+    # so this path can vouch for it. Report it rather than leaving a writer to
+    # infer a covering from the column's name (#738).
+    return query, (None if skip_bbox else "bbox")
 
 
 def _bounds_with_curve_fallback(
@@ -1192,7 +1196,7 @@ def _convert_spatial_path(
         }
 
     if geom_column is None:
-        return None, None
+        return None, None, None
 
     # Curved geometries cannot pass through the ST_Read-based query below;
     # detected up front (GPKG pre-scan, issue #643) they are read once via
@@ -1219,6 +1223,7 @@ def _convert_spatial_path(
     # Check for existing bbox column if input is parquet
     existing_bbox_col = None
     preserve_existing_bbox = False
+    bbox_info = {"has_bbox_metadata": False}
     if is_parquet:
         bbox_info = check_bbox_structure(input_file, verbose=False)
         if bbox_info["has_bbox_column"]:
@@ -1284,7 +1289,18 @@ def _convert_spatial_path(
         table_expr=table_expr,
     )
 
-    return query, geom_info
+    # Provenance for the covering. Two things justify declaring one: gpio
+    # computed the column from the geometry in this query, or the input's own
+    # metadata already declared it for the column being preserved. A column that
+    # merely looks like a bbox justifies nothing (#738).
+    if skip_bbox:
+        bbox_covering_column = None
+    elif preserve_existing_bbox:
+        bbox_covering_column = existing_bbox_col if bbox_info["has_bbox_metadata"] else None
+    else:
+        bbox_covering_column = "bbox"
+
+    return query, geom_info, bbox_covering_column
 
 
 def read_spatial_to_arrow(
@@ -1962,7 +1978,7 @@ def convert_to_geoparquet(
         )
 
         if is_csv:
-            query = _convert_csv_path(
+            query, bbox_covering_column = _convert_csv_path(
                 con,
                 input_url,
                 delimiter,
@@ -1977,7 +1993,7 @@ def convert_to_geoparquet(
             )
             geometry_info = None
         else:
-            query, geometry_info = _convert_spatial_path(
+            query, geometry_info, bbox_covering_column = _convert_spatial_path(
                 con,
                 input_url,
                 skip_hilbert,
@@ -2034,11 +2050,22 @@ def convert_to_geoparquet(
         # from the converted data, never copied.
         preserved_kv = read_preserved_kv_metadata(input_file, verbose) if is_parquet else {}
 
+        # A covering is declared only for a column this conversion computed, or
+        # one the input's metadata already declared -- never inferred from a
+        # column name by the writer. strip_unsupported_covering drops the key
+        # for 1.0 output, and 2.0/parquet-geo-only carry no bbox column at all.
+        custom_metadata = (
+            {"covering": {"bbox": build_bbox_covering(bbox_covering_column)}}
+            if has_geometry and bbox_covering_column
+            else None
+        )
+
         write_parquet_with_metadata(
             con,
             query,
             output_file,
             original_metadata=None,
+            custom_metadata=custom_metadata,
             extra_kv_metadata=preserved_kv or None,
             compression=compression,
             compression_level=compression_level,

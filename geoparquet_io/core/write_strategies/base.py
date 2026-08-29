@@ -92,10 +92,22 @@ def build_geo_metadata(
     # value carried from the source) when the output is the spec default.
     apply_output_crs(col_meta, input_crs)
 
-    # Merge custom metadata into geometry column
+    # Merge custom metadata into geometry column.
+    #
+    # `covering` is merged one entry deep rather than replaced: it holds one
+    # entry per covering kind (bbox, h3, s2, a5, quadkey), and callers supply
+    # only the one they just produced. Replacing the dict made `gpio sort
+    # quadkey` destroy the bbox covering its input declared while adding its own
+    # (#738). Individual entries still win, so a caller can correct one.
     if custom_metadata:
         for key, value in custom_metadata.items():
-            col_meta[key] = value
+            if key == "covering" and isinstance(value, dict):
+                existing = col_meta.get("covering")
+                col_meta["covering"] = (
+                    {**existing, **value} if isinstance(existing, dict) else dict(value)
+                )
+            else:
+                col_meta[key] = value
 
     # Handle secondary geometry columns from geometry_info
     if geometry_info:
