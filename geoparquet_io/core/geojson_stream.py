@@ -157,6 +157,10 @@ def _build_feature_query(
     Returns:
         SQL query string
     """
+    # Interpolated into SQL below. The CLI declares --precision as an int, but
+    # the Python API takes it from a free-form format_options dict, so coerce
+    # rather than trust it.
+    precision = int(precision)
     quoted_geom = quote_identifier(geometry_column)
 
     # Reproject first, in a subquery, so everything below sees the geometry in
@@ -199,38 +203,49 @@ def _build_feature_query(
     else:
         props_expr = "'{}'"
 
-    # Build id expression if specified
-    id_expr = ""
+    # Optional members are whole expressions, joined into the `||` chain below
+    # rather than carrying their own trailing separator. A fragment that ended
+    # in a bare comma is what split the SELECT into several columns and
+    # truncated every Feature (#726).
+    fragments = ['\'{"type":"Feature",\'']
+
+    # DuckDB's `||` yields NULL if any operand is NULL, which would null the
+    # whole Feature string and abort the conversion when the writer tried to
+    # parse it. Both optional members can go NULL on perfectly ordinary input,
+    # so each is wrapped to degrade to "member omitted" instead.
     if id_field:
         quoted_id = quote_identifier(id_field)
-        # Ends in `||`, not a bare comma: this fragment is spliced into a
-        # concatenation chain, and a trailing comma would separate SELECT items
-        # instead of landing in the JSON, truncating every Feature (#726).
-        id_expr = f"'\"id\":' || to_json({quoted_id}) || ',' ||"
+        # to_json() of a NULL id is NULL. Omitting the member is also what
+        # RFC 7946 wants -- `id` must be a string or a number, never null.
+        fragments.append(f"""COALESCE('"id":' || to_json({quoted_id}) || ',', '')""")
 
-    # Build bbox expression if requested (use reprojected geometry)
-    # Bbox coordinates honor the precision parameter via ROUND()
-    bbox_expr = ""
+    # Bbox coordinates honor the precision parameter via ROUND().
     if write_bbox:
-        bbox_expr = (
-            f"'\"bbox\":[' || "
+        # ST_XMin of an EMPTY geometry is NULL, and EMPTY passes the
+        # `IS NOT NULL` filter below -- ST_ReducePrecision and ST_MakeValid can
+        # both produce it from valid input, so this is reachable without a
+        # malformed file.
+        fragments.append(
+            f"""COALESCE('"bbox":[' || """
             f"ROUND(ST_XMin({geom_for_output}), {precision}) || ',' || "
             f"ROUND(ST_YMin({geom_for_output}), {precision}) || ',' || "
             f"ROUND(ST_XMax({geom_for_output}), {precision}) || ',' || "
-            f"ROUND(ST_YMax({geom_for_output}), {precision}) || '],' ||"
+            f"""ROUND(ST_YMax({geom_for_output}), {precision}) || '],', '')"""
         )
 
+    fragments += [
+        "'\"geometry\":'",
+        f"COALESCE({geom_expr}, 'null')",
+        "',\"properties\":'",
+        props_expr,
+        "'}'",
+    ]
+
     # Build complete Feature JSON using string concatenation
+    joined = " ||\n            ".join(fragments)
     query = f"""
         SELECT
-            '{{\"type\":\"Feature\",' ||
-            {id_expr}
-            {bbox_expr}
-            '\"geometry\":' ||
-            COALESCE({geom_expr}, 'null') ||
-            ',\"properties\":' ||
-            {props_expr} ||
-            '}}' AS feature
+            {joined} AS feature
         FROM {source_ref}
         WHERE {quoted_geom} IS NOT NULL
     """

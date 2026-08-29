@@ -177,13 +177,15 @@ gpio convert data.parquet output.geojson --precision 5
 gpio convert data.parquet output.geojson --pretty
 ```
 
-<!-- doctest: skip="gpio convert geojson --write-bbox/--id-field crash on valid input" -->
 ```bash
 # Include bbox for each feature
 gpio convert data.parquet output.geojson --write-bbox
+```
 
+<!-- doctest: skip="uses an attribute column the sample dataset does not carry" -->
+```bash
 # Use specific field as feature ID
-gpio convert data.parquet output.geojson --id-field osm_id
+gpio convert data.parquet with-ids.geojson --id-field osm_id
 ```
 
 ### Cloud Output Support
