@@ -219,11 +219,10 @@ class TestQuadkeyColumnNameQuoting:
     def test_geo_metadata_primary_column_survives_hostile_name(self, places_file, tmp_path, name):
         """Writing a hostile-named quadkey column must not corrupt geo metadata.
 
-        This deliberately does NOT assert that the quadkey `covering` entry
-        survives: on inputs that carry a bbox column the quadkey/h3/s2/a5
-        covering is dropped before the file is written, for every column name
-        including the default. That is a separate pre-existing bug (see issue
-        #694); pin covering survival there once it is fixed.
+        The quadkey `covering` entry must reach the file under a hostile name too,
+        alongside the bbox covering derived from the input's bbox column (#694).
+        `tests/test_spatial_index_covering.py` pins that coexistence for all four
+        index commands; here it guards the quoting path specifically.
         """
         import json
 
@@ -238,6 +237,10 @@ class TestQuadkeyColumnNameQuoting:
         geo = json.loads(meta[b"geo"].decode())
         assert geo["primary_column"] == "geometry"
         assert "geometry" in geo["columns"]
+
+        covering = geo["columns"]["geometry"].get("covering", {})
+        assert covering.get("quadkey") == {"column": name, "resolution": 13}, covering
+        assert covering.get("bbox", {}).get("xmin") == ["bbox", "xmin"], covering
 
     @pytest.mark.parametrize("name", ["weird name", 'has"quote'])
     def test_table_path_hostile_name(self, places_file, name):
