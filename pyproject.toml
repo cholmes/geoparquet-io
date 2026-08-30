@@ -330,7 +330,11 @@ name = "cz_conventional_commits"
 version = "1.3.0"
 version_files = ["pyproject.toml:^version"]
 tag_format = "v$version"
-update_changelog_on_bump = true
+# Off: the changelog is generated from merged pull requests by
+# scripts/release_notes.py (see .claude/skills/release/), which writes the
+# house style. Letting cz regenerate it from commit subjects would fight that,
+# and would overwrite the reviewed section with a second, unreviewed one.
+update_changelog_on_bump = false
 changelog_file = "CHANGELOG.md"
 major_version_zero = true
 

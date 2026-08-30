@@ -210,6 +210,35 @@ Complexity guidance: guard clauses, dictionary dispatch, max 30-40 lines/functio
 **Commits**: Enforced by commitizen hook. Format: `type(scope): message`
 **PRs**: Update `docs/guide/` and `docs/api/python-api.md` if API changed.
 
+The PR title becomes the squashed commit message, and the changelog is built
+from PR titles — so write the title as the changelog entry you want, and put the
+`!` for a breaking change in the title, never only in the body.
+
+---
+
+## Releases
+
+Use the `release` skill (`.claude/skills/release/`). Do not hand-write a
+changelog section and do not run `cz bump` on its own.
+
+`CHANGELOG.md` sections are generated from the merged pull requests by
+`scripts/release_notes.py`, which asks GitHub for its own release-note list and
+groups it into Keep a Changelog sections by conventional-commit type:
+
+```bash
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0          # preview
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --write  # apply
+```
+
+One line per PR — `- <title> by @<author> in #<number>` — in this section order:
+Breaking, Added, Changed, Fixed, Documentation, Internal, Dependencies, then New
+Contributors and the Full Changelog link. Above them go two to four paragraphs of
+highlights, written by hand. Below Documentation is housekeeping a reader can skip.
+
+`update_changelog_on_bump` is off, so `cz bump` writes versions only and leaves
+the reviewed section alone. The skill stops for human review before anything is
+bumped or tagged.
+
 ---
 
 ## New Feature Checklist

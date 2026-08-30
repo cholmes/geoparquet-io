@@ -1,0 +1,137 @@
+---
+name: release
+description: Use when cutting a geoparquet-io release - builds the CHANGELOG section from merged PRs in the house style, stops for human review, then bumps, tags and posts the GitHub release notes.
+---
+
+# Releasing geoparquet-io
+
+Every release section of `CHANGELOG.md` is generated, never hand-written. It is
+GitHub's own release-note list — one line per pull request, with its author and
+number — grouped into Keep a Changelog sections, under two to four paragraphs of
+highlights that you write.
+
+**There is a mandatory human review checkpoint at step 5. Nothing is bumped,
+tagged or published before the user approves the changelog section.**
+
+## 1. Preflight
+
+```bash
+git checkout main && git pull
+gh run list --branch main --limit 5          # main must be green
+git status --short                            # must be clean
+uv run pytest -n auto -m "not slow and not network and not meta"
+```
+
+Pick the version from what merged: a `!` title or a withdrawn command means
+minor at least (this project is 1.x and pre-1.0 rules no longer apply), new
+commands mean minor, fixes alone mean patch.
+
+## 2. Generate the section
+
+```bash
+uv run python scripts/release_notes.py <version> --previous v<previous> --write
+```
+
+This replaces the `## Unreleased` block with the new section. It refuses to run
+twice for one version. Without `--write` it prints to stdout, which is the way
+to preview.
+
+## 3. Triage `### Uncategorized`
+
+Pull requests whose titles carry no conventional-commit prefix land there. Read
+each one and move it to the section it belongs in. Two rules the script cannot
+apply on its own:
+
+- **Promote to `### Breaking`** any entry that removes a command, changes a
+  default, or withdraws a capability, even when its title has no `!`. Squash
+  merges take the PR title, so a `!` written in a commit body is already lost.
+- Bot dependency bumps belong in `### Dependencies`, human dependency decisions
+  (a pin relaxed, a floor raised for a CVE) belong there too.
+
+`### Uncategorized` must be empty and its heading gone before you continue.
+
+## 4. Write the highlights
+
+Replace the `<!-- TODO ... -->` placeholder with two to four paragraphs, written
+after reading the Breaking, Added and Changed entries. Cover, in this order:
+
+1. What is newly possible — the commands and capabilities added.
+2. The theme of the fixes, named concretely, not "various bug fixes".
+3. Every breaking change, with what a user has to do about it.
+
+Do not thank contributors in the prose; `### New Contributors` is already there.
+Do not restate the entry list. Aim for what a user needs to decide whether to
+upgrade.
+
+## 5. Human review — STOP HERE
+
+Show the user the rendered section and wait for explicit approval. Say what you
+want checked:
+
+- the version number
+- the summary paragraphs
+- any entry you moved out of `### Uncategorized`, and anything you promoted to
+  `### Breaking`
+
+Do not run step 6 until the user approves. If the release ships alongside other
+work, put the changelog in that pull request and let review happen there.
+
+## 6. Bump and open the release PR
+
+`update_changelog_on_bump` is off, so `cz bump` touches versions only and leaves
+the section you just wrote alone.
+
+```bash
+git checkout -b release/v<version>
+uv run cz bump --yes                 # pyproject.toml + [tool.commitizen].version
+git push -u origin release/v<version>
+gh pr create --title "bump: version <previous> → <version>"
+```
+
+Merging that PR fires `.github/workflows/publish.yml`, which tags `v<version>`,
+publishes to PyPI, and creates the GitHub release.
+
+## 7. Post the release notes
+
+The workflow's release body is a placeholder. Replace it with the section you
+wrote, plus a link back to the changelog anchor:
+
+```bash
+python3 - <<'PY' > /tmp/notes.md
+import pathlib, re
+v = "<version>"
+t = pathlib.Path("CHANGELOG.md").read_text()
+start = t.index(f"## v{v} ")
+end = t.find("\n## ", start + 1)
+body = t[start:end].split("\n", 1)[1].strip()
+anchor = f"v{v}-" + "".join(c for c in "<date>" if c.isdigit() or c == "-")
+print(body)
+print()
+print(f"Full changelog entry: https://github.com/geoparquet/geoparquet-io/blob/main/CHANGELOG.md#{anchor}")
+PY
+
+gh release edit v<version> --notes-file /tmp/notes.md
+```
+
+The anchor GitHub gives `## v1.4.0 (2026-08-30)` is `#v140-2026-08-30`: the
+heading lowercased, dots and parentheses dropped, spaces to hyphens. Open the
+link and confirm it lands on the heading before you finish.
+
+## 8. Verify
+
+```bash
+uv run python -c "import geoparquet_io; print(geoparquet_io.__version__)"
+pip index versions geoparquet-io          # PyPI has the new version
+gh release view v<version>
+```
+
+## Conventions this skill enforces
+
+- One line per pull request: `- <title> by @<author> in #<number>`, titles kept
+  verbatim so they match the PR and the commit.
+- Sections in order: Breaking, Added, Changed, Fixed, Documentation, Internal,
+  Dependencies, then New Contributors and the Full Changelog link.
+- Housekeeping sits below the user-facing sections; a reader can stop at
+  Documentation.
+- `docs/CHANGELOG.md` is generated from the root file by the `doc-sync`
+  pre-commit hook. Never edit it.
