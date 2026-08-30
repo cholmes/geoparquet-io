@@ -24,7 +24,10 @@ from geoparquet_io.core.common import (
     get_duckdb_connection,
     get_parquet_metadata,
 )
-from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
+from geoparquet_io.core.duckdb_utils import (
+    _wrap_query_with_blob_conversion,
+    build_kv_metadata_clause,
+)
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import covering_supported, parse_geo_metadata
@@ -96,29 +99,27 @@ def _build_kv_metadata_clause(existing_metadata: dict, new_geo_meta: dict) -> st
     DuckDB's KV_METADATA replaces all metadata, so we must include all existing
     keys we want to preserve, plus the updated geo key.
 
+    The clause itself comes from the shared ``build_kv_metadata_clause()``: it
+    quotes key names as well as escaping them, where this function used to emit
+    bare keys and hand-roll ``value.replace("'", "''")``. A preserved key
+    containing ``:`` -- ``stac:collection``, or pyarrow's ``ARROW:schema`` --
+    made DuckDB's parser reject the whole COPY (#756).
+
     Args:
-        existing_metadata: Dict of existing key-value pairs
+        existing_metadata: Dict of existing key-value pairs (raw, unescaped)
         new_geo_meta: The new geo metadata dict to set
 
     Returns:
         KV_METADATA clause string for DuckDB COPY
     """
-    kv_parts = []
+    # Carry every existing key except 'geo', which this rewrite replaces.
+    pairs = {key: value for key, value in existing_metadata.items() if key != "geo"}
+    pairs["geo"] = json.dumps(new_geo_meta)
 
-    # Preserve all existing metadata except 'geo' (which we're updating)
-    for key, value in existing_metadata.items():
-        if key == "geo":
-            continue  # Skip - we'll add the updated geo below
-        # Escape single quotes for DuckDB string literals
-        escaped_value = value.replace("'", "''")
-        kv_parts.append(f"{key}: '{escaped_value}'")
-
-    # Add the new geo metadata
-    geo_json = json.dumps(new_geo_meta)
-    escaped_geo = geo_json.replace("'", "''")
-    kv_parts.append(f"geo: '{escaped_geo}'")
-
-    return f"KV_METADATA {{{', '.join(kv_parts)}}}"
+    clause = build_kv_metadata_clause(pairs)
+    # `pairs` always holds at least 'geo', so the helper never returns None.
+    assert clause is not None
+    return clause
 
 
 def require_geo_metadata_for_covering(geo_meta: object, source: str | None = None) -> dict:

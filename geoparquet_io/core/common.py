@@ -2390,6 +2390,11 @@ def _plain_copy_to(
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
     kv_pairs = dict(extra_kv_metadata or {})
     if carry_geo_metadata is not None:
+        # Applied last, so the carried block wins over an explicit `geo` in
+        # `extra_kv_metadata` -- a deliberate flip of the previous precedence.
+        # Preserved keys never collide here (`extract_preserved_kv_metadata`
+        # excludes `geo`); only a caller that hand-passes `geo` is affected, and
+        # `carry_geo_metadata` is the block this write decided to emit.
         kv_pairs["geo"] = json.dumps(carry_geo_metadata)
     kv_clause = build_kv_metadata_clause(kv_pairs)
     if kv_clause:
@@ -2709,9 +2714,20 @@ def write_parquet_with_metadata(
     # (#709). A 2.0 -> 2.0 copy that happens to carry a fiboa or vecorel payload
     # used to pay for a full metadata rewrite -- an extra scan of the geometry
     # column to recompute bbox and geometry types -- for a key that has nothing
-    # to do with the geo block. Only the reasons that genuinely require
-    # rebuilding that block (a covering in custom_metadata, a version change)
-    # still force one.
+    # to do with the geo block.
+    #
+    # Note what the fast path costs, because dropping the rewrite is not free.
+    # It does not carry the input's `geo` block forward: it regenerates one from
+    # DuckDB's own V2 output, plus whatever `_covering_to_carry_on_fast_path`
+    # rescues (a covering the input explicitly DECLARED). So `epoch`,
+    # `orientation`, and a covering gpio would have auto-declared from a bbox
+    # column are all absent from the output, where the rewrite path preserved
+    # them via `_declare_carried_bbox_column` and
+    # `build_geo_metadata(original_metadata=...)`. That is pre-existing fast-path
+    # behaviour, not a new loss class -- the same file without a sidecar key
+    # already took this path and already lost those keys. Not forcing a rewrite
+    # here simply makes sidecar-carrying inputs behave like every other input.
+    # Closing the gap for both is tracked in #772.
     if extra_kv_metadata and verbose:
         debug(f"Carrying extra KV metadata: {list(extra_kv_metadata.keys())}")
 
