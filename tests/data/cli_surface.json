@@ -3411,7 +3411,7 @@
        "type": "integer"
       },
       {
-       "default": "0.5",
+       "default": "0.7",
        "hidden": false,
        "is_flag": false,
        "multiple": false,

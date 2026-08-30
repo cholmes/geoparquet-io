@@ -72,7 +72,7 @@ Checks if data is spatially ordered. Spatially ordered data improves:
 
 **How it works:**
 
-- **Bbox-stats method**: Estimates how many row groups a spatial query can skip, using only the bounding boxes in the file footer, and compares that against what the file's row-group count allows. Passes if the file reaches at least 50% of the achievable skip rate (`--min-efficiency`).
+- **Bbox-stats method**: Estimates how many row groups a spatial query can skip, using only the bounding boxes in the file footer, and compares that against what the file's row-group count allows. Passes if the file reaches at least 70% of the achievable skip rate (`--min-efficiency`).
 
     The comparison is relative because the achievable skip rate depends on how many row groups there are: two row groups can never let a reader skip more than about half the file, while 500 should let it skip ~98%. A fixed threshold is wrong at one end or the other.
 

@@ -757,7 +757,7 @@ def check_all(
 )
 @click.option(
     "--min-efficiency",
-    default=0.5,
+    default=0.7,
     show_default=True,
     type=click.FloatRange(0.0, 1.0),
     help=(
