@@ -344,19 +344,34 @@ class TestGridDetectionStubbed:
             detect_aggregate_info(con, "agg", scheme="s2")
         con.close()
 
-    def test_ensure_grid_extension_statements(self):
+    def test_ensure_grid_extension_statements(self, monkeypatch):
+        """Loads a5 through the shared helper, so the telemetry opt-out applies.
+
+        A raw INSTALL/LOAD here brought back the #779 segfault on
+        ``gpio process overview``, which is why this asserts the opt-out is in
+        the environment by the time LOAD runs rather than pinning the SQL text.
+        """
+        import os
+
         from geoparquet_io.core.process.overview.detect import ensure_grid_extension
+
+        monkeypatch.delenv("QUERY_FARM_TELEMETRY_OPT_OUT", raising=False)
 
         class RecordingCon:
             def __init__(self):
                 self.statements = []
 
             def execute(self, sql):
-                self.statements.append(sql)
+                self.statements.append((sql, os.environ.get("QUERY_FARM_TELEMETRY_OPT_OUT")))
 
         con = RecordingCon()
         ensure_grid_extension(con, "a5")
-        assert con.statements == ["INSTALL a5 FROM community", "LOAD a5"]
+        sql = [statement for statement, _ in con.statements]
+        assert any(s.startswith("INSTALL a5 FROM community") for s in sql)
+        assert any(s.startswith("LOAD a5") for s in sql)
+        assert all(
+            opt_out is not None for statement, opt_out in con.statements if "LOAD" in statement
+        )
 
 
 class TestOutGeometryInference:

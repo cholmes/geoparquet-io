@@ -27,6 +27,7 @@ from geoparquet_io.core.crs_utils import (
 from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     get_duckdb_connection,
+    load_community_extension,
     quote_identifier,
     validate_where_clause,
     where_sql_fragment,
@@ -582,8 +583,7 @@ def aggregate_grid_file(
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
     try:
-        con.execute(f"INSTALL {scheme.extension} FROM community")
-        con.execute(f"LOAD {scheme.extension}")
+        load_community_extension(con, scheme.extension, feature=f"{scheme.name} aggregation")
         con.execute("SET geometry_always_xy = true")
 
         source_sql = read_grid_source_sql(
@@ -684,8 +684,7 @@ def aggregate_grid_table(
     geom_col = geometry_column or "geometry"
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        con.execute(f"INSTALL {scheme.extension} FROM community")
-        con.execute(f"LOAD {scheme.extension}")
+        load_community_extension(con, scheme.extension, feature=f"{scheme.name} aggregation")
         con.execute("SET geometry_always_xy = true")
         con.register("__agg_input", table)
         source_crs = extract_crs_from_table(table, geom_col)

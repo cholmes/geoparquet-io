@@ -1,5 +1,6 @@
 """Tests for core/duckdb_utils.py module."""
 
+import os
 from unittest import mock
 
 import duckdb
@@ -768,3 +769,68 @@ class TestWrapQueryWithBlobConversion:
         )
 
         assert wrapped.count("ST_AsWKB") == 1
+
+
+class TestCommunityExtensionTelemetry:
+    """The a5 community extension phones home on LOAD from a detached thread.
+
+    That thread races process teardown and segfaults (issue #779), so gpio opts
+    out before any community extension is loaded.
+    """
+
+    def _recording_connection(self, seen):
+        class FakeConnection:
+            def execute(self, sql):
+                seen.append((sql, os.environ.get("QUERY_FARM_TELEMETRY_OPT_OUT")))
+
+        return FakeConnection()
+
+    def test_opt_out_is_set_before_load(self, monkeypatch):
+        monkeypatch.delenv("QUERY_FARM_TELEMETRY_OPT_OUT", raising=False)
+        seen = []
+        load_community_extension(self._recording_connection(seen), "a5")
+        load_sql = [entry for entry in seen if entry[0].upper().startswith("LOAD")]
+        assert load_sql, "expected a LOAD statement"
+        assert all(value is not None for _, value in load_sql), (
+            "QUERY_FARM_TELEMETRY_OPT_OUT must be set before LOAD so the extension "
+            "does not spawn its detached telemetry thread"
+        )
+
+    def test_existing_user_value_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("QUERY_FARM_TELEMETRY_OPT_OUT", "user-set")
+        seen = []
+        load_community_extension(self._recording_connection(seen), "a5")
+        assert os.environ["QUERY_FARM_TELEMETRY_OPT_OUT"] == "user-set"
+
+
+class TestNoCommunityExtensionBypass:
+    """Every community-extension load must go through load_community_extension.
+
+    The a5 extension's load-time telemetry is opted out of inside that helper
+    (issue #779), so a raw ``INSTALL ... FROM community`` / ``LOAD`` pair brings
+    the segfault back on whatever path skipped it. Three call sites did exactly
+    that -- ``process aggregate a5``, ``process overview`` and the ``--auto``
+    resolution probe -- which is how the first fix for #779 missed them.
+    """
+
+    # bigquery is not a Query Farm extension and carries no telemetry; its
+    # FORCE INSTALL also has to stay a FORCE INSTALL, which the helper does not
+    # express.
+    ALLOWED = {"duckdb_utils.py", "exceptions.py", "extract_bigquery.py"}
+
+    def test_no_module_installs_a_community_extension_directly(self):
+        from pathlib import Path
+
+        package = Path(__file__).parent.parent / "geoparquet_io"
+        offenders = [
+            path.relative_to(package.parent)
+            for path in package.rglob("*.py")
+            # encoding pinned: the default is cp1252 on Windows, and the
+            # sources carry em dashes.
+            if path.name not in self.ALLOWED
+            and "FROM community" in path.read_text(encoding="utf-8")
+        ]
+        assert not offenders, (
+            "these modules install a community extension directly instead of "
+            f"calling load_community_extension(): {offenders}"
+        )
