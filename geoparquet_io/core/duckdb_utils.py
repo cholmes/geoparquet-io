@@ -5,6 +5,7 @@ This module provides functions for creating and managing DuckDB connections
 with appropriate extensions loaded for GeoParquet operations.
 """
 
+import os
 import re
 import threading
 from collections.abc import Iterable, Mapping
@@ -597,6 +598,32 @@ def get_duckdb_connection(
     return con
 
 
+# Query Farm's community extensions (a5) POST usage telemetry when the
+# extension is LOADed. The 1.5.5-era a5 build fires that request from a
+# *detached* std::thread, so it keeps running after LOAD returns and races
+# process teardown: if the process exits while the thread is inside the TLS
+# handshake, OpenSSL's global locks have already been freed and the thread
+# dereferences a null rwlock, killing the process with SIGSEGV (issue #779).
+# The output file is already written by then, so the only symptom is a
+# non-zero exit code -- which still fails scripts and CI. Measured at ~8% of
+# `gpio add a5` invocations on duckdb 1.5.5; 0% on 1.5.1, whose a5 build used
+# a blocking std::async instead.
+#
+# The extension opts out on the mere *presence* of this variable, whatever its
+# value, so an existing setting is left untouched.
+_TELEMETRY_OPT_OUT_VAR = "QUERY_FARM_TELEMETRY_OPT_OUT"
+
+
+def _opt_out_of_extension_telemetry() -> None:
+    """Disable community-extension load-time telemetry before LOAD.
+
+    Must run before the LOAD statement: the extension reads the environment
+    while it initialises. Uses ``setdefault`` so a user who has deliberately
+    set the variable keeps their own value.
+    """
+    os.environ.setdefault(_TELEMETRY_OPT_OUT_VAR, "1")
+
+
 def load_community_extension(con, name: str, feature: str | None = None) -> None:
     """INSTALL and LOAD a DuckDB community extension with a clear error message.
 
@@ -618,6 +645,7 @@ def load_community_extension(con, name: str, feature: str | None = None) -> None
     """
     from geoparquet_io.core.exceptions import ExtensionUnavailableError
 
+    _opt_out_of_extension_telemetry()
     try:
         con.execute(f"INSTALL {name} FROM community;")
         con.execute(f"LOAD {name};")
