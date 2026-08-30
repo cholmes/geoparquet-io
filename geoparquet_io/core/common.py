@@ -1101,26 +1101,38 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     if verbose:
         debug("v1.x: stripping geoarrow extension type to plain binary WKB")
 
+    # geoarrow.wkb's storage is `large_binary`, so building a `binary`
+    # chunked_array straight from the storage chunks raises -- and the raise used
+    # to be swallowed here, silently leaving the extension type in place. That is
+    # invisible on the primary column (it reaches the writer as plain
+    # `large_binary` via the WKB query wrapper and is narrowed downstream) and
+    # was the reason a SECONDARY geometry column kept a native Parquet GEOMETRY
+    # type inside a 1.x file (#706). `_to_plain_wkb_array` unwraps the extension
+    # and narrows the offsets, and is the same helper the streaming strategy uses.
+    from geoparquet_io.core.write_strategies.arrow_streaming import _to_plain_wkb_array
+
     try:
-        # Extract storage (plain binary) from extension type
-        new_chunks = []
-        for chunk in geom_col.chunks:
-            if hasattr(chunk, "storage"):
-                new_chunks.append(chunk.storage)
-            else:
-                new_chunks.append(chunk)
-
-        # Create new binary column
-        plain_col = pa.chunked_array(new_chunks, type=pa.binary())
-
-        # Replace in table
+        plain_col = _to_plain_wkb_array(geom_col)
         col_index = table.schema.get_field_index(geometry_column)
         return table.set_column(col_index, geometry_column, plain_col)
 
-    except (TypeError, ValueError, AttributeError) as e:
+    except (TypeError, ValueError, AttributeError, pa.ArrowInvalid) as e:
         if verbose:
             debug(f"Could not strip geoarrow type: {e}")
         return table
+
+
+def _crs_as_projjson(crs):
+    """Normalize a geoarrow CRS object to a PROJJSON dict, or return it as-is."""
+    if crs is None:
+        return None
+    to_json_dict = getattr(crs, "to_json_dict", None)
+    if to_json_dict is None:
+        return crs
+    try:
+        return to_json_dict()
+    except (TypeError, ValueError):
+        return None
 
 
 def _process_geometry_column_for_version(
@@ -1160,12 +1172,37 @@ def _process_geometry_column_for_version(
             # For v2.0/parquet-geo-only: use geoarrow extension type with CRS
             wkb_arr = ga.as_wkb(geom_col)
 
-            # Apply CRS to schema type if non-default
-            if input_crs and not is_default_crs(input_crs):
+            # Set the CRS explicitly in BOTH directions. Applying it only when
+            # non-default left whatever the reader had attached in place, so the
+            # same input produced a different schema type depending on whether
+            # the process had imported geoarrow.pyarrow — DuckDB hands over a
+            # GEOMETRY column carrying OGC:CRS84 when it is registered and a bare
+            # one when it is not (#706). A default CRS is the spec default and is
+            # declared by the geo block, so the schema type carries none.
+            # A missing `crs` in the geo block does not mean "no CRS": at 2.0 the
+            # Parquet logical type is authoritative, and a block may legitimately
+            # omit the key. Clearing unconditionally relabelled projected data as
+            # the CRS84 default -- silent corruption nothing validates. Fall back
+            # to the CRS the incoming type already carries before clearing.
+            #
+            # geoarrow hands that back as a CRS object, which `is_default_crs`
+            # does not recognize; normalizing to PROJJSON is what keeps the
+            # reader's incidental OGC:CRS84 classified as the default and thus
+            # cleared, so the output stays independent of import state (#706).
+            resolved_crs = input_crs or _crs_as_projjson(getattr(wkb_arr.type, "crs", None))
+            if resolved_crs and not is_default_crs(resolved_crs):
                 if verbose:
-                    debug(f"Applying CRS to geometry schema type: {_format_crs_display(input_crs)}")
-                new_type = wkb_arr.type.with_crs(input_crs)
-                wkb_arr = _rebuild_array_with_type(wkb_arr, new_type)
+                    debug(
+                        "Applying CRS to geometry schema type: "
+                        f"{_format_crs_display(input_crs) if input_crs else resolved_crs}"
+                    )
+                new_type = wkb_arr.type.with_crs(resolved_crs)
+            else:
+                new_type = ga.wkb()
+            # Always rebuild: geoarrow's WkbType.__eq__ ignores the CRS, so a
+            # "types are equal" shortcut would skip precisely the case this is
+            # here to normalize.
+            wkb_arr = _rebuild_array_with_type(wkb_arr, new_type)
 
             # Replace geometry column in table
             col_index = table.schema.get_field_index(geometry_column)
@@ -1412,6 +1449,77 @@ def _strip_geo_metadata_key(table, verbose: bool = False):
     return table.replace_schema_metadata(new_metadata)
 
 
+def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
+    """Give every 1.x geometry column the canonical plain-``binary`` carrier.
+
+    ``_process_geometry_column_for_version`` handles the case where PyArrow
+    resolved the geoarrow extension type. It cannot see the other shape DuckDB
+    emits: plain ``large_binary`` carrying a raw ``ARROW:extension:name`` field
+    metadata key, which appears when nothing in the process registered
+    ``geoarrow.pyarrow``. Left in place, that key rides into the output's
+    ``ARROW:schema``, so the same input produced different bytes depending on
+    what the process had imported (#688's shape, on a secondary column — #706).
+
+    Reuses the streaming strategy's ``canonicalize_wkb_fields`` so both paths
+    agree on what "canonical" means.
+    """
+    import pyarrow as pa
+
+    from geoparquet_io.core.write_strategies.arrow_streaming import (
+        _to_plain_wkb_array,
+        canonicalize_wkb_fields,
+    )
+
+    target = canonicalize_wkb_fields(table.schema, set(geometry_columns), native_columns=set())
+    # check_metadata=True matters: the leak this exists to stop is a stale
+    # ARROW:extension:name on a field whose *type* is already plain binary, and
+    # the default comparison ignores metadata entirely.
+    if target.equals(table.schema, check_metadata=True):
+        return table
+
+    for index, field in enumerate(target):
+        current = table.schema.field(index)
+        if field.equals(current, check_metadata=True):
+            continue
+        try:
+            table = table.set_column(index, field, _to_plain_wkb_array(table.column(index)))
+        except (TypeError, ValueError, pa.ArrowInvalid) as e:
+            if verbose:
+                debug(f"Could not canonicalize WKB carrier for '{field.name}': {e}")
+    return table
+
+
+def _parse_geo_metadata_quietly(original_metadata) -> dict:
+    """Best-effort parse of a carried ``geo`` key; ``{}`` when absent or unreadable."""
+    if not original_metadata:
+        return {}
+    raw = original_metadata.get(b"geo") or original_metadata.get("geo")
+    if not raw:
+        return {}
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    # Callers read ``columns`` as a mapping of column name to a dict of that
+    # column's metadata. A carried block is arbitrary JSON from the input file,
+    # so anything else is dropped here rather than allowed to raise a TypeError
+    # three frames away, in the middle of a write. `create_geo_metadata` reads
+    # the raw block itself and still does; that is pre-existing, tracked in #771.
+    columns = parsed.get("columns")
+    if isinstance(columns, dict):
+        parsed["columns"] = {
+            name: entry for name, entry in columns.items() if isinstance(entry, dict)
+        }
+    else:
+        parsed.pop("columns", None)
+    return parsed
+
+
 def _apply_geoparquet_metadata(
     table,
     geometry_column: str,
@@ -1492,10 +1600,44 @@ def _apply_geoparquet_metadata(
             debug(f"Geometry column '{geometry_column}' not found in table, skipping metadata")
         return table
 
-    # Step 1: Handle geometry column based on version
-    table = _process_geometry_column_for_version(
-        table, geometry_column, effective_version, input_crs, verbose
+    # Step 1: Handle geometry columns based on version.
+    #
+    # EVERY geometry column, not just the primary: validation applies the same
+    # per-version requirements to each column in geo["columns"], and a secondary
+    # left with whatever carrier the reader produced is both wrong for the target
+    # version and dependent on whether anything imported geoarrow.pyarrow (#706).
+    # Each column carries its OWN crs -- giving a secondary the primary's fails
+    # v2_crs_consistency.
+    from geoparquet_io.core.write_strategies.base import resolve_geometry_columns
+
+    # The table entry points (`write_geoparquet_table`, the strategies'
+    # `write_from_table`) get no `geometry_info`, so fall back to naming the
+    # secondaries from the carried geo metadata -- otherwise they would silently
+    # keep the single-column behaviour this loop exists to replace.
+    # `original_metadata` is deliberately None on the table entry points (passing
+    # it there would smuggle the input's stale geo block into the output), so the
+    # secondary names come from the table's own carried key instead. This feeds
+    # the carrier decision only -- step 2 still builds metadata from
+    # `original_metadata` as passed.
+    carried_geo = _parse_geo_metadata_quietly(original_metadata) or _parse_geo_metadata_quietly(
+        table.schema.metadata
     )
+    column_metadata = dict(carried_geo.get("columns") or {})
+    column_metadata.update((geometry_info or {}).get("metadata", {}))
+    for column in sorted(resolve_geometry_columns(geometry_column, geometry_info, carried_geo)):
+        if column not in table.column_names:
+            continue
+        column_crs = (
+            input_crs if column == geometry_column else column_metadata.get(column, {}).get("crs")
+        )
+        table = _process_geometry_column_for_version(
+            table, column, effective_version, column_crs, verbose
+        )
+
+    if effective_version in ("1.0", "1.1"):
+        table = _canonicalize_wkb_columns(
+            table, resolve_geometry_columns(geometry_column, geometry_info, carried_geo), verbose
+        )
 
     # Step 2: Build and apply geo metadata (unless parquet-geo-only)
     if not should_add_geo_metadata:

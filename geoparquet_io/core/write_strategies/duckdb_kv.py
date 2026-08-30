@@ -28,7 +28,11 @@ from geoparquet_io.core.duckdb_utils import (
     validate_compression_level,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
-from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
+from geoparquet_io.core.write_strategies.base import (
+    BaseWriteStrategy,
+    build_geo_metadata,
+    resolve_geometry_columns,
+)
 from geoparquet_io.core.write_strategies.row_group_sizing import _resolve_row_group_rows
 
 if TYPE_CHECKING:
@@ -157,6 +161,26 @@ def _wrap_query_with_crs(
     from geoparquet_io.core.crs_utils import _wrap_query_with_crs as _common_wrap_query_with_crs
 
     return _common_wrap_query_with_crs(query, geometry_column, input_crs)
+
+
+def _plain_wkb_for_secondary_columns(table, geometry_column: str, verbose: bool):
+    """Strip geoarrow extension typing from every NON-primary geometry column.
+
+    Named from the table's own carried ``geo`` key, which is the only place a
+    table entry point learns about secondaries. The primary is left alone: the
+    caller converts it explicitly.
+    """
+    from geoparquet_io.core.common import (
+        _parse_geo_metadata_quietly,
+        _strip_geoarrow_to_plain_wkb,
+    )
+
+    carried_geo = _parse_geo_metadata_quietly(table.schema.metadata)
+    secondaries = resolve_geometry_columns(geometry_column, None, carried_geo) - {geometry_column}
+    for column in sorted(secondaries):
+        if column in table.column_names:
+            table = _strip_geoarrow_to_plain_wkb(table, column, verbose)
+    return table
 
 
 def _build_copy_options(
@@ -497,11 +521,20 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
         self._declare_carried_bbox_column(con, query, col_meta, verbose, geoparquet_version)
 
-        # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB.
+        # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB. EVERY geometry
+        # column, not just the primary: validation applies the same per-version
+        # requirement to each column in geo["columns"], and a secondary left as
+        # DuckDB's GEOMETRY type lands as a native Parquet GEOMETRY logical type
+        # inside a 1.x file, which is invalid (#706).
         # For v2.0: Keep native GEOMETRY type with CRS — DuckDB writes native
-        # Parquet geometry encoding and CRS directly.
+        # Parquet geometry encoding and CRS directly, for every geometry column.
         if geoparquet_version in ("1.0", "1.1"):
-            final_query = _wrap_query_with_blob_conversion(query, geometry_column, con)
+            secondary_columns = resolve_geometry_columns(
+                geometry_column, geometry_info, geo_meta
+            ) - {geometry_column}
+            final_query = _wrap_query_with_blob_conversion(
+                query, geometry_column, con, secondary_columns=sorted(secondary_columns)
+            )
         else:
             final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
@@ -588,6 +621,15 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         effective_version = geoparquet_version
         if effective_version is None:
             effective_version = _detect_version_from_table(table, verbose)
+
+        # DuckDB registers a `geoarrow.wkb` column as GEOMETRY, and the COPY then
+        # writes it as a native Parquet GEOMETRY logical type. That is right for
+        # 2.0 and wrong inside a 1.x file. The primary column is handled by the
+        # blob conversion further down, which is keyed on names this entry point
+        # does not have for the secondaries -- so strip them here, named by the
+        # table's own carried geo key (#706).
+        if effective_version in ("1.0", "1.1"):
+            table = _plain_wkb_for_secondary_columns(table, geometry_column, verbose)
 
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:

@@ -23,6 +23,33 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
+def resolve_geometry_columns(
+    geometry_column: str,
+    geometry_info: dict | None = None,
+    geo_meta: dict | None = None,
+) -> set[str]:
+    """Every column the write must treat as geometry, not just the primary.
+
+    A file may declare more than one geometry column: `geo["columns"]` carries a
+    `primary_column` plus secondaries, and gpio threads those through
+    `geometry_info["secondary"]`. Validation applies the same per-version
+    requirements to *every* column in `geo["columns"]`, so every strategy has to
+    make the same per-version carrier decision for all of them (#706).
+
+    The secondary names must be taken from `geometry_info` and not recovered from
+    `geo_meta` alone: `parquet-geo-only` writes no geo metadata at all, so by
+    schema-build time there is nothing left to name them by.
+    """
+    columns = {geometry_column}
+    if geometry_info:
+        columns.update(geometry_info.get("secondary") or ())
+        columns.update(geometry_info.get("metadata") or {})
+    if geo_meta:
+        columns.update(geo_meta.get("columns") or {})
+    columns.discard(None)
+    return columns
+
+
 def build_geo_metadata(
     geometry_column: str,
     geoparquet_version: str,
