@@ -685,6 +685,41 @@ def test_a2_strategy_shape_contract(strategy, shape, shape_sources, tmp_path):
 
 
 @pytest.mark.parametrize("strategy", STRATEGIES)
+def test_a2_row_group_coarsen_contract(strategy, shape_sources, tmp_path):
+    """A request LARGER than the source's row groups must coarsen them (#697).
+
+    The ``multi_row_group`` leg of the A2 matrix above only exercises the
+    splitting direction (source groups of 10, request 10). The rewrite in
+    ``disk-rewrite`` issued one ``write_table`` per *source* row group, and each
+    of those starts a new group, so it could make groups smaller but never
+    larger: 40 groups of 10 came back as 40 groups of 10, silently ignoring a
+    ``row_group_rows=40`` request. This is the same cross-strategy divergence
+    family as #689, so it is pinned for all four.
+    """
+    source = shape_sources["multi_row_group"]
+    out = tmp_path / f"{strategy}_coarsen.parquet"
+
+    _write_via_query(source, str(out), "1.1", write_strategy=strategy, row_group_rows=40)
+
+    expect = Expect(
+        rows=40,
+        geometry_column="geometry",
+        geo_version="1.1.0",
+        geometry_types=("Point",),
+        bbox=BBOX,
+        columns=("id", "geometry"),
+        row_groups=1,
+    )
+    divergence = KNOWN_STRATEGY_DIVERGENCES.get((strategy, "coarsen"))
+    try:
+        failed = assert_valid_geoparquet_output(str(out), expect)
+    except AssertionError as exc:
+        _xfail_if_expected(exc, divergence)
+        raise  # unreachable; _xfail_if_expected always raises or xfails
+    _adjudicate(failed, divergence)
+
+
+@pytest.mark.parametrize("strategy", STRATEGIES)
 def test_a2_geoarrow_version_agrees_across_strategies(strategy, shape_sources, tmp_path):
     """1.1-geoarrow must not depend on which strategy the caller asked for.
 

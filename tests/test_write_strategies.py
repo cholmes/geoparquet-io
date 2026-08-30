@@ -8,6 +8,7 @@ Tests the Strategy Pattern for GeoParquet writes including:
 """
 
 import json
+import logging
 import struct
 import tempfile
 import uuid
@@ -729,6 +730,161 @@ def _write_points_geoparquet(path: Path, num_rows: int) -> str:
     table = table.replace_schema_metadata({b"geo": json.dumps(geo_meta).encode()})
     pq.write_table(table, path)
     return str(path)
+
+
+class TestDiskRewriteRowGroupCoarsening:
+    """The metadata rewrite must be able to MERGE source row groups (#697).
+
+    ``_rewrite_with_metadata`` issued one ``write_table`` per source row group,
+    and each of those starts a new row group, so it could only ever make groups
+    smaller than the source's. A request larger than the source's groups came
+    back as the source's shape, silently.
+
+    These call the helper directly because it is the smallest thing that can
+    express the shape assertions. The defect is *not* helper-only: DuckDB's
+    ``ROW_GROUP_SIZE`` leaves small source groups alone, so the temporary file
+    the rewrite reads still arrives at 10 rows per group and
+    ``gpio extract geoparquet --write-strategy disk-rewrite --row-group-size``
+    ignored the request end to end. ``test_write_contract`` pins that direction
+    across all four strategies.
+    """
+
+    GEO_META = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+    }
+
+    @staticmethod
+    def _row_group_sizes(path) -> list[int]:
+        pf = pq.ParquetFile(str(path))
+        return [pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups)]
+
+    @pytest.fixture
+    def source_of_ten_row_groups(self, tmp_path):
+        """400 rows in 40 groups of 10 — the shape from the issue."""
+        path = tmp_path / "small_groups.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(400)]
+        table = pa.table({"id": list(range(400)), "geometry": points})
+        pq.write_table(table, path, row_group_size=10)
+        assert self._row_group_sizes(path) == [10] * 40
+        return path
+
+    def _rewrite(self, source, out, row_group_rows):
+        WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)._rewrite_with_metadata(
+            input_path=str(source),
+            output_path=str(out),
+            geo_meta=self.GEO_META,
+            compression="ZSTD",
+            compression_level=None,
+            verbose=False,
+            row_group_rows=row_group_rows,
+        )
+
+    def test_request_larger_than_source_groups_coarsens(self, source_of_ten_row_groups, tmp_path):
+        """The reproducer: 10-row source groups, request 100."""
+        out = tmp_path / "coarsened.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        assert self._row_group_sizes(out) == [100] * 4
+
+    def test_request_smaller_than_source_groups_still_splits(
+        self, source_of_ten_row_groups, tmp_path
+    ):
+        """The direction that already worked must keep working."""
+        out = tmp_path / "split.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 5)
+
+        assert self._row_group_sizes(out) == [5] * 80
+
+    def test_no_request_preserves_the_source_shape(self, source_of_ten_row_groups, tmp_path):
+        """No sizing request means no reshaping."""
+        out = tmp_path / "unchanged.parquet"
+        self._rewrite(source_of_ten_row_groups, out, None)
+
+        assert self._row_group_sizes(out) == [10] * 40
+
+    def test_uneven_remainder_is_flushed(self, tmp_path):
+        """A trailing partial group must still be written, not dropped."""
+        source = tmp_path / "uneven.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(25)]
+        pq.write_table(
+            pa.table({"id": list(range(25)), "geometry": points}), source, row_group_size=5
+        )
+        out = tmp_path / "uneven_out.parquet"
+        self._rewrite(source, out, 10)
+
+        assert self._row_group_sizes(out) == [10, 10, 5]
+
+    @pytest.mark.parametrize(
+        ("source_rows", "source_group", "target", "expected"),
+        [
+            (400, 10, 25, [25] * 16),
+            (600, 60, 100, [100] * 6),
+            (400, 40, 100, [100] * 4),
+            (990, 99, 100, [100] * 9 + [90]),
+        ],
+        ids=["10s_to_25", "60s_to_100", "40s_to_100", "99s_to_100"],
+    )
+    def test_overshoot_is_carried_not_flushed_as_a_runt(
+        self, tmp_path, source_rows, source_group, target, expected
+    ):
+        """A batch that overshoots the target must not leave a runt behind it.
+
+        Flushing the whole over-full batch wrote one full group plus its
+        remainder, so 10-row sources at ``row_group_rows=25`` came back as
+        ``[25, 5, 25, 5, ...]`` -- more groups than asked for, half of them
+        undersized, and a worse layout than doing nothing. The remainder is
+        carried into the next group instead. Only the final group may be short.
+        """
+        source = tmp_path / f"src_{source_group}_{target}.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(source_rows)]
+        pq.write_table(
+            pa.table({"id": list(range(source_rows)), "geometry": points}),
+            source,
+            row_group_size=source_group,
+        )
+        out = tmp_path / f"out_{source_group}_{target}.parquet"
+        self._rewrite(source, out, target)
+
+        assert self._row_group_sizes(out) == expected
+        assert pq.read_table(str(out)).column("id").to_pylist() == list(range(source_rows))
+
+    def test_rows_and_values_survive_coarsening(self, source_of_ten_row_groups, tmp_path):
+        """Merging groups must not reorder or lose rows."""
+        out = tmp_path / "values.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        assert pq.read_table(str(out)).column("id").to_pylist() == list(range(400))
+
+    @pytest.mark.parametrize("row_group_rows", [100, None], ids=["coarsen", "no_request"])
+    def test_verbose_progress_reports_every_ten_source_groups(
+        self, source_of_ten_row_groups, tmp_path, caplog, row_group_rows
+    ):
+        """Both loops report progress; 40 source groups means four reports."""
+        out = tmp_path / f"verbose_{row_group_rows}.parquet"
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)._rewrite_with_metadata(
+                input_path=str(source_of_ten_row_groups),
+                output_path=str(out),
+                geo_meta=self.GEO_META,
+                compression="ZSTD",
+                compression_level=None,
+                verbose=True,
+                row_group_rows=row_group_rows,
+            )
+
+        assert "Rewrote 10/40 row groups" in caplog.text
+        assert "Rewrote 40/40 row groups" in caplog.text
+        assert self._row_group_sizes(out) == ([100] * 4 if row_group_rows else [10] * 40)
+
+    def test_geo_metadata_is_written_when_coarsening(self, source_of_ten_row_groups, tmp_path):
+        """The rewrite's actual job still happens on the merging path."""
+        out = tmp_path / "meta.parquet"
+        self._rewrite(source_of_ten_row_groups, out, 100)
+
+        metadata = pq.ParquetFile(str(out)).schema_arrow.metadata
+        assert json.loads(metadata[b"geo"].decode("utf-8"))["version"] == "1.1.0"
 
 
 class TestDiskRewriteRowGroupSizing:
