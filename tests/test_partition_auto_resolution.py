@@ -11,8 +11,10 @@ from geoparquet_io.core.partition.auto_resolution import (
     _calculate_a5_resolution,
     _calculate_h3_resolution,
     _calculate_quadkey_resolution,
+    _probe_extent_resolution,
     calculate_auto_resolution,
 )
+from tests.conftest import skip_if_geography_unavailable
 
 
 class TestH3ResolutionCalculation:
@@ -545,6 +547,80 @@ class TestAutoResolutionMath:
         assert target_rows / 2 <= actual_avg_rows <= target_rows * 10
 
 
+class TestProbeFallbackIsAnnounced:
+    """A silent fallback to the global formula is a wrong answer nobody sees (#778).
+
+    `gpio partition s2 --auto` on a DuckDB without 'geography' swallowed the 404,
+    returned the global-formula resolution and said nothing unless --verbose was
+    passed. The resolution is wrong, not merely suboptimal, so the warning is
+    unconditional.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_logging(self):
+        logger = get_logger()
+        original_propagate = logger.propagate
+        original_level = logger.level
+        original_handlers = logger.handlers.copy()
+        logger.setLevel(logging.DEBUG)
+        logger.handlers.clear()
+        logger.propagate = True
+        yield
+        logger.handlers.clear()
+        logger.handlers.extend(original_handlers)
+        logger.propagate = original_propagate
+        logger.setLevel(original_level)
+
+    def _probe(self, **kwargs):
+        return _probe_extent_resolution(
+            input_parquet="does-not-matter.parquet",
+            spatial_index_type="h3",
+            target_partitions=100.0,
+            min_resolution=1,
+            max_resolution=3,
+            total_rows=1000,
+            **kwargs,
+        )
+
+    def test_a_failed_probe_warns_without_verbose(self, caplog, monkeypatch):
+        module = "geoparquet_io.core.partition.auto_resolution"
+        monkeypatch.setattr(f"{module}.safe_file_url", lambda *a, **k: "u")
+
+        def _boom(**kwargs):
+            raise RuntimeError("HTTP 404 no geography")
+
+        monkeypatch.setattr(f"{module}.get_duckdb_connection", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            assert self._probe(verbose=False) is None
+
+        assert "Extent-aware probe unavailable" in caplog.text
+        assert "HTTP 404 no geography" in caplog.text
+
+    def test_an_empty_probe_warns_without_verbose(self, caplog, monkeypatch):
+        module = "geoparquet_io.core.partition.auto_resolution"
+        monkeypatch.setattr(f"{module}.safe_file_url", lambda *a, **k: "u")
+        monkeypatch.setattr(f"{module}.get_duckdb_connection", lambda **k: _NullConnection())
+        monkeypatch.setattr(f"{module}.find_primary_geometry_column", lambda *a, **k: "geometry")
+        monkeypatch.setattr(f"{module}.source_crs_string", lambda *a, **k: None)
+        monkeypatch.setattr(f"{module}._geom_sql", lambda *a, **k: "geometry")
+        monkeypatch.setattr(f"{module}.transform_geom_sql", lambda *a, **k: "geometry")
+        monkeypatch.setattr(f"{module}._probe_distinct_cell_counts", lambda *a, **k: [0, 0, 0])
+
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            assert self._probe(verbose=False) is None
+
+        assert "no non-empty cells" in caplog.text
+
+
+class _NullConnection:
+    def execute(self, *args, **kwargs):
+        return self
+
+    def close(self):
+        pass
+
+
 class TestVerboseOutput:
     """Test verbose output logging with correct index names."""
 
@@ -695,6 +771,11 @@ class TestExtentAwareResolution:
     @pytest.mark.parametrize("index_type", ["a5", "s2", "h3", "quadkey"])
     def test_finer_than_global_formula(self, clustered_file, index_type):
         """Extent-aware resolution must exceed the old global-formula choice."""
+        if index_type == "s2":
+            # The probe swallows an unavailable 'geography' and falls back to the
+            # global formula, so without this the test fails on a wrong answer
+            # rather than reporting the missing extension.
+            skip_if_geography_unavailable()
         total_rows = 8000
         target_rows = 80  # ~100 target partitions
 
@@ -719,6 +800,11 @@ class TestExtentAwareResolution:
     @pytest.mark.parametrize("index_type", ["a5", "s2", "h3", "quadkey"])
     def test_chosen_resolution_near_target_partitions(self, clustered_file, index_type):
         """The chosen resolution's non-empty cell count is near the target."""
+        if index_type == "s2":
+            # `_count_distinct_cells` INSTALLs 'geography' raw, so an unpublished
+            # extension surfaces as a bare duckdb.HTTPException that conftest's
+            # ExtensionUnavailableError hook does not convert to a skip.
+            skip_if_geography_unavailable()
         total_rows = 8000
         target_rows = 80
         target_partitions = total_rows / target_rows  # 100

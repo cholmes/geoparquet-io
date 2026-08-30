@@ -114,26 +114,53 @@ class ValidationError(GeoParquetError):
     pass
 
 
-# Last DuckDB release for which the 'geography' community extension is published.
-# Newer releases 404 from community-extensions.duckdb.org: the build fails on a
-# C++11/C++17 link error in DuckDB's plan_serializer tool, added in DuckDB 1.5.2
-# (duckdb/duckdb#22097). The fix is merged upstream
-# (paleolimbot/duckdb-geography#34); republication for newer DuckDB is pending.
-GEOGRAPHY_LAST_PUBLISHED_DUCKDB = "1.5.1"
+# DuckDB's own text for "this extension is not built/published for your DuckDB".
+# The HTTP status is the whole signal. Verified against DuckDB 1.5.5:
+#
+#   unpublished  HTTPException: 'HTTP Error: Failed to download extension
+#                "geography" at URL "..." (HTTP 404)'
+#   offline      IOException:   'IO Error: Failed to download extension
+#                "..." at URL "..." (ERROR Could not establish connection)'
+#
+# Both say "Failed to download extension", so that phrase decides nothing -- it
+# was matching an offline user's error and telling them to wait for an upstream
+# republication that has nothing to do with their problem (#778). Only the 404
+# means the registry answered and does not have this build.
+_NOT_PUBLISHED_SIGNATURES = ("http 404",)
 
-# Extension-specific guidance appended to ExtensionUnavailableError. Only add an
-# entry when we know something the generic message cannot say.
-_EXTENSION_HINTS = {
+
+def is_unpublished_extension_error(exc: BaseException | str | None) -> bool:
+    """True when `exc` carries DuckDB's "not published for this version" signature.
+
+    Accepts an exception (whose ``__cause__``/``__context__`` chain is walked) or
+    the raw error text. Deliberately does NOT match gpio's own wording, which is
+    present on every :class:`ExtensionUnavailableError` regardless of cause.
+    """
+    if exc is None:
+        return False
+    if isinstance(exc, str):
+        blob = exc.lower()
+    else:
+        parts: list[str] = []
+        seen: set[int] = set()
+        cur: BaseException | None = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            parts.append(str(cur))
+            cur = cur.__cause__ or cur.__context__
+        blob = " ".join(parts).lower()
+    return any(sig in blob for sig in _NOT_PUBLISHED_SIGNATURES)
+
+
+# Extension-specific guidance, shown only when the extension really is
+# unpublished. Only add an entry when we know something the generic message
+# cannot say.
+_UNPUBLISHED_EXTENSION_HINTS = {
     "geography": (
-        f"'geography' is currently published only up to DuckDB "
-        f"{GEOGRAPHY_LAST_PUBLISHED_DUCKDB}, and gpio requires a newer DuckDB. "
-        f"A build fix has been merged upstream (paleolimbot/duckdb-geography#34) "
-        f"and republication is pending, so S2 support should return without any "
-        f"action on your part. To use S2 before then, install the last DuckDB "
-        f"that provides the extension: "
-        f"uv pip install 'duckdb=={GEOGRAPHY_LAST_PUBLISHED_DUCKDB}' "
-        f"(note that DuckDB {GEOGRAPHY_LAST_PUBLISHED_DUCKDB} can segfault while "
-        f"repairing invalid geometry — see geoparquet-io issue #737)."
+        "The upstream build fix is merged (paleolimbot/duckdb-geography#34), so "
+        "S2 returns on its own once the extension is republished -- no gpio "
+        "change needed. For a hierarchical cell index that works today, use "
+        "`gpio add a5` or `gpio partition a5`."
     ),
 }
 
@@ -157,17 +184,35 @@ class ExtensionUnavailableError(GeoParquetError):
         self.name = name
         self.duckdb_version = duckdb_version
         self.feature = feature
+        self.unpublished = is_unpublished_extension_error(detail)
         subject = f"'{feature}' requires" if feature else "This operation requires"
+        listing = f"https://community-extensions.duckdb.org/extensions/{name}.html"
         msg = (
             f"{subject} the DuckDB community extension '{name}', which could not "
-            f"be loaded for DuckDB {duckdb_version}. Community extensions are built "
-            f"per DuckDB release, so '{name}' may not be published for this version "
-            f"yet (see "
-            f"https://community-extensions.duckdb.org/extensions/{name}.html)."
+            f"be loaded for DuckDB {duckdb_version}."
         )
-        hint = _EXTENSION_HINTS.get(name)
-        if hint:
-            msg = f"{msg} {hint}"
+        if self.unpublished:
+            # DuckDB said "not published for this version" outright.
+            msg += (
+                f" Community extensions are built per DuckDB release, and '{name}' "
+                f"is not published for this one (see {listing})."
+            )
+            hint = _UNPUBLISHED_EXTENSION_HINTS.get(name)
+            if hint:
+                msg = f"{msg} {hint}"
+        elif detail:
+            # A failure that is NOT a 404: do not blame the extension registry.
+            msg += (
+                " This is not the 'not published for this DuckDB version' 404, so "
+                "check that https://community-extensions.duckdb.org is reachable "
+                "from here (proxy, firewall, offline)."
+            )
+        else:
+            # No underlying error to reason from: state the possibility, claim nothing.
+            msg += (
+                f" Community extensions are built per DuckDB release, so '{name}' "
+                f"may not be published for this version yet (see {listing})."
+            )
         if detail:
             msg = f"{msg} Original error: {detail}"
         super().__init__(msg)

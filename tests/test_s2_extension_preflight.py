@@ -58,7 +58,9 @@ class TestAddS2Preflight:
 
         message = str(exc_info.value)
         assert "geography" in message
-        assert "duckdb==1.5.1" in message
+        # The way forward is a5, not a downgrade: pyproject forbids duckdb 1.5.1.
+        assert "a5" in message
+        assert "duckdb==1.5.1" not in message
 
     def test_invalid_level_still_reported_before_the_extension_check(self, tmp_path):
         """Argument validation stays first: a bad level is a user error, not a build gap."""

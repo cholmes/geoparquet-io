@@ -763,7 +763,14 @@ def handle_directory_sub_partition(
         raise click.UsageError(str(e)) from None
 
     if result["errors"]:
+        # Every per-file failure was caught and warned about, so without this the
+        # command printed errors, partitioned nothing and still exited 0 (#778).
         for err in result["errors"]:
             warn(f"Error processing {err['file']}: {err['error']}")
+        failed = len(result["errors"])
+        raise click.ClickException(
+            f"{failed} of {failed + result['processed']} file(s) failed to sub-partition; "
+            f"see the errors above."
+        )
 
     return True

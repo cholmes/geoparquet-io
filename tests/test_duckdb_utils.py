@@ -303,6 +303,24 @@ class TestDuckDBVersionFloor:
             f"pyproject requires >= 1.5.2"
         )
 
+    # A behavioural probe would be better than the version string above, which is
+    # a tautology for anyone who installed per pyproject and cannot see a
+    # backport, a vendored build, or a distro DuckDB reporting 1.5.5 over 1.5.1's
+    # evaluator. One was attempted and does not exist cheaply. Measured on
+    # 1.5.0/1.5.1/1.5.2/1.5.5, all of these behave IDENTICALLY on every version:
+    #
+    #   - TRY(CAST(VARCHAR AS INTEGER)) under a CASE, vs. the unguarded cast
+    #   - the same to DECIMAL, DATE, LIST and STRUCT targets
+    #   - the same under a WHERE that forces a selection vector, at 20k rows
+    #   - TRY(ST_GeomFromWKB(...)) with NULLs filtered in one WHERE (the unsafe
+    #     shape from `_layered_invalid_count_sql`), at 20k rows
+    #
+    # The real reproduction (#737) needs ~200k WKB polygons over ~300 chunks and
+    # kills the process, so it cannot run in-process and is far too slow for the
+    # fast lane. Do not add a probe here without first checking it actually FAILS
+    # on 1.5.1 -- one that passes on both versions asserts nothing while looking
+    # like it asserts everything.
+
 
 class TestRequireCommunityExtension:
     """Fail-fast preflight for community extensions (#737)."""
@@ -658,6 +676,32 @@ class TestWrapQueryWithBlobConversion:
 
         assert "ST_AsWKB" in wrapped
         assert con.execute(f"DESCRIBE ({wrapped})").fetchall()[1][1] == "BLOB"
+
+    def test_a_blob_primary_column_is_not_cast(self, con):
+        """A BLOB primary is already the 1.x carrier; ST_AsWKB(BLOB) does not bind."""
+        query = "SELECT 1 AS id, 'raw'::BLOB AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con)
+
+        assert "ST_AsWKB" not in wrapped
+        assert con.execute(wrapped).fetchall()[0][1] == b"raw"
+
+    def test_a_varchar_primary_column_is_not_cast(self, con):
+        """ST_AsWKB(VARCHAR) *does* bind, silently reinterpreting the text as WKT."""
+        query = "SELECT 1 AS id, 'POINT (9 9)' AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con)
+
+        assert "ST_AsWKB" not in wrapped
+        assert con.execute(wrapped).fetchall()[0][1] == "POINT (9 9)"
+
+    def test_an_undescribable_query_still_casts_the_primary(self, con):
+        """DESCRIBE can fail; with no type info the primary is still the best guess."""
+        wrapped = _wrap_query_with_blob_conversion(
+            "SELECT * FROM a_table_that_does_not_exist", "geometry", con
+        )
+
+        assert 'ST_AsWKB("geometry")' in wrapped
 
     def test_secondary_geometry_columns_are_cast_too(self, con):
         query = (

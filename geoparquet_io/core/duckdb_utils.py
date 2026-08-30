@@ -882,10 +882,17 @@ def _wrap_query_with_blob_conversion(
 
     targets: list[str] = []
     if col_info:
-        # Skip a missing column, and a STRUCT of that name (a bbox-style column)
-        if geometry_column in col_info and "STRUCT" not in col_info[geometry_column]:
+        # Only a real GEOMETRY needs ST_AsWKB, and the same test as the
+        # secondaries below. "Not a STRUCT" was too loose: a BLOB primary is
+        # already the correct 1.x carrier and ST_AsWKB(BLOB) does not bind, so
+        # the whole write aborted; worse, ST_AsWKB(VARCHAR) *does* bind and
+        # silently reinterprets the text as WKT.
+        if col_info.get(geometry_column, "").upper().startswith("GEOMETRY"):
             targets.append(geometry_column)
     else:
+        # DESCRIBE failed, so we know nothing about the types. Convert the
+        # primary and let DuckDB reject it if it is not geometry -- the
+        # historical behaviour, and the only safe guess without type info.
         targets.append(geometry_column)
 
     for name in secondary_columns or ():

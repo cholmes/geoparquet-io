@@ -52,7 +52,6 @@ from __future__ import annotations
 import json
 import os
 import struct
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -418,20 +417,10 @@ def assert_valid_geoparquet_output(path: str, expect: Expect) -> list[str]:
             )
 
     result = validate_geoparquet(path, validate_data=True, sample_size=0)
-    failed = [c.name for c in result.checks if c.status == CheckStatus.FAILED]
-    if sys.platform == "win32":
-        # On Windows the native geospatial statistics do not survive the trip
-        # between writers and readers: DuckDB reports all-zero bounds for a
-        # native GEOMETRY column pyarrow wrote, and pyarrow reads denormal
-        # garbage out of one DuckDB wrote, so this check reports every geometry
-        # as outside them (issue #721). The identical files read correctly on
-        # macOS and Linux, so it is a reader/writer interop gap affecting both
-        # readers there and says nothing about the write contract this suite
-        # exists to pin. Excused by name and only on win32 -- every other
-        # oracle check stays enforced on Windows, which skipping the affected
-        # matrix cells would not have preserved.
-        failed = [n for n in failed if not n.startswith("native_geo_stats_contains_data")]
-    return failed
+    # No platform is excused: DuckDB <= 1.5.1 misread native-geo statistics on
+    # Windows (#721), but gpio now floors DuckDB at 1.5.2, which reads them
+    # correctly, so the oracle is enforced everywhere.
+    return [c.name for c in result.checks if c.status == CheckStatus.FAILED]
 
 
 def _adjudicate(failed: list[str], divergence: Divergence | None) -> None:

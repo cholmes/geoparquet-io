@@ -63,9 +63,14 @@ def _layered_invalid_count_sql(source_sql: str, parsed_expr: str) -> str:
     #737; fixed in DuckDB 1.5.2 — duckdb/duckdb-spatial#858 — which pyproject
     now requires). Verified on issue #642's reproduction: projecting the parsed
     geometry first, filtering NULLs in a middle layer, and running
-    ``ST_IsValid`` outermost is logically identical and crash-free. Kept as
-    cheap insurance for anyone who forces an older DuckDB (e.g. to get the
-    'geography' extension back for S2).
+    ``ST_IsValid`` outermost is logically identical and crash-free.
+
+    Kept for anyone who forces a DuckDB below the pyproject floor, but it is
+    not a guarantee there: the layered form only avoids the crash because the
+    optimizer happens to keep the two filters in separate operators, which
+    nothing promises (duckdb/duckdb-spatial#858). #737's reporter hit SIGSEGV
+    through this very code. The version floor is the fix; this shape is only
+    slightly better odds.
     """
     return (
         f"SELECT COUNT(*) FROM ("

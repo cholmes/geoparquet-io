@@ -505,28 +505,15 @@ def crs_srid_file(test_data_dir):
 def _is_unpublished_extension_error(exc) -> bool:
     """True only if `exc` is an ExtensionUnavailableError caused by a 404/download.
 
-    Matches the DuckDB "extension not built/published for this version" signature
-    (a community-extensions download that 404s). Deliberately does NOT match
-    gpio's own "may not be published" boilerplate, which is present on every
-    ExtensionUnavailableError regardless of the real underlying cause.
+    The signature match itself lives in core (`is_unpublished_extension_error`),
+    so the test hook and the user-facing error message cannot drift apart.
     """
-    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+    from geoparquet_io.core.exceptions import (
+        ExtensionUnavailableError,
+        is_unpublished_extension_error,
+    )
 
-    if not isinstance(exc, ExtensionUnavailableError):
-        return False
-
-    # Collect text from the exception and its cause/context chain.
-    parts: list[str] = []
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        parts.append(str(cur))
-        cur = cur.__cause__ or cur.__context__
-    blob = " ".join(parts).lower()
-
-    # The only signals we treat as "unavailable": DuckDB's download-failure text.
-    return "failed to download extension" in blob or "http 404" in blob
+    return isinstance(exc, ExtensionUnavailableError) and is_unpublished_extension_error(exc)
 
 
 @pytest.hookimpl(hookwrapper=True)
