@@ -129,9 +129,12 @@ v = "<version>"
 t = pathlib.Path("CHANGELOG.md").read_text()
 start = t.index(f"## v{v} ")
 end = t.find("\n## ", start + 1)
-body = t[start:end].split("\n", 1)[1].strip()
-anchor = f"v{v}-" + "".join(c for c in "<date>" if c.isdigit() or c == "-")
-print(body)
+heading, body = t[start:end].split("\n", 1)
+# GitHub's anchor: the heading lowercased, anything but a letter, digit, space
+# or hyphen dropped, then spaces to hyphens. "## v1.4.0 (2026-08-30)" gives
+# "v140-2026-08-30" - the dots go, so do not build this from the version string.
+anchor = re.sub(r"[^a-z0-9 -]", "", heading[3:].lower()).replace(" ", "-")
+print(body.strip())
 print()
 print(f"Full changelog entry: https://github.com/geoparquet/geoparquet-io/blob/main/CHANGELOG.md#{anchor}")
 PY
@@ -139,9 +142,7 @@ PY
 gh release edit v<version> --notes-file /tmp/notes.md
 ```
 
-The anchor GitHub gives `## v1.4.0 (2026-08-30)` is `#v140-2026-08-30`: the
-heading lowercased, dots and parentheses dropped, spaces to hyphens. Open the
-link and confirm it lands on the heading before you finish.
+Open the printed link and confirm it lands on the heading before you finish.
 
 ## 8. Verify
 
