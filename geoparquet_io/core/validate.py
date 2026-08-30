@@ -2106,8 +2106,10 @@ def _is_bbox_valid(geo_bbox: dict) -> bool:
 
 def _check_native_geo_statistics(parquet_file: str, geom_col: str) -> ValidationCheck:
     """Check that geometry column has native Parquet GeospatialStatistics (geo_bbox)."""
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.duckdb_metadata import (
+        aggregate_native_geo_stats,
+        get_native_geo_stats_by_row_group,
+    )
     from geoparquet_io.core.remote import is_remote_url
 
     try:
@@ -2120,59 +2122,50 @@ def _check_native_geo_statistics(parquet_file: str, geom_col: str) -> Validation
                 category="parquet_geo_types",
             )
 
-        safe_url = safe_file_url(parquet_file, verbose=False)
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geom_col)
 
-        with get_duckdb_connection(load_spatial=True) as con:
-            # Check for geo_bbox in parquet_metadata for the geometry column
-            escaped_geom_col = _escape_sql_string(geom_col)
-            result = con.execute(f"""
-                SELECT geo_bbox, geo_types
-                FROM parquet_metadata('{safe_url}')
-                WHERE path_in_schema = '{escaped_geom_col}'
-                LIMIT 1
-            """).fetchone()
+        if chunks is None:
+            return ValidationCheck(
+                name=f"native_geo_stats_{geom_col}",
+                status=CheckStatus.WARNING,
+                message=f'geometry column "{geom_col}" not found in parquet metadata',
+                category="parquet_geo_types",
+            )
 
-            if result is None:
+        # The whole file's bounds, not whichever row group comes first.
+        bbox = aggregate_native_geo_stats(chunks).get("bbox")
+
+        if bbox:
+            geo_bbox = dict(zip(("xmin", "ymin", "xmax", "ymax"), bbox[:4], strict=True))
+            # Validate that bbox values are reasonable (not garbage from parsing errors)
+            if not _is_bbox_valid(geo_bbox):
                 return ValidationCheck(
                     name=f"native_geo_stats_{geom_col}",
-                    status=CheckStatus.WARNING,
-                    message=f'geometry column "{geom_col}" not found in parquet metadata',
+                    status=CheckStatus.SKIPPED,
+                    message="geospatial statistics values appear invalid (possible parsing error)",
+                    details="The bbox values read from native geo stats are out of range. "
+                    "This may be a platform-specific issue with reading Parquet geo metadata.",
                     category="parquet_geo_types",
                 )
-
-            geo_bbox, geo_types = result
-
-            # Check if geo_bbox has valid values
-            if geo_bbox and geo_bbox.get("xmin") is not None:
-                # Validate that bbox values are reasonable (not garbage from parsing errors)
-                if not _is_bbox_valid(geo_bbox):
-                    return ValidationCheck(
-                        name=f"native_geo_stats_{geom_col}",
-                        status=CheckStatus.SKIPPED,
-                        message="geospatial statistics values appear invalid (possible parsing error)",
-                        details="The bbox values read from native geo stats are out of range. "
-                        "This may be a platform-specific issue with reading Parquet geo metadata.",
-                        category="parquet_geo_types",
-                    )
-                bbox_str = (
-                    f"[{geo_bbox['xmin']:.2f}, {geo_bbox['ymin']:.2f}, "
-                    f"{geo_bbox['xmax']:.2f}, {geo_bbox['ymax']:.2f}]"
-                )
-                return ValidationCheck(
-                    name=f"native_geo_stats_{geom_col}",
-                    status=CheckStatus.PASSED,
-                    message=f"geometry column has geospatial statistics: {bbox_str}",
-                    category="parquet_geo_types",
-                )
-            else:
-                return ValidationCheck(
-                    name=f"native_geo_stats_{geom_col}",
-                    status=CheckStatus.WARNING,
-                    message=f'geometry column "{geom_col}" missing geospatial statistics',
-                    details="GeospatialStatistics (geo_bbox) enables efficient spatial filtering. "
-                    "Re-write with a tool that generates native geo statistics.",
-                    category="parquet_geo_types",
-                )
+            bbox_str = (
+                f"[{geo_bbox['xmin']:.2f}, {geo_bbox['ymin']:.2f}, "
+                f"{geo_bbox['xmax']:.2f}, {geo_bbox['ymax']:.2f}]"
+            )
+            return ValidationCheck(
+                name=f"native_geo_stats_{geom_col}",
+                status=CheckStatus.PASSED,
+                message=f"geometry column has geospatial statistics: {bbox_str}",
+                category="parquet_geo_types",
+            )
+        else:
+            return ValidationCheck(
+                name=f"native_geo_stats_{geom_col}",
+                status=CheckStatus.WARNING,
+                message=f'geometry column "{geom_col}" missing geospatial statistics',
+                details="GeospatialStatistics (geo_bbox) enables efficient spatial filtering. "
+                "Re-write with a tool that generates native geo statistics.",
+                category="parquet_geo_types",
+            )
 
     except Exception as e:
         return ValidationCheck(
@@ -2187,6 +2180,7 @@ def _check_native_geo_stats_contains_data(
     parquet_file: str, geom_col: str, con, sample_size: int
 ) -> ValidationCheck:
     """Check that sampled geometries fall within declared geospatial statistics (geo_bbox)."""
+    from geoparquet_io.core.duckdb_metadata import get_aggregated_native_geo_stats
     from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.remote import is_remote_url
 
@@ -2202,16 +2196,12 @@ def _check_native_geo_stats_contains_data(
 
         safe_url = safe_file_url(parquet_file, verbose=False)
 
-        # Get geo_bbox from parquet metadata
-        escaped_geom_col = _escape_sql_string(geom_col)
-        meta_result = con.execute(f"""
-            SELECT geo_bbox
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{escaped_geom_col}'
-            LIMIT 1
-        """).fetchone()
+        # The sample below spans the whole file, so it is judged against the
+        # whole file's statistics -- the union over every row group, not the
+        # bounds of whichever one happens to come first.
+        stats = get_aggregated_native_geo_stats(parquet_file, geom_col, con)
 
-        if meta_result is None or meta_result[0] is None:
+        if not stats:
             return ValidationCheck(
                 name=f"native_geo_stats_contains_data_{geom_col}",
                 status=CheckStatus.SKIPPED,
@@ -2219,14 +2209,16 @@ def _check_native_geo_stats_contains_data(
                 category="parquet_geo_types",
             )
 
-        geo_bbox = meta_result[0]
-        if geo_bbox.get("xmin") is None:
+        bbox = stats.get("bbox")
+        if not bbox:
             return ValidationCheck(
                 name=f"native_geo_stats_contains_data_{geom_col}",
                 status=CheckStatus.SKIPPED,
                 message="geospatial statistics has no bbox values",
                 category="parquet_geo_types",
             )
+
+        geo_bbox = dict(zip(("xmin", "ymin", "xmax", "ymax"), bbox[:4], strict=True))
 
         # Validate that bbox values are reasonable (not garbage from parsing errors)
         if not _is_bbox_valid(geo_bbox):

@@ -1110,12 +1110,77 @@ def find_primary_geometry_column_duckdb(parquet_file: str, con=None) -> str:
     return "geometry"
 
 
+def get_native_geo_stats_by_row_group(
+    parquet_file: str, geometry_column: str, con=None
+) -> list[dict] | None:
+    """Native Parquet geospatial statistics for one column, per column chunk.
+
+    Args:
+        parquet_file: Path or URL to the parquet file
+        geometry_column: Name of the geometry column
+        con: Optional existing DuckDB connection to reuse
+
+    Returns:
+        None if the file carries no column of that name, otherwise one dict per
+        column chunk carrying statistics, ordered by row group: row_group_id,
+        xmin/ymin/xmax/ymax, zmin/zmax (None when absent) and geometry_types
+        (raw type codes, for :func:`_format_geo_types`).
+
+    Raises:
+        Whatever DuckDB raises when the file itself cannot be read. ``None``
+        means "no such column" and nothing else, so a caller can report an
+        unreachable or corrupt file as the failure it is instead of diagnosing
+        it as a missing geometry column.
+    """
+    safe_url = _safe_url(parquet_file)
+    connection, should_close = _get_connection_for_file(parquet_file, con)
+
+    try:
+        # path_in_schema is compared against a string LITERAL, not an
+        # identifier, so the guard is _escape_sql_string, not quote_identifier.
+        escaped_geom_col = _escape_sql_string(geometry_column)
+        rows = connection.execute(f"""
+            SELECT row_group_id, geo_bbox, geo_types
+            FROM parquet_metadata('{safe_url}')
+            WHERE path_in_schema = '{escaped_geom_col}'
+            ORDER BY row_group_id
+        """).fetchall()
+    finally:
+        if should_close:
+            connection.close()
+
+    if not rows:
+        return None
+
+    chunks = []
+    for row_group_id, geo_bbox, geo_types in rows:
+        if not geo_bbox and not geo_types:
+            continue
+        bbox = geo_bbox or {}
+        chunks.append(
+            {
+                "row_group_id": row_group_id,
+                "xmin": bbox.get("xmin"),
+                "ymin": bbox.get("ymin"),
+                "xmax": bbox.get("xmax"),
+                "ymax": bbox.get("ymax"),
+                "zmin": bbox.get("zmin"),
+                "zmax": bbox.get("zmax"),
+                "geometry_types": list(geo_types or []),
+            }
+        )
+    return chunks
+
+
 def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None) -> dict | None:
     """
     Get native Parquet GeospatialStatistics for a geometry column.
 
     This retrieves the geo_bbox and geo_types from the Parquet column metadata,
     which is part of the native Parquet geospatial support (not GeoParquet metadata).
+
+    Reports the first column chunk that carries statistics; for the whole file's
+    bounds use :func:`get_aggregated_native_geo_stats`.
 
     Args:
         parquet_file: Path to the parquet file
@@ -1126,51 +1191,28 @@ def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None)
         dict with 'bbox' (list of 4 floats) and 'geometry_types' (list of strings),
         or None if not available
     """
-    safe_url = _safe_url(parquet_file)
-    connection, should_close = _get_connection_for_file(parquet_file, con)
-
     try:
-        escaped_geom_col = _escape_sql_string(geometry_column)
-        result = connection.execute(f"""
-            SELECT geo_bbox, geo_types
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{escaped_geom_col}'
-            LIMIT 1
-        """).fetchone()
-
-        if result is None:
-            return None
-
-        geo_bbox, geo_types = result
-
-        # Build the result dict
-        stats = {}
-
-        # Process geo_bbox - aggregate across all row groups
-        if geo_bbox and geo_bbox.get("xmin") is not None:
-            # For single row group, just use the values
-            stats["bbox"] = [
-                geo_bbox["xmin"],
-                geo_bbox["ymin"],
-                geo_bbox["xmax"],
-                geo_bbox["ymax"],
-            ]
-
-            # Include Z bounds if present
-            if geo_bbox.get("zmin") is not None:
-                stats["bbox"].extend([geo_bbox["zmin"], geo_bbox["zmax"]])
-
-        # Process geo_types - format nicely
-        if geo_types:
-            stats["geometry_types"] = _format_geo_types(geo_types)
-
-        return stats if stats else None
-
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
     except Exception:
         return None
-    finally:
-        if should_close:
-            connection.close()
+    if not chunks:
+        return None
+
+    stats: dict = {}
+
+    # Both halves must describe the same column chunk: reporting one row group's
+    # bbox beside another's geometry types would be a dict that matches no row
+    # group in the file.
+    first = next((c for c in chunks if c["xmin"] is not None), chunks[0])
+    if first["xmin"] is not None:
+        stats["bbox"] = [first["xmin"], first["ymin"], first["xmax"], first["ymax"]]
+        if first["zmin"] is not None:
+            stats["bbox"].extend([first["zmin"], first["zmax"]])
+
+    if first["geometry_types"]:
+        stats["geometry_types"] = _format_geo_types(first["geometry_types"])
+
+    return stats if stats else None
 
 
 def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con=None) -> dict:
@@ -1187,52 +1229,41 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
     Returns:
         dict with 'bbox' (list of 4+ floats) and 'geometry_types' (list of strings)
     """
-    safe_url = _safe_url(parquet_file)
-    connection, should_close = _get_connection_for_file(parquet_file, con)
-
     try:
-        escaped_geom_col = _escape_sql_string(geometry_column)
-        # Aggregate bbox across all row groups
-        result = connection.execute(f"""
-            SELECT
-                MIN(geo_bbox.xmin) as xmin,
-                MIN(geo_bbox.ymin) as ymin,
-                MAX(geo_bbox.xmax) as xmax,
-                MAX(geo_bbox.ymax) as ymax,
-                MIN(geo_bbox.zmin) as zmin,
-                MAX(geo_bbox.zmax) as zmax
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{escaped_geom_col}'
-              AND geo_bbox IS NOT NULL
-        """).fetchone()
-
-        stats = {}
-
-        if result and result[0] is not None:
-            xmin, ymin, xmax, ymax, zmin, zmax = result
-            stats["bbox"] = [xmin, ymin, xmax, ymax]
-            if zmin is not None:
-                stats["bbox"].extend([zmin, zmax])
-
-        # Get unique geometry types across all row groups
-        types_result = connection.execute(f"""
-            SELECT DISTINCT unnest(geo_types) as geo_type
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{escaped_geom_col}'
-              AND geo_types IS NOT NULL
-        """).fetchall()
-
-        if types_result:
-            raw_types = [row[0] for row in types_result if row[0]]
-            stats["geometry_types"] = _format_geo_types(raw_types)
-
-        return stats
-
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
     except Exception:
         return {}
-    finally:
-        if should_close:
-            connection.close()
+    return aggregate_native_geo_stats(chunks) if chunks else {}
+
+
+def aggregate_native_geo_stats(chunks: list[dict]) -> dict:
+    """Combine per-column-chunk statistics into one bbox and type list.
+
+    Args:
+        chunks: Output of :func:`get_native_geo_stats_by_row_group`
+
+    Returns:
+        dict with 'bbox' (list of 4+ floats) and 'geometry_types' (list of strings)
+    """
+    stats: dict = {}
+
+    with_bbox = [c for c in chunks if c["xmin"] is not None]
+    if with_bbox:
+        stats["bbox"] = [
+            min(c["xmin"] for c in with_bbox),
+            min(c["ymin"] for c in with_bbox),
+            max(c["xmax"] for c in with_bbox),
+            max(c["ymax"] for c in with_bbox),
+        ]
+        with_z = [c for c in with_bbox if c["zmin"] is not None]
+        if with_z:
+            stats["bbox"].extend([min(c["zmin"] for c in with_z), max(c["zmax"] for c in with_z)])
+
+    raw_types = [t for c in chunks for t in c["geometry_types"] if t or t == 0]
+    if raw_types:
+        stats["geometry_types"] = _format_geo_types(raw_types)
+
+    return stats
 
 
 def get_per_row_group_native_geo_stats(
@@ -1252,45 +1283,30 @@ def get_per_row_group_native_geo_stats(
     Returns:
         List of dicts with row_group_id, xmin, ymin, xmax, ymax (empty if no stats)
     """
-    safe_url = _safe_url(parquet_file)
-    connection, should_close = _get_connection_for_file(parquet_file, con)
+    if not geometry_column:
+        try:
+            geometry_column = find_primary_geometry_column_duckdb(parquet_file, con)
+        except Exception:
+            return []
 
     try:
-        # Auto-detect geometry column if not specified
-        if not geometry_column:
-            geometry_column = find_primary_geometry_column_duckdb(parquet_file, con)
-
-        escaped_geom_col = _escape_sql_string(geometry_column)
-        result = connection.execute(f"""
-            SELECT
-                row_group_id,
-                geo_bbox.xmin as xmin,
-                geo_bbox.ymin as ymin,
-                geo_bbox.xmax as xmax,
-                geo_bbox.ymax as ymax
-            FROM parquet_metadata('{safe_url}')
-            WHERE path_in_schema = '{escaped_geom_col}'
-              AND geo_bbox IS NOT NULL
-              AND geo_bbox.xmin IS NOT NULL
-            ORDER BY row_group_id
-        """).fetchall()
-
-        return [
-            {
-                "row_group_id": row[0],
-                "xmin": row[1],
-                "ymin": row[2],
-                "xmax": row[3],
-                "ymax": row[4],
-            }
-            for row in result
-        ]
-
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
     except Exception:
         return []
-    finally:
-        if should_close:
-            connection.close()
+    if not chunks:
+        return []
+
+    return [
+        {
+            "row_group_id": chunk["row_group_id"],
+            "xmin": chunk["xmin"],
+            "ymin": chunk["ymin"],
+            "xmax": chunk["xmax"],
+            "ymax": chunk["ymax"],
+        }
+        for chunk in chunks
+        if chunk["xmin"] is not None
+    ]
 
 
 def _format_geo_types(geo_types: list) -> list[str]:

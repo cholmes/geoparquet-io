@@ -420,11 +420,13 @@ def assert_valid_geoparquet_output(path: str, expect: Expect) -> list[str]:
     result = validate_geoparquet(path, validate_data=True, sample_size=0)
     failed = [c.name for c in result.checks if c.status == CheckStatus.FAILED]
     if sys.platform == "win32":
-        # pyarrow's Windows wheel writes all-zero geospatial statistics for a
-        # native GEOMETRY column, so this check reports every geometry as
-        # outside them (issue #721). The identical write path produces correct
-        # statistics on macOS and Linux and uv.lock pins the same pyarrow
-        # everywhere, so it says nothing about the write contract this suite
+        # On Windows the native geospatial statistics do not survive the trip
+        # between writers and readers: DuckDB reports all-zero bounds for a
+        # native GEOMETRY column pyarrow wrote, and pyarrow reads denormal
+        # garbage out of one DuckDB wrote, so this check reports every geometry
+        # as outside them (issue #721). The identical files read correctly on
+        # macOS and Linux, so it is a reader/writer interop gap affecting both
+        # readers there and says nothing about the write contract this suite
         # exists to pin. Excused by name and only on win32 -- every other
         # oracle check stays enforced on Windows, which skipping the affected
         # matrix cells would not have preserved.

@@ -9,15 +9,17 @@ GEOMETRY column on Windows: pyarrow writing them, or DuckDB's
 - ``..._via_duckdb``          XFAIL — DuckDB reports [0, 0, 0, 0] for that same file
 - ``..._both_readers_agree``  XFAIL
 
-So the files gpio writes on Windows are correct on disk; gpio's *reader* is not.
-Everything gpio reports and validates from these statistics goes through DuckDB
-``parquet_metadata()`` — ``get_native_geo_statistics``,
-``get_aggregated_native_geo_stats`` and ``get_per_row_group_native_geo_stats``
-in ``core/duckdb_metadata.py`` — so on Windows those misreport bounds that are
-fine in the file. ``native_geo_stats_contains_data_*`` was flagging a real
-discrepancy all along; it pointed at the reader, not at the file. No rewrite of
-Windows-written files is needed, and routing Windows native-geo writes through
-DuckDB ``COPY`` would have fixed nothing.
+So a pyarrow-written file is correct on disk and DuckDB misreads it there. The
+converse holds too, which the #770 CI run then showed (run 33299322424, win32 x
+Python 3.11/3.12/3.13): on a file DuckDB wrote, DuckDB reads its own statistics
+back correctly and *pyarrow* returns a denormal (1.0435e-320 — bytes taken at
+the wrong offset). Each reader misreads what the other writer produced, so this
+is a reader/writer interop gap on Windows and not a single bad reader. Swapping
+gpio onto pyarrow would only move which files it gets wrong, so gpio keeps
+reading these statistics through DuckDB ``parquet_metadata()``
+(``get_native_geo_stats_by_row_group`` in ``core/duckdb_metadata.py``, which the
+three public getters and the validator all sit on) and the ``win32`` validator
+exclusions carried by #702 and #707 stay.
 
 ``test_duckdb_reads_a_file_it_did_not_write`` closes the one branch the pair
 above leaves open: a writer and reader that are wrong *symmetrically* would also
@@ -25,9 +27,10 @@ agree. It reads a committed corpus fixture, written by neither gpio nor the
 Windows runner, so a failure there is the reader's alone.
 
 The pyarrow assertion is enforced on every platform, Windows included: now that
-the write path is known good there, it is the guard that keeps it good. The
-DuckDB-dependent assertions stay xfail on Windows until the reader is fixed
-(#721). They are strict, so the day DuckDB stops zeroing them CI turns red and
+the write path is known good there, it is the guard that keeps it good. Every
+assertion that reads a pyarrow-written file through DuckDB stays xfail on
+Windows, since that is exactly the half of the interop gap gpio's reader sits
+on. They are strict, so the day DuckDB stops zeroing them CI turns red and
 names the markers — and this docstring — to delete.
 """
 
@@ -41,7 +44,13 @@ import pyarrow.parquet as pq
 import pytest
 import shapely
 
+from geoparquet_io.core import duckdb_metadata
 from geoparquet_io.core.common import get_duckdb_connection, write_geoparquet_table
+from geoparquet_io.core.duckdb_metadata import (
+    get_aggregated_native_geo_stats,
+    get_native_geo_statistics,
+    get_per_row_group_native_geo_stats,
+)
 
 # Far from the origin in every direction, so all-zero statistics cannot contain
 # the data by accident, and a zeroed *single* bound is still caught. The
@@ -61,7 +70,8 @@ duckdb_windows_xfail = pytest.mark.xfail(
     reason=(
         "#721: DuckDB parquet_metadata() reports [0, 0, 0, 0] on Windows for "
         "native GEOMETRY columns whose statistics pyarrow reads back correctly "
-        "from the very same file"
+        "from the very same file (pyarrow misreads DuckDB-written ones in turn, "
+        "so neither reader is the fix)"
     ),
     strict=True,
 )
@@ -252,3 +262,173 @@ def test_duckdb_reads_a_file_it_did_not_write():
         CORPUS_EXPECTED["xmax"],
         CORPUS_EXPECTED["ymax"],
     ), f"DuckDB reports {bbox} for a fixture whose bounds are {CORPUS_EXPECTED}"
+
+
+# ---------------------------------------------------------------------------
+# The whole file's statistics, not whichever row group came first (#770).
+# ---------------------------------------------------------------------------
+
+MULTI_RG_EXPECTED = {"xmin": -122.4, "ymin": -33.9, "xmax": 151.2, "ymax": 48.85}
+
+
+@pytest.fixture
+def multi_row_group_file(tmp_path):
+    """One native-geo row group per point, so no single one holds the extent."""
+    out = tmp_path / "multi_rg.parquet"
+    write_geoparquet_table(
+        _points_table(),
+        str(out),
+        geometry_column="geometry",
+        geoparquet_version="2.0",
+        row_group_rows=1,
+    )
+    assert pq.ParquetFile(str(out)).metadata.num_row_groups == len(POINTS)
+    return str(out)
+
+
+@duckdb_windows_xfail
+def test_aggregated_statistics_span_every_row_group(multi_row_group_file):
+    """The aggregate is the union of the chunks, not whichever one comes first."""
+    per_rg = get_per_row_group_native_geo_stats(multi_row_group_file, "geometry")
+    assert len(per_rg) == len(POINTS)
+    assert [row["row_group_id"] for row in per_rg] == list(range(len(POINTS)))
+
+    agg = get_aggregated_native_geo_stats(multi_row_group_file, "geometry")
+    assert agg["bbox"][:4] == pytest.approx(
+        [
+            MULTI_RG_EXPECTED["xmin"],
+            MULTI_RG_EXPECTED["ymin"],
+            MULTI_RG_EXPECTED["xmax"],
+            MULTI_RG_EXPECTED["ymax"],
+        ]
+    )
+
+
+def _native_geo_checks(path, **kwargs):
+    from geoparquet_io.core.validate import validate_geoparquet
+
+    result = validate_geoparquet(path, validate_data=True, sample_size=0, **kwargs)
+    return {c.name: c for c in result.checks if c.name.startswith("native_geo_stats")}
+
+
+@duckdb_windows_xfail
+def test_validator_judges_data_against_the_whole_files_statistics(multi_row_group_file):
+    """Every geometry is inside the file's statistics; only the first chunk's
+    bbox made them look outside. Platform-independent bug, Windows-only reader
+    gap: hence the xfail, which is about the reader and not about the union."""
+    from geoparquet_io.core.validate import CheckStatus
+
+    checks = _native_geo_checks(multi_row_group_file)
+    contains = checks["native_geo_stats_contains_data_geometry"]
+    assert contains.status == CheckStatus.PASSED, contains.message
+
+    present = checks["native_geo_stats_geometry"]
+    assert present.status == CheckStatus.PASSED, present.message
+    assert "151.20" in present.message, (
+        f"the reported bbox describes one row group, not the file: {present.message}"
+    )
+
+
+def test_validator_reads_its_bbox_from_the_shared_reader(native_geo_file, monkeypatch):
+    """Pin the validator to the shared reader, so it cannot grow its own read."""
+    from geoparquet_io.core.validate import CheckStatus
+
+    monkeypatch.setattr(
+        duckdb_metadata,
+        "get_aggregated_native_geo_stats",
+        lambda *args, **kwargs: {"bbox": [0.0, 0.0, 0.0, 0.0], "geometry_types": ["Point"]},
+    )
+
+    checks = _native_geo_checks(native_geo_file)
+    contains = checks["native_geo_stats_contains_data_geometry"]
+    assert contains.status == CheckStatus.FAILED, (
+        f"the validator ignored the reader it is supposed to use: {contains.message}"
+    )
+
+
+# --- A read failure is not a missing column (#770) ---------------------------
+
+
+def _explode(*args, **kwargs):
+    raise OSError("403 Forbidden: s3://example-bucket/native-geo.parquet")
+
+
+def test_an_unreadable_file_raises_instead_of_reporting_no_column(native_geo_file, monkeypatch):
+    """``None`` must mean "no such column" and nothing else.
+
+    Folding a read failure into ``None`` made every unreachable, truncated or
+    permission-denied file look like a file whose geometry column was missing.
+    """
+    monkeypatch.setattr(duckdb_metadata, "_get_connection_for_file", _explode)
+
+    with pytest.raises(OSError, match="403 Forbidden"):
+        duckdb_metadata.get_native_geo_stats_by_row_group(native_geo_file, "geometry")
+
+    # A column that genuinely is not there still reports None, not an exception.
+    monkeypatch.undo()
+    assert duckdb_metadata.get_native_geo_stats_by_row_group(native_geo_file, "nope") is None
+
+
+def test_validator_reports_the_read_failure_not_a_missing_column(native_geo_file, monkeypatch):
+    from geoparquet_io.core.validate import CheckStatus, _check_native_geo_statistics
+
+    monkeypatch.setattr(duckdb_metadata, "_get_connection_for_file", _explode)
+
+    check = _check_native_geo_statistics(native_geo_file, "geometry")
+
+    assert "403 Forbidden" in check.message, (
+        f"the real read failure never reached the user: {check.message}"
+    )
+    assert "not found" not in check.message, (
+        f"an unreadable file was diagnosed as a missing column: {check.message}"
+    )
+    assert check.status == CheckStatus.SKIPPED
+
+
+def test_the_getters_still_absorb_a_read_failure(native_geo_file, monkeypatch):
+    """Their callers treat empty as "nothing to report"; that contract is unchanged."""
+    monkeypatch.setattr(duckdb_metadata, "_get_connection_for_file", _explode)
+
+    assert get_native_geo_statistics(native_geo_file, "geometry") is None
+    assert get_aggregated_native_geo_stats(native_geo_file, "geometry") == {}
+    assert get_per_row_group_native_geo_stats(native_geo_file, "geometry") == []
+
+
+# --- One dict describes one row group (#770) ---------------------------------
+
+
+def test_single_statistics_take_bbox_and_types_from_the_same_row_group(monkeypatch):
+    """A bbox from one chunk beside another chunk's types matches no row group."""
+    chunks = [
+        # Row group 0: types recorded, bounds not.
+        {
+            "row_group_id": 0,
+            "xmin": None,
+            "ymin": None,
+            "xmax": None,
+            "ymax": None,
+            "zmin": None,
+            "zmax": None,
+            "geometry_types": [1],  # Point
+        },
+        {
+            "row_group_id": 1,
+            "xmin": -1.0,
+            "ymin": -2.0,
+            "xmax": 3.0,
+            "ymax": 4.0,
+            "zmin": None,
+            "zmax": None,
+            "geometry_types": [3],  # Polygon
+        },
+    ]
+    monkeypatch.setattr(
+        duckdb_metadata, "get_native_geo_stats_by_row_group", lambda *a, **k: chunks
+    )
+
+    stats = get_native_geo_statistics("ignored.parquet", "geometry")
+
+    assert stats["bbox"] == pytest.approx([-1.0, -2.0, 3.0, 4.0])
+    assert stats["geometry_types"] == ["Polygon"], (
+        "the types describe row group 0 while the bbox describes row group 1"
+    )

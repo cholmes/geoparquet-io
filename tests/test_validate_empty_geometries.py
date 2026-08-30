@@ -6,11 +6,21 @@ from geoparquet_io.core.validate import (
 
 
 class _Result:
-    def __init__(self, row):
+    def __init__(self, row=None, rows=None):
         self._row = row
+        self._rows = rows
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._rows
+
+
+# One row group, so the file-wide union the check reads is this chunk's bounds.
+_DECLARED_STATS_ROWS = [
+    (0, {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1, "zmin": None, "zmax": None}, ["point"]),
+]
 
 
 class _RecordingConnection:
@@ -21,8 +31,8 @@ class _RecordingConnection:
     def execute(self, query):
         self.queries.append(query)
         if "parquet_metadata" in query:
-            return _Result(({"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1},))
-        return _Result(self._containment_row)
+            return _Result(rows=_DECLARED_STATS_ROWS)
+        return _Result(row=self._containment_row)
 
 
 def test_bbox_query_excludes_empty_geometries():
@@ -56,3 +66,4 @@ def test_native_geo_stats_all_rows_empty_is_skipped(tmp_path):
     )
 
     assert result.status is CheckStatus.SKIPPED
+    assert "no non-empty geometries" in result.message

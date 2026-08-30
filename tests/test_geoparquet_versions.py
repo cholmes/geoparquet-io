@@ -1636,11 +1636,13 @@ class TestGeoParquet11GeoArrow:
 def _is_windows_geo_stats_gap(check_name: str) -> bool:
     """True for the one validator check Windows fails for a platform reason (#721).
 
-    pyarrow's Windows wheel writes geospatial statistics of all zeros for native
-    GEOMETRY columns; `native_geo_stats_contains_data_*` then reports every
-    geometry as outside them. macOS and Linux write correct statistics from the
-    identical code path, so excusing this check on win32 costs no coverage there
-    and none at all elsewhere.
+    On Windows each reader misreads the geospatial statistics the *other*
+    writer produced: DuckDB reports all-zero bounds for a native GEOMETRY
+    column pyarrow wrote, and pyarrow reads denormal garbage out of one DuckDB
+    wrote. The files themselves are fine -- macOS and Linux read the identical
+    files correctly -- so this is a reader/writer interop gap, not a bad writer
+    and not a single bad reader. Excusing this one check on win32 costs no
+    coverage there and none at all elsewhere.
     """
     return sys.platform == "win32" and check_name.startswith("native_geo_stats_contains_data")
 
@@ -1752,11 +1754,12 @@ class TestWriteGeoParquetTableParquetGeoOnly:
 
         result = validate_geoparquet(output_file, target_version="parquet-geo-only")
         failed = [c.name for c in result.checks if c.status == CheckStatus.FAILED]
-        # On Windows the pyarrow writer emits all-zero geospatial statistics for a
-        # native GEOMETRY column, so the "stats contain the data" check fails there
-        # for reasons that have nothing to do with this fix (issue #721). The same
-        # write path produces correct statistics on macOS and Linux. Only that one
-        # check is excused, and only on win32 — every other validator check stays
+        # On Windows the native-geo statistics do not survive the trip between
+        # writers and readers: whichever reader gpio uses misreads the ones the
+        # other writer produced, so the "stats contain the data" check fails
+        # there for reasons that have nothing to do with this fix (issue #721).
+        # The same files read correctly on macOS and Linux. Only that one check
+        # is excused, and only on win32 — every other validator check stays
         # enforced on every platform.
         failed = [n for n in failed if not _is_windows_geo_stats_gap(n)]
         assert not failed, f"validator failures: {failed}"
