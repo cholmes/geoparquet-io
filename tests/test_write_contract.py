@@ -369,7 +369,7 @@ def assert_valid_geoparquet_output(path: str, expect: Expect) -> list[str]:
     assert not missing, f"write dropped input columns {missing} (kept {column_names})"
 
     # Row-group structure: every row must live in exactly one row group, and a
-    # pinned row-group count must be honoured.
+    # pinned row-group count must be honored.
     assert sum(row_group_rows) == expect.rows, (
         f"row groups hold {sum(row_group_rows)} rows but the file claims {expect.rows}"
     )
