@@ -289,11 +289,9 @@ def test_add_bbox_metadata_cli_rejects_v10_file(v10_with_bbox_column):
 def test_add_bbox_metadata_still_works_on_v11_file(v11_with_bbox_column):
     """The 1.1 path is untouched: the covering key is written as before.
 
-    Deliberately not asserting overall file validity here: `add bbox-metadata`'s
-    DuckDB rewrite re-materializes a v1.x WKB column as a native Parquet GEOMETRY
-    type while leaving the version at 1.1.0, which its own validator rejects. That
-    defect predates this branch (bbox_metadata.py is unchanged from main) and is
-    reported separately rather than pinned here.
+    Overall validity is asserted too, now that #712 is fixed -- the rewrite used
+    to re-materialize a v1.x WKB column as a native Parquet GEOMETRY type while
+    leaving the version at 1.1.0, which the validator rejects.
     """
     from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
 
@@ -301,6 +299,7 @@ def test_add_bbox_metadata_still_works_on_v11_file(v11_with_bbox_column):
 
     covering = _covering(v11_with_bbox_column)
     assert covering is not None and covering["bbox"]["xmin"] == ["bbox", "xmin"]
+    assert validate_geoparquet(str(v11_with_bbox_column)).is_valid
 
 
 def test_api_add_bbox_metadata_rejects_v10_table(v10_with_bbox_column):

@@ -1155,6 +1155,12 @@ Raises `ValueError` when the table declares GeoParquet 1.0: the `covering` key w
 introduced in 1.1, so writing it at 1.0 would produce a file that fails validation.
 Write the table at 1.1 first (`table.write(path, geoparquet_version='1.1')`).
 
+Raises `GeoParquetError` when the table carries no GeoParquet `geo` metadata at all:
+`covering` describes a geometry column that `encoding` and `geometry_types` define, so
+a table read from plain Parquet is refused here exactly as `gpio add bbox-metadata`
+refuses the file. Convert it first: `gpio convert geoparquet in.parquet out.parquet`.
+`ops.add_bbox_metadata(table)` is the function form and applies the same rules.
+
 #### `check()` / `check_spatial()` / `check_compression()` / `check_bbox()` / `check_row_groups()`
 
 Run best-practice checks on the table.
@@ -1447,6 +1453,7 @@ pq.write_table(table, 'output.parquet')
 | Function | Description |
 |----------|-------------|
 | `ops.add_bbox(table, column_name='bbox', geometry_column=None)` | Add bounding box column |
+| `ops.add_bbox_metadata(table, bbox_column='bbox', geometry_column=None)` | Add `covering` metadata for an existing bbox column |
 | `ops.add_quadkey(table, column_name='quadkey', resolution=13, use_centroid=False, geometry_column=None)` | Add quadkey column |
 | `ops.add_h3(table, column_name='h3_cell', resolution=9, geometry_column=None)` | Add H3 cell column |
 | `ops.add_a5(table, column_name='a5_cell', resolution=15, geometry_column=None)` | Add A5 cell column |

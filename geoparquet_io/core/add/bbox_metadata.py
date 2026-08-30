@@ -14,6 +14,7 @@ are not supported for in-place metadata modification.
 
 import json
 import os
+from typing import TYPE_CHECKING
 
 import duckdb
 
@@ -23,11 +24,15 @@ from geoparquet_io.core.common import (
     get_duckdb_connection,
     get_parquet_metadata,
 )
+from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import covering_supported, parse_geo_metadata
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
-from geoparquet_io.core.logging_config import debug, error, success
+from geoparquet_io.core.logging_config import debug, success
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 
 def _is_remote_url(path: str) -> bool:
@@ -116,6 +121,134 @@ def _build_kv_metadata_clause(existing_metadata: dict, new_geo_meta: dict) -> st
     return f"KV_METADATA {{{', '.join(kv_parts)}}}"
 
 
+def require_geo_metadata_for_covering(geo_meta: object, source: str | None = None) -> dict:
+    """Refuse an input that carries no usable GeoParquet metadata (#713).
+
+    A file with no `geo` key is not GeoParquet, and adding covering metadata
+    cannot make it one: the covering key is written and nothing else, so the
+    synthesised block used to go out with no `encoding` and no `geometry_types`
+    -- a file that claims to be GeoParquet 1.1.0 and fails five of its own spec
+    checks. Refuse instead, the same way a 1.0 input is refused (#686), and name
+    the command that does produce valid metadata.
+
+    A `geo` key holding valid JSON that is not an object (a bare string, a list)
+    is treated as absent rather than crashing on the first `.get()`.
+
+    Shared by the file path (`add_bbox_metadata`) and the Python API
+    (`Table.add_bbox_metadata`, `ops.add_bbox_metadata`) so both refuse the same
+    input with the same error. `source` names the file when there is one; the
+    in-memory API has no path, so it falls back to naming the table, exactly as
+    the 1.0 gate below says "this file" / "this table".
+
+    Args:
+        geo_meta: Parsed `geo` metadata, or None/whatever JSON produced
+        source: Path of the file being modified, if any
+
+    Returns:
+        dict: The validated geo metadata
+
+    Raises:
+        GeoParquetError: If there is no usable `geo` object
+    """
+    if isinstance(geo_meta, dict) and geo_meta:
+        return geo_meta
+
+    subject = source if source else "this table"
+    target = source if source else "input.parquet"
+    raise GeoParquetError(
+        f"Cannot add bbox covering metadata: {subject} has no GeoParquet "
+        "metadata, so there is nothing to describe the geometry column "
+        "(encoding, geometry types) that the 'covering' key attaches to.\n"
+        f"Convert it first: gpio convert geoparquet {target} out.parquet"
+    )
+
+
+def _covering_for(bbox_column: str) -> dict:
+    """The `covering` value pointing at a bbox struct column."""
+    return {
+        "bbox": {
+            "xmin": [bbox_column, "xmin"],
+            "ymin": [bbox_column, "ymin"],
+            "xmax": [bbox_column, "xmax"],
+            "ymax": [bbox_column, "ymax"],
+        }
+    }
+
+
+def add_bbox_metadata_table(
+    table: "pa.Table",
+    bbox_column: str = "bbox",
+    geometry_column: str | None = None,
+) -> "pa.Table":
+    """Add bbox covering metadata to an in-memory Arrow table.
+
+    The in-memory counterpart of :func:`add_bbox_metadata`, and the single
+    implementation behind `Table.add_bbox_metadata` and `ops.add_bbox_metadata`
+    so the Python API refuses exactly what the CLI refuses (#713).
+
+    Args:
+        table: Arrow table carrying GeoParquet `geo` schema metadata
+        bbox_column: Name of the existing bbox struct column
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        pa.Table: A new table whose `geo` metadata carries the covering key
+
+    Raises:
+        GeoParquetError: If the table carries no usable GeoParquet metadata
+        ValueError: If the geometry or bbox column is missing, or the declared
+            version predates GeoParquet 1.1
+    """
+    from geoparquet_io.core.streaming import find_geometry_column_from_table
+
+    geom_col = geometry_column or find_geometry_column_from_table(table)
+    if geom_col is None:
+        raise ValueError(
+            "Cannot add bbox metadata: no geometry column detected. "
+            "Ensure the table has a valid geometry column."
+        )
+
+    if bbox_column not in table.column_names:
+        raise ValueError(f"Bbox column '{bbox_column}' not found. Use add_bbox() first.")
+
+    schema_metadata = dict(table.schema.metadata) if table.schema.metadata else {}
+
+    geo_meta: object = None
+    if b"geo" in schema_metadata:
+        try:
+            geo_meta = json.loads(schema_metadata[b"geo"].decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            geo_meta = None
+
+    # Same refusal as the file path: a table with no usable `geo` block has
+    # nothing describing the geometry column, and the skeleton this used to
+    # invent claimed GeoParquet 1.1.0 while failing five of its own spec checks.
+    geo_meta = require_geo_metadata_for_covering(geo_meta)
+    if not isinstance(geo_meta.get("columns"), dict):
+        geo_meta["columns"] = {}
+
+    # 'covering' was introduced in GeoParquet 1.1. This path exists solely to
+    # write that key, so a 1.0 table gets a clear error naming the conflict
+    # rather than silently returning a table without the metadata it asked for.
+    table_version = geo_meta.get("version", "")
+    if not covering_supported(table_version):
+        raise ValueError(
+            f"Cannot add bbox covering metadata: this table declares GeoParquet "
+            f"{table_version}, and the 'covering' key requires GeoParquet 1.1 or later. "
+            f"Write the table at 1.1 first (e.g. write(..., geoparquet_version='1.1'))."
+        )
+
+    geo_col_meta = geo_meta["columns"].get(str(geom_col))
+    if not isinstance(geo_col_meta, dict):
+        geo_col_meta = {}
+        geo_meta["columns"][str(geom_col)] = geo_col_meta
+    geo_col_meta["covering"] = _covering_for(bbox_column)
+
+    # Metadata-only change, not a cast
+    schema_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+    return table.replace_schema_metadata(schema_metadata)
+
+
 def add_bbox_metadata(
     parquet_file: str,
     verbose: bool = False,
@@ -159,16 +292,20 @@ def add_bbox_metadata(
         )
         return
 
+    # Reporting a failure and then exiting 0 is the same defect as #713, one
+    # branch earlier: there is no covering to write without a bbox column, so
+    # say so and fail, rather than letting a script read success from $?.
     if not bbox_info["has_bbox_column"]:
-        error("No valid bbox column found in the file. Please add a bbox column first.")
-        return
+        raise GeoParquetError(
+            "No valid bbox column found in the file. Please add a bbox column first.\n"
+            f"Add one: gpio add bbox {parquet_file}"
+        )
 
     # Get existing metadata
     metadata, _ = get_parquet_metadata(safe_url)
     geo_meta = parse_geo_metadata(metadata, False)
 
-    if not geo_meta:
-        geo_meta = {"version": "1.1.0", "primary_column": "geometry", "columns": {}}
+    geo_meta = require_geo_metadata_for_covering(geo_meta, parquet_file)
 
     # 'covering' was introduced in GeoParquet 1.1. Unlike the write paths — where
     # covering is an implicit side effect of writing a bbox column and is simply
@@ -186,22 +323,17 @@ def add_bbox_metadata(
     # Find primary geometry column
     primary_col = find_primary_geometry_column(safe_url, verbose)
 
-    # Update or create the columns section
-    if "columns" not in geo_meta:
+    # Update or create the columns section. A `columns` value that is not an
+    # object is as unusable as a missing one, so replace it rather than indexing
+    # into it.
+    if not isinstance(geo_meta.get("columns"), dict):
         geo_meta["columns"] = {}
 
     if primary_col not in geo_meta["columns"]:
         geo_meta["columns"][primary_col] = {}
 
     # Add bbox covering metadata
-    geo_meta["columns"][primary_col]["covering"] = {
-        "bbox": {
-            "xmin": [bbox_info["bbox_column_name"], "xmin"],
-            "ymin": [bbox_info["bbox_column_name"], "ymin"],
-            "xmax": [bbox_info["bbox_column_name"], "xmax"],
-            "ymax": [bbox_info["bbox_column_name"], "ymax"],
-        }
-    }
+    geo_meta["columns"][primary_col]["covering"] = _covering_for(bbox_info["bbox_column_name"])
 
     if verbose:
         debug("\nUpdated geo metadata:")
@@ -237,9 +369,13 @@ def add_bbox_metadata(
         # Build KV_METADATA clause preserving all existing metadata
         kv_metadata_clause = _build_kv_metadata_clause(existing_kv, geo_meta)
 
-        # Build COPY options
-        # Use GEOPARQUET_VERSION 'V2' if native geometry, 'NONE' otherwise
-        # (NONE means "don't touch the geometry column, just copy as-is with custom metadata")
+        # Build COPY options.
+        # 'V2' keeps the native GEOMETRY logical type of a 2.0 input. 'NONE' means
+        # "don't manage geo metadata" — without it DuckDB writes its own V1 geo
+        # block and clobbers the covering this command exists to add. Note 'NONE'
+        # governs the *metadata* only; keeping the v1.x geometry columns
+        # physically unchanged is what _wrap_query_with_blob_conversion below is
+        # for (#712).
         geoparquet_version = "V2" if has_native_geometry else "NONE"
 
         copy_options = [
@@ -250,8 +386,26 @@ def add_bbox_metadata(
             f"ROW_GROUP_SIZE {row_group_size}",
         ]
 
+        # This command is documented as metadata-only, so the geometry columns'
+        # physical types have to survive it. With the spatial extension loaded --
+        # and GEOPARQUET_VERSION above loads it whether or not we ask -- DuckDB
+        # reads a v1.x WKB column as its own GEOMETRY type, and the COPY then
+        # writes a native Parquet GEOMETRY logical type back out while the declared
+        # version stays 1.1.0. gpio's own validator rejects that combination
+        # (#712). Casting straight back to BLOB keeps the columns plain WKB, which
+        # is what a 1.x file must carry. Every column the file declares as geometry
+        # needs that cast, not just the primary one -- the validator names any
+        # native column, and a 1.1 file may carry several. A file that is *already*
+        # native is left alone: there the native type is the correct output.
+        source_query = f"SELECT * FROM '{safe_url}'"
+        if not has_native_geometry:
+            secondary_cols = [col for col in geo_meta["columns"] if col != primary_col]
+            source_query = _wrap_query_with_blob_conversion(
+                source_query, primary_col, conn, secondary_columns=secondary_cols
+            )
+
         copy_sql = f"""
-            COPY (SELECT * FROM '{safe_url}')
+            COPY ({source_query})
             TO '{temp_file}'
             ({", ".join(copy_options)})
         """
