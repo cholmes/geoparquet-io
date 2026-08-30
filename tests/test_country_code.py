@@ -236,10 +236,7 @@ class TestCountryCodesLocalCountriesFile:
         """Build a countries file from ``source_parquet``'s geometries.
 
         Reusing the input's own geometries guarantees every feature joins, so
-        the assertions below are about plumbing rather than spatial luck. Both a
-        country and a subdivision column are present because
-        ``_print_results_summary`` queries ``admin:subdivision_code``
-        unconditionally.
+        the assertions below are about plumbing rather than spatial luck.
         """
         con = duckdb.connect()
         try:
@@ -299,3 +296,156 @@ class TestCountryCodesLocalCountriesFile:
         assert "input features..." in caplog.text
         assert "Added country codes to" in caplog.text
         assert "Found 1 unique countries" in caplog.text
+
+    @staticmethod
+    def _make_countries_file_without_subdivision(source_parquet, dest):
+        """Build a countries file with a country column but no subdivision column."""
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL spatial; LOAD spatial;")
+            con.execute(
+                f"COPY (SELECT geometry, 'US' AS country_code "
+                f"FROM read_parquet('{source_parquet}')) "
+                f"TO '{dest}' (FORMAT PARQUET)"
+            )
+        finally:
+            con.close()
+        return str(dest)
+
+    def test_countries_file_without_subdivision_column(self, fields_v2_file, tmp_path, caplog):
+        """A countries file with no subdivision column must not crash the summary.
+
+        Regression test for #672: ``_print_results_summary`` hardcoded
+        ``"admin:subdivision_code"`` in its stats query, so a countries file
+        without a subdivision column raised a DuckDB BinderException *after*
+        the output had already been written -- a successful run reported as a
+        failure. The summary also has to omit the subdivision lines rather than
+        report zeros for a column that is not there.
+        """
+        countries = self._make_countries_file_without_subdivision(
+            fields_v2_file, tmp_path / "countries.parquet"
+        )
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=fields_v2_file,
+                countries_parquet=countries,
+                output_parquet=str(output),
+                add_bbox_flag=False,
+                dry_run=False,
+                verbose=True,
+            )
+
+        table = pq.read_table(output)
+        assert "admin:country_code" in table.column_names
+        assert "admin:subdivision_code" not in table.column_names
+        assert set(table.column("admin:country_code").to_pylist()) == {"US"}
+
+        assert "Added country codes to" in caplog.text
+        assert "Found 1 unique countries" in caplog.text
+        assert "Added subdivision codes to" not in caplog.text
+        assert "unique subdivisions" not in caplog.text
+
+    def test_output_path_with_apostrophe(self, fields_v2_file, tmp_path):
+        """An output directory containing an apostrophe must not break the summary.
+
+        The summary query interpolates the output path as a SQL string literal;
+        an unescaped ``'`` broke it the same way #672 did -- after the file was
+        already written.
+        """
+        countries = self._make_countries_file(fields_v2_file, tmp_path / "countries.parquet")
+        odd_dir = tmp_path / "o'brien"
+        odd_dir.mkdir()
+        output = odd_dir / "out.parquet"
+
+        add_country_codes(
+            input_parquet=fields_v2_file,
+            countries_parquet=countries,
+            output_parquet=str(output),
+            add_bbox_flag=False,
+            dry_run=False,
+            verbose=True,
+        )
+
+        assert pq.read_table(output).num_rows == pq.read_table(fields_v2_file).num_rows
+
+    @staticmethod
+    def _make_input_with_subdivision(source_parquet, dest):
+        """Copy ``source_parquet``, adding a subdivision column of its own."""
+        con = duckdb.connect()
+        try:
+            con.execute("INSTALL spatial; LOAD spatial;")
+            con.execute(
+                f"COPY (SELECT *, 'ZZ-01' AS \"admin:subdivision_code\" "
+                f"FROM read_parquet('{source_parquet}')) "
+                f"TO '{dest}' (FORMAT PARQUET)"
+            )
+        finally:
+            con.close()
+        return str(dest)
+
+    def test_summary_counts_a_subdivision_column_the_input_supplied(
+        self, fields_v2_file, tmp_path, caplog
+    ):
+        """The subdivision stats follow the output, not the countries file.
+
+        The join is ``SELECT a.*``, so an input that already carries
+        ``admin:subdivision_code`` keeps it even when the countries file has
+        none. Keying the summary off the countries file omitted the stats for a
+        column that was really written.
+        """
+        source = self._make_input_with_subdivision(fields_v2_file, tmp_path / "in.parquet")
+        countries = self._make_countries_file_without_subdivision(
+            fields_v2_file, tmp_path / "countries.parquet"
+        )
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=source,
+                countries_parquet=countries,
+                output_parquet=str(output),
+                add_bbox_flag=False,
+                dry_run=False,
+                verbose=True,
+            )
+
+        assert "admin:subdivision_code" in pq.read_table(output).column_names
+        assert "Added subdivision codes to" in caplog.text
+        assert "Found 1 unique subdivisions" in caplog.text
+
+    def test_unreadable_summary_warns_instead_of_failing_the_run(
+        self, fields_v2_file, tmp_path, caplog, monkeypatch
+    ):
+        """A summary that cannot be read must not turn a good write into a failure.
+
+        The file is written before the summary runs, so #672's real defect is
+        that *any* failure in that last step exits non-zero. A remote output
+        this connection has no credentials for is the case that survived the
+        column fix.
+        """
+        from geoparquet_io.core.add import country_codes as country_codes_module
+
+        def explode(con, output_parquet):
+            raise RuntimeError("HTTP 403 while reading the output")
+
+        monkeypatch.setattr(country_codes_module, "_print_output_stats", explode)
+
+        countries = self._make_countries_file(fields_v2_file, tmp_path / "countries.parquet")
+        output = tmp_path / "out.parquet"
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=fields_v2_file,
+                countries_parquet=countries,
+                output_parquet=str(output),
+                add_bbox_flag=False,
+                dry_run=False,
+                verbose=True,
+            )
+
+        assert pq.read_table(output).num_rows == pq.read_table(fields_v2_file).num_rows
+        assert "Could not summarize the output file" in caplog.text
+        assert "HTTP 403 while reading the output" in caplog.text
+        assert "Successfully wrote output to" in caplog.text
