@@ -18,6 +18,7 @@ from geoparquet_io.core.constants import (
     DEFAULT_S2_COLUMN_NAME,
     DEFAULT_S2_COMPRESSION_LEVEL,
 )
+from geoparquet_io.core.duckdb_utils import require_community_extension
 from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -223,6 +224,17 @@ def partition_by_s2(
     """
     configure_verbose(verbose)
 
+    # Validate level parameter before consuming stdin or probing extensions.
+    if auto and level is not None:
+        raise InvalidParameterError("auto", "cannot specify both --auto and --level")
+
+    if not auto and level is None:
+        raise InvalidParameterError("level", "must specify either --level or --auto")
+
+    # S2 cell computation is impossible without 'geography'; fail before reading
+    # input (or draining stdin) rather than partway through the pipeline (#737).
+    require_community_extension("geography", feature="gpio partition s2")
+
     # Handle stdin input first (before level calculation)
     stdin_temp_file = None
     actual_input = input_parquet
@@ -230,13 +242,6 @@ def partition_by_s2(
     if is_stdin(input_parquet):
         stdin_temp_file = read_stdin_to_temp_file(verbose)
         actual_input = stdin_temp_file
-
-    # Validate level parameter
-    if auto and level is not None:
-        raise InvalidParameterError("auto", "cannot specify both --auto and --level")
-
-    if not auto and level is None:
-        raise InvalidParameterError("level", "must specify either --level or --auto")
 
     # Wrap all operations in try/finally to ensure stdin temp file cleanup
     try:

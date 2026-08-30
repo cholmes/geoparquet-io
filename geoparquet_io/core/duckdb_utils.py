@@ -597,7 +597,7 @@ def get_duckdb_connection(
     return con
 
 
-def load_community_extension(con, name: str) -> None:
+def load_community_extension(con, name: str, feature: str | None = None) -> None:
     """INSTALL and LOAD a DuckDB community extension with a clear error message.
 
     Community extensions (e.g. ``geography`` for S2 support) are built per
@@ -610,6 +610,8 @@ def load_community_extension(con, name: str) -> None:
     Args:
         con: An open DuckDB connection.
         name: Community extension name (e.g. "geography", "h3").
+        feature: What the caller was trying to do (e.g. "gpio add s2"), named in
+            the error so the user knows which command is unavailable.
 
     Raises:
         ExtensionUnavailableError: If the extension cannot be installed or loaded.
@@ -620,7 +622,31 @@ def load_community_extension(con, name: str) -> None:
         con.execute(f"INSTALL {name} FROM community;")
         con.execute(f"LOAD {name};")
     except duckdb.Error as e:
-        raise ExtensionUnavailableError(name, duckdb.__version__, str(e)) from e
+        raise ExtensionUnavailableError(name, duckdb.__version__, str(e), feature=feature) from e
+
+
+def require_community_extension(name: str, feature: str | None = None) -> None:
+    """Fail fast when a community extension a command depends on is unavailable.
+
+    Commands that cannot run without a community extension call this before
+    reading input or writing anything, so an unpublished extension surfaces as
+    one clear message instead of an error partway through a pipeline (#737).
+
+    The check uses a throwaway in-memory connection; a successful ``INSTALL``
+    is cached by DuckDB, so the cost after the first run is negligible.
+
+    Args:
+        name: Community extension name (e.g. "geography").
+        feature: What the caller was trying to do (e.g. "gpio add s2").
+
+    Raises:
+        ExtensionUnavailableError: If the extension cannot be installed or loaded.
+    """
+    con = duckdb.connect()
+    try:
+        load_community_extension(con, name, feature=feature)
+    finally:
+        con.close()
 
 
 def get_duckdb_connection_for_s3(
@@ -856,10 +882,17 @@ def _wrap_query_with_blob_conversion(
 
     targets: list[str] = []
     if col_info:
-        # Skip a missing column, and a STRUCT of that name (a bbox-style column)
-        if geometry_column in col_info and "STRUCT" not in col_info[geometry_column]:
+        # Only a real GEOMETRY needs ST_AsWKB, and the same test as the
+        # secondaries below. "Not a STRUCT" was too loose: a BLOB primary is
+        # already the correct 1.x carrier and ST_AsWKB(BLOB) does not bind, so
+        # the whole write aborted; worse, ST_AsWKB(VARCHAR) *does* bind and
+        # silently reinterprets the text as WKT.
+        if col_info.get(geometry_column, "").upper().startswith("GEOMETRY"):
             targets.append(geometry_column)
     else:
+        # DESCRIBE failed, so we know nothing about the types. Convert the
+        # primary and let DuckDB reject it if it is not geometry -- the
+        # historical behaviour, and the only safe guess without type info.
         targets.append(geometry_column)
 
     for name in secondary_columns or ():

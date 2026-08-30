@@ -499,8 +499,10 @@ def _probe_extent_resolution(
             con, url, spatial_index_type, geom_sql, sample_clause, resolutions, where=where
         )
     except Exception as e:
-        if verbose:
-            warn(f"Extent-aware probe unavailable ({e}); using global estimate")
+        # Unconditional: falling back to the global formula silently produces a
+        # wrong-but-plausible resolution, and a user who never passes --verbose
+        # has no way to tell that from a correct one.
+        warn(f"Extent-aware probe unavailable ({e}); using global estimate")
         return None
     finally:
         if con is not None:
@@ -510,8 +512,7 @@ def _probe_extent_resolution(
     # Treat that like a probe failure so the global estimate is used instead of
     # silently selecting the coarsest resolution.
     if not any(counts):
-        if verbose:
-            warn("Extent-aware probe found no non-empty cells; using global estimate")
+        warn("Extent-aware probe found no non-empty cells; using global estimate")
         return None
 
     resolution = _select_closest_resolution(resolutions, counts, target_partitions)

@@ -1095,11 +1095,14 @@ def _convert_csv_path(
         geom_info, effective_skip_hilbert, bounds, skip_invalid, skip_bbox=skip_bbox
     )
 
-    # Materialize skip_invalid queries into a temp table to avoid DuckDB 1.5
+    # Materialize skip_invalid queries into a temp table to avoid DuckDB <= 1.5.1
     # segfaults. TRY(ST_GeomFromText(...)) in CTE subqueries gets inlined by
     # the optimizer, causing repeated re-evaluation when downstream metadata
     # queries (ST_GeometryType, ST_XMin, etc.) wrap the query. Materializing
     # parses CSV once and eliminates the unsafe TRY() re-evaluation.
+    # pyproject now floors DuckDB at 1.5.2, which does not have that bug, so
+    # this full materialization is pure overhead on every supported version.
+    # Left in place deliberately: removing it needs its own benchmarking.
     if skip_invalid and geom_info["type"] == "wkt":
         con.execute(f"CREATE OR REPLACE TEMP TABLE _gpio_csv_parsed AS {query}")
         query = "SELECT * FROM _gpio_csv_parsed"
@@ -1522,7 +1525,7 @@ def _read_csv_to_arrow(
         wkt_col = quote_identifier(geom_info["wkt_column"])
         if skip_invalid:
             # Use a CTE to evaluate TRY(ST_GeomFromText(...)) once, avoiding
-            # repeated re-evaluation that can segfault in DuckDB 1.5.
+            # repeated re-evaluation that can segfault in DuckDB <= 1.5.1.
             query = f"""
                 WITH _parsed AS (
                     SELECT * EXCLUDE ({wkt_col}),

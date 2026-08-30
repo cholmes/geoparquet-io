@@ -43,6 +43,7 @@ from click.testing import CliRunner
 # everywhere. Do not "simplify" this back to a dotted patch target.
 from geoparquet_io.cli import main as cli_main
 from geoparquet_io.cli.main import cli
+from tests.conftest import skip_if_geography_unavailable
 
 
 def _find_non_geometry_column(parquet_file: str) -> str:
@@ -215,6 +216,7 @@ class TestFileBasedWriteMemoryReachesEngine:
         assert "DuckDB memory limit: 514MB" in result.output
 
     def test_add_s2_write_memory_reaches_engine(self, places_test_file, temp_output_file):
+        skip_if_geography_unavailable()
         runner = CliRunner()
         result = runner.invoke(
             cli,

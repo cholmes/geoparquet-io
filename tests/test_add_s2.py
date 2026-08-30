@@ -13,7 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.core.add.s2 import add_s2_column, add_s2_table
-from tests.conftest import safe_unlink
+from tests.conftest import safe_unlink, skip_if_geography_unavailable
 
 
 class TestAddS2Table:
@@ -201,6 +201,8 @@ class TestAddS2CLI:
     def test_add_s2_cli_basic(self, places_file, output_file):
         """Test basic CLI invocation."""
         from geoparquet_io.cli.main import cli
+
+        skip_if_geography_unavailable()
 
         runner = CliRunner()
         result = runner.invoke(cli, ["add", "s2", places_file, output_file, "--level", "13"])

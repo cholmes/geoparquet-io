@@ -29,20 +29,20 @@ dependencies = [
     "click>=8.0.0",
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
     "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
-    # S2 support needs the 'geography' community extension, which is built per
-    # DuckDB release. It is published up to 1.5.1 but NOT for 1.5.2-1.5.5
-    # (INSTALL ... FROM community returns HTTP 404). Cap below 1.5.2 so S2 keeps
-    # working; raise the cap once 'geography' is republished for a newer DuckDB.
-    # (gpio still errors clearly via ExtensionUnavailableError if it is missing.)
+    # Floor at 1.5.2: DuckDB <= 1.5.1 applies the selection vector twice in TRY()
+    # under conditional execution (duckdb/duckdb-spatial#858), so TRY() over a
+    # blob segfaults and over a fixed-width type can silently return another
+    # row's value. That crashed geometry repair on ordinary extractions (#737)
+    # and is why core/geometry_repair.py counts invalid geometry in layers (#645).
     #
-    # Staying on <=1.5.1 keeps us on a DuckDB whose TRY() applies the selection
-    # vector twice under conditional execution (dropped in 1.5.2, see
-    # duckdb/duckdb-spatial#858): TRY() over a blob can segfault, and over a
-    # fixed-width type it can silently return another row's value. That is why
-    # core/geometry_repair.py counts invalid geometry in layers (#645). When the
-    # cap moves past 1.5.1, that workaround — and the risk at the other TRY()
-    # call sites — goes away.
-    "duckdb>=1.5.0,<1.5.2",
+    # Cost of the floor: S2 needs the 'geography' community extension, which is
+    # published only up to DuckDB 1.5.1 — newer releases 404 from
+    # community-extensions.duckdb.org because the build hits a C++11/C++17 link
+    # error in DuckDB's plan_serializer (duckdb/duckdb#22097). The fix is merged
+    # upstream (paleolimbot/duckdb-geography#34) and republication is pending;
+    # until then `gpio add s2` / `gpio partition s2` fail fast with an actionable
+    # ExtensionUnavailableError (see core/duckdb_utils.require_community_extension).
+    "duckdb>=1.5.2,<1.6",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
     "rich>=13.0.0",

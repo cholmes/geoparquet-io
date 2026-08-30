@@ -11,8 +11,22 @@ from geoparquet_io.core.exceptions import (
     PartitionError,
     RemoteAccessError,
     ValidationError,
+    is_unpublished_extension_error,
 )
 from geoparquet_io.core.partition.common import PartitionAnalysisError
+
+# The two DuckDB 1.5.5 errors these branches must tell apart, verbatim. Both say
+# "Failed to download extension"; only the first says the registry answered.
+_NOT_PUBLISHED = (
+    'HTTP Error: Failed to download extension "geography" at URL '
+    '"http://community-extensions.duckdb.org/v1.5.5/osx_arm64/geography.duckdb_extension.gz" '
+    "(HTTP 404)"
+)
+_OFFLINE = (
+    'IO Error: Failed to download extension "geography" at URL '
+    '"http://community-extensions.duckdb.org/v1.5.5/osx_arm64/geography.duckdb_extension.gz" '
+    "(ERROR Could not establish connection)"
+)
 
 
 class TestCoreExceptions:
@@ -44,6 +58,75 @@ class TestCoreExceptions:
     def test_extension_unavailable_error_with_detail(self):
         exc = ExtensionUnavailableError("geography", "1.5.4", "HTTP 404")
         assert "HTTP 404" in str(exc)
+
+    def test_extension_unavailable_error_names_the_feature(self):
+        """The failing command is named so users know what stopped working (#737)."""
+        exc = ExtensionUnavailableError("geography", "1.5.5", feature="gpio add s2")
+        assert "gpio add s2" in str(exc)
+
+    def test_geography_hint_offers_a5_and_never_a_forbidden_downgrade(self):
+        """The 404 branch must be actionable without violating the pin (#778).
+
+        pyproject requires duckdb>=1.5.2, so telling a user to install 1.5.1
+        leaves `uv pip check` failing and any `uv sync` silently reverting it.
+        `gpio add a5` is the substitute that actually works today.
+        """
+        message = str(ExtensionUnavailableError("geography", "1.5.5", _NOT_PUBLISHED))
+
+        assert "a5" in message
+        assert "paleolimbot/duckdb-geography#34" in message
+        assert "is not published for this one" in message
+        # Never recommend a DuckDB the pin forbids.
+        assert "duckdb==1.5.1" not in message
+        assert "pip install" not in message
+        # No promised timeline: "pending" claimed a republication nobody filed.
+        assert "pending" not in message.lower()
+
+    def test_geography_hint_is_absent_when_the_download_merely_failed(self):
+        """An offline user must not be told to wait for an upstream release (#778).
+
+        Both DuckDB errors say "Failed to download extension"; only the 404 says
+        the registry answered and lacks this build. Diagnosing on the shared
+        phrase told users behind a proxy that S2 was unpublished.
+        """
+        message = str(ExtensionUnavailableError("geography", "1.5.5", _OFFLINE))
+
+        assert "paleolimbot/duckdb-geography#34" not in message
+        assert "is not published for this one" not in message
+        assert "reachable" in message
+        assert "proxy" in message
+
+    def test_unpublished_flag_tracks_the_underlying_error(self):
+        assert ExtensionUnavailableError("geography", "1.5.5", _NOT_PUBLISHED).unpublished
+        assert not ExtensionUnavailableError("geography", "1.5.5", _OFFLINE).unpublished
+        assert not ExtensionUnavailableError("geography", "1.5.5").unpublished
+
+    def test_no_detail_claims_neither_cause(self):
+        """With no underlying error there is no evidence for either diagnosis."""
+        message = str(ExtensionUnavailableError("geography", "1.5.5"))
+
+        assert "may not be published" in message
+        assert "proxy" not in message
+        assert "paleolimbot" not in message
+
+    def test_extension_unavailable_error_hint_is_extension_specific(self):
+        """Other community extensions must not inherit the geography guidance."""
+        message = str(ExtensionUnavailableError("h3", "1.5.5", _NOT_PUBLISHED))
+
+        assert "paleolimbot" not in message
+        assert "a5" not in message
+        assert "h3" in message
+
+    def test_is_unpublished_extension_error_walks_the_cause_chain(self):
+        """gpio raises `from e`, so the 404 can sit one link down the chain."""
+        cause = RuntimeError(_NOT_PUBLISHED)
+        exc = ExtensionUnavailableError("geography", "1.5.5")
+        exc.__cause__ = cause
+
+        assert is_unpublished_extension_error(exc)
+        assert is_unpublished_extension_error(_NOT_PUBLISHED)
+        assert not is_unpublished_extension_error(_OFFLINE)
+        assert not is_unpublished_extension_error(None)
 
     def test_file_not_found_error_with_detail(self):
         with pytest.raises(FileNotFoundGeoParquetError) as exc_info:

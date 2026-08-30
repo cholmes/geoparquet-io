@@ -37,6 +37,7 @@ duckdb.connect = _thread_limited_connect
 # Now import everything else (they'll get the patched duckdb.connect)
 # noqa: E402 - Intentionally importing after duckdb patch
 # ---------------------------------------------------------------------------
+import functools  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
@@ -504,28 +505,15 @@ def crs_srid_file(test_data_dir):
 def _is_unpublished_extension_error(exc) -> bool:
     """True only if `exc` is an ExtensionUnavailableError caused by a 404/download.
 
-    Matches the DuckDB "extension not built/published for this version" signature
-    (a community-extensions download that 404s). Deliberately does NOT match
-    gpio's own "may not be published" boilerplate, which is present on every
-    ExtensionUnavailableError regardless of the real underlying cause.
+    The signature match itself lives in core (`is_unpublished_extension_error`),
+    so the test hook and the user-facing error message cannot drift apart.
     """
-    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+    from geoparquet_io.core.exceptions import (
+        ExtensionUnavailableError,
+        is_unpublished_extension_error,
+    )
 
-    if not isinstance(exc, ExtensionUnavailableError):
-        return False
-
-    # Collect text from the exception and its cause/context chain.
-    parts: list[str] = []
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        parts.append(str(cur))
-        cur = cur.__cause__ or cur.__context__
-    blob = " ".join(parts).lower()
-
-    # The only signals we treat as "unavailable": DuckDB's download-failure text.
-    return "failed to download extension" in blob or "http 404" in blob
+    return isinstance(exc, ExtensionUnavailableError) and is_unpublished_extension_error(exc)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -548,4 +536,41 @@ def pytest_runtest_call(item):
                 f"available for DuckDB {exc.duckdb_version} in this environment "
                 f"(community extensions are built per DuckDB release)."
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Explicit skip for tests that drive an optional extension through the CLI
+# ---------------------------------------------------------------------------
+# The hook above only sees exceptions that propagate out of the test. Tests that
+# invoke `gpio add s2` / `gpio partition s2` through Click get a non-zero exit
+# code instead -- Click has already turned the ExtensionUnavailableError into
+# output -- so they must ask before asserting success (#737).
+
+
+@functools.cache
+def _community_extension_available(name: str) -> bool:
+    """Probe once per session whether `name` can be installed and loaded.
+
+    Only the unpublished/404 case counts as unavailable; any other failure is
+    re-raised so a genuinely broken environment still fails loudly.
+    """
+    from geoparquet_io.core.duckdb_utils import require_community_extension
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    try:
+        require_community_extension(name)
+    except ExtensionUnavailableError as exc:
+        if _is_unpublished_extension_error(exc):
+            return False
+        raise
+    return True
+
+
+def skip_if_geography_unavailable() -> None:
+    """Skip an S2 test when 'geography' is not published for the running DuckDB."""
+    if not _community_extension_available("geography"):
+        pytest.skip(
+            f"DuckDB community extension 'geography' (S2) is not published for "
+            f"DuckDB {duckdb.__version__}"
         )

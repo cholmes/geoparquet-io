@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import partition
+from tests.conftest import skip_if_geography_unavailable
 
 
 @pytest.fixture
@@ -258,6 +259,8 @@ class TestSubPartitionCLI:
         """Test gpio partition s2 with directory input and --min-size."""
         from pathlib import Path
 
+        skip_if_geography_unavailable()
+
         # Copy the buildings test file to our temp directory
         buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"
         test_file = os.path.join(temp_partition_dir, "test.parquet")
@@ -310,3 +313,80 @@ class TestSubPartitionCLI:
         assert result.exit_code == 0, f"Failed: {result.output}"
         assert not os.path.exists(test_file)
         assert os.path.isdir(os.path.join(temp_partition_dir, "test_quadkey"))
+
+
+class TestSubPartitionFailuresAreReported:
+    """A directory sub-partition that partitions nothing must not exit 0 (#778)."""
+
+    @staticmethod
+    def _seed(directory) -> int:
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        target = os.path.join(directory, "test.parquet")
+        shutil.copy(buildings, target)
+        return os.path.getsize(target)
+
+    def test_a_failing_file_makes_the_command_exit_non_zero(
+        self, cli_runner, temp_partition_dir, monkeypatch
+    ):
+        """Every per-file error was caught and warned about, then the exit code
+        said success -- so a run that partitioned nothing looked like a clean one."""
+        size = self._seed(temp_partition_dir)
+
+        def _boom(**kwargs):
+            raise RuntimeError("simulated partition failure")
+
+        # sub_partition_directory imports it inside the function, so patch the source.
+        monkeypatch.setattr("geoparquet_io.core.partition.by_quadkey.partition_by_quadkey", _boom)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "quadkey",
+                temp_partition_dir,
+                "--min-size",
+                f"{size - 100}B",
+                "--auto",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code != 0, f"failures exited 0: {result.output}"
+        assert "simulated partition failure" in result.output
+
+    def test_an_unavailable_extension_is_reported_once_not_once_per_file(
+        self, cli_runner, temp_partition_dir, monkeypatch
+    ):
+        """The preflight sits above the file loop, so N files get one message.
+
+        Before this, `gpio partition s2 <dir>/ --min-size` printed the whole
+        extension paragraph once per file and still exited 0.
+        """
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+        size = self._seed(temp_partition_dir)
+        for extra in ("second.parquet", "third.parquet"):
+            shutil.copy(
+                os.path.join(temp_partition_dir, "test.parquet"),
+                os.path.join(temp_partition_dir, extra),
+            )
+
+        calls = []
+
+        def _unavailable(name, feature=None):
+            calls.append(name)
+            raise ExtensionUnavailableError(name, "1.5.5", "HTTP 404", feature=feature)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.duckdb_utils.require_community_extension", _unavailable
+        )
+
+        result = cli_runner.invoke(
+            partition,
+            ["s2", temp_partition_dir, "--min-size", f"{size - 100}B", "--level", "8", "--force"],
+        )
+
+        assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
+        assert len(calls) == 1, f"preflight ran {len(calls)} times for 3 files"
+        assert result.output.count("paleolimbot/duckdb-geography#34") == 1

@@ -57,14 +57,20 @@ def _layered_invalid_count_sql(source_sql: str, parsed_expr: str) -> str:
     """COUNT of invalid geometries, in a shape DuckDB executes without crashing.
 
     Filtering ``IS NOT NULL`` and evaluating ``ST_IsValid`` over the raw rows in
-    one WHERE clause segfaults DuckDB 1.5.x's spatial extension when the column
-    contains NULLs: DuckDB 1.5.1's TRY() applies the selection vector twice
-    under conditional execution, reading uninitialized vector memory (fixed in
-    DuckDB 1.5.2, see duckdb/duckdb-spatial#858 — we are pinned below it for the
-    'geography' extension). Verified on
-    issue #642's reproduction: projecting the parsed geometry first, filtering
-    NULLs in a middle layer, and running ``ST_IsValid`` outermost is logically
-    identical and crash-free.
+    one WHERE clause segfaults DuckDB <= 1.5.1's spatial extension when the
+    column contains NULLs: its TRY() applies the selection vector twice under
+    conditional execution, reading uninitialized vector memory (issues #642 and
+    #737; fixed in DuckDB 1.5.2 — duckdb/duckdb-spatial#858 — which pyproject
+    now requires). Verified on issue #642's reproduction: projecting the parsed
+    geometry first, filtering NULLs in a middle layer, and running
+    ``ST_IsValid`` outermost is logically identical and crash-free.
+
+    Kept for anyone who forces a DuckDB below the pyproject floor, but it is
+    not a guarantee there: the layered form only avoids the crash because the
+    optimizer happens to keep the two filters in separate operators, which
+    nothing promises (duckdb/duckdb-spatial#858). #737's reporter hit SIGSEGV
+    through this very code. The version floor is the fix; this shape is only
+    slightly better odds.
     """
     return (
         f"SELECT COUNT(*) FROM ("
@@ -114,7 +120,7 @@ def repair_query_geometry(con, query: str, geometry_column: str, *, repair: bool
         # we never crash the pipeline; such rows are passed through unchanged.
         parsed = f"TRY(ST_GeomFromWKB({col}))"
         # AND-form (repair in THEN, passthrough in ELSE). The equivalent OR-form
-        # with ST_MakeValid in the ELSE branch segfaults DuckDB 1.5.1's spatial
+        # with ST_MakeValid in the ELSE branch segfaults DuckDB <= 1.5.1's spatial
         # extension on some real WKB inputs (see repair_arrow_table_geometry).
         repaired_expr = (
             f"CASE WHEN {parsed} IS NOT NULL AND NOT ST_IsValid({parsed}) "
@@ -181,7 +187,7 @@ def repair_arrow_table_geometry(table, geometry_column: str = "geometry", *, rep
             return table, n
         # AND-form (repair in THEN, passthrough in ELSE). The equivalent
         # OR-form (`col IS NULL OR parsed IS NULL OR ST_IsValid(parsed)` with
-        # ST_MakeValid in the ELSE branch) segfaults DuckDB 1.5.1's spatial
+        # ST_MakeValid in the ELSE branch) segfaults DuckDB <= 1.5.1's spatial
         # extension on some real WKB inputs — a conditional-execution bug where
         # the raw-blob `IS NULL` term mis-aligns the selection vector fed to
         # ST_MakeValid. This form is logically identical and crash-free.

@@ -1,5 +1,7 @@
 """Tests for core/duckdb_utils.py module."""
 
+from unittest import mock
+
 import duckdb
 import pytest
 
@@ -270,6 +272,89 @@ class TestLoadCommunityExtension:
 
         assert "geography" in str(exc_info.value)
         assert "simulated HTTP 404" in str(exc_info.value)
+
+    def test_feature_name_is_carried_into_the_error(self):
+        """The caller's feature label reaches the message (#737)."""
+
+        class _FakeConnection:
+            def execute(self, sql):
+                raise duckdb.IOException("simulated HTTP 404 for community extension")
+
+        with pytest.raises(ExtensionUnavailableError) as exc_info:
+            load_community_extension(_FakeConnection(), "geography", feature="gpio add s2")
+
+        assert "gpio add s2" in str(exc_info.value)
+
+
+class TestDuckDBVersionFloor:
+    """The dependency floor must stay above the TRY() segfault (#737)."""
+
+    def test_running_duckdb_has_the_try_selection_vector_fix(self):
+        """DuckDB <= 1.5.1 segfaults in TRY() over a blob under conditional execution.
+
+        That crash killed `repair_arrow_table_geometry` mid-extraction, discarding
+        everything already downloaded (#737, duckdb/duckdb-spatial#858). It is a
+        process-level SIGSEGV, so no amount of gpio-side error handling can catch
+        it -- only the version floor prevents it.
+        """
+        version = tuple(int(part) for part in duckdb.__version__.split(".")[:3])
+        assert version >= (1, 5, 2), (
+            f"DuckDB {duckdb.__version__} segfaults in geometry repair (#737); "
+            f"pyproject requires >= 1.5.2"
+        )
+
+    # A behavioural probe would be better than the version string above, which is
+    # a tautology for anyone who installed per pyproject and cannot see a
+    # backport, a vendored build, or a distro DuckDB reporting 1.5.5 over 1.5.1's
+    # evaluator. One was attempted and does not exist cheaply. Measured on
+    # 1.5.0/1.5.1/1.5.2/1.5.5, all of these behave IDENTICALLY on every version:
+    #
+    #   - TRY(CAST(VARCHAR AS INTEGER)) under a CASE, vs. the unguarded cast
+    #   - the same to DECIMAL, DATE, LIST and STRUCT targets
+    #   - the same under a WHERE that forces a selection vector, at 20k rows
+    #   - TRY(ST_GeomFromWKB(...)) with NULLs filtered in one WHERE (the unsafe
+    #     shape from `_layered_invalid_count_sql`), at 20k rows
+    #
+    # The real reproduction (#737) needs ~200k WKB polygons over ~300 chunks and
+    # kills the process, so it cannot run in-process and is far too slow for the
+    # fast lane. Do not add a probe here without first checking it actually FAILS
+    # on 1.5.1 -- one that passes on both versions asserts nothing while looking
+    # like it asserts everything.
+
+
+class TestRequireCommunityExtension:
+    """Fail-fast preflight for community extensions (#737)."""
+
+    def test_raises_when_extension_cannot_be_loaded(self):
+        """An unavailable extension surfaces before any work is attempted."""
+        from geoparquet_io.core import duckdb_utils
+
+        def _fail(con, name, feature=None):
+            raise ExtensionUnavailableError(name, "1.5.5", "HTTP 404", feature=feature)
+
+        with mock.patch.object(duckdb_utils, "load_community_extension", _fail):
+            with pytest.raises(ExtensionUnavailableError) as exc_info:
+                duckdb_utils.require_community_extension("geography", feature="gpio add s2")
+
+        assert "gpio add s2" in str(exc_info.value)
+
+    def test_passes_and_closes_its_connection_when_available(self):
+        """The preflight uses a throwaway connection and leaves nothing open."""
+        from geoparquet_io.core import duckdb_utils
+
+        calls = []
+
+        def _ok(con, name, feature=None):
+            calls.append((con, name, feature))
+
+        with mock.patch.object(duckdb_utils, "load_community_extension", _ok):
+            duckdb_utils.require_community_extension("geography", feature="gpio add s2")
+
+        assert len(calls) == 1
+        con, name, feature = calls[0]
+        assert (name, feature) == ("geography", "gpio add s2")
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT 1")
 
 
 class TestS3CacheThreadSafety:
@@ -591,6 +676,32 @@ class TestWrapQueryWithBlobConversion:
 
         assert "ST_AsWKB" in wrapped
         assert con.execute(f"DESCRIBE ({wrapped})").fetchall()[1][1] == "BLOB"
+
+    def test_a_blob_primary_column_is_not_cast(self, con):
+        """A BLOB primary is already the 1.x carrier; ST_AsWKB(BLOB) does not bind."""
+        query = "SELECT 1 AS id, 'raw'::BLOB AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con)
+
+        assert "ST_AsWKB" not in wrapped
+        assert con.execute(wrapped).fetchall()[0][1] == b"raw"
+
+    def test_a_varchar_primary_column_is_not_cast(self, con):
+        """ST_AsWKB(VARCHAR) *does* bind, silently reinterpreting the text as WKT."""
+        query = "SELECT 1 AS id, 'POINT (9 9)' AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con)
+
+        assert "ST_AsWKB" not in wrapped
+        assert con.execute(wrapped).fetchall()[0][1] == "POINT (9 9)"
+
+    def test_an_undescribable_query_still_casts_the_primary(self, con):
+        """DESCRIBE can fail; with no type info the primary is still the best guess."""
+        wrapped = _wrap_query_with_blob_conversion(
+            "SELECT * FROM a_table_that_does_not_exist", "geometry", con
+        )
+
+        assert 'ST_AsWKB("geometry")' in wrapped
 
     def test_secondary_geometry_columns_are_cast_too(self, con):
         query = (

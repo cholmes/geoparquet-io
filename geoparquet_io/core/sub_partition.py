@@ -5,6 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Community extensions a partition type cannot run without, checked once before
+# the file loop so an unavailable one is reported once instead of per file.
+_REQUIRED_EXTENSIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "s2": (("geography", "gpio partition s2"),),
+}
+
 
 def find_large_files(
     directory: str,
@@ -84,6 +90,7 @@ def sub_partition_directory(
     Returns:
         dict with keys: processed, skipped, errors
     """
+    from geoparquet_io.core.duckdb_utils import require_community_extension
     from geoparquet_io.core.logging_config import (
         configure_verbose,
         debug,
@@ -117,6 +124,12 @@ def sub_partition_directory(
     res_value = resolution if resolution is not None else level
     if not auto and res_value is None:
         raise ValueError(f"Must specify resolution/level or auto for {partition_type} partitioning")
+
+    # Preflight once, not once per file: a missing community extension fails
+    # every file identically, and reporting it per file buried the real reason
+    # under N copies of the same paragraph (#737, #778).
+    for extension, feature in _REQUIRED_EXTENSIONS.get(partition_type, ()):
+        require_community_extension(extension, feature=feature)
 
     large_files = find_large_files(directory, min_size_bytes)
 
