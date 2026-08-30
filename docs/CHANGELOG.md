@@ -35,7 +35,12 @@ long extraction with no output and no error. The cost is that `gpio add s2` and
 extension is not published for that DuckDB, so both stop with an explanation before
 reading input, and both start working again with no gpio change once the extension is
 republished upstream. `gpio add a5` is the closest substitute
-([#778](https://github.com/geoparquet/geoparquet-io/issues/778)).
+([#778](https://github.com/geoparquet/geoparquet-io/issues/778)), and it had to be
+made reliable to earn that: the a5 community extension POSTs load-time telemetry from
+a detached thread that races process exit, which killed roughly one `gpio add a5`
+invocation in thirteen with a segfault after the output file was already written. gpio
+now opts out of that telemetry before it loads any community extension
+([#779](https://github.com/geoparquet/geoparquet-io/issues/779)).
 
 Three people contributed to gpio for the first time in this release, and we are
 grateful to all of them. [@cayetanobv](https://github.com/cayetanobv) sent ten pull
@@ -147,6 +152,7 @@ issue tracker is open and the guides now run as tests, so a fix is easy to prove
 - fix(write): give secondary geometry columns the target version's carrier ([#706](https://github.com/geoparquet/geoparquet-io/issues/706)) by [@cholmes](https://github.com/cholmes) in [#765](https://github.com/geoparquet/geoparquet-io/pull/765)
 - fix(metadata): carry sidecar KV keys without geometry and without a rewrite ([#708](https://github.com/geoparquet/geoparquet-io/issues/708), [#709](https://github.com/geoparquet/geoparquet-io/issues/709)) by [@cholmes](https://github.com/cholmes) in [#756](https://github.com/geoparquet/geoparquet-io/pull/756)
 - fix(metadata): judge geometries against the whole file's geo statistics ([#721](https://github.com/geoparquet/geoparquet-io/issues/721)) by [@cholmes](https://github.com/cholmes) in [#770](https://github.com/geoparquet/geoparquet-io/pull/770)
+- fix(duckdb): opt out of a5 extension telemetry that segfaults at exit ([#779](https://github.com/geoparquet/geoparquet-io/issues/779)) by [@cholmes](https://github.com/cholmes) in [#781](https://github.com/geoparquet/geoparquet-io/pull/781)
 
 ### Documentation
 
