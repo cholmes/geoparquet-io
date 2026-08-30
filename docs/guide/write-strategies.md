@@ -135,8 +135,9 @@ Override auto-detection when needed:
     gpio extract input.parquet output.parquet --write-memory 512MB
     ```
 
-    !!! warning "`--write-memory` requires the `duckdb-kv` strategy"
-        Only `duckdb-kv` (the default) has a DuckDB write engine to configure.
+    !!! warning "On file-writing commands, `--write-memory` requires `duckdb-kv`"
+        On commands that write through a DuckDB write engine, only `duckdb-kv`
+        (the default) has one to configure.
         Combining `--write-memory` with an explicitly chosen `--write-strategy`
         of `streaming`, `in-memory`, or `disk-rewrite` is rejected as a
         parameter error. `--geoparquet-version 1.1-geoarrow` internally reroutes
@@ -144,6 +145,25 @@ Override auto-detection when needed:
         `--write-memory` rather than failing. Streaming Arrow IPC to stdout
         (`-`) also has no write engine to configure, so the limit is ignored
         with a warning — `--write-memory` only applies to file outputs.
+
+    !!! note "On `gpio extract bigquery`, `--write-memory` governs the scan"
+        That command writes through PyArrow and has no `--write-strategy` flag,
+        so there is no DuckDB write engine to configure. The value is validated
+        and applied as `memory_limit` on the DuckDB connection running the
+        BigQuery scan — it is honored, not dropped, but it governs the read side
+        only.
+
+        It is **not** a cap on the command's peak memory. The whole result set
+        is materialized as an Arrow table before the write, and that copy is
+        allocated by PyArrow, outside DuckDB's `memory_limit` accounting; the
+        scan connection is also built without a `temp_directory`, so DuckDB has
+        no spill path. Size a BigQuery extract against the result set, not
+        against `--write-memory`.
+
+        The shared `--help` text still describes the flag as a "Memory limit for
+        streaming writes"; on this command it is the scan. Whether the flag
+        should be renamed or removed here is tracked in
+        [#760](https://github.com/geoparquet/geoparquet-io/issues/760).
 
 === "Python"
 

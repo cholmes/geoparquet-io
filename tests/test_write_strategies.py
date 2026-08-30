@@ -999,7 +999,7 @@ class TestDiskRewriteRowGroupSizing:
 
         This path is a bare DuckDB COPY, which flushes a row group per input
         chunk (chunk size capped at 2048 rows), so a request finer than the
-        incoming chunks cannot be honoured exactly. The assertion is therefore
+        incoming chunks cannot be honored exactly. The assertion is therefore
         made at chunk scale — the same resolution the duckdb-kv strategy gives
         for non-geo writes.
         """
