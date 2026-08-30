@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import partition
+from tests.conftest import skip_if_geography_unavailable
 
 
 @pytest.fixture
@@ -257,6 +258,8 @@ class TestSubPartitionCLI:
     def test_partition_s2_with_directory_and_min_size(self, cli_runner, temp_partition_dir):
         """Test gpio partition s2 with directory input and --min-size."""
         from pathlib import Path
+
+        skip_if_geography_unavailable()
 
         # Copy the buildings test file to our temp directory
         buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"

@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.core.partition.by_s2 import partition_by_s2
-from tests.conftest import safe_unlink
+from tests.conftest import safe_unlink, skip_if_geography_unavailable
 
 # Mark all tests as network-dependent (requires DuckDB community extension)
 pytestmark = pytest.mark.network
@@ -128,6 +128,8 @@ class TestPartitionS2CLI:
         """Test basic CLI invocation."""
         from geoparquet_io.cli.main import cli
 
+        skip_if_geography_unavailable()
+
         runner = CliRunner()
         result = runner.invoke(
             cli, ["partition", "s2", places_file, output_folder, "--level", "10", "--force"]
@@ -140,6 +142,8 @@ class TestPartitionS2CLI:
     def test_partition_s2_cli_preview(self, places_file, output_folder):
         """Test preview mode."""
         from geoparquet_io.cli.main import cli
+
+        skip_if_geography_unavailable()
 
         runner = CliRunner()
         result = runner.invoke(

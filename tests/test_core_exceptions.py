@@ -45,6 +45,24 @@ class TestCoreExceptions:
         exc = ExtensionUnavailableError("geography", "1.5.4", "HTTP 404")
         assert "HTTP 404" in str(exc)
 
+    def test_extension_unavailable_error_names_the_feature(self):
+        """The failing command is named so users know what stopped working (#737)."""
+        exc = ExtensionUnavailableError("geography", "1.5.5", feature="gpio add s2")
+        assert "gpio add s2" in str(exc)
+
+    def test_extension_unavailable_error_geography_hint_is_actionable(self):
+        """'geography' is unpublished past 1.5.1, so say how to get S2 working (#737)."""
+        message = str(ExtensionUnavailableError("geography", "1.5.5"))
+        assert "1.5.1" in message
+        assert "duckdb==1.5.1" in message
+        assert "#737" in message
+
+    def test_extension_unavailable_error_hint_is_extension_specific(self):
+        """Other community extensions must not inherit the geography downgrade advice."""
+        message = str(ExtensionUnavailableError("h3", "1.5.5"))
+        assert "duckdb==1.5.1" not in message
+        assert "h3" in message
+
     def test_file_not_found_error_with_detail(self):
         with pytest.raises(FileNotFoundGeoParquetError) as exc_info:
             raise FileNotFoundGeoParquetError("test.parquet", "no read permission")

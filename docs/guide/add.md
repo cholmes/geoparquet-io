@@ -238,13 +238,22 @@ s2_cell_token(
 Cell IDs are stored as hex strings (e.g., `"89c25901"`) rather than integers for
 maximum portability across systems.
 
-!!! note "DuckDB version and the geography extension"
-    The `geography` extension is a [DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html)
-    that is built per DuckDB release. If you install a DuckDB version for which it
-    has not been published yet, `gpio add s2` (and `gpio partition s2`) fail with a
-    clear message telling you the extension is unavailable for that version. All other
-    `gpio` commands continue to work; either wait for the extension to be rebuilt or
-    install a DuckDB version that provides it.
+!!! warning "S2 is temporarily unavailable (`geography` extension)"
+    S2 cells are computed by the [`geography` DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html),
+    which is built per DuckDB release and is currently published only up to
+    **DuckDB 1.5.1**. gpio requires DuckDB 1.5.2 or newer, because older versions
+    segfault while repairing invalid geometry
+    ([#737](https://github.com/geoparquet/geoparquet-io/issues/737)) — so
+    `gpio add s2` and `gpio partition s2` currently stop immediately with a message
+    saying the extension is unavailable, before reading or writing anything. Every
+    other `gpio` command is unaffected.
+
+    The upstream build fix has been merged
+    ([duckdb-geography#34](https://github.com/paleolimbot/duckdb-geography/pull/34));
+    once the extension is republished for a current DuckDB, S2 starts working again
+    with no change on your side. To use S2 before then, install the last DuckDB that
+    ships it — `uv pip install 'duckdb==1.5.1'` — keeping in mind that this DuckDB
+    version carries the geometry-repair segfault above.
 
 ## A5 Cells
 

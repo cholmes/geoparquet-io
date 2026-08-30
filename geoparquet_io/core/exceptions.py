@@ -114,6 +114,30 @@ class ValidationError(GeoParquetError):
     pass
 
 
+# Last DuckDB release for which the 'geography' community extension is published.
+# Newer releases 404 from community-extensions.duckdb.org: the build fails on a
+# C++11/C++17 link error in DuckDB's plan_serializer tool, added in DuckDB 1.5.2
+# (duckdb/duckdb#22097). The fix is merged upstream
+# (paleolimbot/duckdb-geography#34); republication for newer DuckDB is pending.
+GEOGRAPHY_LAST_PUBLISHED_DUCKDB = "1.5.1"
+
+# Extension-specific guidance appended to ExtensionUnavailableError. Only add an
+# entry when we know something the generic message cannot say.
+_EXTENSION_HINTS = {
+    "geography": (
+        f"'geography' is currently published only up to DuckDB "
+        f"{GEOGRAPHY_LAST_PUBLISHED_DUCKDB}, and gpio requires a newer DuckDB. "
+        f"A build fix has been merged upstream (paleolimbot/duckdb-geography#34) "
+        f"and republication is pending, so S2 support should return without any "
+        f"action on your part. To use S2 before then, install the last DuckDB "
+        f"that provides the extension: "
+        f"uv pip install 'duckdb=={GEOGRAPHY_LAST_PUBLISHED_DUCKDB}' "
+        f"(note that DuckDB {GEOGRAPHY_LAST_PUBLISHED_DUCKDB} can segfault while "
+        f"repairing invalid geometry — see geoparquet-io issue #737)."
+    ),
+}
+
+
 class ExtensionUnavailableError(GeoParquetError):
     """Raised when a required DuckDB community extension cannot be installed/loaded.
 
@@ -123,16 +147,27 @@ class ExtensionUnavailableError(GeoParquetError):
     HTTP 404. This exception surfaces an actionable message instead.
     """
 
-    def __init__(self, name: str, duckdb_version: str, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        duckdb_version: str,
+        detail: str | None = None,
+        feature: str | None = None,
+    ) -> None:
         self.name = name
         self.duckdb_version = duckdb_version
+        self.feature = feature
+        subject = f"'{feature}' requires" if feature else "This operation requires"
         msg = (
-            f"Could not load the DuckDB community extension '{name}' for "
-            f"DuckDB {duckdb_version}. Community extensions are built per DuckDB "
-            f"release, so '{name}' may not be published for this version yet. "
-            f"Install a DuckDB version that provides it (see "
+            f"{subject} the DuckDB community extension '{name}', which could not "
+            f"be loaded for DuckDB {duckdb_version}. Community extensions are built "
+            f"per DuckDB release, so '{name}' may not be published for this version "
+            f"yet (see "
             f"https://community-extensions.duckdb.org/extensions/{name}.html)."
         )
+        hint = _EXTENSION_HINTS.get(name)
+        if hint:
+            msg = f"{msg} {hint}"
         if detail:
             msg = f"{msg} Original error: {detail}"
         super().__init__(msg)

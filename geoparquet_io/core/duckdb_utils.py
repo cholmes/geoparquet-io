@@ -597,7 +597,7 @@ def get_duckdb_connection(
     return con
 
 
-def load_community_extension(con, name: str) -> None:
+def load_community_extension(con, name: str, feature: str | None = None) -> None:
     """INSTALL and LOAD a DuckDB community extension with a clear error message.
 
     Community extensions (e.g. ``geography`` for S2 support) are built per
@@ -610,6 +610,8 @@ def load_community_extension(con, name: str) -> None:
     Args:
         con: An open DuckDB connection.
         name: Community extension name (e.g. "geography", "h3").
+        feature: What the caller was trying to do (e.g. "gpio add s2"), named in
+            the error so the user knows which command is unavailable.
 
     Raises:
         ExtensionUnavailableError: If the extension cannot be installed or loaded.
@@ -620,7 +622,31 @@ def load_community_extension(con, name: str) -> None:
         con.execute(f"INSTALL {name} FROM community;")
         con.execute(f"LOAD {name};")
     except duckdb.Error as e:
-        raise ExtensionUnavailableError(name, duckdb.__version__, str(e)) from e
+        raise ExtensionUnavailableError(name, duckdb.__version__, str(e), feature=feature) from e
+
+
+def require_community_extension(name: str, feature: str | None = None) -> None:
+    """Fail fast when a community extension a command depends on is unavailable.
+
+    Commands that cannot run without a community extension call this before
+    reading input or writing anything, so an unpublished extension surfaces as
+    one clear message instead of an error partway through a pipeline (#737).
+
+    The check uses a throwaway in-memory connection; a successful ``INSTALL``
+    is cached by DuckDB, so the cost after the first run is negligible.
+
+    Args:
+        name: Community extension name (e.g. "geography").
+        feature: What the caller was trying to do (e.g. "gpio add s2").
+
+    Raises:
+        ExtensionUnavailableError: If the extension cannot be installed or loaded.
+    """
+    con = duckdb.connect()
+    try:
+        load_community_extension(con, name, feature=feature)
+    finally:
+        con.close()
 
 
 def get_duckdb_connection_for_s3(

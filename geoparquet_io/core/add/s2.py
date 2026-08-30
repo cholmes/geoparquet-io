@@ -26,6 +26,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
+    require_community_extension,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite
@@ -42,10 +43,14 @@ from geoparquet_io.core.streaming import (
     should_stream_output,
 )
 
+# Named in the error when 'geography' is unavailable, so the message says which
+# command stopped working rather than just which extension is missing (#737).
+_S2_FEATURE = "gpio add s2"
+
 
 def _load_geography_extension(con):
     """Load DuckDB geography extension for S2 support."""
-    load_community_extension(con, "geography")
+    load_community_extension(con, "geography", feature=_S2_FEATURE)
 
 
 def _create_geometry_view(con, table, geom_col):
@@ -137,6 +142,9 @@ def add_s2_table(
     # Validate level
     if not 0 <= level <= 30:
         raise ValueError(f"S2 level must be between 0 and 30, got {level}")
+
+    # Nothing here works without 'geography'; say so before any DuckDB work (#737).
+    require_community_extension("geography", feature=_S2_FEATURE)
 
     # Find geometry column
     geom_col = geometry_column or find_geometry_column_from_table(table)
@@ -247,6 +255,10 @@ def add_s2_column(
     # Validate level
     if not 0 <= s2_level <= 30:
         raise InvalidParameterError("level", f"must be between 0 and 30, got {s2_level}")
+
+    # Fail before reading the input (or draining stdin) when the community
+    # extension that computes S2 cells is unavailable for this DuckDB (#737).
+    require_community_extension("geography", feature=_S2_FEATURE)
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)

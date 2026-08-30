@@ -47,6 +47,7 @@ from geoparquet_io.core.duckdb_metadata import (
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.stream_io import _wrap_query_with_wkb_conversion
+from tests.conftest import skip_if_geography_unavailable
 
 # A geometry column name with a space -- breaks unquoted identifier
 # interpolation (`ST_XMin(geom col)` is a parse error).
@@ -630,6 +631,8 @@ class TestAddCommandsQuoting:
     )
     @adversarial_column
     def test_add_subcommand_succeeds(self, tmp_path, subcommand, column_name):
+        if subcommand == "s2":
+            skip_if_geography_unavailable()
         path = _points_fixture(tmp_path, column_name, "add_cmd_input.parquet")
         out = str(tmp_path / "add_cmd_output.parquet")
 

@@ -37,6 +37,7 @@ duckdb.connect = _thread_limited_connect
 # Now import everything else (they'll get the patched duckdb.connect)
 # noqa: E402 - Intentionally importing after duckdb patch
 # ---------------------------------------------------------------------------
+import functools  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
@@ -548,4 +549,41 @@ def pytest_runtest_call(item):
                 f"available for DuckDB {exc.duckdb_version} in this environment "
                 f"(community extensions are built per DuckDB release)."
             )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Explicit skip for tests that drive an optional extension through the CLI
+# ---------------------------------------------------------------------------
+# The hook above only sees exceptions that propagate out of the test. Tests that
+# invoke `gpio add s2` / `gpio partition s2` through Click get a non-zero exit
+# code instead -- Click has already turned the ExtensionUnavailableError into
+# output -- so they must ask before asserting success (#737).
+
+
+@functools.cache
+def _community_extension_available(name: str) -> bool:
+    """Probe once per session whether `name` can be installed and loaded.
+
+    Only the unpublished/404 case counts as unavailable; any other failure is
+    re-raised so a genuinely broken environment still fails loudly.
+    """
+    from geoparquet_io.core.duckdb_utils import require_community_extension
+    from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+    try:
+        require_community_extension(name)
+    except ExtensionUnavailableError as exc:
+        if _is_unpublished_extension_error(exc):
+            return False
+        raise
+    return True
+
+
+def skip_if_geography_unavailable() -> None:
+    """Skip an S2 test when 'geography' is not published for the running DuckDB."""
+    if not _community_extension_available("geography"):
+        pytest.skip(
+            f"DuckDB community extension 'geography' (S2) is not published for "
+            f"DuckDB {duckdb.__version__}"
         )

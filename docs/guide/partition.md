@@ -199,6 +199,13 @@ Auto-resolution probes your data's actual extent (see [How auto-resolution is ch
 
 ## By S2 Cells
 
+!!! warning "S2 is temporarily unavailable (`geography` extension)"
+    S2 partitioning needs the `geography` DuckDB community extension, which is
+    published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer.
+    `gpio partition s2` currently stops immediately with an explanation instead of
+    partitioning. See [S2 Spherical Cells](add.md#s2-spherical-cells) for the details and the
+    workaround.
+
 Partition by S2 spherical cells:
 
 === "CLI"
