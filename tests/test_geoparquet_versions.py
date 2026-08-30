@@ -1828,6 +1828,181 @@ class TestWriteGeoParquetTableParquetGeoOnly:
         assert get_geoparquet_version(output_file).startswith(version)
 
 
+class TestParquetGeoOnlyWithoutGeometryColumn:
+    """parquet-geo-only must drop the carried geo key with no geometry column too (#701).
+
+    #687 fixed the geometry-present case. The strip sat inside geometry-present
+    guards, so a table whose geometry column was dropped by a projection still
+    wrote the carried `geo` key -- and that key names a `primary_column` the file
+    does not contain.
+    """
+
+    @staticmethod
+    def _attributes_only_table_with_geo(extra_keys=None):
+        """Attributes only: the geometry column is gone, but the geo key rode along."""
+        import json
+
+        import pyarrow as pa
+
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        metadata = {b"geo": json.dumps(geo).encode("utf-8")}
+        metadata.update(extra_keys or {})
+        return pa.table({"id": pa.array([1, 2])}).replace_schema_metadata(metadata)
+
+    def test_pgo_strips_geo_key_when_geometry_column_is_absent(self, tmp_path):
+        """The reproducer from #701."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / "pgo_no_geom.parquet")
+        write_geoparquet_table(
+            self._attributes_only_table_with_geo(),
+            output_file,
+            geoparquet_version="parquet-geo-only",
+        )
+
+        assert pq.read_table(output_file).column_names == ["id"]
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" not in out_metadata, (
+            "parquet-geo-only was explicitly requested but the carried geo key was written"
+        )
+
+    def test_pgo_without_geometry_keeps_non_geo_kv_metadata(self, tmp_path):
+        """Stripping takes the carried schema descriptors, and nothing else.
+
+        `_strip_geo_metadata_key` drops the whole
+        `_CARRIED_SCHEMA_METADATA_KEYS` set -- `geo`, `ARROW:schema` and
+        `pandas` -- not just `geo`. That is deliberate and matches the
+        geometry-present case: all three describe the *input's* schema, and a
+        carried `pandas` block names columns and dtypes the output no longer
+        has. Pinned here so the loss of a round-tripped `pandas` key is a
+        stated behaviour rather than a surprise. Unrelated sidecar payloads
+        (`fiboa`, `vecorel`, STAC fragments) must survive.
+        """
+        import base64
+        import json
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        # A real serialized schema for a shape the output does not have. It has
+        # to be well-formed: pyarrow reconstructs `schema_arrow` from whatever
+        # `ARROW:schema` holds, so garbage here fails the read rather than the
+        # assertion, and the file-level KV block is read directly below.
+        stale_arrow_schema = base64.b64encode(
+            pa.schema([pa.field("stale_input_col", pa.float64())]).serialize()
+        )
+        table = self._attributes_only_table_with_geo(
+            {
+                b"fiboa": json.dumps({"schemas": ["example"]}).encode("utf-8"),
+                b"pandas": json.dumps({"index_columns": ["geometry"]}).encode("utf-8"),
+                b"ARROW:schema": bytes(stale_arrow_schema),
+            }
+        )
+        output_file = str(tmp_path / "pgo_no_geom_kv.parquet")
+        write_geoparquet_table(table, output_file, geoparquet_version="parquet-geo-only")
+
+        out_metadata = pq.ParquetFile(output_file).metadata.metadata or {}
+        assert b"geo" not in out_metadata
+        assert b"fiboa" in out_metadata
+        assert b"pandas" not in out_metadata, (
+            "a carried pandas block describes the input's columns, so it is dropped"
+        )
+        # pyarrow regenerates ARROW:schema from the output schema, so the key is
+        # present -- what must not survive is the *input's* value.
+        assert out_metadata.get(b"ARROW:schema") != bytes(stale_arrow_schema), (
+            "the input's stale ARROW:schema must not ride through to the output"
+        )
+
+    def test_pgo_helper_drops_every_carried_schema_key(self):
+        """The in-memory view of the same rule, free of writer regeneration.
+
+        `pq.write_table` regenerates `ARROW:schema` from the output schema, so
+        the on-disk assertion above can only show the stale value is gone. At
+        the helper boundary all three keys are simply absent.
+        """
+        import json
+
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        result = _apply_geoparquet_metadata(
+            self._attributes_only_table_with_geo(
+                {
+                    b"fiboa": json.dumps({"schemas": ["example"]}).encode("utf-8"),
+                    b"pandas": json.dumps({"index_columns": ["geometry"]}).encode("utf-8"),
+                    b"ARROW:schema": b"stale-serialized-input-schema",
+                }
+            ),
+            geometry_column="geometry",
+            geoparquet_version="parquet-geo-only",
+        )
+
+        metadata = result.schema.metadata or {}
+        assert set(metadata) == {b"fiboa"}
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1", "2.0"])
+    def test_other_versions_without_geometry_are_unchanged(self, version, tmp_path):
+        """Only parquet-geo-only strips; the other explicit versions still no-op.
+
+        The geometry-absent branch is a no-op for them, and this pins that the
+        new strip did not widen into one.
+        """
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        output_file = str(tmp_path / f"nogeom_{version}.parquet")
+        write_geoparquet_table(
+            self._attributes_only_table_with_geo(),
+            output_file,
+            geoparquet_version=version,
+        )
+
+        out_metadata = pq.ParquetFile(output_file).schema_arrow.metadata or {}
+        assert b"geo" in out_metadata
+
+    def test_verbose_reports_the_drop(self, caplog):
+        """The verbose path names what it dropped and why."""
+        import logging
+
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            _apply_geoparquet_metadata(
+                self._attributes_only_table_with_geo(),
+                geometry_column="geometry",
+                geoparquet_version="parquet-geo-only",
+                verbose=True,
+            )
+
+        # Assert on text only the new branch emits. The pre-existing
+        # "not found in table, skipping metadata" line and the earlier
+        # "Applying GeoParquet metadata for version: parquet-geo-only" line
+        # are both reachable without the fix, so matching those would make
+        # this test pass against the unfixed code.
+        assert "dropping carried geo metadata for parquet-geo-only" in caplog.text
+        assert "parquet-geo-only: dropped the input's geo metadata key(s)" in caplog.text
+
+    def test_apply_metadata_helper_strips_directly(self):
+        """The helper itself honors the request, so every caller inherits the fix."""
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
+
+        result = _apply_geoparquet_metadata(
+            self._attributes_only_table_with_geo(),
+            geometry_column="geometry",
+            geoparquet_version="parquet-geo-only",
+        )
+
+        assert b"geo" not in (result.schema.metadata or {})
+
+
 class TestCarriedSchemaMetadataKeysHasOneDefinition:
     """The two write paths must exclude the same keys, structurally.
 
