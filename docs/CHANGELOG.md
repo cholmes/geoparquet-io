@@ -54,6 +54,7 @@ long run of write-path, metadata and CRS correctness fixes.
 ### Fixed
 
 - **`gpio convert geojson - out.geojson` now reads stdin into a named output file** instead of failing with `File not found: -`. The other four converters still reject `-`; they have no stdin-consuming path to route to ([#749](https://github.com/geoparquet/geoparquet-io/issues/749)). ([#723](https://github.com/geoparquet/geoparquet-io/issues/723))
+- **`--row-group-size` is no longer ignored by the `disk-rewrite` write strategy when the request is larger than the input's row groups.** The rewrite issued one `write_table` per *source* row group, and each of those starts a new group, so it could only ever split — a 400-row file of 10-row groups asked for 100 came back as 40 groups of 10. DuckDB's `ROW_GROUP_SIZE` leaves groups that small alone, so the temporary file the rewrite reads did not correct it either. Groups are now accumulated to the target and the overshoot is carried into the next one rather than flushed beside it, which had produced a full group followed by a runt. `disk-rewrite` now returns the same shape as `in-memory` and `streaming`, and the "coarsen" direction is pinned for all four strategies in the write-contract suite. ([#697](https://github.com/geoparquet/geoparquet-io/issues/697), [#757](https://github.com/geoparquet/geoparquet-io/issues/757))
 - **`convert geojson --write-bbox` and `--id-field` no longer truncate every Feature,** and no longer abort the whole conversion on a NULL id value or an EMPTY geometry — each member is omitted instead. ([#726](https://github.com/geoparquet/geoparquet-io/issues/726))
 - **Windows native-geo statistics: the zeros are a read, not a write.** pyarrow reads the real bounds from the same file DuckDB's `parquet_metadata()` reports as `[0, 0, 0, 0]`, so files gpio writes on Windows are correct and it is gpio's own reader that misreports them. ([#721](https://github.com/geoparquet/geoparquet-io/issues/721), [#748](https://github.com/geoparquet/geoparquet-io/issues/748))
 - **Guide examples no longer use flags the CLI does not accept.** Nonexistent options are corrected and missing option-table rows filled in. ([#735](https://github.com/geoparquet/geoparquet-io/issues/735))
@@ -88,7 +89,6 @@ long run of write-path, metadata and CRS correctness fixes.
 
 ### Internal
 
-- **The `disk-rewrite` metadata rewrite can now merge row groups, not only split them.** It issued one `write_table` per *source* row group, and each of those starts a new group, so a `row_group_rows` request larger than the source's groups returned the source's shape. Reachable only through the helper today — the query path pre-sizes its temporary file through DuckDB's `ROW_GROUP_SIZE`, which is what masked it — and the "coarsen" direction is now pinned for all four strategies in the write-contract suite. ([#697](https://github.com/geoparquet/geoparquet-io/issues/697), [#757](https://github.com/geoparquet/geoparquet-io/issues/757))
 - Reduced complexity in 6 functions from Grade E/D to Grade C
 - Comprehensive test coverage improvements
 - Plugin system documentation

@@ -740,10 +740,13 @@ class TestDiskRewriteRowGroupCoarsening:
     smaller than the source's. A request larger than the source's groups came
     back as the source's shape, silently.
 
-    These call the helper directly: the query path pre-sizes the temporary file
-    through DuckDB's ``ROW_GROUP_SIZE``, so end-to-end the request is normally
-    already satisfied before the rewrite runs. That masking is exactly why the
-    limitation survived -- the helper's own contract is what these pin.
+    These call the helper directly because it is the smallest thing that can
+    express the shape assertions. The defect is *not* helper-only: DuckDB's
+    ``ROW_GROUP_SIZE`` leaves small source groups alone, so the temporary file
+    the rewrite reads still arrives at 10 rows per group and
+    ``gpio extract geoparquet --write-strategy disk-rewrite --row-group-size``
+    ignored the request end to end. ``test_write_contract`` pins that direction
+    across all four strategies.
     """
 
     GEO_META = {
@@ -812,6 +815,40 @@ class TestDiskRewriteRowGroupCoarsening:
         self._rewrite(source, out, 10)
 
         assert self._row_group_sizes(out) == [10, 10, 5]
+
+    @pytest.mark.parametrize(
+        ("source_rows", "source_group", "target", "expected"),
+        [
+            (400, 10, 25, [25] * 16),
+            (600, 60, 100, [100] * 6),
+            (400, 40, 100, [100] * 4),
+            (990, 99, 100, [100] * 9 + [90]),
+        ],
+        ids=["10s_to_25", "60s_to_100", "40s_to_100", "99s_to_100"],
+    )
+    def test_overshoot_is_carried_not_flushed_as_a_runt(
+        self, tmp_path, source_rows, source_group, target, expected
+    ):
+        """A batch that overshoots the target must not leave a runt behind it.
+
+        Flushing the whole over-full batch wrote one full group plus its
+        remainder, so 10-row sources at ``row_group_rows=25`` came back as
+        ``[25, 5, 25, 5, ...]`` -- more groups than asked for, half of them
+        undersized, and a worse layout than doing nothing. The remainder is
+        carried into the next group instead. Only the final group may be short.
+        """
+        source = tmp_path / f"src_{source_group}_{target}.parquet"
+        points = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(source_rows)]
+        pq.write_table(
+            pa.table({"id": list(range(source_rows)), "geometry": points}),
+            source,
+            row_group_size=source_group,
+        )
+        out = tmp_path / f"out_{source_group}_{target}.parquet"
+        self._rewrite(source, out, target)
+
+        assert self._row_group_sizes(out) == expected
+        assert pq.read_table(str(out)).column("id").to_pylist() == list(range(source_rows))
 
     def test_rows_and_values_survive_coarsening(self, source_of_ten_row_groups, tmp_path):
         """Merging groups must not reorder or lose rows."""

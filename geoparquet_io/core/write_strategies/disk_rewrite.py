@@ -380,16 +380,20 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         """Rewrite file with proper geo metadata, row group by row group.
 
         ``row_group_rows`` is the already-resolved rows-per-group request. The
-        DuckDB COPY that produced ``input_path`` was given the same value, so the
-        source groups are normally already the right size.
+        DuckDB COPY that produced ``input_path`` was given the same value, but it
+        does not always honour it: DuckDB leaves tiny source groups alone, so a
+        400-row file of 10-row groups reaches this method still shaped 40x10.
 
-        The rewrite must still be able to reach the requested shape on its own.
         Writing one ``write_table`` per *source* row group starts a new row group
-        each time, so it could only ever make groups smaller than the source's:
-        a source of 10-row groups with ``row_group_rows=100`` came back as 40
-        groups of 10, silently ignoring the request (#697). Source groups are
-        therefore accumulated until the target is reached and flushed together,
-        which coarsens and splits from the same code path.
+        each time, so the rewrite could only ever make groups smaller than the
+        source's: that file with ``row_group_rows=100`` came back as 40 groups of
+        10, silently ignoring the request (#697).
+
+        Source groups are therefore accumulated until the target is reached, and
+        the target is sliced off and written whole. The remainder is *carried*
+        into the next group rather than flushed with it -- flushing it turns
+        every over-full batch into a full group plus a runt, which is how a
+        request of 25 against 10-row sources produced ``[25, 5, 25, 5, ...]``.
         """
         pf = pq.ParquetFile(input_path)
         schema = pf.schema_arrow
@@ -423,17 +427,22 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                     if verbose and (i + 1) % 10 == 0:
                         debug(f"Rewrote {i + 1}/{num_source_groups} row groups...")
             else:
-                # Buffer at most one target row group, then hand it to the writer
-                # with row_group_size so it splits anything larger.
+                # Buffer until a whole target group is available, write exactly
+                # that many rows, and keep the overshoot for the next group.
                 pending: list[pa.Table] = []
                 pending_rows = 0
                 for i in range(num_source_groups):
                     table = pf.read_row_group(i).replace_schema_metadata(new_meta)
                     pending.append(table)
                     pending_rows += table.num_rows
-                    if pending_rows >= row_group_rows:
-                        writer.write_table(pa.concat_tables(pending), row_group_size=row_group_rows)
-                        pending, pending_rows = [], 0
+                    while pending_rows >= row_group_rows:
+                        combined = pa.concat_tables(pending)
+                        writer.write_table(
+                            combined.slice(0, row_group_rows), row_group_size=row_group_rows
+                        )
+                        remainder = combined.slice(row_group_rows)
+                        pending = [remainder] if remainder.num_rows else []
+                        pending_rows = remainder.num_rows
 
                     if verbose and (i + 1) % 10 == 0:
                         debug(f"Rewrote {i + 1}/{num_source_groups} row groups...")
