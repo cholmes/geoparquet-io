@@ -177,11 +177,36 @@ Open the printed link and confirm it lands on the heading before you finish.
 
 ## 8. Verify
 
+Check the published artifact, not the local tree:
+
 ```bash
-uv run python -c "import geoparquet_io; print(geoparquet_io.__version__)"
-pip index versions geoparquet-io          # PyPI has the new version
-gh release view v<version>
+uv run --isolated --no-project --with "geoparquet-io==<version>" gpio --version
+gh release view v<version> --json assets --jq '[.assets[].name]'
 ```
+
+The release should carry four assets: the wheel, the sdist, and an
+attestation for each.
+
+## If the publish fails after the tag is pushed
+
+The workflow creates the tag before it uploads, so a failed upload leaves a
+tag with no release and nothing on PyPI. Nothing is half-published — the
+upload is the last step — so do not delete the tag. Fix the cause on `main`,
+then re-run:
+
+```bash
+gh workflow run publish.yml --ref main
+```
+
+That is the documented recovery path: the run sees the tag already exists and
+the release does not, skips tag creation, rebuilds, publishes and creates the
+release.
+
+Seen once, for the record: `gh-action-pypi-publish` v1.14.0 rejected the wheel
+with `InvalidDistribution: '2.5' is not a valid metadata version`, because
+hatchling had started writing `Metadata-Version: 2.5` and the action's bundled
+Twine predated it. Fixed by bumping the action pin, not by downgrading the
+build backend or skipping verification.
 
 ## Conventions this skill enforces
 
