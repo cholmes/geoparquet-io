@@ -12534,6 +12534,225 @@
        "type": "text"
       }
      ]
+    },
+    "str": {
+     "class": "SingleFileCommand",
+     "hidden": false,
+     "kind": "command",
+     "params": [
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "add_bbox",
+       "nargs": 1,
+       "opts": [
+        "--add-bbox"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "any_extension",
+       "nargs": 1,
+       "opts": [
+        "--any-extension"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "'ZSTD'",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "compression",
+       "nargs": 1,
+       "opts": [
+        "--compression"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "choice[ZSTD|GZIP|BROTLI|LZ4|SNAPPY|UNCOMPRESSED,case_sensitive=False]"
+      },
+      {
+       "default": "<unset>",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "compression_level",
+       "nargs": 1,
+       "opts": [
+        "--compression-level"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "integer range[min=1,max=22,min_open=False,max_open=False,clamp=False]"
+      },
+      {
+       "default": "'geometry'",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "geometry_column",
+       "nargs": 1,
+       "opts": [
+        "--geometry-column",
+        "-g"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "text"
+      },
+      {
+       "default": "None",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "geoparquet_version",
+       "nargs": 1,
+       "opts": [
+        "--geoparquet-version"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "choice[1.0|1.1|1.1-geoarrow|2.0|parquet-geo-only,case_sensitive=True]"
+      },
+      {
+       "default": "<unset>",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "input_parquet",
+       "nargs": 1,
+       "opts": [
+        "input_parquet"
+       ],
+       "param_type": "Argument",
+       "required": true,
+       "secondary_opts": [],
+       "type": "text"
+      },
+      {
+       "default": "None",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "output_parquet",
+       "nargs": 1,
+       "opts": [
+        "output_parquet"
+       ],
+       "param_type": "Argument",
+       "required": false,
+       "secondary_opts": [],
+       "type": "path[exists=False,file_okay=True,dir_okay=True,writable=False,readable=True,resolve_path=False]"
+      },
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "overwrite",
+       "nargs": 1,
+       "opts": [
+        "--overwrite"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "None",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "row_group_size",
+       "nargs": 1,
+       "opts": [
+        "--row-group-size"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "integer"
+      },
+      {
+       "default": "<unset>",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "row_group_size_mb",
+       "nargs": 1,
+       "opts": [
+        "--row-group-size-mb"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "text"
+      },
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "show_sql",
+       "nargs": 1,
+       "opts": [
+        "--show-sql"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "verbose",
+       "nargs": 1,
+       "opts": [
+        "--verbose",
+        "-v"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "None",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "write_memory",
+       "nargs": 1,
+       "opts": [
+        "--write-memory"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "text"
+      }
+     ]
     }
    },
    "default_subcommand": null,

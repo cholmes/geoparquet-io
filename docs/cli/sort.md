@@ -35,6 +35,29 @@ Options:
 | `--verbose` | - | Verbose output |
 | `--show-sql` | - | Show generated SQL |
 
+### str
+
+Pack rows with Sort-Tile-Recursive ordering for compact row-group bounding boxes:
+
+```bash
+gpio sort str input.parquet output.parquet --row-group-size 50000 [OPTIONS]
+```
+
+STR sorts geometry bounding-box centers into X strips, sorts each strip on Y,
+and alternates the Y direction between strips.
+
+`--row-group-size` does double duty: it is the writer's row-group target, and
+it selects how many X strips STR builds, as
+`ceil(sqrt(num_rows / row-group-size))`. That is a coarse control - nearby
+values often produce an identical ordering. STR does not pack rows into
+row-group-sized tiles, and because the writer rounds row groups up to a
+multiple of 2048, strips and row groups only line up when `--row-group-size` is
+itself a multiple of 2048. Pass an exact row count anyway: without it the
+writer emits 122,880-row groups while STR sizes its strips from 100,000.
+
+The `str` subcommand supports the same geometry, bbox, compression, row-group,
+GeoParquet version, overwrite, verbosity, and SQL-display options as `hilbert`.
+
 ### quadkey
 
 Sort by quadkey for spatial locality:

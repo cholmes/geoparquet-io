@@ -40,7 +40,7 @@ Be proactive - analyze the data and make recommendations rather than waiting to 
 | `gpio process` | aggregate, overview | Transform or reduce GeoParquet data (aggregate, overview,... |
 | `gpio publish` | stac, upload | Commands for publishing GeoParquet data (STAC metadata,... |
 | `gpio skills` |  | List and access LLM skills for gpio. Skills are markdown... |
-| `gpio sort` | column, hilbert, quadkey | Commands for sorting GeoParquet files. |
+| `gpio sort` | column, hilbert, quadkey, str | Commands for sorting GeoParquet files. |
 <!-- END GENERATED: skill-commands -->
 
 ---
@@ -128,6 +128,11 @@ gpio sort column <input> <output> --column "timestamp"
 
 # Sort by quadkey (alternative spatial ordering)
 gpio sort quadkey <input> <output>
+
+# Sort-Tile-Recursive: X strips, each sorted on Y with alternating direction.
+# --row-group-size sets the writer's row-group target AND picks the strip count
+# as ceil(sqrt(rows / row-group-size)); it is not an exact tile capacity.
+gpio sort str <input> <output> --row-group-size 50000
 ```
 
 ### Adding Columns

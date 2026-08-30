@@ -250,6 +250,16 @@ KNOWN_DIVERGENCES: dict[tuple[str, str, str, str, str], str] = {
         "tracks its geometry column, so None means 'use that one'"
     ),
     (
+        "sort str",
+        "ops.sort_str",
+        "geometry_column",
+        "'geometry'",
+        "'<unset>'",
+    ): (
+        "CLI reads a file and names the conventional column; the API holds a Table that already "
+        "tracks its geometry column, so None means 'use that one'"
+    ),
+    (
         "partition a5",
         "Table.partition_by_a5",
         "keep_a5_column",

@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.str_order import DEFAULT_STR_TILE_SIZE
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
 
 if TYPE_CHECKING:
@@ -460,6 +461,7 @@ class Table:
     - add_bbox(): Add bounding box column
     - add_quadkey(): Add quadkey column
     - sort_hilbert(): Reorder by Hilbert curve
+    - sort_str(): Reorder with Sort-Tile-Recursive packing
     - extract(): Filter columns and rows
 
     All methods return a new Table, preserving immutability.
@@ -1348,6 +1350,32 @@ class Table:
         result = hilbert_order_table(
             self._table,
             geometry_column=self._geometry_column,
+        )
+        return self._wrap(result, self._geometry_column)
+
+    def sort_str(self, tile_size: int = DEFAULT_STR_TILE_SIZE) -> Table:
+        """Reorder rows using Sort-Tile-Recursive packing.
+
+        Args:
+            tile_size: Roughly the number of rows you intend to put in a Parquet
+                row group. STR uses it only to pick the number of X strips
+                (default: 100,000).
+
+        Returns:
+            New Table with rows packed into spatially compact tiles
+
+        Note:
+            The default is imported from ``core.str_order`` rather than spelled
+            out, because the CLI has no ``tile_size`` option: the CLI<->API
+            default-parity harness has nothing to compare this against and so
+            cannot catch it drifting from ``ops.sort_str``.
+        """
+        from geoparquet_io.core.str_order import str_order_table
+
+        result = str_order_table(
+            self._table,
+            geometry_column=self._geometry_column,
+            tile_size=tile_size,
         )
         return self._wrap(result, self._geometry_column)
 
