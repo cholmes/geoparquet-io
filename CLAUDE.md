@@ -225,8 +225,8 @@ decides the section, so pick it for where the entry should land:
 | `fix` | Fixed |
 | `perf`, `refactor`, `revert` | Changed |
 | `docs` | Documentation |
-| `test`, `ci`, `chore`, `style`, `build` | Internal |
-| `build(deps...)`, or any bot bump | Dependencies |
+| `test`, `ci`, `chore`, `style`, `build` | Internal — *counted, not listed* |
+| `build(deps...)`, or any bot bump | Dependencies — *counted, not listed* |
 | anything with `!` | **Breaking** |
 
 Write the summary as the line a user reads in the changelog, not as a note to
@@ -254,9 +254,14 @@ uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --write  # apply
 ```
 
 One line per PR — `- <title> by @<author> in #<number>` — in this section order:
-Breaking, Added, Changed, Fixed, Documentation, Internal, Dependencies, then New
-Contributors and the Full Changelog link. Below Documentation is housekeeping a
-reader can skip.
+Breaking, Added, Changed, Fixed, Documentation, then New Contributors and the Full
+Changelog link.
+
+**Internal and dependency work is counted, not listed.** Anything typed `test`,
+`ci`, `chore`, `style` or `build` — and every bot bump — is left out, under a
+one-line note giving the counts. The compare link and the GitHub release page
+still carry them. This is why the type in a PR title matters: it decides whether
+the change is published or only counted.
 
 Above them go two to four paragraphs of highlights, written by hand, and the last
 one **must name every first-time contributor**, say what they contributed, give

@@ -52,6 +52,11 @@ SECTIONS = (
     "Uncategorized",
 )
 
+# Classified, counted, but not listed. Bot bumps and repo chores are not what a
+# changelog is for, and GitHub's release page and the compare link below still
+# carry every one of them.
+OMITTED_SECTIONS = ("Internal", "Dependencies")
+
 # Conventional-commit type -> section. Types absent here land in Internal;
 # a title with no recognizable type lands in Uncategorized, which the review
 # step exists to empty.
@@ -212,6 +217,18 @@ def _render_entry(entry: Entry) -> str:
     )
 
 
+def _omission_note(buckets: dict[str, list[Entry]]) -> str:
+    """Say how much housekeeping was left out, so the count is not a surprise."""
+    parts = []
+    for name, noun in (("Internal", "internal change"), ("Dependencies", "dependency update")):
+        count = len(buckets[name])
+        if count:
+            parts.append(f"{count} {noun}{'' if count == 1 else 's'}")
+    if not parts:
+        return ""
+    return f"_{' and '.join(parts)} are not listed here; the full changelog has them._"
+
+
 def render(notes: Notes, version: str, date: str, summary: str | None = None) -> str:
     """Render one changelog section: heading, summary, grouped entries, footer."""
     buckets: dict[str, list[Entry]] = {name: [] for name in SECTIONS}
@@ -221,7 +238,7 @@ def render(notes: Notes, version: str, date: str, summary: str | None = None) ->
     lines = [f"## v{version} ({date})", "", summary or SUMMARY_PLACEHOLDER, ""]
 
     for name in SECTIONS:
-        if not buckets[name]:
+        if not buckets[name] or name in OMITTED_SECTIONS:
             continue
         lines.append(f"### {name}")
         lines.append("")
@@ -232,6 +249,11 @@ def render(notes: Notes, version: str, date: str, summary: str | None = None) ->
         lines.append("### New Contributors")
         lines.append("")
         lines.extend(line.replace("* ", "- ", 1) for line in notes.new_contributors)
+        lines.append("")
+
+    note = _omission_note(buckets)
+    if note:
+        lines.append(note)
         lines.append("")
 
     if notes.full_changelog:

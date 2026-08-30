@@ -186,10 +186,10 @@ class TestOverrides:
         assert entry.title == "chore(deps): relax the duckdb pin"
 
     def test_a_rewritten_title_decides_the_section(self):
-        notes = rn.apply_overrides(rn.parse(SAMPLE), {"534": "chore(deps): relax the duckdb pin"})
+        notes = rn.apply_overrides(rn.parse(SAMPLE), {"534": "perf(convert): stream the read"})
         out = rn.render(notes, version="1.4.0", date="2026-08-30")
         assert "### Uncategorized" not in out
-        assert "relax the duckdb pin" in out.split("### Internal")[1]
+        assert "stream the read" in out.split("### Changed")[1]
 
     def test_keys_starting_with_underscore_are_comments(self):
         notes = rn.apply_overrides(rn.parse(SAMPLE), {"_note": "not a pull request"})
@@ -214,3 +214,32 @@ class TestContributorBrief:
 
     def test_covers_only_new_contributors(self):
         assert list(rn.contributor_brief(rn.parse(SAMPLE))) == ["oakhill87"]
+
+
+class TestOmittedSections:
+    def test_internal_and_dependency_work_is_not_listed(self):
+        out = rn.render(rn.parse(SAMPLE), version="1.4.0", date="2026-08-30")
+        assert "### Internal" not in out
+        assert "### Dependencies" not in out
+        assert "ten user journeys" not in out
+        assert "bump pyarrow" not in out
+
+    def test_a_note_counts_what_was_left_out(self):
+        out = rn.render(rn.parse(SAMPLE), version="1.4.0", date="2026-08-30")
+        assert "1 internal change and 2 dependency updates are not listed" in out
+
+    def test_the_note_is_omitted_when_there_is_nothing_to_leave_out(self):
+        notes = rn.Notes(
+            entries=[rn.Entry(title="fix(x): y", author="a", number=1)],
+            full_changelog="**Full Changelog**: https://example.com/compare",
+        )
+        out = rn.render(notes, version="1.4.0", date="2026-08-30")
+        assert "are not listed" not in out
+
+    def test_the_note_sits_with_the_full_changelog_link(self):
+        out = rn.render(rn.parse(SAMPLE), version="1.4.0", date="2026-08-30")
+        assert out.index("are not listed") > out.index("### New Contributors")
+
+    def test_uncategorized_is_still_shown_so_triage_cannot_be_skipped(self):
+        out = rn.render(rn.parse(SAMPLE), version="1.4.0", date="2026-08-30")
+        assert "### Uncategorized" in out

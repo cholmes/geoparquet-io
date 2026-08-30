@@ -48,7 +48,9 @@ generator again. The type you give it is what files the entry.
 ```
 
 Read each pull request before you retitle it, and write the line a user should
-read. Two judgements the script cannot make:
+read. A `test`, `ci`, `chore`, `style` or `build` type files the entry as
+housekeeping, which is not listed — correct for a chore, wrong for a fix wearing
+the wrong type, so pick deliberately. Two judgements the script cannot make:
 
 - **Give it a `!`** when the change removes a command, changes a default, or
   withdraws a capability, even though the merged title had none. Squash merges
@@ -116,7 +118,9 @@ publishes to PyPI, and creates the GitHub release.
 ## 7. Post the release notes
 
 The workflow's release body is a placeholder. Replace it with the section you
-wrote, plus a link back to the changelog anchor:
+wrote, plus a link back to the changelog anchor. This drops GitHub's own listing
+of the internal and dependency pull requests, which is the intent: the compare
+link at the end of the section still reaches all of them.
 
 ```bash
 python3 - <<'PY' > /tmp/notes.md
@@ -153,9 +157,11 @@ gh release view v<version>
   from the pull request, or from `scripts/release_title_overrides.json` where one
   did not follow the convention. `.github/workflows/pr-title.yml` checks new
   titles, so the overrides file should stop growing.
-- Sections in order: Breaking, Added, Changed, Fixed, Documentation, Internal,
-  Dependencies, then New Contributors and the Full Changelog link.
-- Housekeeping sits below the user-facing sections; a reader can stop at
-  Documentation.
+- Sections in order: Breaking, Added, Changed, Fixed, Documentation, then New
+  Contributors and the Full Changelog link.
+- **Internal and dependency work is classified and counted, but not listed.** A
+  changelog is not the place for bot bumps and repo chores. A one-line note gives
+  the counts, and the compare link and the GitHub release page still carry every
+  one of them. Do not add them back by hand.
 - `docs/CHANGELOG.md` is generated from the root file by the `doc-sync`
   pre-commit hook. Never edit it.

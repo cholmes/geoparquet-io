@@ -157,63 +157,13 @@ issue tracker is open and the guides now run as tests, so a fix is easy to prove
 - docs(changelog): compress unreleased entries and link every issue reference by [@cholmes](https://github.com/cholmes) in [#743](https://github.com/geoparquet/geoparquet-io/pull/743)
 - docs(write-strategies): say what --write-memory does on extract bigquery ([#673](https://github.com/geoparquet/geoparquet-io/issues/673)) by [@cholmes](https://github.com/cholmes) in [#763](https://github.com/geoparquet/geoparquet-io/pull/763)
 
-### Internal
-
-- chore: deterministic guardrails for recurring fix/review cycles by [@nlebovits](https://github.com/nlebovits) in [#495](https://github.com/geoparquet/geoparquet-io/pull/495)
-- test(arcgis): shrink live [#334](https://github.com/geoparquet/geoparquet-io/issues/334) regression fetch to curb worker crashes by [@nlebovits](https://github.com/nlebovits) in [#544](https://github.com/geoparquet/geoparquet-io/pull/544)
-- chore(ci): surface non-blocking network-test failures in run summary + tracking issue by [@nlebovits](https://github.com/nlebovits) in [#599](https://github.com/geoparquet/geoparquet-io/pull/599)
-- test(corpus): add official geoparquet-testing conformance suite (GeoParquet 2.0 audit) by [@cholmes](https://github.com/cholmes) in [#591](https://github.com/geoparquet/geoparquet-io/pull/591)
-- chore(ci): retire the "main: review required" ruleset by [@nlebovits](https://github.com/nlebovits) in [#635](https://github.com/geoparquet/geoparquet-io/pull/635)
-- test(benchmark): assert setup ordering instead of racing a stopwatch by [@cholmes](https://github.com/cholmes) in [#675](https://github.com/geoparquet/geoparquet-io/pull/675)
-- ci(coverage): report coverage in one job, not ten ([#665](https://github.com/geoparquet/geoparquet-io/issues/665)) by [@cholmes](https://github.com/cholmes) in [#677](https://github.com/geoparquet/geoparquet-io/pull/677)
-- test(metadata): pin agreement across the geo-metadata readers and CRS helpers ([#664](https://github.com/geoparquet/geoparquet-io/issues/664)) by [@cholmes](https://github.com/cholmes) in [#681](https://github.com/geoparquet/geoparquet-io/pull/681)
-- test(cli): pin the CLI surface with a structural snapshot ([#664](https://github.com/geoparquet/geoparquet-io/issues/664)) by [@cholmes](https://github.com/cholmes) in [#679](https://github.com/geoparquet/geoparquet-io/pull/679)
-- test(ci): move repo tooling checks into a meta lane ([#665](https://github.com/geoparquet/geoparquet-io/issues/665)) by [@cholmes](https://github.com/cholmes) in [#684](https://github.com/geoparquet/geoparquet-io/pull/684)
-- test(spatial-index): pin golden cell values across add, partition, and sort ([#664](https://github.com/geoparquet/geoparquet-io/issues/664)) by [@cholmes](https://github.com/cholmes) in [#682](https://github.com/geoparquet/geoparquet-io/pull/682)
-- test(api): add CLI/ops/Table parity harness at the core boundary ([#664](https://github.com/geoparquet/geoparquet-io/issues/664)) by [@cholmes](https://github.com/cholmes) in [#685](https://github.com/geoparquet/geoparquet-io/pull/685)
-- test(write): add the write-contract characterization suite ([#664](https://github.com/geoparquet/geoparquet-io/issues/664)) by [@cholmes](https://github.com/cholmes) in [#693](https://github.com/geoparquet/geoparquet-io/pull/693)
-- test(validate): regression coverage for empty-geometry bbox exclusion by [@Sanjays2402](https://github.com/Sanjays2402) in [#590](https://github.com/geoparquet/geoparquet-io/pull/590)
-- test(notebooks): stop the inert cloud notebook from reporting a false-positive pass ([#667](https://github.com/geoparquet/geoparquet-io/issues/667)) by [@cholmes](https://github.com/cholmes) in [#720](https://github.com/geoparquet/geoparquet-io/pull/720)
-- test(slow): re-align two slow-lane assertions with current behavior by [@cholmes](https://github.com/cholmes) in [#741](https://github.com/geoparquet/geoparquet-io/pull/741)
-- test(data): add canonical sample dataset for docs and e2e journeys ([#667](https://github.com/geoparquet/geoparquet-io/issues/667)) by [@cholmes](https://github.com/cholmes) in [#719](https://github.com/geoparquet/geoparquet-io/pull/719)
-- test(e2e): add the ten-journey end-to-end matrix ([#667](https://github.com/geoparquet/geoparquet-io/issues/667)) by [@cholmes](https://github.com/cholmes) in [#725](https://github.com/geoparquet/geoparquet-io/pull/725)
-- test(docs): run the guides' examples as tests ([#667](https://github.com/geoparquet/geoparquet-io/issues/667)) by [@cholmes](https://github.com/cholmes) in [#732](https://github.com/geoparquet/geoparquet-io/pull/732)
-- test(geo-stats): record that Windows geo-stat zeros are DuckDB's read, not pyarrow's write by [@cholmes](https://github.com/cholmes) in [#748](https://github.com/geoparquet/geoparquet-io/pull/748)
-- test(covering): pin the spatial-index covering against the bbox covering ([#694](https://github.com/geoparquet/geoparquet-io/issues/694)) by [@cholmes](https://github.com/cholmes) in [#751](https://github.com/geoparquet/geoparquet-io/pull/751)
-- chore(release): generate the changelog from merged PRs, and prep v1.4.0 by [@cholmes](https://github.com/cholmes) in [#780](https://github.com/geoparquet/geoparquet-io/pull/780)
-
-### Dependencies
-
-- build(deps-dev): bump pytest from 9.0.3 to 9.1.0 in the development-dependencies group by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#496](https://github.com/geoparquet/geoparquet-io/pull/496)
-- build(deps): upgrade dependencies flagged by the security audit by [@nlebovits](https://github.com/nlebovits) in [#532](https://github.com/geoparquet/geoparquet-io/pull/532)
-- build(deps-dev): bump the development-dependencies group across 1 directory with 2 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#527](https://github.com/geoparquet/geoparquet-io/pull/527)
-- build(deps): bump actions/checkout from 6 to 7 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#513](https://github.com/geoparquet/geoparquet-io/pull/513)
-- build(deps): relax the duckdb pin by [@nlebovits](https://github.com/nlebovits) in [#534](https://github.com/geoparquet/geoparquet-io/pull/534)
-- build(deps): bump the production-dependencies group across 1 directory with 10 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#528](https://github.com/geoparquet/geoparquet-io/pull/528)
-- build(deps): bump pymdown-extensions from 10.21.3 to 11.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#556](https://github.com/geoparquet/geoparquet-io/pull/556)
-- build(deps-dev): bump the development-dependencies group across 1 directory with 2 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#554](https://github.com/geoparquet/geoparquet-io/pull/554)
-- ci: bump astral-sh/setup-uv from 7.6.0 to 8.2.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#558](https://github.com/geoparquet/geoparquet-io/pull/558)
-- ci: bump actions/deploy-pages from 4.0.5 to 5.0.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#559](https://github.com/geoparquet/geoparquet-io/pull/559)
-- ci: bump actions/upload-artifact from 6.0.0 to 7.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#561](https://github.com/geoparquet/geoparquet-io/pull/561)
-- ci: bump peter-evans/create-pull-request from 7.0.11 to 8.1.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#562](https://github.com/geoparquet/geoparquet-io/pull/562)
-- ci: bump astral-sh/setup-uv from 8.2.0 to 8.3.2 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#571](https://github.com/geoparquet/geoparquet-io/pull/571)
-- build(deps): bump the production-dependencies group across 1 directory with 3 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#576](https://github.com/geoparquet/geoparquet-io/pull/576)
-- build(deps): bump ruff from 0.15.20 to 0.15.21 in the production-dependencies group by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#579](https://github.com/geoparquet/geoparquet-io/pull/579)
-- ci: bump astral-sh/setup-uv from 8.3.2 to 9.0.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#620](https://github.com/geoparquet/geoparquet-io/pull/620)
-- ci: bump actions/setup-python from 6.3.0 to 7.0.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#607](https://github.com/geoparquet/geoparquet-io/pull/607)
-- ci: bump actions/checkout from 7.0.0 to 7.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#608](https://github.com/geoparquet/geoparquet-io/pull/608)
-- build(deps): raise the pip floor to 26.2 for PYSEC-2026-3721 by [@cayetanobv](https://github.com/cayetanobv) in [#669](https://github.com/geoparquet/geoparquet-io/pull/669)
-- ci: bump astral-sh/setup-uv from 9.0.0 to 10.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#716](https://github.com/geoparquet/geoparquet-io/pull/716)
-- build(deps): bump the production-dependencies group across 1 directory with 16 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#742](https://github.com/geoparquet/geoparquet-io/pull/742)
-- build(deps-dev): bump pygments from 2.20.0 to 2.21.0 in the development-dependencies group by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#767](https://github.com/geoparquet/geoparquet-io/pull/767)
-- build(deps): bump pyarrow from 24.0.0 to 25.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#769](https://github.com/geoparquet/geoparquet-io/pull/769)
-- build(deps): bump obstore and pymdown-extensions by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#768](https://github.com/geoparquet/geoparquet-io/pull/768)
-
 ### New Contributors
 
 - @oakhill87 made their first contribution in https://github.com/geoparquet/geoparquet-io/pull/510
 - @Sanjays2402 made their first contribution in https://github.com/geoparquet/geoparquet-io/pull/606
 - @cayetanobv made their first contribution in https://github.com/geoparquet/geoparquet-io/pull/645
+
+_21 internal changes and 24 dependency updates are not listed here; the full changelog has them._
 
 **Full Changelog**: https://github.com/geoparquet/geoparquet-io/compare/v1.3.0...v1.4.0
 
