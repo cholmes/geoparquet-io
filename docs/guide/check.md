@@ -76,6 +76,8 @@ Checks if data is spatially ordered. Spatially ordered data improves:
 
     The comparison is relative because the achievable skip rate depends on how many row groups there are: two row groups can never let a reader skip more than about half the file, while 500 should let it skip ~98%. A fixed threshold is wrong at one end or the other.
 
+    Below five row groups the verdict is withheld — the numbers are still reported, but the file is not failed. With only a few row groups an ideal grid is a poor model of what a sort can achieve on clustered data: measured across Hilbert-sorted samples, a *perfectly* sorted file scores as low as 0.11 at two row groups and 0.30 at three, so failing on that score would measure the row-group count rather than the ordering.
+
     The fraction of *consecutive* row-group pairs whose boxes overlap is still reported, but it does not decide the verdict. Hilbert-sorted row groups are spatially adjacent by construction, so their boxes touch and that fraction runs near 1.00 for a perfectly ordered file — it cannot tell "every row group covers the whole country" from "row groups tile the country perfectly but neighbours touch".
 
     Tune the estimate with `--query-fraction` (how large a query window to assume, default 10% of each dimension), `--num-samples`, and `--seed`.

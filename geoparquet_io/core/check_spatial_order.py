@@ -23,10 +23,24 @@ _OVERLAP_RATIO_THRESHOLD = 0.3
 # tiling of the same extent and row-group count achieves on the same queries.
 # Relative because the achievable skip rate depends on the row-group count -- two
 # row groups can never skip more than ~50%, 589 should skip ~98% -- so any
-# absolute cutoff is wrong at one end or the other. Measured separation is wide:
-# ideal tilings score 1.0, realistic clustered Hilbert-sorted data 0.89-0.98,
-# unsorted data 0.00.
+# absolute cutoff is wrong at one end or the other.
+#
+# 0.5 sits in the measured gap. Across 60 runs per row-group count of
+# Hilbert-sorted clustered data (5 and 40 clusters), the worst well-sorted file
+# scores 0.603 at five row groups, 0.759 at eight and 0.946 at fifty-nine, while
+# unsorted data -- every row group's box spanning the extent, which is what an
+# unsorted file actually looks like -- scores 0.000 at every count.
 _SKIP_RATE_EFFICIENCY_THRESHOLD = 0.5
+
+# Below this many row groups the comparison is too noisy to fail a file on, so
+# the verdict is withheld. Measured on the same well-sorted data, a PERFECTLY
+# sorted file scores as low as 0.105 at two row groups and 0.295 at three (10th
+# percentiles 0.479 and 0.455): a grid of two or three cells is a poor model of
+# what a sort can do to clustered data, so a low score there says more about the
+# reference than about the file. Five matches the floor Portolan's formats.md
+# already sets for its footer check. The metrics are still computed and reported
+# at every count -- only the verdict is withheld.
+_MIN_VERDICT_ROW_GROUPS = 5
 
 # Pushdown readiness verdict: ABSOLUTE, and deliberately a different question
 # from ordering. "Is this sorted as well as it could be?" and "will queries
@@ -34,7 +48,6 @@ _SKIP_RATE_EFFICIENCY_THRESHOLD = 0.5
 # and both are worth saying.
 _SKIP_RATE_THRESHOLD = 0.5
 
-_AREA_RATIO_THRESHOLD = 0.25
 _DEFAULT_NUM_SAMPLES = 20
 _DEFAULT_QUERY_FRACTION = 0.1
 _DEFAULT_SEED = 42
@@ -286,10 +299,14 @@ def _check_spatial_order_from_row_group_bboxes(
             query_fraction=query_fraction,
             seed=seed,
         )
+    if len(row_group_bboxes) >= _MIN_VERDICT_ROW_GROUPS:
         passed = metrics["skip_rate_efficiency"] >= efficiency_threshold
     else:
-        # Nothing to order: one row group is trivially "sorted". Whether one row
-        # group is a good LAYOUT is check_spatial_pushdown_readiness's question.
+        # Too few row groups to judge: the ideal-tiling reference is noisy enough
+        # there that a well-sorted file can score badly, so measuring the layout
+        # would be measuring the row-group count. The numbers are still reported.
+        # Whether few row groups is a good LAYOUT is
+        # check_spatial_pushdown_readiness's question, and it answers separately.
         passed = True
 
     avg_area_ratio: float | None = metrics.get("avg_bbox_area_ratio")
@@ -533,16 +550,6 @@ def _compute_skip_rate_for_query(query_bbox: dict, row_group_bboxes: list[dict])
         return 0.0
     skipped = sum(1 for rg in row_group_bboxes if not _bboxes_overlap(query_bbox, rg))
     return skipped / len(row_group_bboxes)
-
-
-def _area_ratio_threshold(num_row_groups: int) -> float:
-    """Area-ratio cutoff for the secondary locality check.
-
-    With few row groups each Hilbert segment legitimately covers a larger
-    share of the total extent (roughly 1/N plus bbox slop), so the fixed
-    threshold is relaxed for small group counts.
-    """
-    return max(_AREA_RATIO_THRESHOLD, 2.0 / num_row_groups)
 
 
 def _ideal_grid_bboxes(extent: dict, num_row_groups: int) -> list[dict]:

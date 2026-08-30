@@ -75,11 +75,40 @@ class TestWellSortedFilesPass:
         assert r["passed"], f"n={n}: high consecutive overlap still drove the verdict"
 
     def test_two_row_groups_are_not_flagged(self):
-        """#755's residual case: the locality check used to be gated on n >= 3."""
+        """#755's residual case: a 2-group file was flagged and never measured."""
         r = result(grid_with_slop(2))
 
         assert r["passed"]
         assert r["skip_rate_efficiency"] is not None, "metrics must be computed at n=2"
+
+
+class TestVerdictIsWithheldBelowTheFloor:
+    """Too few row groups to judge: measure and report, but do not fail (#755).
+
+    Measured across 60 runs per count of Hilbert-sorted clustered data, a
+    PERFECTLY sorted file scores as low as 0.105 at two row groups and 0.295 at
+    three. A grid of two or three cells is a poor model of what a sort can do to
+    clustered data, so failing on that score would measure the row-group count.
+    """
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_unsorted_data_below_the_floor_is_not_failed(self, n):
+        r = result(unsorted(n))
+
+        assert r["passed"], f"n={n} is below the floor and must not be failed"
+
+    @pytest.mark.parametrize("n", [2, 3, 4])
+    def test_metrics_are_still_reported_below_the_floor(self, n):
+        """Withholding the verdict must not withhold the numbers."""
+        r = result(unsorted(n))
+
+        assert r["estimated_skip_rate"] is not None
+        assert r["skip_rate_efficiency"] is not None
+
+    def test_the_floor_is_exactly_five(self):
+        """One row group either side of the boundary, same badly-ordered data."""
+        assert result(unsorted(4))["passed"]
+        assert not result(unsorted(5))["passed"]
 
 
 class TestBadlyOrderedFilesStillFail:
@@ -377,3 +406,40 @@ class TestCliReportsBothVerdicts:
         assert r.exit_code == 0, r.output
         assert "Spatial Filter Pushdown Readiness" in r.output
         assert "Estimated skip rate" in r.output
+
+
+class TestSkipRateEdgeCases:
+    def test_empty_box_list_skips_nothing(self):
+        from geoparquet_io.core.check_spatial_order import _compute_skip_rate_for_query
+
+        assert _compute_skip_rate_for_query(UNIT, []) == 0.0
+
+    def test_bbox_stats_failure_falls_back_to_sampling(self, tmp_path, monkeypatch):
+        """A malformed bbox column must fall through, not abort the check."""
+        import geoparquet_io.core.check_spatial_order as mod
+
+        def _boom(*args, **kwargs):
+            raise ValueError("malformed bbox column")
+
+        monkeypatch.setattr(mod, "check_spatial_order_bbox_stats", _boom)
+        monkeypatch.setattr(
+            "geoparquet_io.core.duckdb_metadata.has_bbox_column", lambda *a, **k: (True, "bbox")
+        )
+        monkeypatch.setattr(
+            "geoparquet_io.core.duckdb_metadata.get_per_row_group_native_geo_stats",
+            lambda *a, **k: grid(9),
+        )
+        # module-level import, so patch the binding the function actually uses
+        monkeypatch.setattr(mod, "find_primary_geometry_column", lambda *a, **k: "geometry")
+        monkeypatch.setattr(mod, "safe_file_url", lambda p, v=False: str(p))
+
+        out = mod.check_spatial_order(
+            str(tmp_path / "x.parquet"),
+            random_sample_size=10,
+            limit_rows=100,
+            verbose=True,
+            return_results=True,
+            quiet=True,
+        )
+
+        assert out["passed"], "fell through to the native-stats path and judged it"
