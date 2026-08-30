@@ -14,6 +14,7 @@ import math
 from geoparquet_io.core.common import get_duckdb_connection, needs_httpfs
 from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
 from geoparquet_io.core.duckdb_utils import (
+    load_community_extension,
     quote_identifier,
     validate_where_clause,
     where_sql_fragment,
@@ -30,12 +31,15 @@ _PROBE_OVERSAMPLE = 100
 _PROBE_MIN_SAMPLE = 50_000
 _PROBE_MAX_SAMPLE = 500_000
 
-# DuckDB extension setup required before each index's cell function is callable.
+# Community extension each index's cell function lives in, loaded before the
+# probe runs. Loaded through load_community_extension() rather than raw INSTALL
+# / LOAD so this path shares its unavailable-extension error and its opt-out
+# from the a5 extension's crash-prone load-time telemetry (#779).
 _INDEX_EXTENSIONS = {
-    "a5": ["INSTALL a5 FROM community", "LOAD a5"],
-    "h3": ["INSTALL h3 FROM community", "LOAD h3"],
-    "s2": ["INSTALL geography FROM community", "LOAD geography"],
-    "quadkey": [],
+    "a5": "a5",
+    "h3": "h3",
+    "s2": "geography",
+    "quadkey": None,
 }
 
 
@@ -474,8 +478,9 @@ def _probe_extent_resolution(
         con.execute("SET geometry_always_xy = true;")
         if profile:
             setup_aws_profile_if_needed(profile, input_parquet)
-        for stmt in _INDEX_EXTENSIONS[spatial_index_type]:
-            con.execute(stmt)
+        index_extension = _INDEX_EXTENSIONS[spatial_index_type]
+        if index_extension:
+            load_community_extension(con, index_extension)
         if spatial_index_type == "quadkey":
             _register_quadkey_udf(con)
 
