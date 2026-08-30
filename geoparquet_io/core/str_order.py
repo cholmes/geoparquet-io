@@ -14,16 +14,24 @@ from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_m
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.geo_metadata import parse_geo_metadata
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
 )
+
+# These three helpers are private to hilbert_order.py but are shared by convention
+# between the two spatial-sort commands: both run the same prepare/write/cleanup
+# pipeline. Extracting them (with the rest of the duplicated pipeline) into a
+# core/sort_common.py is tracked in #776, because it also rewrites the sibling
+# `sort hilbert` command and this project keeps cross-cutting refactors in their
+# own PR.
 from geoparquet_io.core.hilbert_order import (
     _cleanup_temp_file,
     _prepare_working_file,
     _resolve_output_version,
 )
-from geoparquet_io.core.logging_config import debug, info, success, warn
+from geoparquet_io.core.logging_config import configure_verbose, debug, info, success, warn
 from geoparquet_io.core.parquet_writer import ParquetWriteSettings
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import (
@@ -50,11 +58,17 @@ def _validate_tile_size(tile_size: int) -> None:
 
 
 def _str_layout(row_count: int, tile_size: int) -> tuple[int, int, int]:
-    """Return ``(tile_count, strip_count, strip_size)`` for a 2D STR pack."""
+    """Return ``(tile_count, strip_count, strip_size)`` for a 2D STR pack.
+
+    ``strip_size`` is rounded up to a whole number of tiles. Deriving it as
+    ``ceil(row_count / strip_count)`` instead leaves a fractional tile at each
+    strip boundary, so the row group that spans the boundary covers two strips
+    and its bounding box stretches across the whole X extent.
+    """
     _validate_tile_size(tile_size)
     tile_count = max(1, math.ceil(row_count / tile_size))
     strip_count = max(1, math.ceil(math.sqrt(tile_count)))
-    strip_size = max(1, math.ceil(row_count / strip_count))
+    strip_size = tile_size * max(1, math.ceil(tile_count / strip_count))
     return tile_count, strip_count, strip_size
 
 
@@ -165,10 +179,15 @@ def str_order_table(
 ) -> pa.Table:
     """Reorder an Arrow Table with 2D Sort-Tile-Recursive leaf packing.
 
-    Geometry envelope centers are sorted into approximately square X strips.
-    Each strip is sorted on Y, alternating direction between strips so adjacent
-    tiles remain close. ``tile_size`` should match the eventual Parquet row
-    group size. Empty and NULL geometries are placed at the end.
+    Geometry envelope centers are sorted into X strips. Each strip is sorted on
+    Y, alternating direction between strips so adjacent strips stay close. Empty
+    and NULL geometries are placed at the end.
+
+    ``tile_size`` does not pack rows into tiles directly: it only selects the
+    number of X strips, as ``ceil(sqrt(ceil(num_rows / tile_size)))``. That is a
+    coarse control -- nearby ``tile_size`` values often produce an identical
+    ordering -- so treat it as "roughly the rows I intend to put in a row
+    group", not as an exact tile capacity.
     """
     _validate_tile_size(tile_size)
     geom_col = geometry_column or find_geometry_column_from_table(table) or "geometry"
@@ -226,6 +245,11 @@ def str_order(
     memory_limit: str | None = None,
 ) -> None:
     """Reorder a GeoParquet file with Sort-Tile-Recursive packing."""
+    configure_verbose(verbose)
+    # Validate the value the user actually typed, so the error names
+    # --row-group-size rather than the internal tile_size it is derived into.
+    if row_group_rows is not None and row_group_rows < 1:
+        raise InvalidParameterError("--row-group-size", "must be at least 1")
     tile_size = DEFAULT_STR_TILE_SIZE if row_group_rows is None else row_group_rows
     _validate_tile_size(tile_size)
     effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose, profile)
@@ -237,11 +261,16 @@ def str_order(
 
     if row_group_size_mb is not None and row_group_rows is None:
         info(
-            f"STR tile capacity defaults to {DEFAULT_STR_TILE_SIZE:,} rows when "
-            "--row-group-size-mb is used. Set --row-group-size for exact tile/row-group alignment."
+            f"STR falls back to {DEFAULT_STR_TILE_SIZE:,} rows per tile when --row-group-size-mb "
+            "is used, because the row count of a byte-sized group is not known before writing. "
+            "Set --row-group-size to choose the strip count yourself."
         )
 
     if is_stdin(input_parquet) or should_stream_output(output_parquet):
+        if add_bbox_flag:
+            # Same pre-existing gap as `sort hilbert`: the streaming path has no
+            # bbox step. Say so instead of silently dropping the request.
+            warn("--add-bbox is ignored in streaming mode; no bbox column will be added.")
         _str_order_streaming(
             input_parquet,
             output_parquet,
@@ -299,13 +328,23 @@ def _str_order_streaming(
         ]
         geom_col = geometry_column
         if geom_col == "geometry" or geom_col not in column_names:
-            geom_col = next(
-                (name for name in STANDARD_GEOMETRY_NAMES if name in column_names), geom_col
-            )
+            # The stream carries its own `geo` metadata, so prefer the file's
+            # declared primary column over the conventional-name guess. Without
+            # this a file whose primary column is e.g. `footprint` binder-errors
+            # in stream mode while working in file mode.
+            geo_meta = parse_geo_metadata(metadata) or {}
+            primary_column = geo_meta.get("primary_column")
+            if primary_column in column_names:
+                geom_col = primary_column
+            else:
+                geom_col = next(
+                    (name for name in STANDARD_GEOMETRY_NAMES if name in column_names), geom_col
+                )
 
         source = _geometry_source(con, source, geom_col)
         row_count = _count_spatial_rows(con, source, geom_col)
-        if row_count == 0:
+        reordered = row_count > 0
+        if not reordered:
             warn("All geometries are empty or null. Writing file without STR ordering.")
             query = f"SELECT * FROM {source}"
         else:
@@ -333,7 +372,10 @@ def _str_order_streaming(
             memory_limit=memory_limit,
         )
         if not should_stream_output(output_path):
-            success(f"Successfully reordered data using STR to: {output_path}")
+            if reordered:
+                success(f"Successfully reordered data using STR to: {output_path}")
+            else:
+                success(f"Wrote data without STR ordering to: {output_path}")
 
 
 def _str_order_file_based(
@@ -371,7 +413,8 @@ def _str_order_file_based(
     try:
         geometry_source = _geometry_source(con, source, geometry_column)
         row_count = _count_spatial_rows(con, geometry_source, geometry_column)
-        if row_count == 0:
+        reordered = row_count > 0
+        if not reordered:
             warn("All geometries are empty or null. Writing file without STR ordering.")
             query = f"SELECT * FROM {geometry_source}"
         else:
@@ -400,7 +443,10 @@ def _str_order_file_based(
         )
         if add_bbox_flag and temp_file_created:
             success("Output includes bbox column and metadata for optimal performance")
-        success(f"Successfully reordered data using STR to: {output_parquet}")
+        if reordered:
+            success(f"Successfully reordered data using STR to: {output_parquet}")
+        else:
+            success(f"Wrote data without STR ordering to: {output_parquet}")
     except duckdb.IOException as exc:
         if is_remote_url(input_parquet):
             hints = get_remote_error_hint(str(exc), input_parquet)
@@ -409,7 +455,3 @@ def _str_order_file_based(
     finally:
         con.close()
         _cleanup_temp_file(temp_file, verbose)
-
-
-if __name__ == "__main__":
-    str_order()

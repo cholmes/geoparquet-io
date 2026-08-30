@@ -195,8 +195,10 @@ def sort_str(
     Args:
         table: Input PyArrow Table
         geometry_column: Geometry column name (auto-detected if None)
-        tile_size: Target rows per spatial tile; match this to the output row
-            group size (default: 100,000)
+        tile_size: Roughly the rows you intend to put in a row group. STR uses
+            it only to choose the number of X strips, as
+            ``ceil(sqrt(num_rows / tile_size))``, so it is a coarse control
+            rather than an exact tile capacity (default: 100,000)
 
     Returns:
         New table with rows reordered into spatially compact tiles

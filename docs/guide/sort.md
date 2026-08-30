@@ -5,7 +5,7 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
 ## Sorting Methods
 
 - **Hilbert curve** - Optimal spatial ordering using Hilbert space-filling curve
-- **Sort-Tile-Recursive (STR)** - Pack approximately square spatial tiles aligned to row groups
+- **Sort-Tile-Recursive (STR)** - Snake through X strips, each sorted on Y
 - **Column** - Sort by any column(s) for non-spatial ordering needs
 
 ## Hilbert Curve Ordering
@@ -104,10 +104,9 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 1GB
 
 ## Sort-Tile-Recursive Ordering
 
-STR is an alternative spatial packing strategy that explicitly builds tiles at
-the output row-group capacity. It sorts geometry bounding-box centers into
-approximately square X strips, sorts each strip on Y, and alternates the Y
-direction between strips to keep neighboring tiles close.
+STR is an alternative spatial ordering. It sorts geometry bounding-box centers
+into X strips, sorts each strip on Y, and alternates the Y direction between
+strips so that neighbouring strips stay close.
 
 === "CLI"
 
@@ -125,14 +124,37 @@ direction between strips to keep neighboring tiles close.
         .write('output.parquet', row_group_rows=50000)
     ```
 
-The tile size and written row-group size should match. The CLI derives STR's
-tile capacity from `--row-group-size`; both default to 100,000 rows when the
-option is omitted. With `--row-group-size-mb`, STR still uses 100,000 rows per
-tile because the final number of rows in a byte-sized group cannot be known
-before writing; set an exact row count when strict alignment matters.
+### What `--row-group-size` does here
 
-STR is especially useful for uneven spatial distributions where rectangular
-row-group tiles have less overlap than a single space-filling-curve order. The
+`--row-group-size` does two separate things, and only one of them is exact:
+
+- It is the writer's row-group target, as it is for every other gpio command.
+- It selects how many X strips STR builds, as
+  `ceil(sqrt(num_rows / row-group-size))`.
+
+The second use is coarse. The strip count is a rounded square root, so nearby
+values collapse onto the same layout: on 20,000 points, `--row-group-size 800`
+and `--row-group-size 1000` produce a byte-identical ordering, as do 1,500 and
+2,000. STR does not pack rows into row-group-sized tiles either - within a
+strip, rows are simply sorted on Y.
+
+Strips and row groups do not line up in general. The writer rounds the
+row-group size up to a multiple of 2048, so `--row-group-size 100000` writes
+100,352-row groups; strips are a whole number of `--row-group-size` rows, which
+means they land on row-group boundaries only when you pass a multiple of 2048
+(for example `--row-group-size 102400`).
+
+Passing an exact row count is still worth doing. Without `--row-group-size` the
+writer emits DuckDB's 122,880-row groups while STR sizes its strips from
+100,000, so nothing lines up at all. With `--row-group-size-mb`, STR falls back
+to 100,000 rows per tile, because the row count of a byte-sized group is not
+known before writing.
+
+### How much does it help?
+
+Modestly, and it depends on the data. On 2 million uniformly distributed points
+written with `--row-group-size 100000`, STR's mean row-group bounding-box area
+was 3,846 square degrees against Hilbert's 4,426 - about 13% tighter. The
 [benchmark linked from the design presentation](https://github.com/Kanahiro/spatial-sort-benchmark)
 reports lower row-group bbox overlap and fewer candidate row groups than
 Hilbert on its 30-million-row POI dataset. Results depend on the dataset, so

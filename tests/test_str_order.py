@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import io
+import json
+import logging
 import struct
 import sys
 from unittest import mock
@@ -48,15 +49,64 @@ def _point_table(coords: list[tuple[int, float, float]]) -> pa.Table:
     ).replace_schema_metadata(metadata)
 
 
-def _group_bbox_area(table: pa.Table, tile_size: int) -> float:
-    """Return the sum of point bounding-box areas for consecutive tiles."""
-    points = [struct.unpack("<BIdd", value)[2:] for value in table["geometry"].to_pylist()]
-    total = 0.0
+def _points(table: pa.Table) -> list[tuple[float, float]]:
+    return [struct.unpack("<BIdd", value)[2:] for value in table["geometry"].to_pylist()]
+
+
+def _tile_boxes(table: pa.Table, tile_size: int) -> list[tuple[float, float, float, float]]:
+    """Return ``(xmin, ymin, xmax, ymax)`` per consecutive ``tile_size`` rows."""
+    points = _points(table)
+    boxes = []
     for start in range(0, len(points), tile_size):
-        xs = [point[0] for point in points[start : start + tile_size]]
-        ys = [point[1] for point in points[start : start + tile_size]]
-        total += (max(xs) - min(xs)) * (max(ys) - min(ys))
-    return total
+        chunk = points[start : start + tile_size]
+        xs = [point[0] for point in chunk]
+        ys = [point[1] for point in chunk]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    return boxes
+
+
+def _mean_candidate_tiles(
+    boxes: list[tuple[float, float, float, float]],
+    window: float,
+    extent: float,
+) -> float:
+    """Mean tiles a square query window of side ``window`` has to open.
+
+    This is what spatial filter pushdown actually pays for: candidate row
+    groups. Total tile *area* is close to invariant under any ordering that
+    partitions the data (a plain ``ORDER BY x, y`` reaches the same area as
+    STR), so area alone cannot tell a good spatial order from a bad one.
+    """
+    total = 0
+    windows = 0
+    step = 1.0
+    y = 0.0
+    while y < extent:
+        x = 0.0
+        while x < extent:
+            total += sum(
+                1
+                for (xmin, ymin, xmax, ymax) in boxes
+                if not (xmax < x or xmin > x + window or ymax < y or ymin > y + window)
+            )
+            windows += 1
+            x += step
+        y += step
+    return total / windows
+
+
+# 400 points spread over a 20x20 extent by two irrational strides: deterministic,
+# no grid structure, and every x is distinct so a lexicographic order cannot win
+# by producing zero-width tiles.
+_SPREAD_EXTENT = 20.0
+_SPREAD_POINTS = [
+    (
+        index,
+        ((index * 0.6180339887498949) % 1.0) * _SPREAD_EXTENT,
+        ((index * 0.41421356237309515) % 1.0) * _SPREAD_EXTENT,
+    )
+    for index in range(400)
+]
 
 
 def test_str_order_packs_square_grid_into_snaking_tiles():
@@ -86,19 +136,36 @@ def test_str_order_packs_square_grid_into_snaking_tiles():
     assert result.schema.metadata == _point_table(shuffled).schema.metadata
 
 
-def test_str_order_reduces_tile_bbox_area_for_adversarial_input():
-    """Consecutive STR tiles are spatially tighter than a deliberately scattered order."""
-    scattered = []
-    next_id = 0
-    for offset in range(8):
-        for x in range(8):
-            scattered.append((next_id, x, (x + offset) % 8))
-            next_id += 1
-    table = _point_table(scattered)
+def test_str_order_beats_lexicographic_order_on_candidate_tiles():
+    """STR opens measurably fewer tiles per query window than ``ORDER BY x, y``.
 
-    result = str_order_table(table, tile_size=8)
+    The lexicographic baseline is the one that matters: it is what you get for
+    free, it produces tall thin x-slabs, and on total tile *area* it ties with
+    (or narrowly beats) STR - so a test that only measures area passes without
+    proving STR does anything spatial.
+    """
+    tile_size = 20
+    scattered = _point_table(_SPREAD_POINTS)
+    lexicographic = _point_table(sorted(_SPREAD_POINTS, key=lambda row: (row[1], row[2])))
 
-    assert _group_bbox_area(result, 8) < _group_bbox_area(table, 8) * 0.25
+    result = str_order_table(scattered, tile_size=tile_size)
+
+    str_boxes = _tile_boxes(result, tile_size)
+    lex_boxes = _tile_boxes(lexicographic, tile_size)
+    scattered_boxes = _tile_boxes(scattered, tile_size)
+
+    str_candidates = _mean_candidate_tiles(str_boxes, 2.0, _SPREAD_EXTENT)
+    lex_candidates = _mean_candidate_tiles(lex_boxes, 2.0, _SPREAD_EXTENT)
+    scattered_candidates = _mean_candidate_tiles(scattered_boxes, 2.0, _SPREAD_EXTENT)
+
+    # Measured: STR 1.58, lexicographic 2.27, unsorted 19.65 tiles per window.
+    assert str_candidates < lex_candidates * 0.8
+    assert str_candidates < scattered_candidates * 0.25
+
+    # And the point of the new metric: area does not separate the two orders.
+    str_area = sum((b[2] - b[0]) * (b[3] - b[1]) for b in str_boxes)
+    lex_area = sum((b[2] - b[0]) * (b[3] - b[1]) for b in lex_boxes)
+    assert str_area > lex_area * 0.9
 
 
 def test_str_order_places_empty_and_null_geometries_last():
@@ -134,14 +201,21 @@ def test_str_order_all_empty_returns_input_unchanged():
 
 
 def test_str_order_preserves_columns_that_resemble_internal_names():
+    """A user column sharing the real internal prefix survives the EXCLUDE list.
+
+    The internal columns are ``__gpio_str_<role>_<uuid4 hex>``; the uuid suffix
+    is what keeps them from colliding, so the collision has to be tested with a
+    name carrying the real prefix.
+    """
+    collider = "__gpio_str_input_order_deadbeef"
     table = _point_table([(1, 1, 1), (2, 0, 0)]).append_column(
-        "__str_input_order", pa.array(["first", "second"])
+        collider, pa.array(["first", "second"])
     )
 
     result = str_order_table(table, tile_size=1)
 
     assert result.column_names == table.column_names
-    assert result["__str_input_order"].to_pylist() == ["second", "first"]
+    assert result[collider].to_pylist() == ["second", "first"]
 
 
 @pytest.mark.parametrize("tile_size", [0, -1])
@@ -150,9 +224,15 @@ def test_str_order_rejects_non_positive_tile_size(tile_size):
         str_order_table(_point_table([(1, 0, 0)]), tile_size=tile_size)
 
 
-def test_str_layout_matches_presentation_formula():
+def test_str_layout_rounds_strip_size_to_whole_tiles():
+    """``strip_size`` is a multiple of ``tile_size``, so tiles never straddle strips."""
     assert _str_layout(row_count=16, tile_size=4) == (4, 2, 8)
-    assert _str_layout(row_count=17, tile_size=4) == (5, 3, 6)
+    # 5 tiles over 3 strips: 2 tiles per strip (8 rows), not ceil(17 / 3) == 6,
+    # which would leave the third tile spanning the strip-0/strip-1 boundary.
+    assert _str_layout(row_count=17, tile_size=4) == (5, 3, 8)
+    for row_count, tile_size in ((100_000, 10_000), (2_000_000, 122_880), (17, 4)):
+        _, _, strip_size = _str_layout(row_count, tile_size)
+        assert strip_size % tile_size == 0
 
 
 def test_str_order_streams_stdin_to_file(tmp_path, monkeypatch):
@@ -210,17 +290,168 @@ def test_str_order_file_adds_bbox_and_handles_byte_sized_groups(tmp_path):
     assert "bbox" in result.column_names
 
 
-def test_str_order_file_passes_through_all_empty_geometries(tmp_path):
-    source = tmp_path / "empty-source.parquet"
-    output = tmp_path / "empty-str.parquet"
-    table = pa.table(
+def _all_empty_table() -> pa.Table:
+    return pa.table(
         {
             "id": [1, 2],
             "geometry": pa.array([None, _empty_collection_wkb()], type=pa.binary()),
         }
     )
-    write_geoparquet_table(table, str(source), geometry_column="geometry")
 
-    str_order(str(source), str(output), geoparquet_version="1.1")
+
+def test_str_order_file_passes_through_all_empty_geometries(tmp_path, caplog):
+    """The passthrough branch must not claim it reordered anything."""
+    source = tmp_path / "empty-source.parquet"
+    output = tmp_path / "empty-str.parquet"
+    write_geoparquet_table(_all_empty_table(), str(source), geometry_column="geometry")
+
+    with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+        str_order(str(source), str(output), geoparquet_version="1.1")
 
     assert pq.read_table(output).num_rows == 2
+    messages = [record.message for record in caplog.records]
+    assert any("Wrote data without STR ordering to:" in message for message in messages)
+    assert not any("Successfully reordered data using STR" in message for message in messages)
+
+
+def test_str_order_streaming_passthrough_does_not_claim_it_sorted(tmp_path, monkeypatch, caplog):
+    """Same honesty requirement on the streaming dispatch."""
+    table = _all_empty_table()
+    stream = io.BytesIO()
+    with ipc.RecordBatchStreamWriter(stream, table.schema) as writer:
+        writer.write_table(table)
+    stream.seek(0)
+    mock_stdin = mock.MagicMock()
+    mock_stdin.isatty.return_value = False
+    mock_stdin.buffer = stream
+    monkeypatch.setattr(sys, "stdin", mock_stdin)
+    output = tmp_path / "empty-stream.parquet"
+
+    with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+        str_order("-", str(output), geoparquet_version="1.1")
+
+    assert pq.read_table(output).num_rows == 2
+    messages = [record.message for record in caplog.records]
+    assert any("Wrote data without STR ordering to:" in message for message in messages)
+    assert not any("Successfully reordered data using STR" in message for message in messages)
+
+
+def test_str_order_verbose_emits_the_layout_it_chose(tmp_path, caplog):
+    """``--verbose`` has to actually raise the logger, or its only new line is dead."""
+    source = tmp_path / "verbose-source.parquet"
+    output = tmp_path / "verbose-str.parquet"
+    write_geoparquet_table(
+        _point_table([(index, index % 4, index // 4) for index in range(16)]),
+        str(source),
+        geometry_column="geometry",
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+        str_order(
+            str(source), str(output), row_group_rows=4, verbose=True, geoparquet_version="1.1"
+        )
+
+    assert any("STR layout" in record.message for record in caplog.records)
+
+
+def test_str_order_streaming_verbose_emits_the_layout_it_chose(tmp_path, monkeypatch, caplog):
+    """The streaming dispatch has its own layout line; it must emit too."""
+    table = _point_table([(index, index % 4, index // 4) for index in range(16)])
+    stream = io.BytesIO()
+    with ipc.RecordBatchStreamWriter(stream, table.schema) as writer:
+        writer.write_table(table)
+    stream.seek(0)
+    mock_stdin = mock.MagicMock()
+    mock_stdin.isatty.return_value = False
+    mock_stdin.buffer = stream
+    monkeypatch.setattr(sys, "stdin", mock_stdin)
+    output = tmp_path / "verbose-stream.parquet"
+
+    with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+        str_order("-", str(output), row_group_rows=4, verbose=True, geoparquet_version="1.1")
+
+    assert any("STR layout" in record.message for record in caplog.records)
+
+
+def test_str_order_rejects_zero_row_group_size_by_the_name_the_user_typed(tmp_path):
+    """The error names --row-group-size, not the tile_size it is derived into."""
+    source = tmp_path / "reject-source.parquet"
+    write_geoparquet_table(_point_table([(1, 0, 0)]), str(source), geometry_column="geometry")
+
+    with pytest.raises(InvalidParameterError) as excinfo:
+        str_order(str(source), str(tmp_path / "out.parquet"), row_group_rows=0)
+
+    assert excinfo.value.param_name == "--row-group-size"
+    assert "tile_size" not in str(excinfo.value)
+
+
+def test_str_order_streaming_warns_that_add_bbox_is_ignored(tmp_path, monkeypatch, caplog):
+    """Streaming has no bbox step (same gap as `sort hilbert`), so say so."""
+    table = _point_table([(index, index % 4, index // 4) for index in range(16)])
+    stream = io.BytesIO()
+    with ipc.RecordBatchStreamWriter(stream, table.schema) as writer:
+        writer.write_table(table)
+    stream.seek(0)
+    mock_stdin = mock.MagicMock()
+    mock_stdin.isatty.return_value = False
+    mock_stdin.buffer = stream
+    monkeypatch.setattr(sys, "stdin", mock_stdin)
+    output = tmp_path / "stream-bbox.parquet"
+
+    with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+        str_order("-", str(output), add_bbox_flag=True, geoparquet_version="1.1")
+
+    assert any("--add-bbox is ignored in streaming mode" in r.message for r in caplog.records)
+    assert "bbox" not in pq.read_table(output).column_names
+
+
+def test_str_order_streaming_uses_the_streams_own_primary_column(tmp_path, monkeypatch):
+    """A non-standard primary column works in stream mode, as it does in file mode."""
+    metadata = {
+        b"geo": json.dumps(
+            {
+                "version": "1.1.0",
+                "primary_column": "footprint",
+                "columns": {"footprint": {"encoding": "WKB", "geometry_types": ["Point"]}},
+            }
+        ).encode()
+    }
+    table = pa.table(
+        {
+            "id": pa.array(list(range(16))),
+            "footprint": pa.array(
+                [_point_wkb(index % 4, index // 4) for index in range(16)],
+                type=pa.binary(),
+            ),
+        }
+    ).replace_schema_metadata(metadata)
+    stream = io.BytesIO()
+    with ipc.RecordBatchStreamWriter(stream, table.schema) as writer:
+        writer.write_table(table)
+    stream.seek(0)
+    mock_stdin = mock.MagicMock()
+    mock_stdin.isatty.return_value = False
+    mock_stdin.buffer = stream
+    monkeypatch.setattr(sys, "stdin", mock_stdin)
+    output = tmp_path / "footprint-str.parquet"
+
+    str_order("-", str(output), row_group_rows=4, geoparquet_version="1.1")
+
+    result = pq.read_table(output)
+    assert result.num_rows == 16
+    assert result.column_names == ["id", "footprint"]
+
+
+def test_str_order_file_write_preserves_the_in_memory_ordering(tmp_path):
+    """The written row order is str_order_table's order - the write does not reshuffle."""
+    source = tmp_path / "order-source.parquet"
+    output = tmp_path / "order-str.parquet"
+    table = _point_table(_SPREAD_POINTS)
+    write_geoparquet_table(table, str(source), geometry_column="geometry")
+
+    str_order(str(source), str(output), row_group_rows=20, geoparquet_version="1.1")
+
+    written = pq.read_table(output)
+    expected = str_order_table(table, tile_size=20)
+    assert written["id"].to_pylist() == expected["id"].to_pylist()
+    assert written["geometry"].to_pylist() == expected["geometry"].to_pylist()

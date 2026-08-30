@@ -3750,10 +3750,17 @@ def str_order_command(
 ):
     """Pack GeoParquet rows with Sort-Tile-Recursive ordering.
 
-    STR builds approximately square X strips from geometry bounding-box
-    centers, sorts each strip on Y, and aligns spatial tiles to Parquet row
-    groups. This can produce tighter row-group bounds than a space-filling
-    curve for uneven spatial distributions.
+    STR sorts geometry bounding-box centers into X strips, sorts each strip on
+    Y, and alternates the Y direction between strips. This can produce tighter
+    row-group bounding boxes than a space-filling curve.
+
+    --row-group-size does double duty: it is the writer's row-group target, and
+    it selects how many X strips STR builds, as
+    ceil(sqrt(num_rows / row-group-size)). That makes it a coarse control -
+    nearby values often produce an identical ordering. Rows are not packed into
+    row-group-sized tiles, and because the writer rounds row groups up to a
+    multiple of 2048, tiles and row groups only line up when --row-group-size
+    is itself a multiple of 2048.
     """
     with _activate_s3(ctx):
         from geoparquet_io.core.streaming import StreamingError, validate_output
@@ -3768,16 +3775,16 @@ def str_order_command(
         str_impl(
             input_parquet,
             output_parquet,
-            geometry_column,
-            add_bbox,
-            verbose,
-            compression.upper(),
-            compression_level,
-            row_group_mb,
-            row_group_size,
-            None,
-            geoparquet_version,
-            overwrite,
+            geometry_column=geometry_column,
+            add_bbox_flag=add_bbox,
+            verbose=verbose,
+            compression=compression.upper(),
+            compression_level=compression_level,
+            row_group_size_mb=row_group_mb,
+            row_group_rows=row_group_size,
+            profile=None,
+            geoparquet_version=geoparquet_version,
+            overwrite=overwrite,
             memory_limit=write_memory,
         )
 
