@@ -162,6 +162,7 @@ republished upstream. `gpio add a5` is the closest substitute
 - test(docs): run the guides' examples as tests ([#667](https://github.com/geoparquet/geoparquet-io/issues/667)) by [@cholmes](https://github.com/cholmes) in [#732](https://github.com/geoparquet/geoparquet-io/pull/732)
 - test(geo-stats): record that Windows geo-stat zeros are DuckDB's read, not pyarrow's write by [@cholmes](https://github.com/cholmes) in [#748](https://github.com/geoparquet/geoparquet-io/pull/748)
 - test(covering): pin the spatial-index covering against the bbox covering ([#694](https://github.com/geoparquet/geoparquet-io/issues/694)) by [@cholmes](https://github.com/cholmes) in [#751](https://github.com/geoparquet/geoparquet-io/pull/751)
+- chore(release): generate the changelog from merged PRs, and prep v1.4.0 by [@cholmes](https://github.com/cholmes) in [#780](https://github.com/geoparquet/geoparquet-io/pull/780)
 
 ### Dependencies
 
