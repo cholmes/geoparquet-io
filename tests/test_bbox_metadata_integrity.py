@@ -16,12 +16,15 @@ invalid; and the Python API still carried the skeleton the core had dropped.
 """
 
 import json
+import struct
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
+from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata, add_bbox_metadata_table
 from geoparquet_io.core.common import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.validate import validate_geoparquet
 
@@ -482,3 +485,102 @@ class TestPythonApiRefusesWhatTheCliRefuses:
 
         columns = result.metadata().get("geo_metadata", {}).get("columns", {})
         assert columns["geometry"]["covering"]["bbox"]["xmin"] == ["bbox", "xmin"]
+
+
+_GEO_11 = {
+    "version": "1.1.0",
+    "primary_column": "geometry",
+    "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+}
+
+# WKB for POINT (30 10), little-endian -- the same point the file fixtures use.
+_WKB_POINT = struct.pack("<BI2d", 1, 1, 30.0, 10.0)
+
+
+def _arrow_table(geo=None, *, with_geometry=True, with_bbox=True):
+    """An in-memory table shaped like the file fixtures above."""
+    columns = {"id": [1]}
+    if with_geometry:
+        columns["geometry"] = pa.array([_WKB_POINT], type=pa.binary())
+    if with_bbox:
+        columns["bbox"] = pa.array(
+            [{"xmin": 30.0, "ymin": 10.0, "xmax": 30.0, "ymax": 10.0}],
+            type=pa.struct(
+                [
+                    ("xmin", pa.float64()),
+                    ("ymin", pa.float64()),
+                    ("xmax", pa.float64()),
+                    ("ymax", pa.float64()),
+                ]
+            ),
+        )
+    table = pa.table(columns)
+    if geo is not None:
+        table = table.replace_schema_metadata({b"geo": geo})
+    return table
+
+
+class TestTableEntryPointDefensivePaths:
+    """`add_bbox_metadata_table` guards a caller-supplied table, not a file.
+
+    A table handed in by a library caller has been through none of the file
+    path's checks, so each of these is reachable from ordinary API use rather
+    than being unreachable defensive code.
+    """
+
+    def test_a_table_with_no_geometry_column_is_refused(self):
+        """Detection returns None rather than guessing a column."""
+        table = _arrow_table(json.dumps(_GEO_11).encode(), with_geometry=False)
+
+        with pytest.raises(ValueError, match="no geometry column detected"):
+            add_bbox_metadata_table(table)
+
+    def test_an_unparsable_geo_key_is_treated_as_absent(self):
+        """Invalid JSON in `geo` must refuse, not raise a JSONDecodeError."""
+        table = _arrow_table(b"{not json at all")
+
+        with pytest.raises(GeoParquetError, match="no GeoParquet metadata"):
+            add_bbox_metadata_table(table)
+
+    def test_a_non_dict_columns_value_is_replaced(self):
+        """`columns` is arbitrary JSON from the caller; a list must not crash."""
+        geo = dict(_GEO_11, columns=["geometry"])
+        table = _arrow_table(json.dumps(geo).encode())
+
+        result = add_bbox_metadata_table(table)
+
+        written = json.loads(result.schema.metadata[b"geo"].decode("utf-8"))
+        assert written["columns"]["geometry"]["covering"]["bbox"]["xmin"] == ["bbox", "xmin"]
+
+    def test_a_non_dict_column_entry_is_replaced(self):
+        """The per-column entry can be a scalar; the covering still lands."""
+        geo = dict(_GEO_11, columns={"geometry": "WKB"})
+        table = _arrow_table(json.dumps(geo).encode())
+
+        result = add_bbox_metadata_table(table)
+
+        written = json.loads(result.schema.metadata[b"geo"].decode("utf-8"))
+        assert written["columns"]["geometry"]["covering"]["bbox"]["ymax"] == ["bbox", "ymax"]
+
+
+class TestBlobConversionWrapperDefensivePaths:
+    """`_wrap_query_with_blob_conversion` runs against whatever DuckDB reports."""
+
+    def test_a_query_duckdb_cannot_describe_falls_back_to_the_primary(self):
+        """DESCRIBE can fail; the wrapper must still convert the primary column."""
+        con = get_duckdb_connection()
+        query = _wrap_query_with_blob_conversion(
+            "SELECT * FROM a_table_that_does_not_exist", "geometry", con
+        )
+
+        assert 'ST_AsWKB("geometry")' in query
+
+    def test_a_secondary_repeating_the_primary_is_not_cast_twice(self):
+        """A geo block may name the primary column among its own columns."""
+        con = get_duckdb_connection()
+        con.execute("CREATE TABLE t AS SELECT 1 AS id, ST_Point(1, 2) AS geometry")
+        query = _wrap_query_with_blob_conversion(
+            "SELECT * FROM t", "geometry", con, secondary_columns=["geometry", "geometry"]
+        )
+
+        assert query.count('ST_AsWKB("geometry")') == 1
