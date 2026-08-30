@@ -45,13 +45,16 @@ ERROR_NO_COMPATIBLE_COLUMNS = (
 )
 # `-` reaches these writers as an ordinary path and dies inside GDAL/DuckDB as
 # "File not found: -", which describes neither what happened nor what to do.
-# Only `convert geojson` can consume an Arrow IPC stream (#723); the GDAL and CSV
-# writers hand a URL to GDAL/DuckDB and have no stdin-consuming path (#749).
+# Among the converters only `convert geojson` consumes an Arrow IPC stream
+# (#723, #746); the GDAL and CSV writers hand a URL to GDAL/DuckDB and have no
+# stdin-consuming path (#749). The workaround materializes with `gpio extract -`
+# because that command does read the stream -- `convert geoparquet` takes `-` as
+# an output only, so suggesting it would hand back the very "File not found: -"
+# this message exists to replace.
 ERROR_STDIN_UNSUPPORTED = (
     "reading stdin ('-') is not supported for {format} output.\n"
     "Materialize the stream first:\n"
-    "  gpio convert geoparquet - tmp.parquet && "
-    "gpio convert {command} tmp.parquet {output}"
+    "  gpio extract - tmp.parquet && gpio convert {command} tmp.parquet {output}"
 )
 
 

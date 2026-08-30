@@ -10,9 +10,13 @@ nor what to do about it.
 import pytest
 from click.testing import CliRunner
 
-from geoparquet_io.cli.main import convert
+from geoparquet_io.cli.main import cli, convert
 from geoparquet_io.core.exceptions import GeoParquetError
-from geoparquet_io.core.format_writers import write_csv, write_gdal_format
+from geoparquet_io.core.format_writers import (
+    _reject_stdin_input,
+    write_csv,
+    write_gdal_format,
+)
 
 # (cli subcommand, output file name, format description as it appears in the error)
 NON_STREAMING = [
@@ -37,7 +41,7 @@ def test_cli_rejects_stdin_with_actionable_message(subcommand, out_name, descrip
     output = result.output
     assert "File not found: -" not in output, "still leaking the misleading GDAL/DuckDB error"
     assert f"stdin ('-') is not supported for {description} output" in output
-    assert "gpio convert geoparquet - tmp.parquet" in output
+    assert "gpio extract - tmp.parquet" in output
     assert f"gpio convert {subcommand} tmp.parquet" in output
 
 
@@ -62,9 +66,56 @@ def test_write_gdal_format_raises_geoparquet_error(format_name, tmp_path):
         write_gdal_format("-", str(tmp_path / "out.bin"), format_name)
 
 
-def test_geojson_still_accepts_stdin():
-    """The guard must not touch `convert geojson`, which does consume stdin (#723)."""
-    from geoparquet_io.core.format_writers import _reject_stdin_input
+def test_helper_does_not_fire_on_an_ordinary_path(tmp_path):
+    """The guard keys on the stream marker alone, not on any path that looks odd."""
+    for path in ("some/file.parquet", "./-", str(tmp_path / "-.parquet"), "-file.parquet"):
+        _reject_stdin_input(path, "CSV", "csv", "out.csv")
 
-    # Sanity: the helper only fires on the stream marker.
-    _reject_stdin_input("some/file.parquet", "CSV", "csv", "out.csv")
+
+def test_geojson_still_accepts_stdin(buildings_test_file, tmp_path):
+    """The guard must not touch `convert geojson`, which does consume stdin.
+
+    Asserted end to end rather than by inspecting the helper: `convert geojson`
+    reaches a different writer, and the point is that a real stream still comes
+    out the other side (#723, #746).
+    """
+    runner = CliRunner()
+    stream = runner.invoke(convert, ["geoparquet", str(buildings_test_file), "-"])
+    assert stream.exit_code == 0, stream.output
+
+    out = tmp_path / "out.geojson"
+    result = runner.invoke(convert, ["geojson", "-", str(out)], input=stream.stdout_bytes)
+
+    assert result.exit_code == 0, result.output
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_the_suggested_workaround_actually_runs(buildings_test_file, tmp_path):
+    """The two commands the error prints must work when run.
+
+    The message used to suggest `gpio convert geoparquet - tmp.parquet`, which
+    accepts `-` as an *output* only -- so following the advice produced the very
+    `File not found: -` the message exists to replace. The commands are parsed
+    back out of the message so the two cannot drift apart again (#749).
+    """
+    runner = CliRunner()
+    message = runner.invoke(convert, ["csv", "-", str(tmp_path / "out.csv")]).output
+    suggestion = message.rsplit("Materialize the stream first:", 1)[1].strip()
+    materialize, then_convert = (part.strip().split() for part in suggestion.split("&&"))
+
+    stream = runner.invoke(convert, ["geoparquet", str(buildings_test_file), "-"])
+    assert stream.exit_code == 0, stream.output
+
+    # gpio extract - tmp.parquet
+    assert materialize[:2] == ["gpio", "extract"]
+    tmp_parquet = tmp_path / "tmp.parquet"
+    step_one = runner.invoke(cli, [*materialize[1:-1], str(tmp_parquet)], input=stream.stdout_bytes)
+    assert step_one.exit_code == 0, step_one.output
+    assert tmp_parquet.exists()
+
+    # gpio convert csv tmp.parquet out.csv
+    assert then_convert[:3] == ["gpio", "convert", "csv"]
+    out_csv = tmp_path / "out.csv"
+    step_two = runner.invoke(cli, [*then_convert[1:-2], str(tmp_parquet), str(out_csv)])
+    assert step_two.exit_code == 0, step_two.output
+    assert out_csv.exists() and out_csv.stat().st_size > 0

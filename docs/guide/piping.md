@@ -186,8 +186,12 @@ gpio sort hilbert intermediate.parquet output.parquet
 ## Limitations
 
 - **Partition commands**: `partition string`, `partition quadkey`, etc. can read from stdin but always write to a directory (not stdout)
-- **Non-streaming converters**: `convert csv`, `convert flatgeobuf`, `convert geopackage` and `convert shapefile` cannot read from stdin — they hand a file URL to GDAL/DuckDB. `convert geojson` and `convert geoparquet` can. Materialize first:
-  `gpio convert geoparquet - tmp.parquet && gpio convert csv tmp.parquet out.csv`
+- **Non-streaming converters**: `convert csv`, `convert flatgeobuf`, `convert geopackage` and `convert shapefile` cannot read from stdin — they hand a file URL to GDAL/DuckDB. Among the converters only `convert geojson` consumes a stream; `convert geoparquet` accepts `-` as an output, not an input. Materialize the stream first, with a command that does read it:
+
+    ```bash
+    gpio add bbox input.parquet - | gpio extract - tmp.parquet
+    gpio convert csv tmp.parquet out.csv
+    ```
 - **Remote output**: Streaming to remote destinations (S3, HTTP) is not supported; use file output then `gpio publish upload`
 - **Memory**: Large datasets are streamed, but some operations (like Hilbert sorting) require loading the full dataset into memory
 
