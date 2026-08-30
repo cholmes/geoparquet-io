@@ -62,10 +62,12 @@ def v11_with_bbox_column(tmp_path):
     """A 1.1 file with a bbox column but no covering — what `add bbox-metadata` is for.
 
     Written straight through DuckDB rather than by rewriting a converted file with
-    pyarrow: pyarrow adds an ``ARROW:schema`` KV key, and `add bbox-metadata`'s
-    KV_METADATA clause does not quote key names, so a key containing ':' makes
-    DuckDB's parser reject the rewrite. That is a separate pre-existing defect;
-    this fixture keeps the test aimed at the version gate.
+    pyarrow, so the geo block under test is spelled out here instead of depending
+    on what pyarrow happens to attach. (The original reason was a defect — pyarrow
+    adds an ``ARROW:schema`` KV key and `add bbox-metadata` emitted unquoted key
+    names, so a key containing ':' broke the rewrite. That is fixed: the command
+    now shares ``build_kv_metadata_clause()``, and
+    ``test_preserves_kv_key_containing_colon`` in ``tests/test_add.py`` covers it.)
     """
     path = tmp_path / "v11_bbox.parquet"
     geo = json.dumps(

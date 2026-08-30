@@ -21,6 +21,7 @@ from geoparquet_io.core.duckdb_utils import (
     _get_query_column_type,
     _get_query_columns,
     _wrap_query_with_wkb_conversion,
+    build_kv_metadata_clause,
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
@@ -2321,6 +2322,7 @@ def _plain_copy_to(
     input_crs: dict | None = None,
     geometry_column: str | None = None,
     carry_geo_metadata: dict | None = None,
+    extra_kv_metadata: dict[str, str] | None = None,
 ) -> None:
     """
     Execute a plain DuckDB COPY TO without geo metadata manipulation.
@@ -2348,6 +2350,10 @@ def _plain_copy_to(
             Supplying it alongside GEOPARQUET_VERSION 'V2' keeps the native
             GEOMETRY logical type and its geospatial statistics — only the KV
             entry is replaced.
+        extra_kv_metadata: Non-geo sidecar keys (fiboa, vecorel, STAC fragments)
+            to carry into the output. DuckDB accepts KV_METADATA alongside
+            GEOPARQUET_VERSION, so these ride along on the fast path instead of
+            forcing a full metadata rewrite for an unrelated key (#709).
     """
     compression_map = {
         "zstd": "ZSTD",
@@ -2382,9 +2388,17 @@ def _plain_copy_to(
         options.append(f"COMPRESSION_LEVEL {validate_compression_level(compression_level)}")
     if row_group_rows is not None:
         options.append(f"ROW_GROUP_SIZE {row_group_rows}")
+    kv_pairs = dict(extra_kv_metadata or {})
     if carry_geo_metadata is not None:
-        geo_json = _escape_sql_string(json.dumps(carry_geo_metadata))
-        options.append(f"KV_METADATA {{'geo': '{geo_json}'}}")
+        # Applied last, so the carried block wins over an explicit `geo` in
+        # `extra_kv_metadata` -- a deliberate flip of the previous precedence.
+        # Preserved keys never collide here (`extract_preserved_kv_metadata`
+        # excludes `geo`); only a caller that hand-passes `geo` is affected, and
+        # `carry_geo_metadata` is the block this write decided to emit.
+        kv_pairs["geo"] = json.dumps(carry_geo_metadata)
+    kv_clause = build_kv_metadata_clause(kv_pairs)
+    if kv_clause:
+        options.append(kv_clause)
 
     copy_query = f"""
         COPY ({final_query})
@@ -2695,12 +2709,27 @@ def write_parquet_with_metadata(
         # Caller-supplied entries win over preserved keys of the same name.
         extra_kv_metadata = {**preserved_keys, **(extra_kv_metadata or {})}
 
-    if extra_kv_metadata:
-        rewrite_needed = True
-        if verbose:
-            debug(
-                f"Forcing metadata rewrite for extra KV metadata: {list(extra_kv_metadata.keys())}"
-            )
+    # Sidecar keys no longer force a rewrite: DuckDB accepts KV_METADATA in the
+    # same COPY as GEOPARQUET_VERSION, so `_plain_copy_to` writes them itself
+    # (#709). A 2.0 -> 2.0 copy that happens to carry a fiboa or vecorel payload
+    # used to pay for a full metadata rewrite -- an extra scan of the geometry
+    # column to recompute bbox and geometry types -- for a key that has nothing
+    # to do with the geo block.
+    #
+    # Note what the fast path costs, because dropping the rewrite is not free.
+    # It does not carry the input's `geo` block forward: it regenerates one from
+    # DuckDB's own V2 output, plus whatever `_covering_to_carry_on_fast_path`
+    # rescues (a covering the input explicitly DECLARED). So `epoch`,
+    # `orientation`, and a covering gpio would have auto-declared from a bbox
+    # column are all absent from the output, where the rewrite path preserved
+    # them via `_declare_carried_bbox_column` and
+    # `build_geo_metadata(original_metadata=...)`. That is pre-existing fast-path
+    # behaviour, not a new loss class -- the same file without a sidecar key
+    # already took this path and already lost those keys. Not forcing a rewrite
+    # here simply makes sidecar-carrying inputs behave like every other input.
+    # Closing the gap for both is tracked in #772.
+    if extra_kv_metadata and verbose:
+        debug(f"Carrying extra KV metadata: {list(extra_kv_metadata.keys())}")
 
     if show_sql:
         info("\n-- Query:")
@@ -2733,6 +2762,7 @@ def write_parquet_with_metadata(
                 carry_geo_metadata=_covering_to_carry_on_fast_path(
                     original_metadata, geometry_column, effective_version
                 ),
+                extra_kv_metadata=extra_kv_metadata,
             )
         else:
             # Metadata rewrite needed - use strategy pattern

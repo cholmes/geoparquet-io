@@ -7,7 +7,7 @@ with appropriate extensions loaded for GeoParquet operations.
 
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -90,6 +90,30 @@ def _escape_sql_string(value: str) -> str:
         String with single quotes escaped for safe SQL interpolation
     """
     return value.replace("'", "''")
+
+
+def build_kv_metadata_clause(pairs: Mapping[str, str] | None) -> str | None:
+    """Build a DuckDB ``KV_METADATA {...}`` clause from RAW key/value pairs.
+
+    Every key and value is escaped exactly once here, so callers must pass raw
+    strings. Returns ``None`` when there is nothing to write, so a caller can
+    simply skip appending the option.
+
+    Keys are quoted as well as escaped: an unquoted key containing ``:`` (an
+    ``ARROW:schema`` payload, say) makes DuckDB's parser reject the whole COPY.
+
+    Keys and values must already be ``str``. Nothing is coerced here: every
+    caller decodes Parquet's ``bytes`` KV payloads before it gets this far, and
+    ``str(b'{"a": 1}')`` would quietly write the literal ``b'{"a": 1}'`` into the
+    file rather than fail. A non-``str`` raises instead.
+    """
+    if not pairs:
+        return None
+    body = ", ".join(
+        f"'{_escape_sql_string(key)}': '{_escape_sql_string(value)}'"
+        for key, value in pairs.items()
+    )
+    return f"KV_METADATA {{{body}}}"
 
 
 def validate_compression_level(value: int) -> int:

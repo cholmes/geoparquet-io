@@ -289,3 +289,196 @@ class TestTableWritePreservesKv:
         metadata = pq.ParquetFile(str(out)).schema_arrow.metadata
         geo = json.loads(metadata[b"geo"].decode("utf-8"))
         assert geo["version"].startswith("1.0")
+
+
+class TestBuildKvMetadataClause:
+    """The shared clause builder escapes exactly once and quotes keys."""
+
+    def test_empty_returns_none(self):
+        from geoparquet_io.core.duckdb_utils import build_kv_metadata_clause
+
+        assert build_kv_metadata_clause(None) is None
+        assert build_kv_metadata_clause({}) is None
+
+    def test_escapes_values_once(self):
+        from geoparquet_io.core.duckdb_utils import build_kv_metadata_clause
+
+        assert build_kv_metadata_clause({"k": "o'brien"}) == "KV_METADATA {'k': 'o''brien'}"
+
+    def test_quotes_keys_so_a_colon_survives(self):
+        """An unquoted `ARROW:schema` key makes DuckDB's parser reject the COPY."""
+        from geoparquet_io.core.duckdb_utils import build_kv_metadata_clause
+
+        clause = build_kv_metadata_clause({"ARROW:schema": "x"})
+        assert clause == "KV_METADATA {'ARROW:schema': 'x'}"
+
+
+@pytest.fixture
+def nongeo_kv_source(tmp_path):
+    """Plain Parquet -- no geometry column at all -- carrying a sidecar key."""
+    src = tmp_path / "nongeo.parquet"
+    table = pa.table({"id": [1, 2], "name": ["a", "b"]})
+    metadata = {
+        b"fiboa": FIBOA_VALUE.encode("utf-8"),
+        b"custom_note": CUSTOM_VALUE.encode("utf-8"),
+    }
+    pq.write_table(table.replace_schema_metadata(metadata), src)
+    return src
+
+
+class TestNonGeoTablePreservesKv:
+    """#708: preservation must not depend on there being a geometry column.
+
+    #690 fixed this for GeoParquet writes. ``duckdb-kv`` -- the default -- routes
+    a table with no geometry column to ``_write_plain_parquet_from_table``, which
+    built its COPY options inline with no ``KV_METADATA`` and never received the
+    keys #690 plumbed in. The other three strategies write through PyArrow, which
+    carries schema metadata along for free.
+    """
+
+    @pytest.mark.parametrize("strategy", WRITE_STRATEGIES)
+    def test_every_strategy_preserves_keys_without_geometry(
+        self, nongeo_kv_source, tmp_path, strategy
+    ):
+        out = tmp_path / f"nongeo_{strategy}.parquet"
+        api.read(str(nongeo_kv_source)).write(str(out), write_strategy=strategy)
+
+        assert {"fiboa", "custom_note"} <= kv_keys(out), f"{strategy} dropped keys"
+        assert kv_value(out, "fiboa") == FIBOA_VALUE
+        assert kv_value(out, "custom_note") == CUSTOM_VALUE
+
+    def test_default_strategy_preserves_keys_without_geometry(self, nongeo_kv_source, tmp_path):
+        """The default strategy is the one that was broken."""
+        out = tmp_path / "nongeo_default.parquet"
+        api.read(str(nongeo_kv_source)).write(str(out))
+
+        assert {"fiboa", "custom_note"} <= kv_keys(out)
+
+    def test_no_geo_key_is_invented(self, nongeo_kv_source, tmp_path):
+        """A table with no geometry is still not GeoParquet afterwards."""
+        out = tmp_path / "nongeo_nogeo.parquet"
+        api.read(str(nongeo_kv_source)).write(str(out))
+
+        assert "geo" not in kv_keys(out)
+
+    def test_rows_survive(self, nongeo_kv_source, tmp_path):
+        out = tmp_path / "nongeo_rows.parquet"
+        api.read(str(nongeo_kv_source)).write(str(out))
+
+        assert pq.read_table(out).column("name").to_pylist() == ["a", "b"]
+
+    def test_values_needing_escaping_round_trip(self, tmp_path):
+        """A sidecar value with an apostrophe must be escaped exactly once."""
+        src = tmp_path / "quoted.parquet"
+        awkward = '{"note": "o\'brien said \'hi\'"}'
+        pq.write_table(
+            pa.table({"id": [1]}).replace_schema_metadata({b"custom_note": awkward.encode()}),
+            src,
+        )
+        out = tmp_path / "quoted_out.parquet"
+        api.read(str(src)).write(str(out))
+
+        assert kv_value(out, "custom_note") == awkward
+
+    def test_query_entry_point_preserves_keys(self, tmp_path):
+        """``write_from_query`` with no geometry column carries the keys too."""
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+        from geoparquet_io.core.write_strategies.duckdb_kv import DuckDBKVStrategy
+
+        out = tmp_path / "nongeo_query.parquet"
+        con = get_duckdb_connection(load_spatial=False)
+        try:
+            DuckDBKVStrategy().write_from_query(
+                con=con,
+                query="SELECT 1 AS id",
+                output_path=str(out),
+                geometry_column=None,
+                geoparquet_version="1.1",
+                original_metadata=None,
+                input_crs=None,
+                compression="ZSTD",
+                compression_level=None,
+                row_group_size_mb=None,
+                row_group_rows=None,
+                verbose=False,
+                extra_kv_metadata={"fiboa": FIBOA_VALUE},
+            )
+        finally:
+            con.close()
+
+        assert kv_value(out, "fiboa") == FIBOA_VALUE
+
+
+class TestSidecarKeysRideTheFastPath:
+    """#709: an unrelated sidecar key must not cost a full metadata rewrite.
+
+    ``extra_kv_metadata`` used to set ``rewrite_needed = True`` unconditionally,
+    so a 2.0 -> 2.0 copy that would otherwise take the no-rewrite ``_plain_copy_to``
+    path paid for an extra scan of the geometry column purely because the file
+    carried a fiboa or vecorel payload.
+    """
+
+    FAST_PATH_MARKER = "using plain COPY TO"
+
+    def _convert(self, inp, out):
+        result = CliRunner().invoke(
+            cli,
+            ["convert", "geoparquet", str(inp), str(out), "--skip-hilbert", "--verbose"],
+        )
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    @pytest.fixture
+    def v2_with_sidecar(self, fields_v2_file, tmp_path):
+        source = pq.read_table(fields_v2_file)
+        metadata = dict(source.schema.metadata or {})
+        metadata[b"fiboa"] = FIBOA_VALUE.encode("utf-8")
+        path = tmp_path / "v2_sidecar.parquet"
+        pq.write_table(source.replace_schema_metadata(metadata), path)
+        return path
+
+    def test_plain_v2_input_takes_the_fast_path(self, fields_v2_file, tmp_path):
+        """Non-vacuity: this input takes the fast path with no sidecar key."""
+        output = self._convert(fields_v2_file, tmp_path / "plain.parquet")
+
+        assert self.FAST_PATH_MARKER in output
+
+    def test_sidecar_key_still_takes_the_fast_path(self, v2_with_sidecar, tmp_path):
+        output = self._convert(v2_with_sidecar, tmp_path / "sidecar.parquet")
+
+        assert self.FAST_PATH_MARKER in output, (
+            "a sidecar key still forces the metadata-rewrite path"
+        )
+
+    def test_fast_path_writes_the_sidecar_key(self, v2_with_sidecar, tmp_path):
+        out = tmp_path / "sidecar_keys.parquet"
+        self._convert(v2_with_sidecar, out)
+
+        assert kv_value(out, "fiboa") == FIBOA_VALUE
+        assert "geo" in kv_keys(out)
+
+    def test_fast_path_geo_matches_the_no_sidecar_output(
+        self, fields_v2_file, v2_with_sidecar, tmp_path
+    ):
+        """Carrying a sidecar key must not change the geo block at all."""
+        plain_out = tmp_path / "geo_plain.parquet"
+        sidecar_out = tmp_path / "geo_sidecar.parquet"
+        self._convert(fields_v2_file, plain_out)
+        self._convert(v2_with_sidecar, sidecar_out)
+
+        assert json.loads(kv_value(sidecar_out, "geo")) == json.loads(kv_value(plain_out, "geo"))
+
+    def test_covering_input_still_rewrites(self, austria_bbox_covering_file, tmp_path):
+        """A covering is a real reason to rewrite; that gate is untouched."""
+        source = pq.read_table(austria_bbox_covering_file)
+        metadata = dict(source.schema.metadata or {})
+        metadata[b"fiboa"] = FIBOA_VALUE.encode("utf-8")
+        inp = tmp_path / "covering_sidecar.parquet"
+        pq.write_table(source.replace_schema_metadata(metadata), inp)
+
+        out = tmp_path / "covering_out.parquet"
+        self._convert(inp, out)
+
+        geo = json.loads(kv_value(out, "geo"))
+        assert "covering" in geo["columns"][geo["primary_column"]]
+        assert kv_value(out, "fiboa") == FIBOA_VALUE

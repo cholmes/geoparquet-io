@@ -814,6 +814,93 @@ class TestAddBboxMetadataPreservesFileProperties:
         covering = geo_meta.get("columns", {}).get(primary_col, {}).get("covering", {})
         assert "bbox" in covering, "covering.bbox should exist in updated geo metadata"
 
+    def test_preserves_kv_key_containing_colon(self, tmp_path):
+        """A sidecar key containing ':' must not break the rewrite (#756).
+
+        ``add bbox-metadata`` built its own KV_METADATA clause with unquoted key
+        names, so any key with a ':' in it -- ``stac:collection``, pyarrow's
+        ``ARROW:schema`` -- made DuckDB's parser reject the whole COPY with
+        "syntax error at or near \":\"". It now shares
+        ``build_kv_metadata_clause()``, which quotes and escapes both halves.
+        """
+        import json
+
+        test_file = str(tmp_path / "colon_key.parquet")
+        # A value that exercises the escaping too: single quotes, a backslash,
+        # a newline and non-ASCII must all round-trip byte-identically.
+        payload = json.dumps(
+            {"id": "o'brien\\place", "note": "line1\nline2", "name": "Ka\u0301rlsplatz"}
+        )
+
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        conn.execute(f"""
+            COPY (
+                SELECT
+                    'test' AS name,
+                    STRUCT_PACK(
+                        xmin := -1.0::FLOAT,
+                        ymin := -1.0::FLOAT,
+                        xmax := 1.0::FLOAT,
+                        ymax := 1.0::FLOAT
+                    ) AS bbox,
+                    ST_Point(0, 0) AS geometry
+            ) TO '{test_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'V1')
+        """)
+
+        geo_meta_row = conn.execute(
+            f"SELECT value FROM parquet_kv_metadata('{test_file}') WHERE key = 'geo'"
+        ).fetchone()
+        geo_meta_value = geo_meta_row[0].decode("utf-8") if geo_meta_row else "{}"
+        # 'V1' declares 1.0.0, which cannot carry the 1.1-only covering key.
+        geo_meta_value = geo_meta_value.replace('"version":"1.0.0"', '"version":"1.1.0"').replace(
+            '"version": "1.0.0"', '"version": "1.1.0"'
+        )
+        assert '"1.1.0"' in geo_meta_value
+
+        temp_file = str(tmp_path / "colon_key_seed.parquet")
+        escaped_geo = geo_meta_value.replace("'", "''")
+        escaped_payload = payload.replace("'", "''")
+        conn.execute(f"""
+            COPY (SELECT * FROM '{test_file}')
+            TO '{temp_file}' (
+                FORMAT PARQUET,
+                KV_METADATA {{
+                    'geo': '{escaped_geo}',
+                    'stac:collection': '{escaped_payload}'
+                }}
+            )
+        """)
+        conn.close()
+
+        import shutil
+
+        shutil.move(temp_file, test_file)
+
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox-metadata", test_file])
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        conn = duckdb.connect()
+        after_kv = conn.execute(
+            f"SELECT key, value FROM parquet_kv_metadata('{test_file}')"
+        ).fetchall()
+        conn.close()
+        after = {
+            (k.decode("utf-8") if isinstance(k, bytes) else k): (
+                v.decode("utf-8") if isinstance(v, bytes) else v
+            )
+            for k, v in after_kv
+        }
+
+        assert "stac:collection" in after, f"colon key was dropped: {sorted(after)}"
+        assert after["stac:collection"] == payload, "colon key's value did not round-trip"
+
+        geo_meta = json.loads(after["geo"])
+        primary_col = geo_meta.get("primary_column", "geometry")
+        covering = geo_meta.get("columns", {}).get(primary_col, {}).get("covering", {})
+        assert "bbox" in covering, "covering.bbox should exist in updated geo metadata"
+
     def test_rejects_remote_urls(self, tmp_path):
         """Test that add bbox-metadata rejects remote URLs with clear error."""
         from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata
