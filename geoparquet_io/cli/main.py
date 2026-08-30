@@ -1693,11 +1693,13 @@ def convert_geojson(
       Streams newline-delimited GeoJSON (GeoJSONSeq) to stdout with RFC 8142
       record separators. Designed for piping to tippecanoe for PMTiles/MBTiles.
       Use --feature-collection to output a FeatureCollection instead.
-      Supports reading from stdin with "-" for pipeline use.
 
     \b
     FILE MODE (with output file):
       Writes a standard GeoJSON FeatureCollection to the specified file.
+
+    \b
+    Either mode reads from stdin with "-" (Arrow IPC), for pipeline use.
 
     \b
     Examples:
@@ -1706,6 +1708,9 @@ def convert_geojson(
 
       # Pipeline with filtering
       gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | gpio convert geojson - | tippecanoe -P -o sf.pmtiles
+
+      # Pipeline ending in a GeoJSON file
+      gpio extract data.parquet --bbox "-122.5,37.5,-122,38" | gpio convert geojson - sf.geojson
 
       # Write to GeoJSON file
       gpio convert geojson data.parquet output.geojson

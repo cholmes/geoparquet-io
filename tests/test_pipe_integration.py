@@ -240,3 +240,80 @@ class TestEdgeCases:
         assert "address" in table.column_names
         assert "geometry" in table.column_names
         assert "bbox_test" in table.column_names
+
+
+class TestStdinToNamedGeoJsonOutput:
+    """#723: `gpio convert geojson - out.geojson` failed with "File not found: -".
+
+    The message was wrong about what happened -- `-` is understood a moment
+    earlier in the redirect form, and the named path is the *output*. The
+    streaming converter already writes a FeatureCollection to a named path, so
+    the pipeline works once the CLI stops routing stdin through the file-mode
+    writer that can only open a path.
+    """
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_stdin_to_named_geojson_file(self, tmp_path):
+        import json
+
+        output = tmp_path / "out.geojson"
+        result = run_pipeline(
+            [
+                f"gpio extract --limit 5 {PLACES_PARQUET} -",
+                f"gpio convert geojson - {output}",
+            ]
+        )
+
+        assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
+
+        data = json.loads(output.read_text())
+        assert data["type"] == "FeatureCollection"
+        assert len(data["features"]) == 5
+        assert all(f["geometry"] is not None for f in data["features"])
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_stdin_redirect_form_still_works(self, tmp_path):
+        """The documented form must keep working."""
+        import json
+
+        output = tmp_path / "out.geojson"
+        result = subprocess.run(
+            f"gpio extract --limit 5 {PLACES_PARQUET} - | "
+            f"gpio convert geojson - --feature-collection --no-rs > {output}",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
+        assert json.loads(output.read_text())["type"] == "FeatureCollection"
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_stdin_to_named_file_with_bbox_and_id_field(self, tmp_path):
+        """The combination neither #723 nor #726 covered on its own.
+
+        Routing stdin into file mode sends it through `_build_feature_query`,
+        the function #726 fixed. Before that fix this pipeline did not fail --
+        it silently wrote truncated, unparsable GeoJSON, which is worse than
+        the `File not found: -` it replaced. Guard the intersection.
+        """
+        import json
+
+        output = tmp_path / "out.geojson"
+        result = run_pipeline(
+            [
+                f"gpio extract --limit 5 {PLACES_PARQUET} -",
+                f"gpio convert geojson - {output} --write-bbox --id-field name",
+            ]
+        )
+
+        assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
+
+        data = json.loads(output.read_text())
+        assert data["type"] == "FeatureCollection"
+        assert len(data["features"]) == 5
+        for feature in data["features"]:
+            assert len(feature["bbox"]) == 4
+            assert feature["geometry"] is not None
+            assert "properties" in feature

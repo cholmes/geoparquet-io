@@ -417,7 +417,9 @@ def write_geojson(
     Automatically reprojects to WGS84 unless keep_crs is True.
 
     Args:
-        input_path: Path to input GeoParquet file
+        input_path: Path to input GeoParquet file, or "-" to read an Arrow
+            IPC stream from stdin (the FeatureCollection is still written
+            to output_path)
         output_path: Path to output GeoJSON file (must be local)
         precision: Coordinate decimal precision (default: 7)
         write_bbox: Include bbox property for features (default: False)
@@ -438,6 +440,7 @@ def write_geojson(
     from pathlib import Path
 
     from geoparquet_io.core.geojson_stream import convert_to_geojson
+    from geoparquet_io.core.streaming import is_stdin
 
     configure_verbose(verbose)
 
@@ -454,17 +457,25 @@ def write_geojson(
     validate_profile_for_urls(profile, input_path)
     setup_aws_profile_if_needed(profile, input_path)
 
-    # Check if input has geometry column using GeoParquet metadata first
-    input_url = resolve_file_url(input_path, verbose)
-    has_geometry = detect_parquet_geometry_column(input_url, verbose=verbose) is not None
+    # "-" is an Arrow IPC stream on stdin, not a path: there is nothing to
+    # resolve or probe, and the stream can only be consumed once. Skip the
+    # input inspection and let the streaming converter read it -- it writes a
+    # FeatureCollection to a named output just as well, and raises its own
+    # geometry-column error if the stream has none. Probing here instead
+    # reported "File not found: -" about the input the user had just piped in
+    # (#723).
+    if not is_stdin(input_path):
+        # Check if input has geometry column using GeoParquet metadata first
+        input_url = resolve_file_url(input_path, verbose)
+        has_geometry = detect_parquet_geometry_column(input_url, verbose=verbose) is not None
 
-    if not has_geometry:
-        # Reject GeoJSON export without geometry data
-        raise GeoParquetError(
-            "Cannot export to GeoJSON: no geometry column found. "
-            "GeoJSON requires geometry data. Expected column named 'geom', 'geometry', 'wkb_geometry', or 'shape'. "
-            "To export data without geometry, use CSV format instead: gpio convert input.parquet output.csv"
-        )
+        if not has_geometry:
+            # Reject GeoJSON export without geometry data
+            raise GeoParquetError(
+                "Cannot export to GeoJSON: no geometry column found. "
+                "GeoJSON requires geometry data. Expected column named 'geom', 'geometry', 'wkb_geometry', or 'shape'. "
+                "To export data without geometry, use CSV format instead: gpio convert input.parquet output.csv"
+            )
 
     progress(f"Converting to GeoJSON: {output_path}")
 

@@ -257,6 +257,16 @@ gpio extract data.parquet --where "population > 10000" | \
   tippecanoe -P -o cities.pmtiles
 ```
 
+```bash
+# End the pipeline in a GeoJSON file instead of a pipe
+gpio extract data.parquet --limit 1000 | \
+  gpio convert geojson - sample.geojson
+```
+
+Reading from stdin with `-` works in both modes: pipe onward without an output
+file to get newline-delimited GeoJSON, or name an output file to get a
+`FeatureCollection` written there.
+
 ### Select Specific Columns
 
 Reduce output size by selecting only needed columns:
