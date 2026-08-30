@@ -106,11 +106,42 @@ work, put the changelog in that pull request and let review happen there.
 the section you just wrote alone.
 
 ```bash
-git checkout -b release/v<version>
+git checkout -b release/bump-v<version>
 uv run cz bump --yes                 # pyproject.toml + [tool.commitizen].version
-git push -u origin release/v<version>
+```
+
+**`cz bump` usually cannot commit here.** A pre-commit hook rewrites files
+mid-run, cz sees a dirty tree and stops, so you get the version edit with no
+commit and no tag. That is fine — make the commit yourself, with cz's own
+message format, because `publish.yml` triggers on a head commit that starts
+with `bump:`:
+
+```bash
+git commit -am "bump: version <previous> → <version>"   # re-run if a hook edits files
+```
+
+Check what you are committing. `cz bump` leaves `uv.lock` alone, so bump the
+`geoparquet-io` package version in it by hand — one line:
+
+```
+[[package]]
+name = "geoparquet-io"
+version = "<version>"
+```
+
+Never run `uv sync` to do that. An older local uv rewrites the whole lockfile
+into an older format (`revision = 3` → `revision = 1`, every `upload-time`
+stripped, thousands of lines) which is a downgrade, not a dependency change.
+`uv lock --check` tells you whether your uv agrees with the committed lock; if
+it does not, upgrade uv rather than committing the churn.
+
+```bash
+git push -u origin release/bump-v<version>
 gh pr create --title "bump: version <previous> → <version>"
 ```
+
+The PR title matters twice: the squash commit is what `publish.yml` matches on,
+and `pr-title` checks it. `bump` is a valid commitizen type, so this passes.
 
 Merging that PR fires `.github/workflows/publish.yml`, which tags `v<version>`,
 publishes to PyPI, and creates the GitHub release.
