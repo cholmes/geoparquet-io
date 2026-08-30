@@ -1117,51 +1117,49 @@ def _pyarrow_native_geo_chunks(parquet_file: str, geometry_column: str) -> list[
     per column chunk that carries statistics (row groups without them are left
     out). Raises whatever PyArrow raises on a file it cannot open, so the caller
     can fall back to DuckDB.
+
+    Only ``FileMetaData`` is needed, so this reads the footer and keeps no open
+    handle -- an open ``ParquetFile`` would block the ``os.replace`` that the
+    write paths do on Windows.
     """
-    pf = None
-    try:
-        pf = pq.ParquetFile(parquet_file)
-        metadata = pf.metadata
-        if metadata.num_row_groups == 0:
-            return None
+    metadata = pq.read_metadata(parquet_file)
+    if metadata.num_row_groups == 0:
+        return None
 
-        # Match on path_in_schema, exactly as the DuckDB query below does.
-        first = metadata.row_group(0)
-        index = next(
-            (
-                i
-                for i in range(metadata.num_columns)
-                if first.column(i).path_in_schema == geometry_column
-            ),
-            None,
+    # Match on path_in_schema, exactly as the DuckDB query below does.
+    first = metadata.row_group(0)
+    index = next(
+        (
+            i
+            for i in range(metadata.num_columns)
+            if first.column(i).path_in_schema == geometry_column
+        ),
+        None,
+    )
+    if index is None:
+        return None
+
+    chunks = []
+    for rg in range(metadata.num_row_groups):
+        column = metadata.row_group(rg).column(index)
+        if not column.is_geo_stats_set:
+            continue
+        stats = column.geo_statistics
+        if stats is None:
+            continue
+        chunks.append(
+            {
+                "row_group_id": rg,
+                "xmin": stats.xmin,
+                "ymin": stats.ymin,
+                "xmax": stats.xmax,
+                "ymax": stats.ymax,
+                "zmin": stats.zmin,
+                "zmax": stats.zmax,
+                "geometry_types": list(stats.geospatial_types or []),
+            }
         )
-        if index is None:
-            return None
-
-        chunks = []
-        for rg in range(metadata.num_row_groups):
-            column = metadata.row_group(rg).column(index)
-            if not column.is_geo_stats_set:
-                continue
-            stats = column.geo_statistics
-            if stats is None:
-                continue
-            chunks.append(
-                {
-                    "row_group_id": rg,
-                    "xmin": stats.xmin,
-                    "ymin": stats.ymin,
-                    "xmax": stats.xmax,
-                    "ymax": stats.ymax,
-                    "zmin": stats.zmin,
-                    "zmax": stats.zmax,
-                    "geometry_types": list(stats.geospatial_types or []),
-                }
-            )
-        return chunks
-    finally:
-        # Explicitly delete ParquetFile to release file handle (Windows compatibility)
-        del pf
+    return chunks
 
 
 def _duckdb_native_geo_chunks(
@@ -1221,10 +1219,16 @@ def get_native_geo_stats_by_row_group(
     file back onto the path with the platform bug.
 
     Returns:
-        None if the column is absent or unreadable, otherwise one dict per
+        None if the file carries no column of that name, otherwise one dict per
         column chunk carrying statistics, ordered by row group: row_group_id,
         xmin/ymin/xmax/ymax, zmin/zmax (None when absent) and geometry_types
         (raw type codes, for :func:`_format_geo_types`).
+
+    Raises:
+        Whatever the underlying reader raises when the file itself cannot be
+        read. ``None`` means "no such column" and nothing else, so a caller can
+        report an unreachable or corrupt file as the failure it is instead of
+        diagnosing it as a missing geometry column.
     """
     resolved_path = _resolve_local_path(parquet_file)
     if _is_local_file(resolved_path):
@@ -1235,10 +1239,7 @@ def get_native_geo_stats_by_row_group(
             # still be readable by DuckDB; fall through rather than report none.
             pass
 
-    try:
-        return _duckdb_native_geo_chunks(parquet_file, geometry_column, con)
-    except Exception:
-        return None
+    return _duckdb_native_geo_chunks(parquet_file, geometry_column, con)
 
 
 def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None) -> dict | None:
@@ -1260,26 +1261,26 @@ def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None)
         dict with 'bbox' (list of 4 floats) and 'geometry_types' (list of strings),
         or None if not available
     """
-    chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    try:
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    except Exception:
+        return None
     if not chunks:
         return None
 
     stats: dict = {}
 
-    first_with_bbox = next((c for c in chunks if c["xmin"] is not None), None)
-    if first_with_bbox is not None:
-        stats["bbox"] = [
-            first_with_bbox["xmin"],
-            first_with_bbox["ymin"],
-            first_with_bbox["xmax"],
-            first_with_bbox["ymax"],
-        ]
-        if first_with_bbox["zmin"] is not None:
-            stats["bbox"].extend([first_with_bbox["zmin"], first_with_bbox["zmax"]])
+    # Both halves must describe the same column chunk: reporting one row group's
+    # bbox beside another's geometry types would be a dict that matches no row
+    # group in the file.
+    first = next((c for c in chunks if c["xmin"] is not None), chunks[0])
+    if first["xmin"] is not None:
+        stats["bbox"] = [first["xmin"], first["ymin"], first["xmax"], first["ymax"]]
+        if first["zmin"] is not None:
+            stats["bbox"].extend([first["zmin"], first["zmax"]])
 
-    geo_types = chunks[0]["geometry_types"]
-    if geo_types:
-        stats["geometry_types"] = _format_geo_types(geo_types)
+    if first["geometry_types"]:
+        stats["geometry_types"] = _format_geo_types(first["geometry_types"])
 
     return stats if stats else None
 
@@ -1298,7 +1299,10 @@ def get_aggregated_native_geo_stats(parquet_file: str, geometry_column: str, con
     Returns:
         dict with 'bbox' (list of 4+ floats) and 'geometry_types' (list of strings)
     """
-    chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    try:
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    except Exception:
+        return {}
     return aggregate_native_geo_stats(chunks) if chunks else {}
 
 
@@ -1355,7 +1359,10 @@ def get_per_row_group_native_geo_stats(
         except Exception:
             return []
 
-    chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    try:
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geometry_column, con)
+    except Exception:
+        return []
     if not chunks:
         return []
 

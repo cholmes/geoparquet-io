@@ -429,3 +429,94 @@ def test_validator_reads_its_bbox_from_the_shared_reader(native_geo_file, monkey
     assert contains.status == CheckStatus.FAILED, (
         f"the validator ignored the reader it is supposed to use: {contains.message}"
     )
+
+
+# --- A read failure is not a missing column (#770) ---------------------------
+
+
+def _explode(*args, **kwargs):
+    raise OSError("403 Forbidden: s3://example-bucket/native-geo.parquet")
+
+
+def test_an_unreadable_file_raises_instead_of_reporting_no_column(native_geo_file, monkeypatch):
+    """``None`` must mean "no such column" and nothing else.
+
+    Folding a read failure into ``None`` made every unreachable, truncated or
+    permission-denied file look like a file whose geometry column was missing.
+    """
+    monkeypatch.setattr(duckdb_metadata, "_pyarrow_native_geo_chunks", _explode)
+    monkeypatch.setattr(duckdb_metadata, "_duckdb_native_geo_chunks", _explode)
+
+    with pytest.raises(OSError, match="403 Forbidden"):
+        duckdb_metadata.get_native_geo_stats_by_row_group(native_geo_file, "geometry")
+
+    # A column that genuinely is not there still reports None, not an exception.
+    monkeypatch.undo()
+    assert duckdb_metadata.get_native_geo_stats_by_row_group(native_geo_file, "nope") is None
+
+
+def test_validator_reports_the_read_failure_not_a_missing_column(native_geo_file, monkeypatch):
+    from geoparquet_io.core.validate import CheckStatus, _check_native_geo_statistics
+
+    monkeypatch.setattr(duckdb_metadata, "_pyarrow_native_geo_chunks", _explode)
+    monkeypatch.setattr(duckdb_metadata, "_duckdb_native_geo_chunks", _explode)
+
+    check = _check_native_geo_statistics(native_geo_file, "geometry")
+
+    assert "403 Forbidden" in check.message, (
+        f"the real read failure never reached the user: {check.message}"
+    )
+    assert "not found" not in check.message, (
+        f"an unreadable file was diagnosed as a missing column: {check.message}"
+    )
+    assert check.status == CheckStatus.SKIPPED
+
+
+def test_the_getters_still_absorb_a_read_failure(native_geo_file, monkeypatch):
+    """Their callers treat empty as "nothing to report"; that contract is unchanged."""
+    monkeypatch.setattr(duckdb_metadata, "_pyarrow_native_geo_chunks", _explode)
+    monkeypatch.setattr(duckdb_metadata, "_duckdb_native_geo_chunks", _explode)
+
+    assert get_native_geo_statistics(native_geo_file, "geometry") is None
+    assert get_aggregated_native_geo_stats(native_geo_file, "geometry") == {}
+    assert get_per_row_group_native_geo_stats(native_geo_file, "geometry") == []
+
+
+# --- One dict describes one row group (#770) ---------------------------------
+
+
+def test_single_statistics_take_bbox_and_types_from_the_same_row_group(monkeypatch):
+    """A bbox from one chunk beside another chunk's types matches no row group."""
+    chunks = [
+        # Row group 0: types recorded, bounds not.
+        {
+            "row_group_id": 0,
+            "xmin": None,
+            "ymin": None,
+            "xmax": None,
+            "ymax": None,
+            "zmin": None,
+            "zmax": None,
+            "geometry_types": [1],  # Point
+        },
+        {
+            "row_group_id": 1,
+            "xmin": -1.0,
+            "ymin": -2.0,
+            "xmax": 3.0,
+            "ymax": 4.0,
+            "zmin": None,
+            "zmax": None,
+            "geometry_types": [3],  # Polygon
+        },
+    ]
+    monkeypatch.setattr(
+        duckdb_metadata, "get_native_geo_stats_by_row_group", lambda *a, **k: chunks
+    )
+
+    stats = get_native_geo_statistics("ignored.parquet", "geometry")
+
+    assert stats["bbox"] == pytest.approx([-1.0, -2.0, 3.0, 4.0])
+    assert stats["geometry_types"] == ["Polygon"], (
+        "the types describe row group 0 while the bbox describes row group 1"
+    )
