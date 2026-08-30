@@ -1122,6 +1122,19 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
         return table
 
 
+def _crs_as_projjson(crs):
+    """Normalize a geoarrow CRS object to a PROJJSON dict, or return it as-is."""
+    if crs is None:
+        return None
+    to_json_dict = getattr(crs, "to_json_dict", None)
+    if to_json_dict is None:
+        return crs
+    try:
+        return to_json_dict()
+    except (TypeError, ValueError):
+        return None
+
+
 def _process_geometry_column_for_version(
     table,
     geometry_column: str,
@@ -1166,10 +1179,24 @@ def _process_geometry_column_for_version(
             # GEOMETRY column carrying OGC:CRS84 when it is registered and a bare
             # one when it is not (#706). A default CRS is the spec default and is
             # declared by the geo block, so the schema type carries none.
-            if input_crs and not is_default_crs(input_crs):
+            # A missing `crs` in the geo block does not mean "no CRS": at 2.0 the
+            # Parquet logical type is authoritative, and a block may legitimately
+            # omit the key. Clearing unconditionally relabelled projected data as
+            # the CRS84 default -- silent corruption nothing validates. Fall back
+            # to the CRS the incoming type already carries before clearing.
+            #
+            # geoarrow hands that back as a CRS object, which `is_default_crs`
+            # does not recognize; normalizing to PROJJSON is what keeps the
+            # reader's incidental OGC:CRS84 classified as the default and thus
+            # cleared, so the output stays independent of import state (#706).
+            resolved_crs = input_crs or _crs_as_projjson(getattr(wkb_arr.type, "crs", None))
+            if resolved_crs and not is_default_crs(resolved_crs):
                 if verbose:
-                    debug(f"Applying CRS to geometry schema type: {_format_crs_display(input_crs)}")
-                new_type = wkb_arr.type.with_crs(input_crs)
+                    debug(
+                        "Applying CRS to geometry schema type: "
+                        f"{_format_crs_display(input_crs) if input_crs else resolved_crs}"
+                    )
+                new_type = wkb_arr.type.with_crs(resolved_crs)
             else:
                 new_type = ga.wkb()
             # Always rebuild: geoarrow's WkbType.__eq__ ignores the CRS, so a
@@ -1475,7 +1502,22 @@ def _parse_geo_metadata_quietly(original_metadata) -> dict:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    # Callers read ``columns`` as a mapping of column name to a dict of that
+    # column's metadata. A carried block is arbitrary JSON from the input file,
+    # so anything else is dropped here rather than allowed to raise a TypeError
+    # three frames away, in the middle of a write. `create_geo_metadata` reads
+    # the raw block itself and still does; that is pre-existing, tracked in #771.
+    columns = parsed.get("columns")
+    if isinstance(columns, dict):
+        parsed["columns"] = {
+            name: entry for name, entry in columns.items() if isinstance(entry, dict)
+        }
+    else:
+        parsed.pop("columns", None)
+    return parsed
 
 
 def _apply_geoparquet_metadata(

@@ -447,3 +447,96 @@ class TestCarrierHelperDefensivePaths:
         )
 
         assert result.column_names == ["id", "geometry"]
+
+
+class TestNonGeometryColumnsNamedAsGeometry:
+    """A declared geometry column is not always a GEOMETRY column.
+
+    ``geo["columns"]`` and ``geometry_info`` name columns by *declaration*. What
+    DuckDB actually reads them as is a separate question, and the 1.x BLOB cast
+    has to key on the latter -- ``ST_AsWKB(BLOB)`` does not bind and would abort
+    the whole write, while ``ST_AsWKB(VARCHAR)`` binds and silently reinterprets
+    a text column as WKT.
+    """
+
+    def test_blob_and_text_secondaries_are_left_alone(self):
+        from geoparquet_io.core.duckdb_utils import _wrap_query_with_blob_conversion
+
+        con = get_duckdb_connection()
+        con.execute(
+            "CREATE TABLE t AS SELECT 1 AS id, ST_Point(1, 2) AS geometry, "
+            "'x'::BLOB AS already_wkb, 42 AS not_geometry, 'POINT(3 4)' AS text_col"
+        )
+        query = _wrap_query_with_blob_conversion(
+            "SELECT * FROM t",
+            "geometry",
+            con,
+            secondary_columns=["already_wkb", "not_geometry", "text_col"],
+        )
+
+        # Only the real GEOMETRY column is rewritten.
+        assert 'ST_AsWKB("geometry")' in query
+        for untouched in ("already_wkb", "not_geometry", "text_col"):
+            assert f'ST_AsWKB("{untouched}")' not in query
+
+        result = con.execute(query).arrow().read_all()
+        assert result.column("already_wkb").to_pylist() == [b"x"]
+        assert result.column("not_geometry").to_pylist() == [42]
+        assert result.column("text_col").to_pylist() == ["POINT(3 4)"]
+
+
+class TestSchemaCarriedCrsSurvives:
+    """A geo block may omit ``crs``; the schema type is still authoritative at 2.0."""
+
+    def test_crs_carried_only_by_the_schema_type_is_not_cleared(self, tmp_path):
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core.common import write_geoparquet_table
+
+        projected = {
+            "type": "ProjectedCRS",
+            "name": "WGS 84 / Pseudo-Mercator",
+            "id": {"authority": "EPSG", "code": 3857},
+        }
+        base = ga.as_wkb(pa.array([_wkb_point(1.0, 2.0)], type=pa.binary()))
+        with_crs = pa.ExtensionArray.from_storage(base.type.with_crs(projected), base.storage)
+        assert with_crs.type.crs is not None, "fixture must carry a CRS to be meaningful"
+
+        geo = {
+            "version": "2.0.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        table = pa.table(
+            {"id": [1], "geometry": pa.chunked_array([with_crs])}
+        ).replace_schema_metadata({b"geo": json.dumps(geo).encode()})
+
+        out = tmp_path / "projected.parquet"
+        write_geoparquet_table(table, str(out), geoparquet_version="2.0")
+
+        written = pq.ParquetFile(str(out)).schema_arrow.field("geometry")
+        assert "3857" in str(written.type.crs), (
+            f"the schema type's CRS was cleared, leaving {written.type.crs!r}"
+        )
+
+
+class TestMalformedCarriedColumns:
+    """A carried ``geo`` block is arbitrary JSON from someone else's file."""
+
+    @pytest.mark.parametrize(
+        "columns",
+        [None, ["geometry"], "geometry", {"geometry": "WKB"}],
+        ids=["null", "list", "string", "dict_of_non_dict"],
+    )
+    def test_a_malformed_columns_value_does_not_reach_the_carrier_logic(self, columns):
+        from geoparquet_io.core.common import _parse_geo_metadata_quietly
+
+        raw = {"version": "1.1.0", "primary_column": "geometry", "columns": columns}
+        parsed = _parse_geo_metadata_quietly({b"geo": json.dumps(raw).encode()})
+
+        # Either dropped entirely or reduced to the dict-valued entries, so that
+        # `columns[name]["crs"]` downstream cannot raise.
+        entries = parsed.get("columns", {})
+        assert isinstance(entries, dict)
+        assert all(isinstance(entry, dict) for entry in entries.values())
+        assert resolve_geometry_columns("geometry", None, parsed) == {"geometry"}
