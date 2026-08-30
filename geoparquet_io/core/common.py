@@ -1475,6 +1475,12 @@ def _apply_geoparquet_metadata(
         # file does not contain (issue #701). Restricted to the explicit request
         # so auto mode (geoparquet_version=None) keeps whatever it resolves to,
         # which is issue #600's territory.
+        #
+        # Scope: this fixes write_geoparquet_table's path only. Table.write()
+        # dispatches to strategy.write_from_table(), and the in-memory,
+        # streaming and disk-rewrite strategies have the same-shaped guard and
+        # still leak the key -- tracked in issue #773, deliberately left to its
+        # own PR rather than widened into this one.
         if geoparquet_version == "parquet-geo-only":
             if verbose:
                 debug(
