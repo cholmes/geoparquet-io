@@ -1110,66 +1110,34 @@ def find_primary_geometry_column_duckdb(parquet_file: str, con=None) -> str:
     return "geometry"
 
 
-def _pyarrow_native_geo_chunks(parquet_file: str, geometry_column: str) -> list[dict] | None:
-    """Read one column's native geospatial statistics with PyArrow.
-
-    Returns None when the file has no column of that name, otherwise one dict
-    per column chunk that carries statistics (row groups without them are left
-    out). Raises whatever PyArrow raises on a file it cannot open, so the caller
-    can fall back to DuckDB.
-
-    Only ``FileMetaData`` is needed, so this reads the footer and keeps no open
-    handle -- an open ``ParquetFile`` would block the ``os.replace`` that the
-    write paths do on Windows.
-    """
-    metadata = pq.read_metadata(parquet_file)
-    if metadata.num_row_groups == 0:
-        return None
-
-    # Match on path_in_schema, exactly as the DuckDB query below does.
-    first = metadata.row_group(0)
-    index = next(
-        (
-            i
-            for i in range(metadata.num_columns)
-            if first.column(i).path_in_schema == geometry_column
-        ),
-        None,
-    )
-    if index is None:
-        return None
-
-    chunks = []
-    for rg in range(metadata.num_row_groups):
-        column = metadata.row_group(rg).column(index)
-        if not column.is_geo_stats_set:
-            continue
-        stats = column.geo_statistics
-        if stats is None:
-            continue
-        chunks.append(
-            {
-                "row_group_id": rg,
-                "xmin": stats.xmin,
-                "ymin": stats.ymin,
-                "xmax": stats.xmax,
-                "ymax": stats.ymax,
-                "zmin": stats.zmin,
-                "zmax": stats.zmax,
-                "geometry_types": list(stats.geospatial_types or []),
-            }
-        )
-    return chunks
-
-
-def _duckdb_native_geo_chunks(
+def get_native_geo_stats_by_row_group(
     parquet_file: str, geometry_column: str, con=None
 ) -> list[dict] | None:
-    """Read one column's native geospatial statistics with DuckDB (remote files)."""
+    """Native Parquet geospatial statistics for one column, per column chunk.
+
+    Args:
+        parquet_file: Path or URL to the parquet file
+        geometry_column: Name of the geometry column
+        con: Optional existing DuckDB connection to reuse
+
+    Returns:
+        None if the file carries no column of that name, otherwise one dict per
+        column chunk carrying statistics, ordered by row group: row_group_id,
+        xmin/ymin/xmax/ymax, zmin/zmax (None when absent) and geometry_types
+        (raw type codes, for :func:`_format_geo_types`).
+
+    Raises:
+        Whatever DuckDB raises when the file itself cannot be read. ``None``
+        means "no such column" and nothing else, so a caller can report an
+        unreachable or corrupt file as the failure it is instead of diagnosing
+        it as a missing geometry column.
+    """
     safe_url = _safe_url(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
+        # path_in_schema is compared against a string LITERAL, not an
+        # identifier, so the guard is _escape_sql_string, not quote_identifier.
         escaped_geom_col = _escape_sql_string(geometry_column)
         rows = connection.execute(f"""
             SELECT row_group_id, geo_bbox, geo_types
@@ -1202,44 +1170,6 @@ def _duckdb_native_geo_chunks(
             }
         )
     return chunks
-
-
-def get_native_geo_stats_by_row_group(
-    parquet_file: str, geometry_column: str, con=None
-) -> list[dict] | None:
-    """Native Parquet geospatial statistics for one column, per column chunk.
-
-    Local files are read with PyArrow rather than DuckDB ``parquet_metadata()``:
-    on Windows DuckDB reports all-zero bounds for a native GEOMETRY column whose
-    statistics PyArrow reads back correctly from the very same file, so
-    everything gpio reports and validates from them was wrong there (#721).
-    Remote files keep the DuckDB path, which brings its own httpfs plumbing.
-
-    A supplied ``con`` is only a connection to reuse, so it does not pull a local
-    file back onto the path with the platform bug.
-
-    Returns:
-        None if the file carries no column of that name, otherwise one dict per
-        column chunk carrying statistics, ordered by row group: row_group_id,
-        xmin/ymin/xmax/ymax, zmin/zmax (None when absent) and geometry_types
-        (raw type codes, for :func:`_format_geo_types`).
-
-    Raises:
-        Whatever the underlying reader raises when the file itself cannot be
-        read. ``None`` means "no such column" and nothing else, so a caller can
-        report an unreachable or corrupt file as the failure it is instead of
-        diagnosing it as a missing geometry column.
-    """
-    resolved_path = _resolve_local_path(parquet_file)
-    if _is_local_file(resolved_path):
-        try:
-            return _pyarrow_native_geo_chunks(resolved_path, geometry_column)
-        except Exception:
-            # A file PyArrow cannot open (e.g. an unsupported CRS encoding) may
-            # still be readable by DuckDB; fall through rather than report none.
-            pass
-
-    return _duckdb_native_geo_chunks(parquet_file, geometry_column, con)
 
 
 def get_native_geo_statistics(parquet_file: str, geometry_column: str, con=None) -> dict | None:

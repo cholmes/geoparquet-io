@@ -29,7 +29,6 @@ one flavour of hostility it happens to tolerate.
 from __future__ import annotations
 
 import json
-import sys
 
 import duckdb
 import pyarrow.parquet as pq
@@ -38,10 +37,8 @@ from click.testing import CliRunner
 
 from geoparquet_io.cli.main import add, check, convert, extract, inspect, sort
 from geoparquet_io.core import common as common_module
-from geoparquet_io.core import duckdb_metadata as duckdb_metadata_module
 from geoparquet_io.core.check_spatial_order import check_spatial_order
 from geoparquet_io.core.duckdb_metadata import (
-    _duckdb_native_geo_chunks,
     get_aggregated_native_geo_stats,
     get_compression_info,
     get_native_geo_statistics,
@@ -364,61 +361,11 @@ class TestCheckSpatialOrderSamplingQuoting:
 class TestDuckdbMetadataNativeStatsEscaping:
     """geoparquet_io/core/duckdb_metadata.py: the native-geo-stat getters.
 
-    `_duckdb_native_geo_chunks` filters `path_in_schema = '{col}'`. That is a
-    STRING LITERAL comparison, not an identifier, so the fix is
-    `_escape_sql_string`. Only an embedded `'` can break it -- a space is a
+    These are STRING LITERAL comparisons, not identifiers, so the fix is
+    `_escape_sql_string`. Only an embedded `'` can break them -- a space is a
     legal string-literal character -- so this class is deliberately narrowed to
     the name with teeth.
-
-    Since #770 the getters read *local* files with pyarrow, which builds no SQL
-    at all, so the local-file test below no longer reaches that literal. The
-    DuckDB query is still the whole of the remote path -- every `s3://` and
-    `https://` input goes through it -- and the column name still arrives from
-    the file's own `geo.primary_column` or from `--column`, so the escaping
-    guard is exercised here by forcing the remote branch.
     """
-
-    def test_duckdb_query_matches_a_quote_bearing_column_name(self, tmp_path):
-        """The guard proper: an unescaped `'` leaves the query unparsable.
-
-        Calls the DuckDB reader directly, so it holds on every platform -- it
-        asserts only that the WHERE literal matched the column, never the bounds
-        DuckDB misreads on Windows (#721).
-        """
-        path = _native_geo_fixture(tmp_path, SQUOTE_COL, "native_geo_duckdb_literal.parquet")
-
-        chunks = _duckdb_native_geo_chunks(path, SQUOTE_COL)
-
-        assert chunks is not None, "the WHERE literal matched no column at all"
-        assert [c["row_group_id"] for c in chunks] == [0]
-
-    @pytest.mark.xfail(
-        sys.platform == "win32",
-        reason=(
-            "#721: DuckDB parquet_metadata() reports [0, 0, 0, 0] on Windows. "
-            "This test forces that reader deliberately, so it inherits the bug; "
-            "the escaping guard itself is asserted platform-independently above."
-        ),
-        strict=True,
-    )
-    def test_native_geo_stat_getters_return_correct_values_over_duckdb(self, tmp_path, monkeypatch):
-        """The same three getters, routed onto the remote (DuckDB) branch."""
-        path = _native_geo_fixture(tmp_path, SQUOTE_COL, "native_geo_duckdb.parquet")
-        monkeypatch.setattr(duckdb_metadata_module, "_is_local_file", lambda _path: False)
-
-        single = get_native_geo_statistics(path, SQUOTE_COL)
-        assert single is not None, "expected stats, got None (query silently failed)"
-        assert single["bbox"][:4] == pytest.approx([0.0, 0.0, 3.0, 3.0])
-        assert single["geometry_types"] == ["Polygon"]
-
-        agg = get_aggregated_native_geo_stats(path, SQUOTE_COL)
-        assert agg.get("bbox") is not None, "expected aggregated bbox, got empty dict"
-        assert agg["bbox"][:4] == pytest.approx([0.0, 0.0, 3.0, 3.0])
-        assert agg["geometry_types"] == ["Polygon"]
-
-        per_rg = get_per_row_group_native_geo_stats(path, SQUOTE_COL)
-        assert len(per_rg) == 1, "expected one row group of stats, got empty list"
-        assert per_rg[0]["xmax"] == pytest.approx(3.0)
 
     def test_native_geo_stat_getters_return_correct_values(self, tmp_path):
         path = _native_geo_fixture(tmp_path, SQUOTE_COL, "native_geo.parquet")
