@@ -2787,81 +2787,35 @@ class Table:
         Note: This requires the bbox column to already exist. Use add_bbox()
         first if the table doesn't have a bbox column.
 
+        The table must already carry GeoParquet `geo` metadata: `covering`
+        describes a geometry column that `encoding` and `geometry_types` define,
+        and inventing that block produced metadata failing its own spec checks
+        (#713). A table read from plain Parquet is refused here exactly as
+        `gpio add bbox-metadata` refuses the file.
+
         Args:
             bbox_column: Name of the bbox column (default "bbox")
 
         Returns:
             Table with updated metadata
 
+        Raises:
+            GeoParquetError: If the table carries no GeoParquet metadata
+            ValueError: If the geometry or bbox column is missing, or the
+                declared version predates GeoParquet 1.1
+
         Example:
             >>> table = gpio.read('data.parquet')
             >>> table = table.add_bbox().add_bbox_metadata()
         """
-        import json
+        from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata_table
 
-        # Guard against None geometry column
-        if self._geometry_column is None:
-            raise ValueError(
-                "Cannot add bbox metadata: no geometry column detected. "
-                "Ensure the table has a valid geometry column."
-            )
-
-        if bbox_column not in self.column_names:
-            raise ValueError(f"Bbox column '{bbox_column}' not found. Use add_bbox() first.")
-
-        geom_col = str(self._geometry_column)
-
-        # Get existing metadata
-        schema = self._table.schema
-        schema_metadata = dict(schema.metadata) if schema.metadata else {}
-
-        # Parse existing geo metadata or create new
-        if b"geo" in schema_metadata:
-            try:
-                geo_meta = json.loads(schema_metadata[b"geo"].decode("utf-8"))
-                # Ensure geo_meta is a dict and has "columns" key
-                if not isinstance(geo_meta, dict):
-                    geo_meta = {}
-                if "columns" not in geo_meta or not isinstance(geo_meta.get("columns"), dict):
-                    geo_meta["columns"] = {}
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                geo_meta = {"columns": {}}
-        else:
-            geo_meta = {
-                "version": "1.1.0",
-                "primary_column": geom_col,
-                "columns": {},
-            }
-
-        # 'covering' was introduced in GeoParquet 1.1. This method exists solely to
-        # write that key, so a 1.0 table gets a clear error naming the conflict
-        # rather than silently returning a table without the metadata it asked for.
-        from geoparquet_io.core.geo_metadata import covering_supported
-
-        table_version = geo_meta.get("version", "")
-        if not covering_supported(table_version):
-            raise ValueError(
-                f"Cannot add bbox covering metadata: this table declares GeoParquet "
-                f"{table_version}, and the 'covering' key requires GeoParquet 1.1 or later. "
-                f"Write the table at 1.1 first (e.g. write(..., geoparquet_version='1.1'))."
-            )
-
-        # Add covering metadata for the geometry column
-        if geom_col not in geo_meta["columns"]:
-            geo_meta["columns"][geom_col] = {}
-
-        geo_meta["columns"][geom_col]["covering"] = {
-            "bbox": {
-                "xmin": [bbox_column, "xmin"],
-                "ymin": [bbox_column, "ymin"],
-                "xmax": [bbox_column, "xmax"],
-                "ymax": [bbox_column, "ymax"],
-            }
-        }
-
-        # Update schema with new metadata (metadata-only change, not a cast)
-        schema_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
-        new_table = self._table.replace_schema_metadata(schema_metadata)
+        geom_col = str(self._geometry_column) if self._geometry_column is not None else None
+        new_table = add_bbox_metadata_table(
+            self._table,
+            bbox_column=bbox_column,
+            geometry_column=geom_col,
+        )
 
         return self._wrap(new_table, self._geometry_column)
 

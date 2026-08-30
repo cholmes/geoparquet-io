@@ -21,6 +21,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.add.a5 import add_a5_table
 from geoparquet_io.core.add.bbox import add_bbox_table
+from geoparquet_io.core.add.bbox_metadata import add_bbox_metadata_table
 from geoparquet_io.core.add.h3 import add_h3_table
 from geoparquet_io.core.add.kdtree import add_kdtree_table
 from geoparquet_io.core.add.quadkey import add_quadkey_table
@@ -52,6 +53,39 @@ def add_bbox(
     return add_bbox_table(
         table,
         bbox_column_name=column_name,
+        geometry_column=geometry_column,
+    )
+
+
+def add_bbox_metadata(
+    table: pa.Table,
+    bbox_column: str = "bbox",
+    geometry_column: str | None = None,
+) -> pa.Table:
+    """
+    Add bbox covering metadata for an existing bbox column.
+
+    Mirrors `gpio add bbox-metadata`: it writes the GeoParquet `covering` key and
+    nothing else, so the table must already carry `geo` metadata describing the
+    geometry column. A table read from plain Parquet is refused rather than given
+    an invented `geo` block (#713).
+
+    Args:
+        table: Input PyArrow Table, carrying GeoParquet `geo` metadata
+        bbox_column: Name of the existing bbox column (default: 'bbox')
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        New table whose `geo` metadata carries the covering key
+
+    Raises:
+        GeoParquetError: If the table carries no GeoParquet metadata
+        ValueError: If the geometry or bbox column is missing, or the declared
+            version predates GeoParquet 1.1
+    """
+    return add_bbox_metadata_table(
+        table,
+        bbox_column=bbox_column,
         geometry_column=geometry_column,
     )
 

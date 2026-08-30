@@ -7,6 +7,7 @@ with appropriate extensions loaded for GeoParquet operations.
 
 import re
 import threading
+from collections.abc import Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -786,9 +787,15 @@ def _wrap_query_with_wkb_conversion(query: str, geometry_column: str, con=None) 
     )
 
 
-def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None) -> str:
+def _wrap_query_with_blob_conversion(
+    query: str,
+    geometry_column: str,
+    con=None,
+    *,
+    secondary_columns: Iterable[str] | None = None,
+) -> str:
     """
-    Wrap query to convert geometry column to plain binary BLOB.
+    Wrap query to convert geometry column(s) to plain binary BLOB.
 
     Unlike _wrap_query_with_wkb_conversion which produces WKB that DuckDB still
     recognizes as spatial, this casts to BLOB to produce truly plain binary data.
@@ -797,28 +804,57 @@ def _wrap_query_with_blob_conversion(query: str, geometry_column: str, con=None)
 
     Args:
         query: Original SQL SELECT query
-        geometry_column: Name of the geometry column to convert
+        geometry_column: Name of the primary geometry column to convert
         con: Optional DuckDB connection to verify column exists
+        secondary_columns: Other columns a v1.x file declares as geometry. A file
+            may carry more than one geometry column, and every one of them that
+            DuckDB reads as GEOMETRY would otherwise be written back as a native
+            Parquet GEOMETRY logical type (#712). Only names that DuckDB actually
+            typed as GEOMETRY are cast: `geo["columns"]` names columns by
+            *declaration*, so a column stored as plain BLOB would reach
+            ST_AsWKB(BLOB), which does not bind and would abort the whole write,
+            while ST_AsWKB(VARCHAR) does bind and would silently reinterpret a
+            text column as WKT. Requires ``con`` — without it the types are
+            unknown and the secondaries are left alone.
 
     Returns:
-        str: Wrapped query with BLOB conversion, or original query if column doesn't exist
+        str: Wrapped query with BLOB conversion, or original query if there is
+        nothing to convert
     """
-    # If connection provided, check if geometry column exists in query output
+    # If connection provided, check which columns exist in the query output
+    col_info: dict[str, str] = {}
     if con is not None:
         try:
             rows = con.execute(f"DESCRIBE ({query})").fetchall()
             col_info = {row[0]: row[1] for row in rows}
-            if geometry_column not in col_info:
-                return query
-            if "STRUCT" in col_info.get(geometry_column, ""):
-                return query
         except Exception:
-            pass
+            col_info = {}
+
+    targets: list[str] = []
+    if col_info:
+        # Skip a missing column, and a STRUCT of that name (a bbox-style column)
+        if geometry_column in col_info and "STRUCT" not in col_info[geometry_column]:
+            targets.append(geometry_column)
+    else:
+        targets.append(geometry_column)
+
+    for name in secondary_columns or ():
+        if name in targets or name == geometry_column:
+            continue
+        # A STRUCT is a bbox-style column, not geometry: startswith() excludes it.
+        if col_info.get(name, "").upper().startswith("GEOMETRY"):
+            targets.append(name)
+
+    if not targets:
+        return query
 
     # Cast to BLOB to produce plain binary without geoarrow extension type
     # Use SELECT * REPLACE to preserve column order
+    replacements = ", ".join(
+        f"ST_AsWKB({quote_identifier(col)})::BLOB AS {quote_identifier(col)}" for col in targets
+    )
     return f"""
         WITH __arrow_source AS ({query})
-        SELECT * REPLACE (ST_AsWKB({quote_identifier(geometry_column)})::BLOB AS {quote_identifier(geometry_column)})
+        SELECT * REPLACE ({replacements})
         FROM __arrow_source
     """

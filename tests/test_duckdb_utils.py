@@ -12,6 +12,7 @@ from geoparquet_io.core.duckdb_utils import (
     _clear_s3_cache,
     _escape_sql_string,
     _install_and_load_extension,
+    _wrap_query_with_blob_conversion,
     build_spatial_join_condition,
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
@@ -568,3 +569,91 @@ class TestInstallAndLoadExtension:
                 _install_and_load_extension(con, name)
 
         assert not caplog.records, [r.message for r in caplog.records]
+
+
+class TestWrapQueryWithBlobConversion:
+    """The v1.x BLOB cast, including which secondary columns it may touch (#712)."""
+
+    @pytest.fixture
+    def con(self):
+        connection = get_duckdb_connection(load_spatial=True)
+        yield connection
+        connection.close()
+
+    @staticmethod
+    def _query(alias_types: str) -> str:
+        return f"SELECT {alias_types}"
+
+    def test_primary_geometry_column_is_cast(self, con):
+        query = "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con)
+
+        assert "ST_AsWKB" in wrapped
+        assert con.execute(f"DESCRIBE ({wrapped})").fetchall()[1][1] == "BLOB"
+
+    def test_secondary_geometry_columns_are_cast_too(self, con):
+        query = (
+            "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry, "
+            "ST_GeomFromText('POINT (3 4)') AS centroid"
+        )
+
+        wrapped = _wrap_query_with_blob_conversion(
+            query, "geometry", con, secondary_columns=["centroid"]
+        )
+
+        types = {row[0]: row[1] for row in con.execute(f"DESCRIBE ({wrapped})").fetchall()}
+        assert types["geometry"] == "BLOB"
+        assert types["centroid"] == "BLOB"
+
+    def test_a_declared_column_duckdb_types_as_blob_is_not_cast(self, con):
+        """ST_AsWKB(BLOB) does not bind: casting it would abort the whole write."""
+        query = "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry, 'raw'::BLOB AS payload"
+
+        wrapped = _wrap_query_with_blob_conversion(
+            query, "geometry", con, secondary_columns=["payload"]
+        )
+
+        assert wrapped.count("ST_AsWKB") == 1
+        assert con.execute(wrapped).fetchall()[0][2] == b"raw"
+
+    def test_a_declared_column_duckdb_types_as_varchar_is_not_cast(self, con):
+        """ST_AsWKB(VARCHAR) *does* bind, silently reinterpreting text as WKT."""
+        query = "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry, 'POINT (9 9)' AS label"
+
+        wrapped = _wrap_query_with_blob_conversion(
+            query, "geometry", con, secondary_columns=["label"]
+        )
+
+        assert con.execute(wrapped).fetchall()[0][2] == "POINT (9 9)"
+
+    def test_a_struct_column_is_not_cast(self, con):
+        """A STRUCT of a declared name is a bbox- or GeoArrow-style column."""
+        query = (
+            "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry, {'x': 1.0, 'y': 2.0} AS pt"
+        )
+
+        wrapped = _wrap_query_with_blob_conversion(query, "geometry", con, secondary_columns=["pt"])
+
+        assert con.execute(wrapped).fetchall()[0][2] == {"x": 1.0, "y": 2.0}
+
+    def test_a_missing_secondary_column_is_ignored(self, con):
+        query = "SELECT 1 AS id, ST_GeomFromText('POINT (1 2)') AS geometry"
+
+        wrapped = _wrap_query_with_blob_conversion(
+            query, "geometry", con, secondary_columns=["ghost"]
+        )
+
+        assert "ghost" not in wrapped
+        types = {row[0]: row[1] for row in con.execute(f"DESCRIBE ({wrapped})").fetchall()}
+        assert types == {"id": "INTEGER", "geometry": "BLOB"}
+
+    def test_secondaries_need_a_connection_to_be_typed(self):
+        """Without a connection the types are unknown, so secondaries are left alone."""
+        query = "SELECT 1 AS id, geometry, centroid FROM t"
+
+        wrapped = _wrap_query_with_blob_conversion(
+            query, "geometry", None, secondary_columns=["centroid"]
+        )
+
+        assert wrapped.count("ST_AsWKB") == 1

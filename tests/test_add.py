@@ -183,10 +183,14 @@ class TestAddCommands:
             assert fh.read() == original.read()
 
     def test_add_bbox_metadata_no_bbox_column(self, buildings_test_file):
-        """Test add bbox-metadata when there's no bbox column."""
+        """add bbox-metadata fails when there is no bbox column to describe.
+
+        This used to print the error and still exit 0, the same "reports failure,
+        exits 0" shape as gpio #713.
+        """
         runner = CliRunner()
         result = runner.invoke(add, ["bbox-metadata", buildings_test_file])
-        # Should warn that no bbox column exists
+        assert result.exit_code != 0
         assert "No valid bbox column found" in result.output
 
     # H3 tests
