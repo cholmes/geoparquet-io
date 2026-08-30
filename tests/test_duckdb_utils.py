@@ -825,7 +825,10 @@ class TestNoCommunityExtensionBypass:
         offenders = [
             path.relative_to(package.parent)
             for path in package.rglob("*.py")
-            if path.name not in self.ALLOWED and "FROM community" in path.read_text()
+            # encoding pinned: the default is cp1252 on Windows, and the
+            # sources carry em dashes.
+            if path.name not in self.ALLOWED
+            and "FROM community" in path.read_text(encoding="utf-8")
         ]
         assert not offenders, (
             "these modules install a community extension directly instead of "
