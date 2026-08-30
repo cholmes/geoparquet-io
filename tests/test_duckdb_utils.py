@@ -801,3 +801,33 @@ class TestCommunityExtensionTelemetry:
         seen = []
         load_community_extension(self._recording_connection(seen), "a5")
         assert os.environ["QUERY_FARM_TELEMETRY_OPT_OUT"] == "user-set"
+
+
+class TestNoCommunityExtensionBypass:
+    """Every community-extension load must go through load_community_extension.
+
+    The a5 extension's load-time telemetry is opted out of inside that helper
+    (issue #779), so a raw ``INSTALL ... FROM community`` / ``LOAD`` pair brings
+    the segfault back on whatever path skipped it. Three call sites did exactly
+    that -- ``process aggregate a5``, ``process overview`` and the ``--auto``
+    resolution probe -- which is how the first fix for #779 missed them.
+    """
+
+    # bigquery is not a Query Farm extension and carries no telemetry; its
+    # FORCE INSTALL also has to stay a FORCE INSTALL, which the helper does not
+    # express.
+    ALLOWED = {"duckdb_utils.py", "exceptions.py", "extract_bigquery.py"}
+
+    def test_no_module_installs_a_community_extension_directly(self):
+        from pathlib import Path
+
+        package = Path(__file__).parent.parent / "geoparquet_io"
+        offenders = [
+            path.relative_to(package.parent)
+            for path in package.rglob("*.py")
+            if path.name not in self.ALLOWED and "FROM community" in path.read_text()
+        ]
+        assert not offenders, (
+            "these modules install a community extension directly instead of "
+            f"calling load_community_extension(): {offenders}"
+        )

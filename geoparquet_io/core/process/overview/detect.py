@@ -13,7 +13,11 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    load_community_extension,
+    quote_identifier,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.logging_config import warn
@@ -78,9 +82,7 @@ class AggregateInfo:
 
 def ensure_grid_extension(con, scheme: str) -> None:
     """Install/load the community extension backing a grid scheme."""
-    extension = _GRID_EXTENSIONS[scheme]
-    con.execute(f"INSTALL {extension} FROM community")
-    con.execute(f"LOAD {extension}")
+    load_community_extension(con, _GRID_EXTENSIONS[scheme], feature=f"{scheme} overviews")
 
 
 def _describe_columns(con, relation: str) -> list[tuple[str, str]]:
