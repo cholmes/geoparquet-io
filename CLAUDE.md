@@ -210,6 +210,76 @@ Complexity guidance: guard clauses, dictionary dispatch, max 30-40 lines/functio
 **Commits**: Enforced by commitizen hook. Format: `type(scope): message`
 **PRs**: Update `docs/guide/` and `docs/api/python-api.md` if API changed.
 
+### The PR title is the changelog entry
+
+**Enforced by `.github/workflows/pr-title.yml`** (`cz check` on the title, a
+required check). A squash merge uses the PR title as the commit message, and
+`scripts/release_notes.py` groups the changelog by the type in that title.
+
+`type(scope): summary`, `!` after the scope for a breaking change. The type
+decides the section, so pick it for where the entry should land:
+
+| Type | Changelog section |
+|------|-------------------|
+| `feat` | Added |
+| `fix` | Fixed |
+| `perf`, `refactor`, `revert` | Changed |
+| `docs` | Documentation |
+| `test`, `ci`, `chore`, `style`, `build` | Internal — *counted, not listed* |
+| `build(deps...)`, or any bot bump | Dependencies — *counted, not listed* |
+| anything with `!` | **Breaking** |
+
+Write the summary as the line a user reads in the changelog, not as a note to
+the reviewer: `fix(convert): keep CSV rows whose geometry is NULL`, not
+`fix: address review feedback`. A breaking change needs `!` in the *title* — a
+squash merge drops the body, so `BREAKING CHANGE:` written there is lost.
+
+A title that cannot be fixed after the fact is not a blocker: rewrite it for the
+changelog in `scripts/release_title_overrides.json`, which leaves the PR alone.
+
+---
+
+## Releases
+
+Use the `release` skill (`.claude/skills/release/`). Do not hand-write a
+changelog section and do not run `cz bump` on its own.
+
+`CHANGELOG.md` sections are generated from the merged pull requests by
+`scripts/release_notes.py`, which asks GitHub for its own release-note list and
+groups it into Keep a Changelog sections by conventional-commit type:
+
+```bash
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0          # preview
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --write  # apply
+```
+
+One line per PR — `- <title> by @<author> in #<number>` — in this section order:
+Breaking, Added, Changed, Fixed, Documentation, then New Contributors and the Full
+Changelog link.
+
+**Internal and dependency work is counted, not listed.** Anything typed `test`,
+`ci`, `chore`, `style` or `build` — and every bot bump — is left out, under a
+one-line note giving the counts. The compare link and the GitHub release page
+still carry them. This is why the type in a PR title matters: it decides whether
+the change is published or only counted.
+
+Above them go two to four paragraphs of highlights, written by hand, and the last
+one **must name every first-time contributor**, say what they contributed, give
+their pull-request count when it is more than one, and thank them. `--contributors` prints each one with every PR they wrote, which is
+more than the `### New Contributors` list shows:
+
+```bash
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --contributors
+```
+
+`scripts/release_title_overrides.json` rewrites a non-conforming PR title for the
+changelog only. Add an entry whenever the generator leaves something in
+`### Uncategorized`; that heading must be gone before a release ships.
+
+`update_changelog_on_bump` is off, so `cz bump` writes versions only and leaves
+the reviewed section alone. The skill stops for human review before anything is
+bumped or tagged.
+
 ---
 
 ## New Feature Checklist

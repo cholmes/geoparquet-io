@@ -129,7 +129,7 @@ delete_ruleset() {
 # 3a. Ruleset A: "main: PR + green checks"
 #
 #     enforcement: active, NO bypass actors -> applies to EVERYONE, admins
-#     included. Requires a PR (0 approvals) and all 13 status checks green,
+#     included. Requires a PR (0 approvals) and all 14 status checks green,
 #     and blocks force-pushes / deletion of main.
 #
 #     integration_id is intentionally omitted from each required check so a
@@ -167,6 +167,7 @@ RULESET_A_PAYLOAD="$(
         parameters: {
           strict_required_status_checks_policy: false,
           required_status_checks: [
+            {context: "pr-title"},
             {context: "lint"},
             {context: "security"},
             {context: "notebooks"},
@@ -211,7 +212,7 @@ STALE_RULESET_NAME="main: review required"
 # -----------------------------------------------------------------------------
 # NET EFFECT
 #   Ruleset A carries no bypass actors, so everyone - contributors and admins
-#   alike - must open a PR and get all 13 checks green before anything lands
+#   alike - must open a PR and get all 14 checks green before anything lands
 #   on main. Nobody pushes straight to main, force-pushes it, or deletes it.
 #
 #   No approving review is required. Contributors without write access still

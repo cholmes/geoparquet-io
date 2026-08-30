@@ -78,7 +78,10 @@ class TestCommitizenConfig:
         cz_config = _load_pyproject()["tool"]["commitizen"]
         assert cz_config.get("tag_format") == "v$version"
         assert cz_config.get("changelog_file") == "CHANGELOG.md"
-        assert cz_config.get("update_changelog_on_bump") is True
+        # False on purpose: scripts/release_notes.py writes the changelog from
+        # merged pull requests, and cz regenerating it from commit subjects
+        # would overwrite that reviewed section with a second, unreviewed one.
+        assert cz_config.get("update_changelog_on_bump") is False
         assert cz_config.get("major_version_zero") is True
         assert "version" in cz_config
         assert "version_files" in cz_config
