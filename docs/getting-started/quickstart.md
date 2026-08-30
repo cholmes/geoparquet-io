@@ -78,14 +78,23 @@ See [Installation Guide](installation.md) for more options.
 
 ## Adding Spatial Indices
 
+!!! warning "`gpio add s2` is unavailable in this release"
+    S2 needs the `geography` DuckDB community extension, which is published only up
+    to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so `gpio add s2` and
+    `gpio partition s2` stop with an explanation instead of running. Use
+    `gpio add a5` — a hierarchical, globally-uniform cell index over the whole
+    sphere — until the extension is republished upstream. See
+    [S2 Spherical Cells](../guide/add.md#s2-spherical-cells).
+
+
 === "CLI"
 
     ```bash
     # H3 hexagonal cells
     gpio add h3 input.parquet output.parquet --resolution 9
 
-    # S2 spherical cells
-    gpio add s2 input.parquet output.parquet --level 13
+    # A5 pentagonal cells
+    gpio add a5 input.parquet output.parquet --resolution 15
 
     # Chain multiple indices
     gpio add bbox input.parquet | gpio add h3 -r 9 - | gpio sort hilbert - output.parquet

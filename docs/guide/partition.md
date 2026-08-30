@@ -31,9 +31,6 @@ Auto-resolution analyzes your dataset and calculates the optimal spatial index r
 # H3 with ~100K rows per partition (default)
 gpio partition h3 input.parquet output/ --auto
 
-# S2 with ~50K rows per partition
-gpio partition s2 input.parquet output/ --auto --target-rows 50000
-
 # Quadkey with partition limit
 gpio partition quadkey input.parquet output/ --auto --max-partitions 1000
 
@@ -199,18 +196,23 @@ Auto-resolution probes your data's actual extent (see [How auto-resolution is ch
 
 ## By S2 Cells
 
-!!! warning "S2 is temporarily unavailable (`geography` extension)"
+!!! warning "S2 is unavailable in this release — use `gpio partition a5`"
     S2 partitioning needs the `geography` DuckDB community extension, which is
-    published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer.
-    `gpio partition s2` currently stops immediately with an explanation instead of
-    partitioning. See [S2 Spherical Cells](add.md#s2-spherical-cells) for the details and the
-    workaround.
+    published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so
+    `gpio partition s2` stops immediately with an explanation instead of
+    partitioning. Use [`gpio partition a5`](#by-a5-cells) (or `gpio partition h3`)
+    instead; A5 is the closest working substitute — another hierarchical,
+    globally-uniform cell index over the whole sphere. Do not pin `duckdb==1.5.1`
+    to get S2 back: it is below gpio's dependency floor and carries the
+    geometry-repair segfault the floor exists to avoid. See
+    [S2 Spherical Cells](add.md#s2-spherical-cells) for the full story. The examples
+    below apply unchanged once the extension is republished upstream.
 
 Partition by S2 spherical cells:
 
 === "CLI"
 
-    <!-- doctest: menu -->
+    <!-- doctest: menu, skip="gpio partition s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```bash
     # Auto-calculate optimal level for ~100K rows per partition
     gpio partition s2 input.parquet output/ --auto
@@ -225,7 +227,7 @@ Partition by S2 spherical cells:
     gpio partition s2 input.parquet output/ --auto --hive
     ```
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: skip="gpio partition s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```bash
     # Partition at specific level 13 (~1.2km² cells)
     gpio partition s2 input.parquet output/ --level 13
@@ -236,7 +238,7 @@ Partition by S2 spherical cells:
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: skip="Table.partition_by_s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```python
     import geoparquet_io as gpio
 
@@ -269,6 +271,7 @@ Use `--auto` to let gpio calculate the optimal S2 level:
 
 === "CLI"
 
+    <!-- doctest: skip="gpio partition s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```bash
     # Auto-select level for ~100k rows per partition (default)
     gpio partition s2 input.parquet output/ --auto
@@ -320,12 +323,16 @@ Partition by A5 spatial cells:
 
 === "Python"
 
+    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    ```python
+    import geoparquet_io as gpio
+
+    # Partition by A5 (flat files by default, like the CLI; pass hive=True for key=value/)
+    gpio.read('input.parquet').partition_by_a5('output/', resolution=12)
+    ```
+
     !!! note "CLI-Only"
-        A5 partitioning is currently CLI-only. Use S2 partitioning in Python as an alternative:
-        <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
-        ```python
-        gpio.read('input.parquet').partition_by_s2('output/', level=10)
-        ```
+        `--auto` resolution selection is CLI-only; pass an explicit `resolution` in Python.
 
 **Column behavior:**
 

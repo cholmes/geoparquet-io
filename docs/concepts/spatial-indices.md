@@ -167,8 +167,18 @@ Google's S2 geometry library divides the Earth into hierarchical cells using qua
 - Hierarchical spatial indexing
 - Integration with S2-based systems (BigQuery, etc.)
 
+!!! warning "S2 is unavailable in this release — use A5 instead"
+    S2 cells are computed by the `geography` DuckDB community extension, which is
+    published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so
+    `gpio add s2` and `gpio partition s2` stop with an explanation instead of
+    running. [A5](#a5-cells) is the closest working substitute — another
+    hierarchical, globally-uniform cell index over the whole sphere. S2 returns
+    automatically once the extension is republished upstream; do not pin
+    `duckdb==1.5.1` to get it back. See
+    [S2 Spherical Cells](../guide/add.md#s2-spherical-cells) for the details.
+
 ```bash
-# CLI
+# CLI (unavailable in this release — see the warning above)
 gpio add s2 input.parquet output.parquet --level 13
 
 # Python
@@ -215,7 +225,7 @@ gpio.read('input.parquet').add_kdtree().write('output.parquet')
 |--------|------------|------------------|----------|
 | **H3** | Hexagon | 0-15 | Aggregations, joins, uniform coverage |
 | **A5** | Pentagon | 0-31 | Equal-area aggregations, joins & analysis |
-| **S2** | Quad | 0-30 | Global datasets, hierarchical indexing |
+| **S2** | Quad | 0-30 | Global datasets, hierarchical indexing — **unavailable in this release**, use A5 |
 | **Quadkey** | Square | 0-23 | Web mapping, tile workflows |
 | **KD-tree** | Varies | 1-20 | Clustered data, balanced partitions |
 
@@ -249,7 +259,6 @@ Partitioning splits data into multiple files based on spatial location.
 ```bash
 # Auto-calculate optimal resolution (recommended)
 gpio partition h3 input.parquet output_dir/ --auto
-gpio partition s2 input.parquet output_dir/ --auto
 gpio partition a5 input.parquet output_dir/ --auto
 gpio partition quadkey input.parquet output_dir/ --auto
 
@@ -278,7 +287,10 @@ gpio.read('input.parquet') \
     .add_quadkey(resolution=12) \
     .partition_by_quadkey('output/', partition_resolution=4)
 
-# Partition by S2
+# Partition by A5
+gpio.read('input.parquet').partition_by_a5('output/', resolution=12)
+
+# Partition by S2 — unavailable in this release, see the warning above
 gpio.read('input.parquet').partition_by_s2('output/', level=10)
 ```
 
@@ -318,14 +330,19 @@ gpio.read('input.parquet') \
 ### For Analysis Workloads
 
 ```bash
-# Add H3/A5 for aggregation, S2 for spherical analysis, quadkey for mapping
+# Add H3 and A5 for aggregation, quadkey for mapping
 gpio add bbox input.parquet | \
     gpio add h3 --resolution 9 - | \
-    gpio add a5 --level 13 - | \
-    gpio add s2 --level 13 - | \
+    gpio add a5 --resolution 13 - | \
     gpio add quadkey --resolution 12 - | \
     gpio sort hilbert - enriched.parquet
 ```
+
+!!! note "No `gpio add s2` stage"
+    This pipeline used to add an S2 column too. `gpio add s2` is unavailable in this
+    release (the `geography` extension is not published for the DuckDB gpio
+    requires) and would stop the pipeline mid-pipe, so A5 covers the hierarchical
+    spherical index here. Add the stage back once the extension is republished.
 
 ## Quick Reference
 
@@ -333,7 +350,7 @@ gpio add bbox input.parquet | \
 |-----------|---------|---------------------------|
 | **Bbox column** | Enable row group filtering | **Yes** (with sorting) |
 | **Hilbert sorting** | Cluster nearby features | **Yes** (makes bbox useful) |
-| **H3/A5/S2/Quadkey columns** | Analysis and joins | No (for analysis only) |
+| **H3/A5/Quadkey columns** | Analysis and joins | No (for analysis only) |
 | **Partitioning** | Split into files | No (for very large datasets) |
 
 ## Verifying Optimization
