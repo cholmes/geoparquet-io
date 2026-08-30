@@ -387,14 +387,23 @@ TO '{output_parquet}'
     info("-- Original metadata would also be preserved in the output file")
 
 
-def _print_results_summary(con, output_parquet, has_subdivision=True):
-    """Print the results summary after processing.
+def _output_has_subdivision(con, escaped_output):
+    """Report whether the written file carries a subdivision column.
 
-    ``has_subdivision`` must reflect whether a subdivision column was actually
-    written. The countries file may legitimately have none, in which case
-    ``_build_select_clause`` omits ``admin:subdivision_code`` from the output
-    and a query that references it fails to bind (#672).
+    The countries file is not the authority: the join is ``SELECT a.*``, so an
+    input that already carried ``admin:subdivision_code`` keeps it even when the
+    countries file has none. Asking the output is the only answer that is true
+    in both directions (#672).
     """
+    described = con.execute(f"SELECT * FROM '{escaped_output}' LIMIT 0").description
+    return "admin:subdivision_code" in {column[0] for column in described}
+
+
+def _print_output_stats(con, output_parquet):
+    """Query the written file and print the per-column counts."""
+    escaped_output = _escape_sql_string(str(output_parquet))
+    has_subdivision = _output_has_subdivision(con, escaped_output)
+
     subdivision_selects = (
         """,
         COUNT(CASE WHEN "admin:subdivision_code" IS NOT NULL THEN 1 END)
@@ -408,18 +417,35 @@ def _print_results_summary(con, output_parquet, has_subdivision=True):
         COUNT(*) as total_features,
         COUNT(CASE WHEN "admin:country_code" IS NOT NULL THEN 1 END) as features_with_country,
         COUNT(DISTINCT "admin:country_code") as unique_countries{subdivision_selects}
-    FROM '{_escape_sql_string(str(output_parquet))}';
+    FROM '{escaped_output}';
     """
     stats = con.execute(stats_query).fetchone()
     total, with_country, unique_countries = stats[0], stats[1], stats[2]
+    with_subdivision, unique_subdivisions = (stats[3], stats[4]) if has_subdivision else (0, 0)
 
     progress("\nResults:")
     progress(f"- Added country codes to {with_country:,} of {total:,} features")
-    if has_subdivision and stats[3] > 0:
-        progress(f"- Added subdivision codes to {stats[3]:,} of {total:,} features")
+    if with_subdivision > 0:
+        progress(f"- Added subdivision codes to {with_subdivision:,} of {total:,} features")
     progress(f"- Found {unique_countries:,} unique countries")
-    if has_subdivision and stats[4] > 0:
-        progress(f"- Found {stats[4]:,} unique subdivisions")
+    if unique_subdivisions > 0:
+        progress(f"- Found {unique_subdivisions:,} unique subdivisions")
+
+
+def _print_results_summary(con, output_parquet):
+    """Print the results summary after processing.
+
+    The output file is already written by the time this runs, so nothing here
+    may decide the exit status. A summary that cannot be read -- a remote output
+    this connection has no credentials for, a path DuckDB will not re-open -- is
+    reported as a warning and the write still counts as the success it was
+    (#672).
+    """
+    try:
+        _print_output_stats(con, output_parquet)
+    except Exception as exc:  # noqa: BLE001 - the file is written; a summary is never worth failing for
+        warn(f"Could not summarize the output file: {exc}")
+
     success(f"\nSuccessfully wrote output to: {output_parquet}")
 
 
@@ -687,7 +713,7 @@ def add_country_codes(
             verbose=verbose,
         )
 
-        _print_results_summary(con, output_parquet, has_subdivision=bool(subdivision_code_col))
+        _print_results_summary(con, output_parquet)
 
 
 if __name__ == "__main__":
