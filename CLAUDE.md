@@ -210,9 +210,32 @@ Complexity guidance: guard clauses, dictionary dispatch, max 30-40 lines/functio
 **Commits**: Enforced by commitizen hook. Format: `type(scope): message`
 **PRs**: Update `docs/guide/` and `docs/api/python-api.md` if API changed.
 
-The PR title becomes the squashed commit message, and the changelog is built
-from PR titles — so write the title as the changelog entry you want, and put the
-`!` for a breaking change in the title, never only in the body.
+### The PR title is the changelog entry
+
+**Enforced by `.github/workflows/pr-title.yml`** (`cz check` on the title, a
+required check). A squash merge uses the PR title as the commit message, and
+`scripts/release_notes.py` groups the changelog by the type in that title.
+
+`type(scope): summary`, `!` after the scope for a breaking change. The type
+decides the section, so pick it for where the entry should land:
+
+| Type | Changelog section |
+|------|-------------------|
+| `feat` | Added |
+| `fix` | Fixed |
+| `perf`, `refactor`, `revert` | Changed |
+| `docs` | Documentation |
+| `test`, `ci`, `chore`, `style`, `build` | Internal |
+| `build(deps...)`, or any bot bump | Dependencies |
+| anything with `!` | **Breaking** |
+
+Write the summary as the line a user reads in the changelog, not as a note to
+the reviewer: `fix(convert): keep CSV rows whose geometry is NULL`, not
+`fix: address review feedback`. A breaking change needs `!` in the *title* — a
+squash merge drops the body, so `BREAKING CHANGE:` written there is lost.
+
+A title that cannot be fixed after the fact is not a blocker: rewrite it for the
+changelog in `scripts/release_title_overrides.json`, which leaves the PR alone.
 
 ---
 
@@ -232,8 +255,21 @@ uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --write  # apply
 
 One line per PR — `- <title> by @<author> in #<number>` — in this section order:
 Breaking, Added, Changed, Fixed, Documentation, Internal, Dependencies, then New
-Contributors and the Full Changelog link. Above them go two to four paragraphs of
-highlights, written by hand. Below Documentation is housekeeping a reader can skip.
+Contributors and the Full Changelog link. Below Documentation is housekeeping a
+reader can skip.
+
+Above them go two to four paragraphs of highlights, written by hand, and the last
+one **must name every first-time contributor**, say what they contributed, give
+their pull-request count when it is more than one, and thank them. `--contributors` prints each one with every PR they wrote, which is
+more than the `### New Contributors` list shows:
+
+```bash
+uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0 --contributors
+```
+
+`scripts/release_title_overrides.json` rewrites a non-conforming PR title for the
+changelog only. Add an entry whenever the generator leaves something in
+`### Uncategorized`; that heading must be gone before a release ships.
 
 `update_changelog_on_bump` is off, so `cz bump` writes versions only and leaves
 the reviewed section alone. The skill stops for human review before anything is

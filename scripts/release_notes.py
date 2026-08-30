@@ -9,7 +9,11 @@ the same way every time and nobody hand-writes 130 bullets.
 
     uv run python scripts/release_notes.py 1.4.0              # print the section
     uv run python scripts/release_notes.py 1.4.0 --write      # splice into CHANGELOG.md
-    uv run python scripts/release_notes.py 1.4.0 --previous v1.3.0
+    uv run python scripts/release_notes.py 1.4.0 --contributors   # who is new, and why
+
+Not every contributor writes a conventional-commit title, and the pull request
+keeps whatever it merged with. `release_title_overrides.json` rewrites a title
+for the changelog only, which is what gives the entry a section.
 
 `--write` replaces the `## Unreleased` heading and everything under it, so the
 generated section is the only thing describing the release. It refuses to write
@@ -33,6 +37,7 @@ from pathlib import Path
 
 REPO = "geoparquet/geoparquet-io"
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+OVERRIDES_PATH = Path(__file__).resolve().parent / "release_title_overrides.json"
 
 # Section order in the rendered output. The four a reader cares about come
 # first; housekeeping sits below them, so scanning can stop at Documentation.
@@ -60,6 +65,8 @@ TYPE_SECTIONS = {
 }
 
 SUMMARY_PLACEHOLDER = "<!-- TODO: 2-4 paragraphs on the highlights of this release. -->"
+
+NEW_CONTRIBUTOR_RE = re.compile(r"^[*-] @(?P<author>[\w.\[\]-]+) made their first")
 
 # "* <title> by @<author> in <url>", the shape GitHub generates.
 ENTRY_RE = re.compile(
@@ -122,6 +129,53 @@ def parse(body: str) -> Notes:
             )
 
     return notes
+
+
+def load_overrides(path: Path) -> dict[str, str]:
+    """Read the checked-in title rewrites. A missing file means none."""
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text())
+
+
+def apply_overrides(notes: Notes, overrides: dict[str, str]) -> Notes:
+    """Replace entry titles from the overrides map, keyed by pull-request number.
+
+    Contributors do not all write conventional-commit titles, and the pull
+    request keeps whatever it was merged with. The changelog does not have to:
+    a rewrite here gives the entry a type, which is what puts it in a section.
+    """
+    wanted = {int(k): v for k, v in overrides.items() if not k.startswith("_")}
+    present = {entry.number for entry in notes.entries}
+    missing = sorted(wanted.keys() - present)
+    if missing:
+        raise ReleaseNotesError(
+            "overrides name pull requests that are not in this range: "
+            + ", ".join(str(n) for n in missing)
+        )
+
+    notes.entries = [
+        Entry(title=wanted.get(e.number, e.title), author=e.author, number=e.number)
+        for e in notes.entries
+    ]
+    return notes
+
+
+def contributor_brief(notes: Notes) -> dict[str, list[tuple[int, str]]]:
+    """Every pull request each first-time contributor wrote in this range.
+
+    The summary has to thank them for what they actually did, and GitHub's
+    "New Contributors" list names only the first one.
+    """
+    brief: dict[str, list[tuple[int, str]]] = {}
+    for line in notes.new_contributors:
+        match = NEW_CONTRIBUTOR_RE.match(line)
+        if match:
+            brief[match["author"]] = []
+    for entry in notes.entries:
+        if entry.author in brief:
+            brief[entry.author].append((entry.number, entry.title))
+    return {author: sorted(prs) for author, prs in brief.items()}
 
 
 def classify(title: str, author: str) -> str:
@@ -238,10 +292,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--previous", help="previous tag (default: GitHub's own guess)")
     parser.add_argument("--date", default=date_cls.today().isoformat())
     parser.add_argument("--write", action="store_true", help="splice into CHANGELOG.md in place")
+    parser.add_argument(
+        "--contributors",
+        action="store_true",
+        help="list each first-time contributor and every PR they wrote",
+    )
+    parser.add_argument("--overrides", type=Path, default=OVERRIDES_PATH)
     args = parser.parse_args(argv)
 
     try:
-        section = render(generate(args.version, args.previous), args.version, args.date)
+        notes = apply_overrides(
+            generate(args.version, args.previous), load_overrides(args.overrides)
+        )
+        if args.contributors:
+            for author, prs in contributor_brief(notes).items():
+                print(f"@{author}")
+                for number, title in prs:
+                    print(f"  #{number} {title}")
+            return 0
+
+        section = render(notes, args.version, args.date)
         if not args.write:
             print(section, end="")
             return 0

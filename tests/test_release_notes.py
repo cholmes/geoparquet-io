@@ -177,3 +177,40 @@ class TestSplice:
         changelog = "# Changelog\n\n## v1.4.0 (2026-08-30)\n\nalready here\n"
         with pytest.raises(rn.ReleaseNotesError, match="v1.4.0"):
             rn.splice(changelog, "## v1.4.0 (2026-08-30)\n\nnew\n")
+
+
+class TestOverrides:
+    def test_rewrites_a_title_by_pull_request_number(self):
+        notes = rn.apply_overrides(rn.parse(SAMPLE), {"534": "chore(deps): relax the duckdb pin"})
+        entry = next(e for e in notes.entries if e.number == 534)
+        assert entry.title == "chore(deps): relax the duckdb pin"
+
+    def test_a_rewritten_title_decides_the_section(self):
+        notes = rn.apply_overrides(rn.parse(SAMPLE), {"534": "chore(deps): relax the duckdb pin"})
+        out = rn.render(notes, version="1.4.0", date="2026-08-30")
+        assert "### Uncategorized" not in out
+        assert "relax the duckdb pin" in out.split("### Internal")[1]
+
+    def test_keys_starting_with_underscore_are_comments(self):
+        notes = rn.apply_overrides(rn.parse(SAMPLE), {"_note": "not a pull request"})
+        assert len(notes.entries) == 9
+
+    def test_an_override_for_an_absent_pull_request_is_an_error(self):
+        with pytest.raises(rn.ReleaseNotesError, match="9999"):
+            rn.apply_overrides(rn.parse(SAMPLE), {"9999": "fix: nothing"})
+
+    def test_the_shipped_overrides_file_parses(self):
+        overrides = rn.load_overrides(rn.OVERRIDES_PATH)
+        assert all(k.startswith("_") or k.isdigit() for k in overrides)
+
+
+class TestContributorBrief:
+    def test_lists_every_pull_request_a_new_contributor_wrote(self):
+        brief = rn.contributor_brief(rn.parse(SAMPLE))
+        assert brief["oakhill87"] == [
+            (510, "docs(api): document geoparquet_version"),
+            (766, "feat(sort): add Sort-Tile-Recursive ordering"),
+        ]
+
+    def test_covers_only_new_contributors(self):
+        assert list(rn.contributor_brief(rn.parse(SAMPLE))) == ["oakhill87"]

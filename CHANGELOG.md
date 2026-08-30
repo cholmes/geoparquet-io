@@ -37,10 +37,29 @@ reading input, and both start working again with no gpio change once the extensi
 republished upstream. `gpio add a5` is the closest substitute
 ([#778](https://github.com/geoparquet/geoparquet-io/issues/778)).
 
+Three people contributed to gpio for the first time in this release, and we are
+grateful to all of them. [@cayetanobv](https://github.com/cayetanobv) sent ten pull
+requests, and between them they made gpio survive the geometry the real world
+actually contains: curved WKB is linearized on read and streamed rather than
+materialized, empty geometries sort last instead of failing `ST_Hilbert`, CSV rows
+with NULL geometry are kept, repair no longer segfaults on NULL geometry rows,
+conversion names the types it cannot handle, `convert geojson` reprojects before it
+repairs, and `Table.convert()` stops losing the source CRS on the way to
+`Table.write()` — most of them bugs nobody else had hit yet.
+[@oakhill87](https://github.com/oakhill87) sent three: Sort-Tile-Recursive ordering,
+the second spatial sort gpio offers; the catch that `sort hilbert` dropped
+`--write-memory` before it reached the write engine; and the `geoparquet_version`
+documentation on `Table.write` and `Table.upload`.
+[@Sanjays2402](https://github.com/Sanjays2402) sent three as well, making two silent
+failures speak up — DuckDB extension install errors, and the misleading "Batch size 0
+too large" on non-paged ArcGIS requests — and adding regression coverage for
+empty-geometry bbox exclusion. If any of this sounds like work you would enjoy, the
+issue tracker is open and the guides now run as tests, so a fix is easy to prove.
+
 ### Breaking
 
 - fix(api)!: align CLI and Python API defaults (admin dataset, hive, WFS page size) by [@cholmes](https://github.com/cholmes) in [#661](https://github.com/geoparquet/geoparquet-io/pull/661)
-- fix(deps): require duckdb>=1.5.2 and guard S2 on the geography extension by [@cholmes](https://github.com/cholmes) in [#778](https://github.com/geoparquet/geoparquet-io/pull/778)
+- fix(deps)!: require duckdb>=1.5.2 and withdraw S2 until the geography extension returns by [@cholmes](https://github.com/cholmes) in [#778](https://github.com/geoparquet/geoparquet-io/pull/778)
 
 ### Added
 
@@ -48,34 +67,38 @@ republished upstream. `gpio add a5` is the closest substitute
 - feat(wfs): auto-tile large datasets and optimize extraction performance by [@nlebovits](https://github.com/nlebovits) in [#502](https://github.com/geoparquet/geoparquet-io/pull/502)
 - feat: default geometry repair with ST_MakeValid (issue [#506](https://github.com/geoparquet/geoparquet-io/issues/506)) by [@nlebovits](https://github.com/nlebovits) in [#507](https://github.com/geoparquet/geoparquet-io/pull/507)
 - feat(carto): extract non-geo (tabular) tables to plain Parquet (issue [#508](https://github.com/geoparquet/geoparquet-io/issues/508)) by [@nlebovits](https://github.com/nlebovits) in [#509](https://github.com/geoparquet/geoparquet-io/pull/509)
+- feat(arcgis): make the HTTP timeout configurable for large polygon layers by [@nlebovits](https://github.com/nlebovits) in [#533](https://github.com/geoparquet/geoparquet-io/pull/533)
 - feat(inspect): fit head/tail previews to terminal width by [@cholmes](https://github.com/cholmes) in [#520](https://github.com/geoparquet/geoparquet-io/pull/520)
 - feat(geoarrow): produce native GeoArrow encoding for 1.1-geoarrow from any input by [@cholmes](https://github.com/cholmes) in [#519](https://github.com/geoparquet/geoparquet-io/pull/519)
+- feat(process): add aggregate (a5, h3, admin) for low-zoom visualization by [@cholmes](https://github.com/cholmes) in [#529](https://github.com/geoparquet/geoparquet-io/pull/529)
 - feat(ci): harden CI and code-trust machinery — deterministic gates, green main, bots open PRs by [@nlebovits](https://github.com/nlebovits) in [#552](https://github.com/geoparquet/geoparquet-io/pull/552)
 - feat(validate): add corpus-surfaced missing checks ([#586](https://github.com/geoparquet/geoparquet-io/issues/586)) by [@cholmes](https://github.com/cholmes) in [#597](https://github.com/geoparquet/geoparquet-io/pull/597)
 - feat(process): add --where row filter to process aggregate ([#568](https://github.com/geoparquet/geoparquet-io/issues/568)) by [@cholmes](https://github.com/cholmes) in [#612](https://github.com/geoparquet/geoparquet-io/pull/612)
 - feat(process): add --metric-nodata sentinel handling to process aggregate ([#566](https://github.com/geoparquet/geoparquet-io/issues/566)) by [@cholmes](https://github.com/cholmes) in [#613](https://github.com/geoparquet/geoparquet-io/pull/613)
 - feat(process): add --bucket-point bbox keying to process aggregate ([#567](https://github.com/geoparquet/geoparquet-io/issues/567)) by [@cholmes](https://github.com/cholmes) in [#614](https://github.com/geoparquet/geoparquet-io/pull/614)
 - feat: process overview + pmtiles pyramid ([#570](https://github.com/geoparquet/geoparquet-io/issues/570)) by [@cholmes](https://github.com/cholmes) in [#615](https://github.com/geoparquet/geoparquet-io/pull/615)
+- feat(convert): linearize curved WKB geometries on read instead of failing by [@cayetanobv](https://github.com/cayetanobv) in [#647](https://github.com/geoparquet/geoparquet-io/pull/647)
 - feat(sort): add Sort-Tile-Recursive ordering by [@oakhill87](https://github.com/oakhill87) in [#766](https://github.com/geoparquet/geoparquet-io/pull/766)
-- HTTP timeout not configurable — 60s default too short for large polygon FeatureServer layers by [@nlebovits](https://github.com/nlebovits) in [#533](https://github.com/geoparquet/geoparquet-io/pull/533)
-- Add gpio process aggregate (a5, h3, admin) for low-zoom visualization by [@cholmes](https://github.com/cholmes) in [#529](https://github.com/geoparquet/geoparquet-io/pull/529)
 
 ### Changed
 
 - refactor(common): decompose _promote_numeric_type (xenon F→A) by [@nlebovits](https://github.com/nlebovits) in [#494](https://github.com/geoparquet/geoparquet-io/pull/494)
 - perf(add): lean on DuckDB SPATIAL_JOIN for admin-divisions/country-codes; fix misleading native-geometry message; re-evaluate bbox pre-filter (supersedes [#462](https://github.com/geoparquet/geoparquet-io/issues/462)) by [@nlebovits](https://github.com/nlebovits) in [#540](https://github.com/geoparquet/geoparquet-io/pull/540)
-- Time to relax duckdb pin? by [@nlebovits](https://github.com/nlebovits) in [#534](https://github.com/geoparquet/geoparquet-io/pull/534)
-- Name the offending types when non-linear WKB geometries fail conversion by [@cayetanobv](https://github.com/cayetanobv) in [#646](https://github.com/geoparquet/geoparquet-io/pull/646)
-- Stream the linearized curved-geometry read instead of materializing the file by [@cayetanobv](https://github.com/cayetanobv) in [#650](https://github.com/geoparquet/geoparquet-io/pull/650)
+- perf(convert): stream the linearized curved-geometry read by [@cayetanobv](https://github.com/cayetanobv) in [#650](https://github.com/geoparquet/geoparquet-io/pull/650)
 
 ### Fixed
 
 - fix(wfs): add sortBy parameter for stable pagination on PK-less layers by [@nlebovits](https://github.com/nlebovits) in [#489](https://github.com/geoparquet/geoparquet-io/pull/489)
 - fix(wfs): trust server-declared CRS from GeoJSON response ([#499](https://github.com/geoparquet/geoparquet-io/issues/499)) by [@nlebovits](https://github.com/nlebovits) in [#500](https://github.com/geoparquet/geoparquet-io/pull/500)
 - fix(wfs): auto-tiling fails with --workers > 1 by [@nlebovits](https://github.com/nlebovits) in [#504](https://github.com/geoparquet/geoparquet-io/pull/504)
+- fix(arcgis): catch the int32 to timestamp cast error during extraction by [@nlebovits](https://github.com/nlebovits) in [#535](https://github.com/geoparquet/geoparquet-io/pull/535)
 - fix(partition): make --auto resolution extent-aware ([#524](https://github.com/geoparquet/geoparquet-io/issues/524)) by [@cholmes](https://github.com/cholmes) in [#526](https://github.com/geoparquet/geoparquet-io/pull/526)
+- fix(arcgis): catch duckdb.IOException so the batch-size fallback ladder fires by [@nlebovits](https://github.com/nlebovits) in [#536](https://github.com/geoparquet/geoparquet-io/pull/536)
+- fix(spatial): make admin joins and grid keying CRS-aware for non-CRS84 input by [@nlebovits](https://github.com/nlebovits) in [#537](https://github.com/geoparquet/geoparquet-io/pull/537)
+- fix(pmtiles): stop the geoarrow push_batch crash on large GeoParquet by [@nlebovits](https://github.com/nlebovits) in [#541](https://github.com/geoparquet/geoparquet-io/pull/541)
 - fix(spatial): make add/partition CRS-aware for non-CRS84 input ([#525](https://github.com/geoparquet/geoparquet-io/issues/525)) by [@cholmes](https://github.com/cholmes) in [#530](https://github.com/geoparquet/geoparquet-io/pull/530)
 - fix(geometry): summarize geo metadata in verbose output instead of full dump by [@cholmes](https://github.com/cholmes) in [#542](https://github.com/geoparquet/geoparquet-io/pull/542)
+- fix(partition): stop leaking the internal __gpio_part alias column into output by [@nlebovits](https://github.com/nlebovits) in [#539](https://github.com/geoparquet/geoparquet-io/pull/539)
 - fix(convert): honor --row-group-size-mb on the duckdb-kv write path ([#547](https://github.com/geoparquet/geoparquet-io/issues/547)) by [@nlebovits](https://github.com/nlebovits) in [#549](https://github.com/geoparquet/geoparquet-io/pull/549)
 - fix(mutmut): keep test suite CWD-stable so mutation stats phase passes by [@nlebovits](https://github.com/nlebovits) in [#565](https://github.com/geoparquet/geoparquet-io/pull/565)
 - fix(ci): rename Codecov 'file' input to 'files' for v7 action by [@nlebovits](https://github.com/nlebovits) in [#575](https://github.com/geoparquet/geoparquet-io/pull/575)
@@ -87,8 +110,16 @@ republished upstream. `gpio add a5` is the closest substitute
 - fix(convert): preserve input GeoParquet version in auto mode ([#587](https://github.com/geoparquet/geoparquet-io/issues/587)) by [@cholmes](https://github.com/cholmes) in [#594](https://github.com/geoparquet/geoparquet-io/pull/594)
 - fix(write): guarantee geo metadata on 2.0 writes of M/ZM data ([#589](https://github.com/geoparquet/geoparquet-io/issues/589)) by [@cholmes](https://github.com/cholmes) in [#595](https://github.com/geoparquet/geoparquet-io/pull/595)
 - fix(convert): preserve non-planar edges when rewriting geography data ([#588](https://github.com/geoparquet/geoparquet-io/issues/588)) by [@cholmes](https://github.com/cholmes) in [#596](https://github.com/geoparquet/geoparquet-io/pull/596)
+- fix(arcgis): stop reporting 'Batch size 0 too large' on non-paged requests by [@Sanjays2402](https://github.com/Sanjays2402) in [#606](https://github.com/geoparquet/geoparquet-io/pull/606)
 - fix(deps): upgrade vulnerable dependencies (automated) by [@nlebovits](https://github.com/nlebovits) in [#623](https://github.com/geoparquet/geoparquet-io/pull/623)
 - fix(process): clear errors for missing --metric/--breakdown columns by [@cholmes](https://github.com/cholmes) in [#617](https://github.com/geoparquet/geoparquet-io/pull/617)
+- fix(sort): forward --write-memory from sort hilbert to the write engine by [@oakhill87](https://github.com/oakhill87) in [#627](https://github.com/geoparquet/geoparquet-io/pull/627)
+- fix(geometry): stop the SIGSEGV in repair on tables with NULL geometry rows by [@cayetanobv](https://github.com/cayetanobv) in [#645](https://github.com/geoparquet/geoparquet-io/pull/645)
+- fix(convert): name the offending types when non-linear WKB fails conversion by [@cayetanobv](https://github.com/cayetanobv) in [#646](https://github.com/geoparquet/geoparquet-io/pull/646)
+- fix(api): keep the source CRS between Table.convert() and Table.write() by [@cayetanobv](https://github.com/cayetanobv) in [#644](https://github.com/geoparquet/geoparquet-io/pull/644)
+- fix(convert): order empty geometries last instead of failing on ST_Hilbert by [@cayetanobv](https://github.com/cayetanobv) in [#651](https://github.com/geoparquet/geoparquet-io/pull/651)
+- fix(convert): reproject before repairing geometry in convert geojson by [@cayetanobv](https://github.com/cayetanobv) in [#653](https://github.com/geoparquet/geoparquet-io/pull/653)
+- fix(convert): keep CSV rows whose geometry is NULL by [@cayetanobv](https://github.com/cayetanobv) in [#656](https://github.com/geoparquet/geoparquet-io/pull/656)
 - fix(duckdb): route bare duckdb.connect() sites through the connection factory by [@cholmes](https://github.com/cholmes) in [#659](https://github.com/geoparquet/geoparquet-io/pull/659)
 - fix(core): make library writes free of global state leaks by [@cholmes](https://github.com/cholmes) in [#660](https://github.com/geoparquet/geoparquet-io/pull/660)
 - fix(add,sort): forward --write-memory to the write engine by [@cholmes](https://github.com/cholmes) in [#663](https://github.com/geoparquet/geoparquet-io/pull/663)
@@ -116,28 +147,15 @@ republished upstream. `gpio add a5` is the closest substitute
 - fix(write): give secondary geometry columns the target version's carrier ([#706](https://github.com/geoparquet/geoparquet-io/issues/706)) by [@cholmes](https://github.com/cholmes) in [#765](https://github.com/geoparquet/geoparquet-io/pull/765)
 - fix(metadata): carry sidecar KV keys without geometry and without a rewrite ([#708](https://github.com/geoparquet/geoparquet-io/issues/708), [#709](https://github.com/geoparquet/geoparquet-io/issues/709)) by [@cholmes](https://github.com/cholmes) in [#756](https://github.com/geoparquet/geoparquet-io/pull/756)
 - fix(metadata): judge geometries against the whole file's geo statistics ([#721](https://github.com/geoparquet/geoparquet-io/issues/721)) by [@cholmes](https://github.com/cholmes) in [#770](https://github.com/geoparquet/geoparquet-io/pull/770)
-- ArrowNotImplementedError: int32 → timestamp cast not caught during ArcGIS extraction by [@nlebovits](https://github.com/nlebovits) in [#535](https://github.com/geoparquet/geoparquet-io/pull/535)
-- duckdb.IOException (GeoJSON too complex) not caught — batch-size fallback ladder never fires for large polygon layers by [@nlebovits](https://github.com/nlebovits) in [#536](https://github.com/geoparquet/geoparquet-io/pull/536)
-- Spatial operations are not CRS-aware: admin joins error and grid keying silently wrong for non-CRS84 input by [@nlebovits](https://github.com/nlebovits) in [#537](https://github.com/geoparquet/geoparquet-io/pull/537)
-- pmtiles create / extract streaming crashes in geoarrow as_geoarrow push_batch on large GeoParquet by [@nlebovits](https://github.com/nlebovits) in [#541](https://github.com/geoparquet/geoparquet-io/pull/541)
-- partition string leaks internal __gpio_part alias column into output (compounds on re-partition) by [@nlebovits](https://github.com/nlebovits) in [#539](https://github.com/geoparquet/geoparquet-io/pull/539)
-- Fix misleading 'Batch size 0 too large' on non-paged ArcGIS requests by [@Sanjays2402](https://github.com/Sanjays2402) in [#606](https://github.com/geoparquet/geoparquet-io/pull/606)
-- Fix sort hilbert dropping --write-memory before it reaches the write engine by [@oakhill87](https://github.com/oakhill87) in [#627](https://github.com/geoparquet/geoparquet-io/pull/627)
-- Fix SIGSEGV in geometry repair on tables with NULL geometry rows by [@cayetanobv](https://github.com/cayetanobv) in [#645](https://github.com/geoparquet/geoparquet-io/pull/645)
-- Linearize curved WKB geometries on read instead of failing by [@cayetanobv](https://github.com/cayetanobv) in [#647](https://github.com/geoparquet/geoparquet-io/pull/647)
-- Fix Table API dropping the source CRS between convert() and write() by [@cayetanobv](https://github.com/cayetanobv) in [#644](https://github.com/geoparquet/geoparquet-io/pull/644)
-- Order empty geometries last in convert instead of failing on ST_Hilbert by [@cayetanobv](https://github.com/cayetanobv) in [#651](https://github.com/geoparquet/geoparquet-io/pull/651)
-- Reproject before repairing geometry in convert geojson by [@cayetanobv](https://github.com/cayetanobv) in [#653](https://github.com/geoparquet/geoparquet-io/pull/653)
-- Keep CSV rows whose geometry is NULL by [@cayetanobv](https://github.com/cayetanobv) in [#656](https://github.com/geoparquet/geoparquet-io/pull/656)
 
 ### Documentation
 
 - docs(api): document geoparquet_version on Table.write/upload; drop write_memory by [@oakhill87](https://github.com/oakhill87) in [#510](https://github.com/geoparquet/geoparquet-io/pull/510)
 - docs(spatial-join): correct pre-filter rationale to memory-safety ([#545](https://github.com/geoparquet/geoparquet-io/issues/545) Fix A) by [@nlebovits](https://github.com/nlebovits) in [#551](https://github.com/geoparquet/geoparquet-io/pull/551)
+- docs(deps): record why the duckdb pin also holds the TRY() workaround by [@cayetanobv](https://github.com/cayetanobv) in [#654](https://github.com/geoparquet/geoparquet-io/pull/654)
 - docs: correct guide examples that use nonexistent CLI flags by [@cholmes](https://github.com/cholmes) in [#735](https://github.com/geoparquet/geoparquet-io/pull/735)
 - docs(changelog): compress unreleased entries and link every issue reference by [@cholmes](https://github.com/cholmes) in [#743](https://github.com/geoparquet/geoparquet-io/pull/743)
 - docs(write-strategies): say what --write-memory does on extract bigquery ([#673](https://github.com/geoparquet/geoparquet-io/issues/673)) by [@cholmes](https://github.com/cholmes) in [#763](https://github.com/geoparquet/geoparquet-io/pull/763)
-- Record why the duckdb pin also holds the TRY() workaround in place by [@cayetanobv](https://github.com/cayetanobv) in [#654](https://github.com/geoparquet/geoparquet-io/pull/654)
 
 ### Internal
 
@@ -167,8 +185,10 @@ republished upstream. `gpio add a5` is the closest substitute
 ### Dependencies
 
 - build(deps-dev): bump pytest from 9.0.3 to 9.1.0 in the development-dependencies group by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#496](https://github.com/geoparquet/geoparquet-io/pull/496)
+- build(deps): upgrade dependencies flagged by the security audit by [@nlebovits](https://github.com/nlebovits) in [#532](https://github.com/geoparquet/geoparquet-io/pull/532)
 - build(deps-dev): bump the development-dependencies group across 1 directory with 2 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#527](https://github.com/geoparquet/geoparquet-io/pull/527)
 - build(deps): bump actions/checkout from 6 to 7 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#513](https://github.com/geoparquet/geoparquet-io/pull/513)
+- build(deps): relax the duckdb pin by [@nlebovits](https://github.com/nlebovits) in [#534](https://github.com/geoparquet/geoparquet-io/pull/534)
 - build(deps): bump the production-dependencies group across 1 directory with 10 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#528](https://github.com/geoparquet/geoparquet-io/pull/528)
 - build(deps): bump pymdown-extensions from 10.21.3 to 11.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#556](https://github.com/geoparquet/geoparquet-io/pull/556)
 - build(deps-dev): bump the development-dependencies group across 1 directory with 2 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#554](https://github.com/geoparquet/geoparquet-io/pull/554)
@@ -182,13 +202,12 @@ republished upstream. `gpio add a5` is the closest substitute
 - ci: bump astral-sh/setup-uv from 8.3.2 to 9.0.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#620](https://github.com/geoparquet/geoparquet-io/pull/620)
 - ci: bump actions/setup-python from 6.3.0 to 7.0.0 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#607](https://github.com/geoparquet/geoparquet-io/pull/607)
 - ci: bump actions/checkout from 7.0.0 to 7.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#608](https://github.com/geoparquet/geoparquet-io/pull/608)
+- build(deps): raise the pip floor to 26.2 for PYSEC-2026-3721 by [@cayetanobv](https://github.com/cayetanobv) in [#669](https://github.com/geoparquet/geoparquet-io/pull/669)
 - ci: bump astral-sh/setup-uv from 9.0.0 to 10.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#716](https://github.com/geoparquet/geoparquet-io/pull/716)
 - build(deps): bump the production-dependencies group across 1 directory with 16 updates by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#742](https://github.com/geoparquet/geoparquet-io/pull/742)
 - build(deps-dev): bump pygments from 2.20.0 to 2.21.0 in the development-dependencies group by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#767](https://github.com/geoparquet/geoparquet-io/pull/767)
 - build(deps): bump pyarrow from 24.0.0 to 25.0.1 by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#769](https://github.com/geoparquet/geoparquet-io/pull/769)
 - build(deps): bump obstore and pymdown-extensions by [@dependabot[bot]](https://github.com/dependabot[bot]) in [#768](https://github.com/geoparquet/geoparquet-io/pull/768)
-- 🔒 Security: Dependency vulnerabilities detected by [@nlebovits](https://github.com/nlebovits) in [#532](https://github.com/geoparquet/geoparquet-io/pull/532)
-- Raise the pip floor to 26.2 for PYSEC-2026-3721 by [@cayetanobv](https://github.com/cayetanobv) in [#669](https://github.com/geoparquet/geoparquet-io/pull/669)
 
 ### New Contributors
 

@@ -1,0 +1,51 @@
+# The pull request title is the changelog entry.
+#
+# A squash merge uses the PR title as the commit message, and
+# scripts/release_notes.py groups the changelog by the conventional-commit type
+# in that title. The commitizen commit-msg hook checks local commits, but
+# nothing checked the title — so a well-formed branch could still land as
+# "Fix the thing" and arrive in the changelog with no section.
+#
+# A title that cannot be fixed (an outside contributor who has moved on) is not
+# a blocker: rewrite it for the changelog in scripts/release_title_overrides.json.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # For pyproject.toml, which carries the commitizen rules the local
+      # commit-msg hook already uses.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Check the title against the commit convention
+        env:
+          # Through the environment, never interpolated into the script: a
+          # title is attacker-controlled text.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! uvx --from commitizen cz check --message "$TITLE"; then
+            echo "::error::The PR title becomes the squashed commit message and" \
+              "the changelog entry. Write it as 'type(scope): summary', for" \
+              "example 'fix(convert): keep CSV rows whose geometry is NULL'." \
+              "Add '!' after the scope for a breaking change. Types:" \
+              "feat, fix, perf, refactor, docs, test, ci, build, chore."
+            exit 1
+          fi

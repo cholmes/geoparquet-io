@@ -36,19 +36,29 @@ This replaces the `## Unreleased` block with the new section. It refuses to run
 twice for one version. Without `--write` it prints to stdout, which is the way
 to preview.
 
-## 3. Triage `### Uncategorized`
+## 3. Retitle whatever landed in `### Uncategorized`
 
-Pull requests whose titles carry no conventional-commit prefix land there. Read
-each one and move it to the section it belongs in. Two rules the script cannot
-apply on its own:
+Pull requests whose titles carry no conventional-commit type land there. Do not
+edit the changelog by hand and do not touch the pull request: add a rewritten
+title to `scripts/release_title_overrides.json`, keyed by PR number, and run the
+generator again. The type you give it is what files the entry.
 
-- **Promote to `### Breaking`** any entry that removes a command, changes a
-  default, or withdraws a capability, even when its title has no `!`. Squash
-  merges take the PR title, so a `!` written in a commit body is already lost.
-- Bot dependency bumps belong in `### Dependencies`, human dependency decisions
-  (a pin relaxed, a floor raised for a CVE) belong there too.
+```json
+"645": "fix(geometry): stop the SIGSEGV in repair on tables with NULL geometry rows"
+```
 
-`### Uncategorized` must be empty and its heading gone before you continue.
+Read each pull request before you retitle it, and write the line a user should
+read. Two judgements the script cannot make:
+
+- **Give it a `!`** when the change removes a command, changes a default, or
+  withdraws a capability, even though the merged title had none. Squash merges
+  take the PR title, so a `!` written in a commit body is already lost. This is
+  how an entry reaches `### Breaking`.
+- Human dependency decisions — a pin relaxed, a floor raised for a CVE — take
+  `build(deps)` so they sit with the bot bumps.
+
+Regenerate until `### Uncategorized` is gone. Rerunning is safe: the overrides
+file makes the whole section reproducible, so nothing is lost to a second run.
 
 ## 4. Write the highlights
 
@@ -58,10 +68,22 @@ after reading the Breaking, Added and Changed entries. Cover, in this order:
 1. What is newly possible — the commands and capabilities added.
 2. The theme of the fixes, named concretely, not "various bug fixes".
 3. Every breaking change, with what a user has to do about it.
+4. **Every first-time contributor, by name, with what they contributed.**
 
-Do not thank contributors in the prose; `### New Contributors` is already there.
+The last paragraph is not optional. Get the material from:
+
+```bash
+uv run python scripts/release_notes.py <version> --previous v<previous> --contributors
+```
+
+That prints every pull request each new contributor wrote, not only the first
+one GitHub names. For each person: **say how many pull requests they sent when it
+was more than one**, summarize the work in a sentence or two — the actual
+substance of it, so they can see they were read — thank them, and close by
+inviting them back. Do not reduce a run of ten pull requests to "various fixes".
+
 Do not restate the entry list. Aim for what a user needs to decide whether to
-upgrade.
+upgrade, and what a contributor needs to feel their work was noticed.
 
 ## 5. Human review — STOP HERE
 
@@ -127,8 +149,10 @@ gh release view v<version>
 
 ## Conventions this skill enforces
 
-- One line per pull request: `- <title> by @<author> in #<number>`, titles kept
-  verbatim so they match the PR and the commit.
+- One line per pull request: `- <title> by @<author> in #<number>`. Titles come
+  from the pull request, or from `scripts/release_title_overrides.json` where one
+  did not follow the convention. `.github/workflows/pr-title.yml` checks new
+  titles, so the overrides file should stop growing.
 - Sections in order: Breaking, Added, Changed, Fixed, Documentation, Internal,
   Dependencies, then New Contributors and the Full Changelog link.
 - Housekeeping sits below the user-facing sections; a reader can stop at
