@@ -924,6 +924,27 @@ class TestSchemaBuilding:
         assert schema.field("date_field").type == pa.timestamp("ms")
         assert schema.field("date_field").nullable
 
+    def test_date_only_and_time_only_types(self):
+        """Test DateOnly and TimeOnly type mappings (added in ArcGIS Server 10.9)."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _build_schema_from_layer_info
+
+        layer_info = ArcGISLayerInfo(
+            name="test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "date_only", "type": "esriFieldTypeDateOnly", "nullable": True},
+                {"name": "time_only", "type": "esriFieldTypeTimeOnly", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=100,
+        )
+
+        schema = _build_schema_from_layer_info(layer_info)
+
+        assert schema.field("date_only").type == pa.date32()
+        assert schema.field("time_only").type == pa.time32("ms")
+
     def test_all_numeric_types(self):
         """Test all numeric type mappings."""
         from geoparquet_io.core.arcgis import ArcGISLayerInfo, _build_schema_from_layer_info
@@ -935,6 +956,7 @@ class TestSchemaBuilding:
             fields=[
                 {"name": "small_int", "type": "esriFieldTypeSmallInteger", "nullable": True},
                 {"name": "int", "type": "esriFieldTypeInteger", "nullable": True},
+                {"name": "big_int", "type": "esriFieldTypeBigInteger", "nullable": True},
                 {"name": "single", "type": "esriFieldTypeSingle", "nullable": True},
                 {"name": "double", "type": "esriFieldTypeDouble", "nullable": True},
             ],
@@ -946,6 +968,7 @@ class TestSchemaBuilding:
 
         assert schema.field("small_int").type == pa.int16()
         assert schema.field("int").type == pa.int32()
+        assert schema.field("big_int").type == pa.int64()
         assert schema.field("single").type == pa.float32()
         assert schema.field("double").type == pa.float64()
 

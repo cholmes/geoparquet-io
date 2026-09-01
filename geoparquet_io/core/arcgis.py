@@ -917,10 +917,13 @@ def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
     TYPE_MAPPING = {
         "esriFieldTypeSmallInteger": pa.int16(),
         "esriFieldTypeInteger": pa.int32(),
+        "esriFieldTypeBigInteger": pa.int64(),
         "esriFieldTypeSingle": pa.float32(),
         "esriFieldTypeDouble": pa.float64(),
         "esriFieldTypeString": pa.string(),
         "esriFieldTypeDate": pa.timestamp("ms"),
+        "esriFieldTypeDateOnly": pa.date32(),
+        "esriFieldTypeTimeOnly": pa.time32("ms"),
         "esriFieldTypeOID": pa.int64(),
         "esriFieldTypeGeometry": pa.binary(),  # Shouldn't appear in fields, but handle defensively
         "esriFieldTypeBlob": pa.binary(),
