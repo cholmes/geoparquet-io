@@ -10,7 +10,7 @@ from geoparquet_io.core.common import (
     detect_geoparquet_file_type,
 )
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
-from geoparquet_io.core.file_utils import handle_output_overwrite
+from geoparquet_io.core.file_utils import copy_file, handle_output_overwrite
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -43,6 +43,23 @@ def _bbox_metadata_advice(parquet_file: str) -> str:
         "rewrite the bbox column at 1.1 with covering, or convert first: "
         "gpio convert geoparquet IN.parquet OUT.parquet --geoparquet-version 1.1"
     )
+
+
+def _has_bbox_struct_column(con, source: str, bbox_column_name: str) -> bool:
+    """Whether ``source`` already has a usable bbox struct under ``bbox_column_name``.
+
+    Mirrors what :func:`check_bbox_structure` decides for files, but from a live
+    DuckDB relation, so the streaming path can take the same "already has a bbox"
+    decision as the file-based one.
+    """
+    for name, col_type, *_ in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall():
+        if name != bbox_column_name:
+            continue
+        upper = col_type.upper()
+        return upper.startswith("STRUCT") and all(
+            field in upper for field in ("XMIN", "YMIN", "XMAX", "YMAX")
+        )
+    return False
 
 
 def add_bbox_table(
@@ -184,11 +201,15 @@ def add_bbox_column(
     - Input "-" reads from stdin
     - Output "-" or None (with piped stdout) streams to stdout
 
-    Checks for existing bbox columns before adding. If a bbox column already exists:
+    Checks for existing bbox columns before adding. If a bbox column already exists,
+    nothing is recomputed, but the requested output is still produced: the input is
+    copied verbatim to ``output_parquet`` (or passed through unchanged when
+    streaming), so a pipeline step never silently ends with no output (#728).
 
-    - **With covering metadata**: Informs user and exits successfully (no action needed)
-    - **Without metadata**: Suggests using `gpio add bbox-metadata` command
-    - **With --force**: Replaces the existing bbox column
+    - **With covering metadata**: Reports it and copies the input to the output
+    - **Without metadata**: Also suggests `gpio add bbox-metadata`
+    - **With --force**: Replaces the existing bbox column with a fresh computation
+    - **With no output path**: Reports only -- there is nothing to write
 
     Args:
         input_parquet: Path to the input parquet file (local, remote URL, or "-" for stdin)
@@ -274,6 +295,17 @@ def _add_bbox_streaming(
         sample = con.execute(f"SELECT * FROM {source} LIMIT 0").description
         col_names = [col[0] for col in sample]
 
+        # Same guard as the file-based path (#728): a source that already carries a
+        # bbox struct is passed through untouched rather than silently gaining a
+        # second column named 'bbox_1'.
+        if not force and _has_bbox_struct_column(con, source, bbox_column_name):
+            progress(
+                f"Input already has bbox column '{bbox_column_name}'; "
+                "passed it through unchanged - the existing bbox column was not recomputed."
+            )
+            progress("Use --force to recompute and replace the existing bbox column.")
+            return f"SELECT * FROM {source}"
+
         # Find geometry column from common names
         geom_col = None
         for name in STANDARD_GEOMETRY_NAMES:
@@ -352,26 +384,16 @@ def _add_bbox_file_based(
     # Check for existing bbox column (skip in dry-run mode)
     replace_column = None
     if not dry_run:
-        bbox_info = check_bbox_structure(input_parquet, verbose)
-        existing_bbox_col = bbox_info.get("bbox_column_name")
-
-        if bbox_info["status"] == "optimal":
-            if force:
-                replace_column = _handle_existing_bbox_force(bbox_column_name, existing_bbox_col)
-            else:
-                progress(
-                    f"File already has bbox column '{existing_bbox_col}' with covering metadata."
-                )
-                progress("Use --force to replace the existing bbox column.")
-                return
-
-        elif bbox_info["status"] == "suboptimal":
-            if force:
-                replace_column = _handle_existing_bbox_force(bbox_column_name, existing_bbox_col)
-            else:
-                progress(f"File has bbox column '{existing_bbox_col}' but lacks covering metadata.")
-                progress(_bbox_metadata_advice(input_parquet))
-                return
+        done, replace_column = _handle_existing_bbox(
+            check_bbox_structure(input_parquet, verbose),
+            bbox_column_name,
+            input_parquet,
+            output_parquet,
+            force,
+            verbose,
+        )
+        if done:
+            return
 
     # Get geometry column for the SQL expression
     geom_col = find_primary_geometry_column(input_parquet, verbose)
@@ -420,6 +442,74 @@ def _add_bbox_file_based(
 
     if not dry_run:
         success(f"Successfully added bbox column '{bbox_column_name}' to: {output_parquet}")
+
+
+def _handle_existing_bbox(
+    bbox_info: dict,
+    bbox_column_name: str,
+    input_parquet: str,
+    output_parquet: str | None,
+    force: bool,
+    verbose: bool,
+) -> tuple[bool, str | None]:
+    """Decide what a bbox column the input already has means for this run.
+
+    Returns ``(done, replace_column)``. ``done`` means the command is finished --
+    the output it was asked for has been written as a copy of the input. Otherwise
+    the caller computes the column, excluding ``replace_column`` from the copy of
+    the input schema.
+    """
+    if bbox_info["status"] not in ("optimal", "suboptimal"):
+        return False, None
+
+    existing_bbox_col = bbox_info.get("bbox_column_name")
+
+    if force:
+        return False, _handle_existing_bbox_force(bbox_column_name, existing_bbox_col)
+
+    if bbox_column_name != existing_bbox_col:
+        # Not a conflict: the requested column does not exist yet, so compute it
+        # and leave the existing one alone. Copying the input would not satisfy
+        # the request, since the copy would not carry the requested column.
+        warn(
+            f"Warning: Adding '{bbox_column_name}' alongside existing "
+            f"'{existing_bbox_col}'. File will have 2 bbox columns."
+        )
+        return False, None
+
+    if bbox_info["status"] == "optimal":
+        headline = f"File already has bbox column '{existing_bbox_col}' with covering metadata."
+        advice = "Use --force to recompute and replace the existing bbox column."
+    else:
+        headline = f"File has bbox column '{existing_bbox_col}' but lacks covering metadata."
+        advice = _bbox_metadata_advice(input_parquet)
+
+    progress(headline)
+    _copy_instead_of_recomputing(input_parquet, output_parquet, verbose)
+    progress(advice)
+    return True, None
+
+
+def _copy_instead_of_recomputing(
+    input_parquet: str, output_parquet: str | None, verbose: bool
+) -> None:
+    """Write OUTPUT_FILE as a verbatim copy of an input that already has a bbox (#728).
+
+    The end state the caller asked for -- a file at OUTPUT_FILE carrying a bbox
+    column -- is already satisfiable from the input, so satisfy it instead of
+    exiting 0 with no output at all and breaking the pipeline step that follows.
+    The copy is announced so nobody has to wonder whether the bbox was rebuilt.
+
+    With no OUTPUT_FILE (the report-only form) there is nothing to write.
+    """
+    if not output_parquet:
+        return
+
+    copy_file(input_parquet, output_parquet, verbose)
+    progress(
+        f"Copied '{input_parquet}' to '{output_parquet}' unchanged - "
+        "the existing bbox column was not recomputed."
+    )
 
 
 def _handle_existing_bbox_force(bbox_column_name: str, existing_bbox_col: str) -> str | None:

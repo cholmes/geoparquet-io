@@ -11,6 +11,17 @@ from click.testing import CliRunner
 from geoparquet_io.cli.main import add
 
 
+def _read_geo_metadata(parquet_file):
+    """Parse the 'geo' key out of a Parquet file's schema metadata."""
+    import json
+
+    import pyarrow.parquet as pq
+
+    metadata = pq.read_metadata(parquet_file).metadata
+    assert metadata is not None and b"geo" in metadata, f"{parquet_file} has no geo metadata"
+    return json.loads(metadata[b"geo"].decode("utf-8"))
+
+
 class TestAddCommands:
     """Test suite for add commands."""
 
@@ -37,15 +48,165 @@ class TestAddCommands:
         bbox_info = [col for col in bbox_col if col[0] == "bbox"][0]
         assert "STRUCT" in bbox_info[1]
 
-    def test_add_bbox_to_places_skips_existing(self, places_test_file, temp_output_file):
-        """Test adding bbox to file with existing bbox skips and informs user."""
+    def test_add_bbox_to_places_copies_existing(self, places_with_covering_file, temp_output_file):
+        """Existing bbox column: copy the input to OUTPUT_FILE and say so (#728).
+
+        The requested end state -- a file at OUTPUT_FILE carrying a bbox column --
+        is already satisfiable from the input, so gpio satisfies it by copying
+        instead of leaving the caller with no output file at all.
+        """
         runner = CliRunner()
-        result = runner.invoke(add, ["bbox", places_test_file, temp_output_file])
-        # Should succeed but not create output file (bbox already exists)
+        result = runner.invoke(add, ["bbox", places_with_covering_file, temp_output_file])
         assert result.exit_code == 0
-        assert "already has bbox column" in result.output or "covering metadata" in result.output
-        # Output file should NOT be created since we're skipping
-        assert not os.path.exists(temp_output_file)
+
+        # The output the caller asked for exists.
+        assert os.path.exists(temp_output_file)
+
+        # The user is told what happened: nothing recomputed, a verbatim copy,
+        # and how to force a recompute.
+        assert "already has bbox column" in result.output
+        assert "Copied" in result.output
+        assert "not recomputed" in result.output
+        assert "--force" in result.output
+
+        # Output is a valid GeoParquet with the bbox column and covering metadata.
+        geo = _read_geo_metadata(temp_output_file)
+        primary = geo["primary_column"]
+        assert geo["columns"][primary]["covering"]["bbox"]["xmin"][0] == "bbox"
+
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert column_names.count("bbox") == 1
+        assert "bbox_1" not in column_names
+
+        # Row count matches the input.
+        input_count = conn.execute(
+            f'SELECT COUNT(*) FROM "{places_with_covering_file}"'
+        ).fetchone()[0]
+        output_count = conn.execute(f'SELECT COUNT(*) FROM "{temp_output_file}"').fetchone()[0]
+        assert input_count == output_count
+
+    def test_add_bbox_copies_when_covering_metadata_missing(
+        self, places_v11_file, temp_output_file
+    ):
+        """Bbox column without covering metadata: still write OUTPUT_FILE (#728)."""
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox", places_v11_file, temp_output_file])
+        assert result.exit_code == 0
+        assert os.path.exists(temp_output_file)
+
+        # Distinct diagnostic kept, plus the copy notice.
+        assert "lacks covering metadata" in result.output
+        assert "add bbox-metadata" in result.output
+        assert "Copied" in result.output
+        assert "not recomputed" in result.output
+
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert column_names.count("bbox") == 1
+        input_count = conn.execute(f'SELECT COUNT(*) FROM "{places_v11_file}"').fetchone()[0]
+        output_count = conn.execute(f'SELECT COUNT(*) FROM "{temp_output_file}"').fetchone()[0]
+        assert input_count == output_count
+
+    def test_add_bbox_custom_name_alongside_existing_writes_output(
+        self, places_with_covering_file, temp_output_file
+    ):
+        """A different --bbox-name is not a conflict, so it is computed (#728).
+
+        Copying the input would not satisfy this request -- the input has no
+        'bounds' column -- so the column is computed and OUTPUT_FILE written,
+        with the same "2 bbox columns" warning --force gives.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            add, ["bbox", places_with_covering_file, temp_output_file, "--bbox-name", "bounds"]
+        )
+        assert result.exit_code == 0
+        assert os.path.exists(temp_output_file)
+        assert "2 bbox columns" in result.output
+        assert "Copied" not in result.output
+
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert "bbox" in column_names  # existing column left alone
+        assert "bounds" in column_names  # the requested column was computed
+
+    def test_add_bbox_streaming_does_not_duplicate_existing_bbox(
+        self, places_test_file, monkeypatch, caplog
+    ):
+        """Streaming to stdout must not silently append a second bbox column (#728)."""
+        import io
+        import logging
+        import sys
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+
+        from geoparquet_io.core.add.bbox import add_bbox_column
+
+        output_buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.buffer = output_buffer
+        mock_stdout.isatty.return_value = False
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_bbox_column(places_test_file, "-")
+
+        output_buffer.seek(0)
+        table = ipc.RecordBatchStreamReader(output_buffer).read_all()
+        assert table.schema.names.count("bbox") == 1
+        assert "bbox_1" not in table.schema.names
+
+        # The pass-through is announced, not silent.
+        assert "already has bbox column" in caplog.text
+        assert "not recomputed" in caplog.text
+
+    def test_add_bbox_streaming_force_replaces_existing_bbox(self, places_test_file, monkeypatch):
+        """--force still recomputes the bbox column when streaming."""
+        import io
+        import sys
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+
+        from geoparquet_io.core.add.bbox import add_bbox_column
+
+        output_buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.buffer = output_buffer
+        mock_stdout.isatty.return_value = False
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        add_bbox_column(places_test_file, "-", force=True)
+
+        output_buffer.seek(0)
+        table = ipc.RecordBatchStreamReader(output_buffer).read_all()
+        assert table.schema.names.count("bbox") == 1
+        assert "bbox_1" not in table.schema.names
+
+    def test_add_bbox_without_output_path_still_only_reports(
+        self, places_with_covering_file, monkeypatch, caplog
+    ):
+        """No OUTPUT_FILE: behaviour is unchanged -- report only, copy nothing (#728)."""
+        import logging
+        import sys
+        from unittest import mock
+
+        from geoparquet_io.core.add.bbox import add_bbox_column
+
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = True
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_bbox_column(places_with_covering_file, None)
+
+        assert "already has bbox column" in caplog.text
+        assert "Copied" not in caplog.text
 
     def test_add_bbox_force_replaces_existing(self, places_test_file, temp_output_file):
         """Test --force flag replaces existing bbox column."""

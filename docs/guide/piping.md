@@ -184,7 +184,7 @@ For debugging, you can save intermediate results:
 gpio add bbox input.parquet intermediate.parquet
 ```
 
-<!-- doctest: skip="needs intermediate.parquet, which the harness does not seed" -->
+<!-- doctest: setup="gpio add bbox input.parquet intermediate.parquet" -->
 ```bash
 gpio inspect intermediate.parquet
 

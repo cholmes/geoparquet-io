@@ -4294,7 +4294,7 @@ def add_geometry_metrics_cmd(
 @click.option(
     "--force",
     is_flag=True,
-    help="Replace existing bbox column instead of skipping",
+    help="Recompute and replace an existing bbox column instead of copying the input",
 )
 @output_format_options
 @geoparquet_version_option
@@ -4329,9 +4329,10 @@ def add_bbox(
     GeoParquet file (GeoParquet 1.1 spec). The bbox column improves spatial query
     performance.
 
-    If the file already has a bbox column with covering metadata, the command will
-    inform you and exit successfully (no action needed). Use --force to replace an
-    existing bbox column.
+    If the file already has a bbox column, nothing is recomputed, but OUTPUT_FILE is
+    still written: the input is copied to it verbatim and the copy is reported, so a
+    pipeline step never ends with no output file. Use --force to recompute and replace
+    an existing bbox column.
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
 
