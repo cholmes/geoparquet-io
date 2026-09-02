@@ -112,6 +112,14 @@ def assess_row_count(avg_rows, total_size_bytes=None, num_groups=None):
             - "optimal"
             - "suboptimal"
             - "poor"
+
+    Note:
+        The 10,000-200,000 band below is wider than the 10,000-50,000 this same
+        command *advises* for spatial queries, so a file can be reported optimal
+        and still miss the advice printed under it. Narrowing it would reclassify
+        already-published files and change the optimization score, so it is a
+        product decision tracked in #795 rather than something #775 changed while
+        lowering the ``gpio sort`` default.
     """
     # For small files with a single row group, any row count is fine
     if total_size_bytes is not None and num_groups is not None:
