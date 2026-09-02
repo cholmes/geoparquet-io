@@ -502,3 +502,45 @@ class TestA5SubPartitioning:
         assert result.exit_code == 0, f"Failed: {result.output}"
         assert not os.path.exists(test_file)
         assert os.path.isdir(os.path.join(temp_partition_dir, "test_a5"))
+
+    def test_an_unavailable_a5_extension_is_reported_once_not_once_per_file(
+        self, cli_runner, temp_partition_dir, monkeypatch
+    ):
+        """A5 needs the 'a5' community extension, so it gets the same preflight
+        as S2: one message above the file loop, not one per file."""
+        from pathlib import Path
+
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+        buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"
+        first = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings_file, first)
+        size = os.path.getsize(first)
+        for extra in ("second.parquet", "third.parquet"):
+            shutil.copy(first, os.path.join(temp_partition_dir, extra))
+
+        calls = []
+
+        def _unavailable(name, feature=None):
+            calls.append(name)
+            raise ExtensionUnavailableError(name, "1.5.5", "HTTP 404", feature=feature)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.duckdb_utils.require_community_extension", _unavailable
+        )
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                f"{size - 100}B",
+                "--resolution",
+                "4",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
+        assert calls == ["a5"], f"preflight ran {len(calls)} times for 3 files"

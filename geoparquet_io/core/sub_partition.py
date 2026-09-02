@@ -8,6 +8,7 @@ from pathlib import Path
 # Community extensions a partition type cannot run without, checked once before
 # the file loop so an unavailable one is reported once instead of per file.
 _REQUIRED_EXTENSIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "a5": (("a5", "gpio partition a5"),),
     "s2": (("geography", "gpio partition s2"),),
 }
 
