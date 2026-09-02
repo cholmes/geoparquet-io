@@ -16,7 +16,12 @@ from rich.table import Table
 from rich.text import Text
 
 from geoparquet_io.core.common import format_size
-from geoparquet_io.core.crs_utils import _extract_crs_identifier, is_default_crs
+from geoparquet_io.core.crs_utils import (
+    CRS_ABSENT,
+    _extract_crs_identifier,
+    is_crs84_identifier,
+    is_default_crs,
+)
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.metadata_utils import (
@@ -139,20 +144,47 @@ def _crs_are_equivalent(crs1: Any, crs2: Any) -> bool:
     Falls back to pyproj semantic comparison for PROJJSON without authority ids.
     Handles PROJJSON dicts, "EPSG:31287" strings, and URN formats.
 
+    Pass :data:`CRS_ABSENT` for a geometry column with no ``crs`` key (the
+    OGC:CRS84 default) and ``None`` for an explicit ``"crs": null`` (unknown
+    CRS). Extract both with
+    :func:`~geoparquet_io.core.crs_utils.crs_from_column_meta`.
+
     Returns:
         True if CRS values represent the same coordinate system
     """
+    # An omitted crs key means the OGC:CRS84 default; an explicit null means the
+    # CRS is unknown and matches only another unknown. Kept identical to
+    # ``validate._crs_equals`` so the two helpers cannot drift apart again.
+    if crs1 is CRS_ABSENT or crs2 is CRS_ABSENT:
+        if crs1 is CRS_ABSENT and crs2 is CRS_ABSENT:
+            return True
+        other = crs2 if crs1 is CRS_ABSENT else crs1
+        # bool(other) first: is_default_crs answers True for *any* falsy value,
+        # but None means "unknown" and {} / "" name no CRS at all.
+        return bool(other) and is_default_crs(other)
+
+    if crs1 is None or crs2 is None:
+        return crs1 is None and crs2 is None
+
     id1 = _extract_crs_identifier(crs1)
     id2 = _extract_crs_identifier(crs2)
 
     if id1 is not None and id2 is not None:
+        # OGC:CRS84 and EPSG:4326 differ only in axis order, and GeoParquet
+        # fixes the stored order to (x, y), so they name the same CRS here.
+        # Checked before the id comparison, which would otherwise report the
+        # most common equivalent pair as a mismatch.
+        if is_crs84_identifier(id1) and is_crs84_identifier(id2):
+            return True
         return id1 == id2
 
     if isinstance(crs1, dict) and isinstance(crs2, dict):
         try:
             from pyproj import CRS
 
-            return CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2))
+            # ignore_axis_order for the same reason as above -- GeoParquet
+            # stores (x, y) whatever the CRS's own axis definition says.
+            return CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2), ignore_axis_order=True)
         except Exception:
             return False
 

@@ -13,6 +13,71 @@ from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.logging_config import debug, warn
 
 
+class _CrsAbsent:
+    """Type of :data:`CRS_ABSENT`. Singleton, falsy, with a readable repr."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self) -> bool:
+        # Call sites guard with ``if crs:`` all over the codebase; an absent CRS
+        # must stay falsy so substituting the sentinel for None cannot flip one.
+        return False
+
+    def __repr__(self) -> str:
+        return "CRS_ABSENT"
+
+
+#: Marker for a geometry column that has **no** ``crs`` key at all.
+#:
+#: The GeoParquet spec gives the two shapes different meanings: an omitted
+#: ``crs`` defaults to OGC:CRS84, while an explicit ``"crs": null`` means the
+#: CRS is *unknown*. Both collapse to ``None`` under ``col_meta.get("crs")``,
+#: so any helper that must tell them apart takes this sentinel for the first
+#: case and ``None`` for the second. Extract with :func:`crs_from_column_meta`.
+CRS_ABSENT = _CrsAbsent()
+
+
+def crs_from_column_meta(col_meta):
+    """Read a geometry column's ``crs``, preserving absent-vs-explicit-null.
+
+    Returns :data:`CRS_ABSENT` when the key is missing (the OGC:CRS84 default),
+    ``None`` when it is present and null (CRS unknown), else the value itself.
+
+    Use this instead of ``col_meta.get("crs")`` at every call site that feeds a
+    CRS comparison helper — ``.get`` erases the distinction the helpers need.
+    """
+    if not isinstance(col_meta, dict) or "crs" not in col_meta:
+        return CRS_ABSENT
+    return col_meta["crs"]
+
+
+#: Authority ids that name the GeoParquet default CRS.
+#:
+#: OGC:CRS84 and EPSG:4326 differ only in axis order, and GeoParquet fixes the
+#: stored coordinate order to (x, y) regardless of what the CRS itself declares.
+#: The two therefore describe the same coordinates in every GeoParquet file, so
+#: comparison helpers must not report them as different CRSs. Normalized to
+#: upper-case strings because a PROJJSON ``code`` may be an int or a str.
+_CRS84_EQUIVALENT_IDS = frozenset({("OGC", "CRS84"), ("EPSG", "4326")})
+
+
+def is_crs84_identifier(identifier) -> bool:
+    """True when an ``(authority, code)`` pair names the OGC:CRS84 default.
+
+    Accepts the output of :func:`_extract_crs_identifier` (code may be int or
+    str) as well as ``None``.
+    """
+    if not isinstance(identifier, tuple) or len(identifier) != 2:
+        return False
+    authority, code = identifier
+    return (str(authority).upper(), str(code).upper()) in _CRS84_EQUIVALENT_IDS
+
+
 def _extract_crs_identifier(crs_info):
     """
     Extract normalized CRS identifier (authority, code) from various formats.
@@ -475,6 +540,9 @@ def _format_crs_display(crs):
 
 def get_crs_display_name(crs_info: dict | str | None) -> str:
     """Get human-readable CRS name with authority code."""
+    if crs_info is CRS_ABSENT:
+        return "OGC:CRS84 (default)"
+
     if crs_info is None:
         return "None (OGC:CRS84)"
 
@@ -498,7 +566,8 @@ def get_crs_display_name(crs_info: dict | str | None) -> str:
 
 def is_geographic_crs(crs: dict | str | None) -> bool:
     """Check if CRS is geographic (lat/lon) vs projected."""
-    if crs is None:
+    # No crs key at all means the OGC:CRS84 default, which is geographic.
+    if crs is CRS_ABSENT or crs is None:
         return True
 
     if isinstance(crs, dict):

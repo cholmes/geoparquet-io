@@ -15,7 +15,14 @@ from typing import Any
 from rich.console import Console
 
 from geoparquet_io.core.common import split_zm_suffix, zm_suffix_sql
-from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.crs_utils import (
+    CRS_ABSENT,
+    NULL_CRS_HINT,
+    crs_from_column_meta,
+    get_crs_display_name,
+    is_crs84_identifier,
+    is_geographic_crs,
+)
 from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     _geoarrow_coord_exprs,
@@ -2429,14 +2436,25 @@ def _check_v2_crs_in_parquet_type(
     from geoparquet_io.core.duckdb_metadata import parse_geometry_logical_type
 
     col_meta = geo_meta.get("columns", {}).get(geom_col, {})
-    metadata_crs = col_meta.get("crs")
+    # Extract absent-vs-null faithfully: they mean different things here.
+    metadata_crs = crs_from_column_meta(col_meta)
 
-    # If no CRS in metadata (default), this is fine
-    if metadata_crs is None:
+    # No crs key at all -> the OGC:CRS84 default, so nothing to inline.
+    if metadata_crs is CRS_ABSENT:
         return ValidationCheck(
             name=f"v2_crs_in_parquet_type_{geom_col}",
             status=CheckStatus.PASSED,
             message="using default CRS (OGC:CRS84), no inline CRS required",
+            category="geoparquet_2_0",
+        )
+
+    # Explicit null -> the CRS is unknown, so there is no PROJJSON to inline and
+    # this check has nothing to say. _check_crs_valid is what reports the null.
+    if metadata_crs is None:
+        return ValidationCheck(
+            name=f"v2_crs_in_parquet_type_{geom_col}",
+            status=CheckStatus.PASSED,
+            message="CRS is explicitly null (unknown), so no inline CRS is possible",
             category="geoparquet_2_0",
         )
 
@@ -2485,22 +2503,25 @@ def _check_v2_crs_consistency(geo_meta: dict, schema_info: list, geom_col: str) 
     from geoparquet_io.core.duckdb_metadata import parse_geometry_logical_type
 
     col_meta = geo_meta.get("columns", {}).get(geom_col, {})
-    metadata_crs = col_meta.get("crs")
+    metadata_crs = crs_from_column_meta(col_meta)
 
-    # Find schema CRS
-    schema_crs = None
+    # Find schema CRS. ``parse_geometry_logical_type`` omits the "crs" key when
+    # the Parquet geo type carries none, which the Parquet spec defines as
+    # OGC:CRS84 -- the same "absent means default" rule as the geo metadata.
+    schema_crs: Any = CRS_ABSENT
     for col in schema_info:
         if col.get("name") == geom_col:
             logical_type = col.get("logical_type") or ""
             parsed = parse_geometry_logical_type(logical_type)
-            if parsed:
-                schema_crs = parsed.get("crs")
+            if parsed and "crs" in parsed:
+                schema_crs = parsed["crs"]
             break
 
     # An absent CRS on either side means the default, OGC:CRS84. Resolve both
     # sides before comparing so explicit-CRS84 vs absent doesn't false-fail.
-    metadata_is_default = metadata_crs is None or _is_crs84_equivalent(metadata_crs)
-    schema_is_default = schema_crs is None or _is_crs84_equivalent(_parse_crs_value(schema_crs))
+    # An explicit null is NOT the default -- it says the CRS is unknown.
+    metadata_is_default = _is_crs84_equivalent(metadata_crs)
+    schema_is_default = _is_crs84_equivalent(_parse_crs_value(schema_crs))
     if metadata_is_default and schema_is_default:
         return ValidationCheck(
             name=f"v2_crs_consistency_{geom_col}",
@@ -2744,6 +2765,9 @@ def _is_crs84_equivalent(crs: Any) -> bool:
     GeoParquet fixes coordinate order to (x, y) regardless of the CRS's own
     axis definition, so EPSG:4326 metadata describes the same coordinates as
     the OGC:CRS84 default.
+
+    Pass :data:`CRS_ABSENT` for a column with no ``crs`` key (the default, so
+    True) and ``None`` for an explicit ``"crs": null`` (unknown CRS, so False).
     """
     crs = _parse_crs_value(crs)
     if _is_ogc_crs84(crs):
@@ -2751,9 +2775,7 @@ def _is_crs84_equivalent(crs: Any) -> bool:
     if isinstance(crs, dict):
         crs_id = crs.get("id", {})
         if isinstance(crs_id, dict) and crs_id:
-            authority = str(crs_id.get("authority", "")).upper()
-            code = str(crs_id.get("code", "")).upper()
-            return authority == "EPSG" and code == "4326"
+            return is_crs84_identifier((crs_id.get("authority", ""), crs_id.get("code", "")))
         # No id member (allowed in PROJJSON): fall back to a semantic
         # comparison. Axis order is ignored because GeoParquet fixes
         # coordinate order to (x, y) regardless of the CRS definition.
@@ -2778,9 +2800,17 @@ def _is_crs84_equivalent(crs: Any) -> bool:
 
 
 def _is_ogc_crs84(crs: Any) -> bool:
-    """Check if CRS is OGC:CRS84."""
+    """Check if CRS is OGC:CRS84.
+
+    The two "no CRS value" shapes get opposite answers, per the spec: an
+    absent ``crs`` key (:data:`CRS_ABSENT`) *is* the OGC:CRS84 default, while an
+    explicit ``"crs": null`` (``None``) means the CRS is unknown.
+    """
+    if crs is CRS_ABSENT:
+        return True  # Omitted crs key -> the OGC:CRS84 default
+
     if crs is None:
-        return True  # Default is CRS84
+        return False  # Explicit crs: null -> unknown CRS, not the default
 
     if isinstance(crs, dict):
         crs_id = crs.get("id", {})
@@ -2847,8 +2877,11 @@ def _get_crs_bounds(crs: Any) -> tuple[float, float, float, float] | None:
 
     Returns (xmin, ymin, xmax, ymax) or None if bounds cannot be determined.
     """
-    # Default CRS (None) or OGC:CRS84 - geographic
-    if crs is None or _is_ogc_crs84(crs):
+    # Default CRS (absent key) or an explicit OGC:CRS84 - geographic.
+    # An explicit null (unknown CRS) keeps the geographic bounds too: this is a
+    # coordinate sanity check, and lon/lat is the only guess worth making. The
+    # null itself is reported by _check_crs_valid.
+    if crs is CRS_ABSENT or crs is None or _is_ogc_crs84(crs):
         return _GEOGRAPHIC_BOUNDS
 
     epsg_code = _extract_epsg_code(crs)
@@ -3112,11 +3145,33 @@ def _complete_crs_id(crs: dict) -> tuple[str, str] | None:
 
 
 def _crs_equals(crs1: Any, crs2: Any) -> bool:
-    """Compare two CRS values for equality."""
-    if crs1 is None and crs2 is None:
-        return True
+    """Compare two CRS values for equality.
+
+    Pass :data:`CRS_ABSENT` for a column with no ``crs`` key and ``None`` for an
+    explicit ``"crs": null``; the spec gives them different meanings (default
+    OGC:CRS84 vs unknown CRS) and this helper resolves them accordingly. Use
+    :func:`~geoparquet_io.core.crs_utils.crs_from_column_meta` to extract them.
+    """
+    # An omitted crs key means the OGC:CRS84 default, so it equals anything
+    # CRS84-equivalent -- and, being a *known* CRS, differs from an explicit null.
+    if crs1 is CRS_ABSENT or crs2 is CRS_ABSENT:
+        if crs1 is CRS_ABSENT and crs2 is CRS_ABSENT:
+            return True
+        return _is_crs84_equivalent(crs2 if crs1 is CRS_ABSENT else crs1)
+
+    # An explicit null means the CRS is unknown: it matches only another
+    # unknown, never a CRS the other side actually names.
     if crs1 is None or crs2 is None:
-        return False
+        return crs1 is None and crs2 is None
+
+    # OGC:CRS84 and EPSG:4326 differ only in axis order, and GeoParquet fixes
+    # the stored order to (x, y). They describe the same coordinates in every
+    # GeoParquet file, in every spelling -- id stub, authority string, URN or
+    # full PROJJSON -- so resolve them before the id fast path below, which
+    # would otherwise report the single most common equivalent pair as unequal.
+    if _is_crs84_equivalent(crs1) and _is_crs84_equivalent(crs2):
+        return True
+
     if not (isinstance(crs1, dict) and isinstance(crs2, dict)):
         # Direct comparison for strings
         return crs1 == crs2
