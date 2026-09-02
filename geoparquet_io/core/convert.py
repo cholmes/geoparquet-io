@@ -17,6 +17,7 @@ from geoparquet_io.core.crs_utils import (
     detect_crs_from_spatial_file,
     extract_crs_from_parquet,
     is_default_crs,
+    normalize_projjson_crs,
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import (
@@ -1804,6 +1805,9 @@ def _determine_effective_crs(
 
     if is_parquet:
         detected = extract_crs_from_parquet(input_url, verbose=verbose)
+        # Repair or reject before writing: an input CRS that is not valid
+        # PROJJSON would otherwise be copied verbatim into the output (#705).
+        detected = normalize_projjson_crs(detected, input_file)
         if detected and not is_default_crs(detected):
             if verbose:
                 debug(f"Preserving input CRS: {_format_crs_display(detected)}")
@@ -1812,6 +1816,7 @@ def _determine_effective_crs(
 
     # Spatial files (GPKG, GeoJSON, Shapefile) - CRS must be present
     detected = detect_crs_from_spatial_file(input_url, con, verbose=verbose)
+    detected = normalize_projjson_crs(detected, input_file)
     if detected is None:
         if _is_geojson_file(input_file):
             # RFC 7946: GeoJSON is always WGS84/EPSG:4326

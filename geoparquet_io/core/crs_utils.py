@@ -178,6 +178,108 @@ def apply_target_crs_to_geo_meta(geo_meta: dict, geom_col: str, target_crs: str,
         columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
 
 
+# CRS type values allowed by the PROJJSON v0.7 schema's "crs" definition.
+# validate.py's crs check reads the same set, so a CRS gpio writes and a CRS
+# gpio validates can never disagree about what counts as PROJJSON.
+PROJJSON_CRS_TYPES = frozenset(
+    {
+        "GeodeticCRS",
+        "GeographicCRS",
+        "ProjectedCRS",
+        "VerticalCRS",
+        "CompoundCRS",
+        "BoundCRS",
+        "EngineeringCRS",
+        "ParametricCRS",
+        "TemporalCRS",
+        "DerivedGeodeticCRS",
+        "DerivedGeographicCRS",
+        "DerivedProjectedCRS",
+        "DerivedVerticalCRS",
+        "DerivedEngineeringCRS",
+        "DerivedParametricCRS",
+        "DerivedTemporalCRS",
+    }
+)
+
+
+def _projjson_authority_code(crs: dict) -> tuple[str, str] | None:
+    """Return the ``(authority, code)`` of a PROJJSON ``id`` member, if it has one."""
+    crs_id = crs.get("id")
+    if not isinstance(crs_id, dict):
+        return None
+    authority = crs_id.get("authority")
+    code = crs_id.get("code")
+    if authority in (None, "") or code in (None, ""):
+        return None
+    return str(authority), str(code)
+
+
+@lru_cache(maxsize=64)
+def _projjson_from_authority(authority: str, code: str) -> str | None:
+    """Canonical PROJJSON (as a JSON string, for caching) for an authority code."""
+    try:
+        from pyproj import CRS
+
+        return json.dumps(CRS.from_authority(authority, code).to_json_dict())
+    except Exception:  # unknown authority/code, or no PROJ database entry
+        return None
+
+
+def normalize_projjson_crs(crs, source_description: str):
+    """Return a CRS that is valid PROJJSON, repairing or rejecting one that is not.
+
+    gpio copies an input's CRS straight into the file it writes. A CRS that is
+    not valid PROJJSON therefore becomes an invalid *output* — a file gpio's own
+    ``check spec`` rejects (#705). Rather than pass the defect on:
+
+    * valid PROJJSON (and anything that is not a CRS object, e.g. a
+      ``"EPSG:3857"`` string resolved elsewhere) is returned untouched;
+    * PROJJSON missing only the required ``"type"`` member, but carrying an
+      ``id`` that resolves to a real CRS, is repaired from that authority code —
+      the id names the CRS unambiguously, so nothing is guessed;
+    * anything else raises, naming the input and the CRS it could not make sense
+      of, so the user gets an error instead of a silently invalid file.
+
+    ``source_description`` is the input path, quoted back to the user in errors.
+    """
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    if not isinstance(crs, dict):
+        return crs
+
+    crs_type = crs.get("type")
+    if crs_type in PROJJSON_CRS_TYPES:
+        return crs
+
+    authority_code = _projjson_authority_code(crs)
+    name = crs.get("name")
+    described = f"{authority_code[0]}:{authority_code[1]}" if authority_code else "no id"
+    if name:
+        described = f"{described}, name {name!r}"
+
+    if crs_type is None and authority_code is not None:
+        repaired = _projjson_from_authority(*authority_code)
+        if repaired is not None:
+            warn(
+                f"Input CRS ({described}) is missing the required PROJJSON "
+                f'"type" member; rebuilt it from {authority_code[0]}:{authority_code[1]}'
+            )
+            return json.loads(repaired)
+
+    problem = (
+        'is missing the required PROJJSON "type" member'
+        if crs_type is None
+        else f"has unknown PROJJSON type {crs_type!r}"
+    )
+    raise GeoParquetError(
+        f"CRS in {source_description} {problem} ({described}), and could not be "
+        "repaired from its identifier. Writing it through would produce a "
+        "GeoParquet file that 'gpio check spec' rejects. Fix the CRS in the "
+        "input, or re-export it from a tool that writes valid PROJJSON."
+    )
+
+
 def _validate_projjson(crs: dict) -> bool:
     """Validate that a CRS dict has the expected PROJJSON structure."""
     if not isinstance(crs, dict):
