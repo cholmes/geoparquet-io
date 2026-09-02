@@ -821,9 +821,9 @@ arrow_table = table.to_arrow()
 
 #### Spatial Partitioning Methods
 
-All spatial partitioning methods support automatic resolution calculation via CLI (`--auto` flag). Python API currently requires explicit resolution specification; auto-resolution support is planned.
+All spatial partitioning methods need to be told how finely to split. Give them an explicit resolution (or `level`), or pass `auto=True` to size one from the data -- the same choice `gpio partition` offers, and the same calculation behind it. A call that gives neither raises `InvalidParameterError` rather than picking a default for you. Under `auto=True`, `target_rows` (default 100,000) sets the rows you want per partition and `max_partitions` (default 10,000) caps how many are created; passing `auto=True` together with an explicit resolution is an error.
 
-#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
+#### `partition_by_quadkey(output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
 Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -831,19 +831,23 @@ With `hive=False` the partition value lives only in the file name, so the genera
 
 ```python
 # Partition to a directory
-stats = table.partition_by_quadkey('output/', resolution=12)
+stats = table.partition_by_quadkey('output/', resolution=12, partition_resolution=6)
 print(f"Created {stats['file_count']} files")
+
+# Let gpio size both resolutions from the data
+stats = table.partition_by_quadkey('output/', auto=True)
 
 # With custom options
 stats = table.partition_by_quadkey(
     'output/',
+    resolution=13,
     partition_resolution=4,
     compression='SNAPPY',
     overwrite=True
 )
 ```
 
-#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False)`
+#### `partition_by_h3(output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False)`
 
 Partition the table into a directory by H3 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -853,9 +857,12 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by H3
 stats = table.partition_by_h3('output/', resolution=6)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the resolution from the data
+stats = table.partition_by_h3('output/', auto=True, target_rows=50000)
 ```
 
-#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False)`
+#### `partition_by_s2(output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False)`
 
 Partition the table into a directory by S2 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -874,9 +881,12 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by S2
 stats = table.partition_by_s2('output/', level=10)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the level from the data
+stats = table.partition_by_s2('output/', auto=True)
 ```
 
-#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False)`
+#### `partition_by_a5(output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False)`
 
 Partition the table into a directory by A5 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -886,6 +896,9 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by A5
 stats = table.partition_by_a5('output/', resolution=12)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the resolution from the data
+stats = table.partition_by_a5('output/', auto=True)
 ```
 
 #### `partition_by_string(output_dir, column, chars=None, hive=False, overwrite=False)`

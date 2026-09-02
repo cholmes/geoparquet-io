@@ -510,6 +510,9 @@ CASES: list[ParityCase] = [
         normalize={
             "column_name": ("h3_column_name", "h3_column_name"),
             "resolution": ("resolution", "resolution"),
+            "auto": ("auto", "auto"),
+            "target_rows": ("target_rows", "target_rows"),
+            "max_partitions": ("max_partitions", "max_partitions"),
             "hive": ("hive", "hive"),
             "keep_column": ("keep_h3_column", "keep_h3_column"),
             "overwrite": ("overwrite", "overwrite"),
@@ -533,6 +536,9 @@ CASES: list[ParityCase] = [
             "column_name": ("quadkey_column_name", "quadkey_column_name"),
             "resolution": ("resolution", "resolution"),
             "partition_resolution": ("partition_resolution", "partition_resolution"),
+            "auto": ("auto", "auto"),
+            "target_rows": ("target_rows", "target_rows"),
+            "max_partitions": ("max_partitions", "max_partitions"),
             "hive": ("hive", "hive"),
             "keep_column": ("keep_quadkey_column", "keep_quadkey_column"),
             "overwrite": ("overwrite", "overwrite"),
@@ -547,12 +553,6 @@ CASES_BY_ID = {case.id: case for case in CASES}
 # --------------------------------------------------------------------------
 # Known gaps -- findings, not pinned behaviour. Every entry needs a reason.
 # --------------------------------------------------------------------------
-
-_AUTO_FROM_FILE = (
-    "The CLI leaves this unset so core can size it from the file on disk; the API is handed an "
-    "in-memory table and uses a fixed documented default. Same gap the #661 allowlist records "
-    "for the declared defaults -- the facade has to pick one behaviour."
-)
 
 # Keys are (case id, front end, canonical name, repr(CLI value), repr(API value)),
 # following `collect_divergences()` in tests/test_cli_api_default_parity.py. The two
@@ -623,9 +623,6 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "Same as ('add kdtree', 'ops', 'iterations'): Table.add_kdtree also pins iterations=9 "
         "while the CLI defaults to auto-sizing from the row count."
     ),
-    ("partition h3", "table", "resolution", "None", "9"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "resolution", "None", "13"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "partition_resolution", "None", "6"): _AUTO_FROM_FILE,
 }
 
 
