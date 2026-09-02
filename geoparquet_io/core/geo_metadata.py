@@ -779,6 +779,62 @@ def build_bbox_covering(column: str) -> dict:
     return {axis: [column, axis] for axis in ("xmin", "ymin", "xmax", "ymax")}
 
 
+#: The only column name a writer will treat as self-evidently the geometry's
+#: bounding box. `covering` asserts that a column's values bound the geometry,
+#: and a name is weak evidence -- but `bbox`, as a struct of xmin/ymin/xmax/ymax,
+#: is the universal GeoParquet convention and is what every 1.0-era writer
+#: emitted before `covering` existed. Broader matching (`bounds`, `extent`,
+#: `*_bbox`) let an unrelated `tile_bounds` column become the declared covering,
+#: so readers pruned away rows that genuinely matched; those names now require
+#: explicit provenance (#738).
+SELF_EVIDENT_BBOX_COLUMN = "bbox"
+
+
+def declare_carried_bbox_column(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    col_meta: dict,
+    verbose: bool,
+    geoparquet_version: str,
+) -> bool:
+    """Declare a conventional ``bbox`` column the output carries but nothing declared.
+
+    This is the 1.0 -> 1.1 upgrade path: a 1.0 file cannot declare a covering,
+    so its bbox column arrives undeclared and would otherwise stay that way
+    forever. Callers that *computed* a bbox column, or read a covering from the
+    input, supply it through ``custom_metadata`` instead and never reach the
+    branch below.
+
+    Shared by both write paths — the metadata rewrite and the 2.0 no-rewrite
+    fast path — so that the same input gets the same covering either way (#772).
+    Mutates ``col_meta`` in place; returns whether a covering was added.
+    """
+    import pyarrow as pa
+
+    if not covering_supported(geoparquet_version):
+        if verbose:
+            debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+        return False
+    # Never override a covering that arrived with provenance.
+    if isinstance(col_meta.get("covering"), dict) and "bbox" in col_meta["covering"]:
+        return False
+
+    name = SELF_EVIDENT_BBOX_COLUMN
+    schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
+    if name not in schema.names:
+        return False
+    field = schema.field(name)
+    if not pa.types.is_struct(field.type):
+        return False
+    if not _BBOX_STRUCT_FIELDS.issubset({f.name for f in field.type}):
+        return False
+
+    col_meta.setdefault("covering", {})["bbox"] = build_bbox_covering(name)
+    if verbose:
+        debug(f"Declared the carried conventional bbox column '{name}'")
+    return True
+
+
 def _is_bbox_column_name(name: str) -> bool:
     """Whether ``name`` conventionally denotes a bbox covering column."""
     return name in _BBOX_COLUMN_NAMES or name.endswith(_BBOX_COLUMN_SUFFIXES)

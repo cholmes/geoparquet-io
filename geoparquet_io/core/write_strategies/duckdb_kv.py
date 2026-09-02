@@ -28,6 +28,7 @@ from geoparquet_io.core.duckdb_utils import (
     quote_identifier,
     validate_compression_level,
 )
+from geoparquet_io.core.geo_metadata import declare_carried_bbox_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
@@ -401,58 +402,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             debug(f"DuckDB memory limit: {effective_limit}")
         return saved
 
-    #: The only column name a writer will treat as self-evidently the geometry's
-    #: bounding box. `covering` asserts that a column's values bound the
-    #: geometry, and a name is weak evidence -- but `bbox`, as a struct of
-    #: xmin/ymin/xmax/ymax, is the universal GeoParquet convention and is what
-    #: every 1.0-era writer emitted before `covering` existed. Broader matching
-    #: (`bounds`, `extent`, `*_bbox`) let an unrelated `tile_bounds` column
-    #: become the declared covering, so readers pruned away rows that genuinely
-    #: matched; those names now require explicit provenance (#738).
-    _SELF_EVIDENT_BBOX_COLUMN = "bbox"
-
-    def _declare_carried_bbox_column(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        query: str,
-        col_meta: dict,
-        verbose: bool,
-        geoparquet_version: str,
-    ) -> None:
-        """Declare a conventional ``bbox`` column the output carries but nothing declared.
-
-        This is the 1.0 -> 1.1 upgrade path: a 1.0 file cannot declare a
-        covering, so its bbox column arrives undeclared and would otherwise stay
-        that way forever. Callers that *computed* a bbox column, or read a
-        covering from the input, supply it through ``custom_metadata`` instead
-        and never reach the branch below.
-        """
-        import pyarrow as pa
-
-        from geoparquet_io.core.geo_metadata import build_bbox_covering, covering_supported
-
-        if not covering_supported(geoparquet_version):
-            if verbose:
-                debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
-            return
-        # Never override a covering that arrived with provenance.
-        if isinstance(col_meta.get("covering"), dict) and "bbox" in col_meta["covering"]:
-            return
-
-        name = self._SELF_EVIDENT_BBOX_COLUMN
-        schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
-        if name not in schema.names:
-            return
-        field = schema.field(name)
-        if not pa.types.is_struct(field.type):
-            return
-        if not {"xmin", "ymin", "xmax", "ymax"}.issubset({f.name for f in field.type}):
-            return
-
-        col_meta.setdefault("covering", {})["bbox"] = build_bbox_covering(name)
-        if verbose:
-            debug(f"Declared the carried conventional bbox column '{name}'")
-
     def _get_local_path(self, output_path: str, is_remote: bool) -> str:
         """Get local path for writing (temp file if remote)."""
         if is_remote:
@@ -530,7 +479,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
         col_meta = geo_meta["columns"][geometry_column]
         self._compute_missing_metadata(con, query, geometry_column, col_meta, verbose)
-        self._declare_carried_bbox_column(con, query, col_meta, verbose, geoparquet_version)
+        declare_carried_bbox_column(con, query, col_meta, verbose, geoparquet_version)
 
         # For v1.x: Cast to BLOB so DuckDB writes plain binary WKB. EVERY geometry
         # column, not just the primary: validation applies the same per-version

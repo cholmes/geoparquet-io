@@ -2535,31 +2535,54 @@ def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict
 # than DuckDB would have generated.
 _REQUIRED_CARRIED_GEO_FIELDS = ("encoding", "geometry_types")
 
+# Column keys DuckDB's own `GEOPARQUET_VERSION 'V2'` block already writes. A
+# carried block is only worth substituting when it says something more than
+# these; otherwise DuckDB's freshly generated block is the better one, because
+# it describes the data actually written rather than the input.
+_DUCKDB_GENERATED_COLUMN_FIELDS = frozenset({"encoding", "geometry_types", "bbox"})
 
-def _covering_to_carry_on_fast_path(
+
+def _carries_more_than_duckdb_generates(geo_dict: dict) -> bool:
+    """Whether any column in ``geo_dict`` holds a key DuckDB would not write itself."""
+    return any(
+        isinstance(col_meta, dict) and not set(col_meta) <= _DUCKDB_GENERATED_COLUMN_FIELDS
+        for col_meta in (geo_dict.get("columns") or {}).values()
+    )
+
+
+def _geo_block_to_carry_on_fast_path(
     original_metadata: dict | None,
     geometry_column: str | None,
     effective_version: str,
+    con=None,
+    query: str | None = None,
+    verbose: bool = False,
 ) -> dict | None:
-    """The `geo` block the 2.0 fast path must write to keep a declared covering.
+    """The `geo` block the 2.0 fast path must write instead of DuckDB's generated one.
 
-    DuckDB regenerates the `geo` key on the fast path and its generated block
-    has no `covering`, so a covering the input declared is silently dropped
-    (#738). Returning the carried block here lets `_plain_copy_to` write it
-    verbatim, keeping the fast path's write configuration intact — forcing the
-    rewrite instead would clamp threads and memory, drop `--compression-level`,
-    and can add a full stats rescan.
+    DuckDB regenerates the `geo` key on the fast path, and its generated block
+    carries only `version`, `primary_column`, `encoding`, `geometry_types` and
+    `bbox`. Everything else the input declared — a `covering` (#738), `epoch`,
+    `orientation` (#772) — is silently dropped. Returning the carried block here
+    lets `_plain_copy_to` write it verbatim, keeping the fast path's write
+    configuration intact: forcing the rewrite instead would clamp threads and
+    memory, drop `--compression-level`, and can add a full stats rescan.
 
-    Returns None when nothing needs carrying, when the version is not 2.0 (1.x
-    already rewrites), or when the carried block is too thin to stand in for
-    DuckDB's — the caller then keeps its existing behaviour.
+    With `con` and `query`, a conventional `bbox` column the output still
+    carries is also declared as a covering, exactly as the rewrite path does, so
+    both paths produce the same block for the same input. That is the only
+    covering gpio invents: `covering` asserts a relationship between a bbox
+    column and the geometry that cannot be verified from a column name, so
+    `declare_carried_bbox_column` recognises the single universal convention and
+    checks the struct's fields before declaring anything.
 
-    A covering is only ever taken from the input's own metadata: it asserts a
-    relationship between a bbox column and the geometry that gpio cannot verify
-    from a column name, and a covering pointing at unrelated values makes
-    readers prune away rows that genuinely match.
+    Returns None when the version is not 2.0 (1.x already rewrites), when the
+    carried block is too thin to stand in for DuckDB's (a caller invalidated the
+    derived stats and only the rewrite path can recompute them), or when it says
+    nothing DuckDB would not write itself — the caller then keeps its existing
+    behaviour.
     """
-    from geoparquet_io.core.geo_metadata import _decode_geo_value
+    from geoparquet_io.core.geo_metadata import _decode_geo_value, declare_carried_bbox_column
 
     if effective_version != "2.0" or not geometry_column or not original_metadata:
         return None
@@ -2571,12 +2594,18 @@ def _covering_to_carry_on_fast_path(
         if not geo_dict:
             return None
         col_meta = (geo_dict.get("columns") or {}).get(geometry_column)
-        if not isinstance(col_meta, dict) or not col_meta.get("covering"):
+        if not isinstance(col_meta, dict):
             return None
         if any(field not in col_meta for field in _REQUIRED_CARRIED_GEO_FIELDS):
             return None
         carried = copy.deepcopy(geo_dict)
         carried["version"] = "2.0.0"
+        if con is not None and query is not None:
+            declare_carried_bbox_column(
+                con, query, carried["columns"][geometry_column], verbose, effective_version
+            )
+        if not _carries_more_than_duckdb_generates(carried):
+            return None
         return carried
     return None
 
@@ -2716,18 +2745,11 @@ def write_parquet_with_metadata(
     # column to recompute bbox and geometry types -- for a key that has nothing
     # to do with the geo block.
     #
-    # Note what the fast path costs, because dropping the rewrite is not free.
-    # It does not carry the input's `geo` block forward: it regenerates one from
-    # DuckDB's own V2 output, plus whatever `_covering_to_carry_on_fast_path`
-    # rescues (a covering the input explicitly DECLARED). So `epoch`,
-    # `orientation`, and a covering gpio would have auto-declared from a bbox
-    # column are all absent from the output, where the rewrite path preserved
-    # them via `_declare_carried_bbox_column` and
-    # `build_geo_metadata(original_metadata=...)`. That is pre-existing fast-path
-    # behaviour, not a new loss class -- the same file without a sidecar key
-    # already took this path and already lost those keys. Not forcing a rewrite
-    # here simply makes sidecar-carrying inputs behave like every other input.
-    # Closing the gap for both is tracked in #772.
+    # The fast path is no longer thinner than the rewrite: DuckDB regenerates
+    # the `geo` key, but `_geo_block_to_carry_on_fast_path` substitutes the
+    # input's own block -- `epoch`, `orientation`, a declared `covering`, plus
+    # one auto-declared for a conventional bbox column the output carries -- so
+    # both paths write the same block for the same input (#772).
     if extra_kv_metadata and verbose:
         debug(f"Carrying extra KV metadata: {list(extra_kv_metadata.keys())}")
 
@@ -2759,8 +2781,13 @@ def write_parquet_with_metadata(
                 geoparquet_version=effective_version,
                 input_crs=input_crs,
                 geometry_column=geometry_column,
-                carry_geo_metadata=_covering_to_carry_on_fast_path(
-                    original_metadata, geometry_column, effective_version
+                carry_geo_metadata=_geo_block_to_carry_on_fast_path(
+                    original_metadata,
+                    geometry_column,
+                    effective_version,
+                    con=con,
+                    query=query,
+                    verbose=verbose,
                 ),
                 extra_kv_metadata=extra_kv_metadata,
             )
