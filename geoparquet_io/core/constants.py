@@ -119,7 +119,6 @@ def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
 
     from geoparquet_io.core.common import add_computed_column
     from geoparquet_io.core.duckdb_metadata import get_column_names
-    from geoparquet_io.core.file_utils import safe_file_url
 
     columns = get_column_names(parquet_file)
 
@@ -141,8 +140,10 @@ def ensure_vecorel_columns(parquet_file: str, verbose: bool = False) -> None:
                 os.unlink(temp_out)
 
     # Fix schema: nullability + timestamp precision
-    # Only mark columns non-nullable if they actually exist in the file
-    columns = get_column_names(safe_file_url(parquet_file, verbose=False))
+    # Only mark columns non-nullable if they actually exist in the file.
+    # RAW path: get_column_names escapes its own argument, and pre-escaping here
+    # sent `out''_gm.parquet` on to pyarrow (issue #718).
+    columns = get_column_names(parquet_file)
     non_nullable = [c for c in VECOREL_NON_NULLABLE if c in columns]
     _fix_vecorel_schema(parquet_file, non_nullable)
 

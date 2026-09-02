@@ -304,10 +304,9 @@ def _add_determination_datetime(
     from geoparquet_io.core.common import add_computed_column
     from geoparquet_io.core.duckdb_metadata import get_column_names
     from geoparquet_io.core.duckdb_utils import quote_identifier
-    from geoparquet_io.core.file_utils import safe_file_url
 
-    url = safe_file_url(input_file, verbose=False)
-    columns = get_column_names(url)
+    # RAW path: get_column_names escapes its own argument (issue #718).
+    columns = get_column_names(input_file)
     replace_col = None
 
     if value in columns:
@@ -367,8 +366,8 @@ def _add_schemas_metadata(
 
     verbose = kwargs.pop("verbose", False)
 
-    url = safe_file_url(input_file, verbose=False)
-    columns = get_column_names(url)
+    # RAW path: get_column_names escapes its own argument (issue #718).
+    columns = get_column_names(input_file)
 
     schemas = [FIBOA_CORE_SCHEMA, VECOREL_CORE_SCHEMA]
     if has_metrics or "metrics:area" in columns:

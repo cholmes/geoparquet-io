@@ -24,6 +24,7 @@ from geoparquet_io.core.duckdb_utils import (
     _geoarrow_coord_exprs,
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
 )
 from geoparquet_io.core.exceptions import (
     GeometryError,
@@ -80,11 +81,13 @@ def _validate_layer_name(layer: str) -> str:
     return _escape_sql_string(layer)
 
 
-def _build_st_read_expr(input_url: str, layer: str | None = None, keep_wkb: bool = False) -> str:
+def _build_st_read_expr(input_path: str, layer: str | None = None, keep_wkb: bool = False) -> str:
     """Build ST_Read expression with optional layer/keep_wkb parameters.
 
     Args:
-        input_url: Path or URL to the spatial file
+        input_path: RAW (unescaped) path or URL to the spatial file. It is
+            turned into a SQL literal here by ``sql_path`` -- exactly once, so
+            do not pass a ``safe_file_url`` result (issue #718).
         layer: Optional layer name for multi-layer formats (GeoPackage, FileGDB)
         keep_wkb: Return raw WKB blobs instead of parsed GEOMETRY (DuckDB's
             escape hatch for geometry subtypes it cannot represent)
@@ -107,11 +110,14 @@ def _build_st_read_expr(input_url: str, layer: str | None = None, keep_wkb: bool
         params += ", keep_wkb := true"
     if layer:
         params += f", layer := '{_validate_layer_name(layer)}'"
-    return f"ST_Read('{input_url}'{params})"
+    return f"ST_Read({sql_path(input_path)}{params})"
 
 
-def _choose_read_strategy(input_url, layer=None, linearize_curves=True):
+def _choose_read_strategy(input_path, layer=None, linearize_curves=True):
     """Pick how to read a spatial file: 'normal', 'linearized', or 'error'.
+
+    ``input_path`` must be RAW: this stats the filesystem, and an escaped path
+    never exists, so the pre-scan silently degrades to 'normal' (issue #718).
 
     Local GeoPackages are pre-scanned for curved geometry types with the
     stdlib (issue #643) so the strategy is known without provoking a DuckDB
@@ -120,7 +126,7 @@ def _choose_read_strategy(input_url, layer=None, linearize_curves=True):
     """
     from geoparquet_io.core.curved_geometry import find_non_linear_gpkg_types
 
-    path = Path(input_url)
+    path = Path(input_path)
     if path.suffix.lower() != ".gpkg" or not path.exists():
         return "normal"
     if not find_non_linear_gpkg_types(path, layer):
@@ -135,7 +141,11 @@ def _validate_max_angle(max_angle_deg):
 
 
 def _detect_geometry_column(con, input_file, verbose, is_parquet=False, layer=None):
-    """Detect geometry column name from input file."""
+    """Detect geometry column name from input file.
+
+    ``input_file`` is RAW: ``detect_parquet_geometry_column`` escapes its own
+    argument, and ``_build_st_read_expr`` escapes at the SQL boundary.
+    """
     from geoparquet_io.core.geometry_detection import (
         STANDARD_GEOMETRY_NAMES,
         detect_parquet_geometry_column,
@@ -251,9 +261,9 @@ def _calculate_bounds(
     # For parquet files, read directly; for other formats use ST_Read
     if table_expr is None:
         if is_parquet:
-            table_expr = f"read_parquet('{input_file}')"
+            table_expr = f"read_parquet({sql_path(input_file)})"
         else:
-            table_expr = f"ST_Read('{input_file}')"
+            table_expr = f"ST_Read({sql_path(input_file)})"
 
     # Quote column name to handle special characters, spaces, and reserved words
     quoted_geom = quote_identifier(geom_column)
@@ -929,7 +939,7 @@ def _build_conversion_query(
     # For parquet files, read directly; for other formats use ST_Read
     if table_expr is None:
         if is_parquet:
-            table_expr = f"read_parquet('{input_file}')"
+            table_expr = f"read_parquet({sql_path(input_file)})"
         else:
             table_expr = _build_st_read_expr(input_file, layer)
 
@@ -1175,6 +1185,12 @@ def _convert_spatial_path(
 ):
     """Handle standard spatial format conversion path.
 
+    ``input_file`` is the **RAW** path throughout: the metadata and filesystem
+    helpers each escape their own argument, and the SQL builders escape at the
+    point of interpolation via ``sql_path``. Passing the escaped URL in was what
+    made ``gpio convert geoparquet`` fail on an input path containing an
+    apostrophe (issue #718).
+
     Returns:
         tuple: (query, geometry_info) where geometry_info contains primary/secondary columns
                and their metadata. Returns (None, None) if no geometry found.
@@ -1187,7 +1203,6 @@ def _convert_spatial_path(
         geom_column = geom_info["primary"]
         secondary_columns = geom_info["secondary"]
     else:
-        # For non-parquet, use standard single-column detection
         geom_column = _detect_geometry_column(
             con, input_file, verbose, is_parquet=False, layer=layer
         )
@@ -1400,14 +1415,15 @@ def read_spatial_to_arrow(
             # CSV with default CRS - detected_crs stays None
             pass
         elif is_parquet:
-            crs_from_file = extract_crs_from_parquet(input_url, verbose=verbose)
+            # RAW path: extract_crs_from_parquet escapes its own argument (#718).
+            crs_from_file = extract_crs_from_parquet(input_file, verbose=verbose)
             if crs_from_file and not is_default_crs(crs_from_file):
                 detected_crs = crs_from_file
                 if verbose:
                     debug(f"Preserving input CRS: {_format_crs_display(detected_crs)}")
         else:
             # Spatial files - detect CRS
-            crs_from_file = detect_crs_from_spatial_file(input_url, con, verbose=verbose)
+            crs_from_file = detect_crs_from_spatial_file(input_file, con, verbose=verbose)
             if crs_from_file is None:
                 if _is_geojson_file(input_file):
                     # RFC 7946: GeoJSON is always WGS84/EPSG:4326
@@ -1431,7 +1447,7 @@ def read_spatial_to_arrow(
         else:
             arrow_table = _read_spatial_to_arrow(
                 con,
-                input_url,
+                input_file,
                 verbose,
                 is_parquet=is_parquet,
                 layer=layer,
@@ -1447,7 +1463,7 @@ def read_spatial_to_arrow(
                 table_expr = _build_csv_read_expr(input_url, delimiter)
             else:
                 # Spatial formats (GeoJSON, Shapefile, GeoPackage, etc.)
-                table_expr = _build_st_read_expr(input_url, layer)
+                table_expr = _build_st_read_expr(input_file, layer)
             arrow_table = con.execute(f"SELECT * FROM {table_expr}").arrow().read_all()
             return arrow_table, None, None
 
@@ -1560,16 +1576,20 @@ def _read_csv_to_arrow(
 
 def _read_spatial_to_arrow(
     con,
-    input_url,
+    input_file,
     verbose,
     is_parquet=False,
     layer=None,
     linearize_curves=True,
     max_angle_deg=None,
 ):
-    """Read spatial file to Arrow table with geometry as WKB. Returns None if no geometry."""
+    """Read spatial file to Arrow table with geometry as WKB. Returns None if no geometry.
+
+    ``input_file`` is RAW; every helper below either escapes its own argument or
+    escapes at the SQL boundary via ``sql_path`` (issue #718).
+    """
     geom_column = _detect_geometry_column(
-        con, input_url, verbose, is_parquet=is_parquet, layer=layer
+        con, input_file, verbose, is_parquet=is_parquet, layer=layer
     )
     if geom_column is None:
         warn("No geometry column found in input file. Reading as plain table.")
@@ -1577,20 +1597,20 @@ def _read_spatial_to_arrow(
     quoted_geom = quote_identifier(geom_column)
 
     if is_parquet:
-        table_expr = f"read_parquet('{input_url}')"
+        table_expr = f"read_parquet({sql_path(input_file)})"
     else:
-        strategy = _choose_read_strategy(input_url, layer, linearize_curves)
+        strategy = _choose_read_strategy(input_file, layer, linearize_curves)
         if strategy == "error":
             from geoparquet_io.core.curved_geometry import unsupported_wkb_error_message
 
             raise GeoParquetError(
-                unsupported_wkb_error_message(input_url, layer, "curved types found in pre-scan")
+                unsupported_wkb_error_message(input_file, layer, "curved types found in pre-scan")
             )
         if strategy == "linearized":
             if verbose:
                 debug("Curved geometries detected; linearizing via keep_wkb read")
-            return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
-        table_expr = _build_st_read_expr(input_url, layer)
+            return _read_spatial_linearized(con, input_file, layer, geom_column, max_angle_deg)
+        table_expr = _build_st_read_expr(input_file, layer)
 
     # Convert geometry to WKB for geoarrow compatibility
     query = f"""
@@ -1612,7 +1632,7 @@ def _read_spatial_to_arrow(
             raise
         if verbose:
             debug("Curved geometries detected; linearizing via keep_wkb read")
-        return _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg)
+        return _read_spatial_linearized(con, input_file, layer, geom_column, max_angle_deg)
 
 
 #: Rows per batch for the linearized read. DuckDB's ``.arrow()`` defaults to
@@ -1639,18 +1659,22 @@ class _LinearizedRead:
     large curved dataset can exceed.
     """
 
-    def __init__(self, con, input_url, layer, geom_column, max_angle_deg=None):
+    def __init__(self, con, input_file, layer, geom_column, max_angle_deg=None):
         from geoparquet_io.core.linearize import DEFAULT_MAX_ANGLE_DEG
 
         self.con = con
-        self.input_url = input_url
+        # RAW path: _build_st_read_expr escapes it at the SQL boundary, and the
+        # error messages below quote it back to the user unmangled (#718).
+        self.input_file = input_file
         self.layer = layer
         self.max_angle_deg = DEFAULT_MAX_ANGLE_DEG if max_angle_deg is None else max_angle_deg
         self._reader = self._open_reader()
         self.schema = self._reader.schema
         self.wkb_col = geom_column if geom_column in self.schema.names else "wkb_geometry"
         if self.wkb_col not in self.schema.names:
-            raise GeoParquetError(f"keep_wkb read of {input_url} exposes no '{geom_column}' column")
+            raise GeoParquetError(
+                f"keep_wkb read of {input_file} exposes no '{geom_column}' column"
+            )
         self.linearized = 0
         self.arcs = 0
 
@@ -1667,7 +1691,7 @@ class _LinearizedRead:
         # keep_wkb read does not consult them.
         self._cursor = self.con.cursor()
         return self._cursor.execute(
-            f"SELECT * FROM {_build_st_read_expr(self.input_url, self.layer, keep_wkb=True)}"
+            f"SELECT * FROM {_build_st_read_expr(self.input_file, self.layer, keep_wkb=True)}"
         ).arrow(rows_per_batch=_LINEARIZE_BATCH_ROWS)
 
     def batches(self):
@@ -1701,7 +1725,7 @@ class _LinearizedRead:
             # e.g. the surface family (POLYHEDRALSURFACE/TIN/TRIANGLE) or
             # malformed blobs: fall back to the actionable error (#643).
             raise GeoParquetError(
-                unsupported_wkb_error_message(self.input_url, self.layer, str(e))
+                unsupported_wkb_error_message(self.input_file, self.layer, str(e))
             ) from e
         self.linearized += changed
         self.arcs += arcs
@@ -1719,11 +1743,14 @@ class _LinearizedRead:
         )
 
 
-def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=None, read=None):
-    """Linearized read shaped like the normal read path (WKB `geometry` column)."""
+def _read_spatial_linearized(con, input_file, layer, geom_column, max_angle_deg=None, read=None):
+    """Linearized read shaped like the normal read path (WKB `geometry` column).
+
+    ``input_file`` is a RAW path (see :class:`_LinearizedRead`).
+    """
     import pyarrow as pa
 
-    read = read or _LinearizedRead(con, input_url, layer, geom_column, max_angle_deg)
+    read = read or _LinearizedRead(con, input_file, layer, geom_column, max_angle_deg)
     table = pa.Table.from_batches(list(read.batches()), schema=read.schema)
 
     # Round-trip through DuckDB: validates the stroked WKB and yields the same
@@ -1738,7 +1765,7 @@ def _read_spatial_linearized(con, input_url, layer, geom_column, max_angle_deg=N
     return result.arrow().read_all()
 
 
-def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=None, read=None):
+def _register_linearized_view(con, input_file, layer, geom_column, max_angle_deg=None, read=None):
     """Stream a linearized read into a temp relation shaped like ST_Read's output.
 
     The relation exposes a GEOMETRY-typed column under its original name and
@@ -1749,7 +1776,7 @@ def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=
     """
     import pyarrow as pa
 
-    read = read or _LinearizedRead(con, input_url, layer, geom_column, max_angle_deg)
+    read = read or _LinearizedRead(con, input_file, layer, geom_column, max_angle_deg)
     quoted_wkb = quote_identifier(read.wkb_col)
     select = (
         f"SELECT * REPLACE (ST_GeomFromWKB({quoted_wkb}) AS {quoted_wkb}) "
@@ -1778,7 +1805,6 @@ def _register_linearized_view(con, input_url, layer, geom_column, max_angle_deg=
 
 def _determine_effective_crs(
     input_file: str,
-    input_url: str,
     crs: str,
     is_csv: bool,
     is_parquet: bool,
@@ -1803,7 +1829,8 @@ def _determine_effective_crs(
         return None  # CSV with default CRS
 
     if is_parquet:
-        detected = extract_crs_from_parquet(input_url, verbose=verbose)
+        # RAW path: extract_crs_from_parquet escapes its own argument (#718).
+        detected = extract_crs_from_parquet(input_file, verbose=verbose)
         if detected and not is_default_crs(detected):
             if verbose:
                 debug(f"Preserving input CRS: {_format_crs_display(detected)}")
@@ -1811,7 +1838,7 @@ def _determine_effective_crs(
         return None
 
     # Spatial files (GPKG, GeoJSON, Shapefile) - CRS must be present
-    detected = detect_crs_from_spatial_file(input_url, con, verbose=verbose)
+    detected = detect_crs_from_spatial_file(input_file, con, verbose=verbose)
     if detected is None:
         if _is_geojson_file(input_file):
             # RFC 7946: GeoJSON is always WGS84/EPSG:4326
@@ -1976,9 +2003,7 @@ def convert_to_geoparquet(
             else:
                 debug("Could not detect input GeoParquet version; using writer default")
 
-        effective_crs = _determine_effective_crs(
-            input_file, input_url, crs, is_csv, is_parquet, con, verbose
-        )
+        effective_crs = _determine_effective_crs(input_file, crs, is_csv, is_parquet, con, verbose)
 
         if is_csv:
             query, bbox_covering_column = _convert_csv_path(
@@ -1998,7 +2023,7 @@ def convert_to_geoparquet(
         else:
             query, geometry_info, bbox_covering_column = _convert_spatial_path(
                 con,
-                input_url,
+                input_file,
                 skip_hilbert,
                 verbose,
                 is_parquet=is_parquet,

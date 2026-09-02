@@ -1437,13 +1437,10 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
         get_per_row_group_native_geo_stats,
         has_bbox_column,
     )
-    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.metadata_utils import (
         _get_num_rows_per_row_group,
         _merge_row_counts,
     )
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
 
     # Try native geo stats first (GeoParquet 2.0 / parquet-geo-only)
     rg_stats = get_per_row_group_native_geo_stats(parquet_file)
@@ -1458,7 +1455,7 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
         return []
 
     file_meta = get_file_metadata(parquet_file)
-    num_rows_per_rg = _get_num_rows_per_row_group(safe_url, file_meta)
+    num_rows_per_rg = _get_num_rows_per_row_group(parquet_file, file_meta)
 
     return _merge_row_counts(rg_stats, num_rows_per_rg)
 

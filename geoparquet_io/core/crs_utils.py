@@ -127,14 +127,12 @@ def crs_is_explicitly_null(col_meta: dict) -> bool:
 def geoparquet_crs_is_null(parquet_file) -> bool:
     """Return True if the primary geometry column has an explicit ``crs: null``.
 
-    ``parquet_file`` must be a *raw* path/URL — this helper SQL-escapes it
-    internally, so passing an already-escaped URL double-escapes it.
+    ``parquet_file`` must be a *raw* path/URL — ``get_geo_metadata`` SQL-escapes
+    it internally, so passing an already-escaped URL double-escapes it.
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-    from geoparquet_io.core.file_utils import safe_file_url
 
-    safe_url = safe_file_url(str(parquet_file), verbose=False)
-    geo_meta = get_geo_metadata(safe_url)
+    geo_meta = get_geo_metadata(str(parquet_file))
     if not geo_meta:
         return False
     primary_col = geo_meta.get("primary_column", "geometry")
@@ -318,6 +316,12 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
     """
     Extract CRS (as PROJJSON dict) from a Parquet file.
 
+    ``parquet_file`` must be a **RAW** path/URL: every helper it reaches
+    (``get_geo_metadata``, ``get_schema_info``, ``resolve_crs_reference``)
+    SQL-escapes its own argument, so an already-escaped ``safe_file_url``
+    result is escaped twice and the existence check then fails on a file that
+    is plainly there (issue #718).
+
     Checks in order:
     1. GeoParquet metadata (columns.<geom_col>.crs)
     2. Parquet native geo type (from schema logical_type)
@@ -328,9 +332,6 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
         parse_geometry_logical_type,
         resolve_crs_reference,
     )
-    from geoparquet_io.core.file_utils import safe_file_url
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
 
     geo_meta = get_geo_metadata(parquet_file)
     if geo_meta:
@@ -338,7 +339,7 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
         columns = geo_meta.get("columns", {})
         if primary_col in columns:
             if crs_is_explicitly_null(columns[primary_col]):
-                warn_null_crs_once(safe_url)
+                warn_null_crs_once(str(parquet_file))
             crs = columns[primary_col].get("crs")
             if crs and not is_default_crs(crs):
                 if verbose:

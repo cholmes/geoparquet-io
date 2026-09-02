@@ -93,6 +93,39 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+def sql_path(path: str) -> str:
+    """Return a RAW file path as a complete, quoted SQL string literal.
+
+    ``sql_path("/data/it's.parquet")`` yields ``'/data/it''s.parquet'`` --
+    quotes included, ready to drop straight into ``FROM {sql_path(p)}`` or
+    ``TO {sql_path(p)}``. The quotes are part of the result on purpose: a call
+    site that writes ``FROM '{p}'`` by hand is one that can forget the escape,
+    and forgetting it is what made ``gpio add admin-divisions`` die with a
+    ``ParserException`` on an output path containing an apostrophe -- *after*
+    it had already written the file (issue #718).
+
+    The argument must be **RAW**: the path as the user typed it, or as
+    :func:`~geoparquet_io.core.file_utils.resolve_file_url` resolved it. It must
+    NOT be a :func:`~geoparquet_io.core.file_utils.safe_file_url` result, which
+    is already escaped; escaping is not idempotent, so a second pass doubles the
+    doubling. No guard can catch that automatically -- a filename may legally
+    contain two apostrophes in a row -- so the rule is structural: a path is
+    escaped exactly once, either by ``safe_file_url`` (which also resolves
+    remote URLs and checks existence, and whose bare result the caller quotes)
+    or by ``sql_path``, never by both.
+
+    For a non-path SQL string literal use :func:`_escape_sql_string` and supply
+    your own quotes; for an identifier use :func:`quote_identifier`.
+
+    Args:
+        path: RAW, unescaped file path or URL.
+
+    Returns:
+        The path as a quoted, escaped SQL string literal.
+    """
+    return f"'{_escape_sql_string(path)}'"
+
+
 def build_kv_metadata_clause(pairs: Mapping[str, str] | None) -> str | None:
     """Build a DuckDB ``KV_METADATA {...}`` clause from RAW key/value pairs.
 

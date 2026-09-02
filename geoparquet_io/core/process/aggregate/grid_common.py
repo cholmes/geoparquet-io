@@ -507,10 +507,10 @@ def _validate_keying_columns_for_file(
     try:
         if bucket_point == BUCKET_POINT_BBOX and bbox_column:
             _validate_bbox_struct_column(con, relation, bbox_column)
-            _warn_files_missing_column(con, input_url, bbox_column)
+            _warn_files_missing_column(con, input_parquet, bbox_column)
         elif bucket_point != BUCKET_POINT_BBOX:
             _validate_point_column(con, relation, bucket_point)
-            _warn_files_missing_column(con, input_url, bucket_point)
+            _warn_files_missing_column(con, input_parquet, bucket_point)
     finally:
         con.close()
 

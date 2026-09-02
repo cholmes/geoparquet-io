@@ -1,0 +1,52 @@
+# Hand-written `FROM '{path}'` SQL interpolations per file (issue #718).
+# A ratchet, not a target: counts may fall, never rise. New code must use
+# sql_path() from geoparquet_io/core/duckdb_utils.py instead.
+# Regenerate with: uv run python scripts/check_sql_path_literals.py --update
+2 geoparquet_io/api/ops.py
+1 geoparquet_io/api/table.py
+1 geoparquet_io/cli/main.py
+2 geoparquet_io/core/add/admin_divisions.py
+4 geoparquet_io/core/add/bbox_metadata.py
+11 geoparquet_io/core/add/country_codes.py
+1 geoparquet_io/core/add/geometry_metrics.py
+5 geoparquet_io/core/add/kdtree.py
+1 geoparquet_io/core/add/quadkey.py
+5 geoparquet_io/core/admin_datasets.py
+1 geoparquet_io/core/arcgis.py
+7 geoparquet_io/core/benchmark.py
+2 geoparquet_io/core/carto.py
+3 geoparquet_io/core/check_fixes.py
+3 geoparquet_io/core/check_spatial_order.py
+8 geoparquet_io/core/common.py
+5 geoparquet_io/core/convert.py
+2 geoparquet_io/core/crs_utils.py
+13 geoparquet_io/core/duckdb_metadata.py
+2 geoparquet_io/core/duckdb_utils.py
+3 geoparquet_io/core/extract.py
+4 geoparquet_io/core/format_writers.py
+1 geoparquet_io/core/geojson_stream.py
+1 geoparquet_io/core/geometry_detection.py
+4 geoparquet_io/core/hilbert_order.py
+6 geoparquet_io/core/inspect_utils.py
+2 geoparquet_io/core/layers.py
+1 geoparquet_io/core/metadata_utils.py
+3 geoparquet_io/core/partition/admin_hierarchical.py
+4 geoparquet_io/core/partition/auto_resolution.py
+4 geoparquet_io/core/partition/common.py
+2 geoparquet_io/core/partition/reader.py
+2 geoparquet_io/core/partition/staging.py
+1 geoparquet_io/core/process/aggregate/by_admin.py
+1 geoparquet_io/core/process/aggregate/common.py
+2 geoparquet_io/core/process/aggregate/grid_common.py
+1 geoparquet_io/core/process/overview/detect.py
+1 geoparquet_io/core/process/overview/rollup.py
+5 geoparquet_io/core/reproject.py
+1 geoparquet_io/core/sort_by_column.py
+2 geoparquet_io/core/sort_quadkey.py
+1 geoparquet_io/core/stream_io.py
+16 geoparquet_io/core/validate.py
+3 geoparquet_io/core/wfs.py
+2 geoparquet_io/core/write_strategies/disk_rewrite.py
+4 geoparquet_io/core/write_strategies/duckdb_kv.py
+1 plugins/gpio-fiboa/gpio_fiboa/improve.py
+9 plugins/gpio-fiboa/tests/test_fiboa.py
