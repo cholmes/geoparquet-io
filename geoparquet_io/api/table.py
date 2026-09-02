@@ -1414,7 +1414,15 @@ class Table:
             geometry_column=self._geometry_column,
             repair_geometry=repair_geometry,
         )
-        return self._wrap(result, self._geometry_column)
+        # Excluding the geometry column is a documented way to build an
+        # attribute table. Carrying the old name forward made write() ask the
+        # writer for a column that is no longer there (#731); None is the same
+        # state read() reports for a plain Parquet file, and write() already
+        # emits plain Parquet for it.
+        geometry_column = (
+            self._geometry_column if self._geometry_column in result.column_names else None
+        )
+        return self._wrap(result, geometry_column)
 
     def add_h3(
         self,

@@ -732,6 +732,12 @@ def extract_table(
             f"geometry_column '{geom_col}' not found in table columns: {list(all_columns)}"
         )
 
+    # Validate before selecting, so an unknown name is reported here by name
+    # rather than surfacing later as a writer error about a different column
+    # (#731). This is the check --include-cols/--exclude-cols already make.
+    validate_columns(columns, list(all_columns), "columns")
+    validate_columns(exclude_columns, list(all_columns), "exclude_columns")
+
     selected_columns = build_column_selection(
         all_columns, columns, exclude_columns, geom_col, bbox_info.get("bbox_column_name")
     )

@@ -128,6 +128,31 @@ class TestTable:
         result = sample_table.extract(limit=10)
         assert result.num_rows == 10
 
+    def test_extract_excluding_geometry_is_writable(self, sample_table):
+        """Dropping geometry yields an attribute table that write() can emit.
+
+        extract() used to keep pointing at the excluded geometry column, so
+        write() failed deep in the writer with a KeyError naming it (#731).
+        """
+        result = sample_table.extract(columns=["name", "address"], exclude_columns=["geometry"])
+        assert "geometry" not in result.column_names
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "attributes.parquet"
+            result.write(out)
+            written = pq.read_table(out)
+            assert "geometry" not in written.column_names
+            assert "name" in written.column_names
+
+    def test_extract_unknown_column_names_the_missing_one(self, sample_table):
+        """Unknown names fail early and name themselves, not another column (#731)."""
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError) as exc_info:
+            sample_table.extract(columns=["name", "population"])
+
+        assert "population" in str(exc_info.value)
+
     def test_chaining(self, sample_table):
         """Test chaining multiple operations."""
         result = sample_table.add_bbox().add_quadkey(resolution=10)

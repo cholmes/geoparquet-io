@@ -92,36 +92,34 @@ You can combine both to control exactly which columns appear, including removing
 
 === "CLI"
 
-    <!-- doctest: skip="names columns the sample data does not have (id, population)" -->
     ```bash
     # Include specific columns but exclude geometry (for non-spatial export)
     gpio extract data.parquet output.parquet \
-      --include-cols id,name,population \
+      --include-cols fsq_place_id,name,address \
       --exclude-cols geometry
 
     # Include columns but exclude bbox to save space
-    gpio extract data.parquet output.parquet \
-      --include-cols id,name,area \
+    gpio extract data.parquet output2.parquet \
+      --include-cols fsq_place_id,name \
       --exclude-cols bbox
     ```
 
 === "Python"
 
-    <!-- doctest: skip="excludes the geometry column, and the writer then requires it (KeyError in write_strategies/duckdb_kv.py)" -->
     ```python
     import geoparquet_io as gpio
 
     # Include specific columns but exclude geometry (for non-spatial export)
     gpio.read('data.parquet').extract(
-        columns=['id', 'name', 'population'],
+        columns=['fsq_place_id', 'name', 'address'],
         exclude_columns=['geometry']
     ).write('output.parquet')
 
     # Include columns but exclude bbox to save space
     gpio.read('data.parquet').extract(
-        columns=['id', 'name', 'area'],
+        columns=['fsq_place_id', 'name'],
         exclude_columns=['bbox']
-    ).write('output.parquet')
+    ).write('output2.parquet')
     ```
 
 ## Spatial Filtering

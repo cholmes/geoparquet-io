@@ -1063,3 +1063,49 @@ class TestExtractTable:
             extract_table(table)
 
         assert "geometry_column 'geometry' not found" in str(exc_info.value)
+
+    def test_unknown_columns_raise_naming_the_missing_ones(self):
+        """extract_table validates columns= against the schema, like --include-cols.
+
+        Unknown names used to pass silently and surface much later as a
+        KeyError in the writer that named a column the file *does* have (#731).
+        """
+        table = pa.table({"id": [1, 2], "name": ["a", "b"], "geometry": [b"", b""]})
+
+        with pytest.raises(GeoParquetError) as exc_info:
+            extract_table(table, columns=["id", "name", "population", "bogus"])
+
+        message = str(exc_info.value)
+        assert "population" in message
+        assert "bogus" in message
+        # The available-columns list helps the caller correct the call.
+        assert "name" in message
+
+    def test_unknown_exclude_columns_raise(self):
+        """exclude_columns= is validated the same way as --exclude-cols (#731)."""
+        table = pa.table({"id": [1, 2], "name": ["a", "b"], "geometry": [b"", b""]})
+
+        with pytest.raises(GeoParquetError) as exc_info:
+            extract_table(table, exclude_columns=["nonexistent"])
+
+        assert "nonexistent" in str(exc_info.value)
+
+    def test_valid_columns_still_pass(self):
+        """Validation must not reject names that do exist (#731)."""
+        import struct
+
+        def _wkb_point(x, y):
+            return b"\x01\x01\x00\x00\x00" + struct.pack("<dd", x, y)
+
+        table = pa.table(
+            {
+                "id": [1, 2],
+                "name": ["a", "b"],
+                "geometry": [_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)],
+            }
+        )
+
+        result = extract_table(table, columns=["id", "name"])
+
+        assert "id" in result.column_names
+        assert "name" in result.column_names
