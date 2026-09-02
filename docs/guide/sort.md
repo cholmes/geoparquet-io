@@ -100,7 +100,9 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 1GB
 ```
 
 !!! tip "Optimal row group size for spatial queries"
-    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, use **10,000-50,000 rows per group**. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups.
+    Every `gpio sort` subcommand defaults to **50,000 rows per group** - the top of the 10,000-50,000 band that suits GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups, so pass a smaller `--row-group-size` when query selectivity matters more than file size.
+
+    The writer rounds a row-group target up to a multiple of 2048, so the 50,000 default lands as 51,200-row groups. The default applies to the sort commands only; other write paths (`convert`, `add`, `partition`) leave the choice to the Parquet writer unless you pass `--row-group-size` yourself.
 
 ## Sort-Tile-Recursive Ordering
 
@@ -144,11 +146,13 @@ row-group size up to a multiple of 2048, so `--row-group-size 100000` writes
 means they land on row-group boundaries only when you pass a multiple of 2048
 (for example `--row-group-size 102400`).
 
-Passing an exact row count is still worth doing. Without `--row-group-size` the
-writer emits DuckDB's 122,880-row groups while STR sizes its strips from
-100,000, so nothing lines up at all. With `--row-group-size-mb`, STR falls back
-to 100,000 rows per tile, because the row count of a byte-sized group is not
-known before writing.
+Left unset, both uses take the sort default of 50,000 rows, so the strip size
+and the row-group target at least agree with each other - though 50,000 is not
+a multiple of 2048, so the groups land at 51,200 rows and the two still do not
+line up exactly. Pass a multiple of 2048 (for example `--row-group-size 51200`)
+when you want them to. With `--row-group-size-mb`, STR falls back to 50,000
+rows per tile, because the row count of a byte-sized group is not known before
+writing.
 
 ### How much does it help?
 

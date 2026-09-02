@@ -68,6 +68,7 @@ from geoparquet_io.core.inspect import (
     inspect_summary as _inspect_summary_core,
 )
 from geoparquet_io.core.logging_config import configure_verbose, setup_cli_logging
+from geoparquet_io.core.parquet_writer import DEFAULT_SORT_ROW_GROUP_ROWS
 from geoparquet_io.core.partition.admin_hierarchical import (
     partition_by_admin_hierarchical as partition_admin_hierarchical_impl,
 )
@@ -3650,7 +3651,7 @@ def sort(ctx):
 @click.option(
     "--add-bbox", is_flag=True, help="Automatically add bbox column and metadata if missing."
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3729,7 +3730,7 @@ def hilbert_order(
 @click.option(
     "--add-bbox", is_flag=True, help="Automatically add bbox column and metadata if missing."
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3803,7 +3804,7 @@ def str_order_command(
     is_flag=True,
     help="Sort in descending order (default: ascending)",
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3887,7 +3888,7 @@ def sort_column(
     is_flag=True,
     help="Exclude quadkey column from output after sorting",
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option

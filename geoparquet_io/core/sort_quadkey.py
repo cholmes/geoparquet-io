@@ -17,6 +17,7 @@ from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identif
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
+from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
 from geoparquet_io.core.remote import (
     needs_httpfs,
     setup_aws_profile_if_needed,
@@ -122,12 +123,15 @@ def sort_by_quadkey(
         compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
         compression_level: Compression level (varies by format)
         row_group_size_mb: Target row group size in MB
-        row_group_rows: Exact number of rows per row group
+        row_group_rows: Exact number of rows per row group. When neither this
+            nor ``row_group_size_mb`` is given, the sort default
+            (``DEFAULT_SORT_ROW_GROUP_ROWS``) applies.
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
+    row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)

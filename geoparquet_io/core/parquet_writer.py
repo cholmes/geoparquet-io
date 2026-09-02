@@ -9,6 +9,34 @@ from dataclasses import dataclass
 
 from geoparquet_io.core.logging_config import warn
 
+# The default row-group size the ``gpio sort`` commands write when neither
+# --row-group-size nor --row-group-size-mb is given (#775).
+#
+# Sorting exists to make spatial filters prune row groups, and gpio's own
+# advice for that workload -- printed by ``gpio check`` and repeated in the
+# guide -- is 10,000-50,000 rows per group. This is the top of that band: the
+# smallest bounding boxes the band allows without multiplying the per-group
+# footer overhead. It is deliberately *not* the general write default: only the
+# sort commands are sized for spatial pruning.
+DEFAULT_SORT_ROW_GROUP_ROWS = 50_000
+
+
+def resolve_sort_row_group_rows(
+    row_group_rows: int | None,
+    row_group_size_mb: float | None,
+) -> int | None:
+    """Apply the sort commands' row-group default when no sizing was requested.
+
+    An explicit row count wins, and an explicit ``--row-group-size-mb`` target
+    is left alone (it sizes groups by bytes, and forcing a row count here would
+    override the option the user actually passed). Only when neither is given
+    does the sort default apply -- previously that case fell through as ``None``
+    and the writer's own default (DuckDB's 122,880 rows) silently applied.
+    """
+    if row_group_rows is None and row_group_size_mb is None:
+        return DEFAULT_SORT_ROW_GROUP_ROWS
+    return row_group_rows
+
 
 @dataclass
 class ParquetWriteSettings:

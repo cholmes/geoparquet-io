@@ -9,8 +9,6 @@ import functools
 
 import click
 
-from geoparquet_io.core.parquet_writer import ParquetWriteSettings
-
 
 def handle_geoparquet_errors(func):
     """
@@ -96,22 +94,51 @@ def compression_options(func):
     return func
 
 
-def row_group_options(func):
+def _row_group_size_help(default_rows: int | None) -> str:
+    """Help text for --row-group-size, naming a default only where one exists.
+
+    Only commands that resolve their own default (the ``gpio sort`` family, via
+    ``resolve_sort_row_group_rows``) may name a number here. Everywhere else the
+    option falls through as ``None`` and the writer picks -- DuckDB's COPY uses
+    122,880 rows -- so quoting a figure would repeat the #775 bug of advertising
+    a default that nothing applies.
+    """
+    if default_rows is None:
+        return (
+            "Exact number of rows per row group. Mutually exclusive with "
+            "--row-group-size-mb; if neither is given the Parquet writer's own "
+            "default applies (122,880 rows for DuckDB-backed writes)."
+        )
+    return (
+        f"Exact number of rows per row group (default: {default_rows} "
+        "if --row-group-size-mb not set)"
+    )
+
+
+def row_group_options(func=None, *, default_rows: int | None = None):
     """
     Add row group sizing options to a command.
 
     Adds:
-    - --row-group-size: Exact number of rows per row group (default if neither option set)
+    - --row-group-size: Exact number of rows per row group
     - --row-group-size-mb: Target row group size in MB or with units (e.g., '256MB', '1GB')
 
-    These options are mutually exclusive. If neither is set, row_group_size defaults to
-    ParquetWriteSettings.DEFAULT_ROW_GROUP_ROWS.
+    These options are mutually exclusive. Both default to ``None``: a Click default
+    would make ``--row-group-size-mb`` collide with it and raise the
+    mutually-exclusive usage error, so a command that wants a default resolves it
+    downstream and declares the number here via ``default_rows`` purely so the help
+    text matches what the command actually does.
+
+    Usable bare (``@row_group_options``) or called
+    (``@row_group_options(default_rows=50_000)``).
     """
+    if func is None:
+        return lambda inner: row_group_options(inner, default_rows=default_rows)
     func = click.option(
         "--row-group-size",
         type=int,
         default=None,
-        help=f"Exact number of rows per row group (default: {ParquetWriteSettings.DEFAULT_ROW_GROUP_ROWS} if --row-group-size-mb not set)",
+        help=_row_group_size_help(default_rows),
     )(func)
     func = click.option(
         "--row-group-size-mb", help="Target row group size (e.g. '256MB', '1GB', '128' assumes MB)"
@@ -119,15 +146,17 @@ def row_group_options(func):
     return func
 
 
-def output_format_options(func):
+def output_format_options(func=None, *, default_rows: int | None = None):
     """
     Add all output format options (compression + row groups + memory limit).
 
     This is a convenience decorator that combines compression_options, row_group_options,
-    and write_memory_option.
+    and write_memory_option. ``default_rows`` is forwarded to ``row_group_options``.
     """
+    if func is None:
+        return lambda inner: output_format_options(inner, default_rows=default_rows)
     func = compression_options(func)
-    func = row_group_options(func)
+    func = row_group_options(func, default_rows=default_rows)
     func = write_memory_option(func)
     return func
 
