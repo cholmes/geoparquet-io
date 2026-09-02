@@ -304,6 +304,13 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
     This is a shared utility for commands that need file-based processing
     but want to support stdin input. The caller is responsible for cleanup.
 
+    Any derived geo stat the stream left out is computed from the stream's own
+    rows before the temp file is written. gpio's own producers now carry
+    ``geometry_types``, but a stream can come from anywhere, and DuckDB refuses
+    to open a Parquet file whose ``geo`` metadata declares a geometry column
+    without it — so filling the gap here is what keeps a pipe readable by the
+    file-based command on the other end (issue #722).
+
     Args:
         verbose: Whether to print verbose output
 
@@ -316,12 +323,17 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
 
     import pyarrow.parquet as pq
 
+    from geoparquet_io.core.geo_metadata import backfill_derived_stats
     from geoparquet_io.core.logging_config import debug
 
     if verbose:
         debug("Reading Arrow IPC stream from stdin...")
 
     table = read_arrow_stream()
+
+    metadata = dict(table.schema.metadata) if table.schema.metadata else None
+    if metadata:
+        table = table.replace_schema_metadata(backfill_derived_stats(metadata, table, verbose))
 
     # Write to temp file with UUID for uniqueness
     temp_dir = tempfile.gettempdir()

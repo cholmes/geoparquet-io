@@ -166,21 +166,15 @@ def test_journey_03_documented_piping_chains(tmp_path):
     safe_rmtree(partitions)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN BUG #722: `gpio extract ... - | gpio add quadkey - | gpio partition string "
-        "- dir/` -- the chain documented in docs/guide/piping.md 'Spatial Filter and "
-        "Partition' (lines 86-90) -- dies with an unhandled DuckDB error, 'Geoparquet "
-        "column geometry does not have geometry types'. extract's Arrow IPC stream omits "
-        "geometry_types metadata; the file-writing path recomputes it, which is why only "
-        "the piped-into-partition case breaks. Filed separately from #667 per the "
-        "cross-cutting-fix rule; when #722 is fixed this goes red -- drop the xfail and "
-        "keep the assertions."
-    ),
-)
 def test_journey_03b_extract_into_partition_chain(tmp_path):
-    """The one documented piping chain that does not work end to end."""
+    """piping.md 'Spatial Filter and Partition' -- filter, index, partition.
+
+    Was a strict xfail pinning #722: a filtered `extract` invalidates the
+    input's `geometry_types`, and only the file-writing path recomputed them, so
+    the Arrow IPC stream reached `partition` without the key GeoParquet requires
+    and DuckDB refuses to read a file without. The chain died on an unhandled
+    `_duckdb.InvalidInputException`. The stream now carries the recomputed stats.
+    """
     partitions = tmp_path / "bbox_partitions"
     result = run_pipeline(
         [
@@ -194,6 +188,7 @@ def test_journey_03b_extract_into_partition_chain(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Traceback (most recent call last)" not in result.stderr
     assert total_rows(partitions) > 0
+    assert_check_all(partitions, 3, all_files=True)
 
 
 # ---------------------------------------------------------------------------

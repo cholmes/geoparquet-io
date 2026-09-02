@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+from contextlib import contextmanager
 
 from geoparquet_io.core.common import get_parquet_metadata
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
@@ -35,6 +36,39 @@ class PartitionAnalysisError(PartitionError):
     """
 
     pass
+
+
+#: DuckDB's wording when a Parquet file's ``geo`` metadata declares a geometry
+#: column without the ``geometry_types`` list GeoParquet 1.1 requires. DuckDB
+#: refuses to open such a file at all, so there is nothing to fall back to.
+_MISSING_GEOMETRY_TYPES_RE = re.compile(
+    r"Geoparquet column '(?P<column>[^']*)' does not have geometry types"
+)
+
+
+@contextmanager
+def readable_geoparquet(input_parquet: str):
+    """Translate DuckDB's refusal to open a non-conformant GeoParquet (#722).
+
+    Every gpio writer emits ``geometry_types``, and a piped Arrow stream gets it
+    filled in on its way to a temp file, so what reaches here is an input written
+    elsewhere. Say which column is missing what instead of letting a raw
+    ``_duckdb.InvalidInputException`` and its traceback out. Anything else
+    propagates untouched.
+    """
+    try:
+        yield
+    except Exception as exc:
+        match = _MISSING_GEOMETRY_TYPES_RE.search(str(exc))
+        if match is None:
+            raise
+        raise PartitionError(
+            f"Cannot read {input_parquet}: its GeoParquet metadata describes column "
+            f"'{match.group('column')}' without the required \"geometry_types\" list, "
+            "and DuckDB refuses to read a file that omits it. Rewrite the file with a "
+            "writer that emits it; `gpio check spec` reports the full set of "
+            "specification problems."
+        ) from exc
 
 
 def sanitize_filename(value: str) -> str:
@@ -262,7 +296,11 @@ def analyze_partition_strategy(
         FROM partition_stats
     """
 
-    result = con.execute(stats_query).fetchone()
+    try:
+        with readable_geoparquet(input_parquet):
+            result = con.execute(stats_query).fetchone()
+    finally:
+        con.close()
 
     # Get approximate file size for estimation
     try:
@@ -271,8 +309,6 @@ def analyze_partition_strategy(
         file_size_bytes = os.path.getsize(input_parquet)
     except Exception:
         file_size_bytes = 0
-
-    con.close()
 
     # Unpack results
     partition_count, total_rows, min_rows, max_rows, avg_rows, median_rows = result
@@ -750,8 +786,12 @@ def partition_by_column(
         if verbose:
             debug(f"Partitioning by {partition_description} in a single pass...")
 
-        # A partition alias that cannot collide with a real input column.
-        input_cols = [d[0] for d in con.execute(f"SELECT * FROM '{input_url}' LIMIT 0").description]
+        # A partition alias that cannot collide with a real input column. This is
+        # the first DuckDB read when --skip-analysis skipped the pre-flight, so it
+        # is the other place a non-conformant input surfaces.
+        with readable_geoparquet(input_parquet):
+            describe = con.execute(f"SELECT * FROM '{input_url}' LIMIT 0").description
+        input_cols = [d[0] for d in describe]
         alias = make_partition_aliases(1, input_cols)[0]
 
         write_options = PartitionWriteOptions(

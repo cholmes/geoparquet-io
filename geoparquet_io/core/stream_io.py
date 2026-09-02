@@ -24,6 +24,7 @@ import pyarrow as pa
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.geo_metadata import backfill_derived_stats
 from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.remote import needs_httpfs
 from geoparquet_io.core.streaming import (
@@ -322,8 +323,13 @@ def _write_stream_output(
         crs = _extract_crs_from_metadata(original_metadata)
         table = apply_geoarrow_extension_type(table, geometry_column, crs)
 
-    # Apply metadata to output table
+    # Apply metadata to output table. A caller that filtered or transformed rows
+    # stripped the derived stats first (they described the input, not this
+    # result); recompute them from the rows actually being written, the way the
+    # file path does. Without this the stream omits `geometry_types`, which
+    # GeoParquet 1.1 requires and which DuckDB refuses to read without (#722).
     if original_metadata:
+        original_metadata = backfill_derived_stats(original_metadata, table)
         table = apply_metadata_to_table(table, original_metadata)
 
     write_arrow_stream(table)
