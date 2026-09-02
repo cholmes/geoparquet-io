@@ -250,6 +250,60 @@ class TestSecondaryCarrierOnTheTableEntryPoint:
         )
         assert _failed_checks(out) == []
 
+    @staticmethod
+    def _table_with_metadata_only_secondary():
+        """The same table, with the extension name carried in FIELD METADATA only.
+
+        This is the shape gpio's own ``add`` operations hand back (``Table.add_kdtree()``
+        and friends): plain ``large_binary`` plus ``ARROW:extension:name``, which
+        PyArrow leaves unresolved but DuckDB still registers as GEOMETRY. It is the
+        same column as the resolved-extension shape above, so it must get the same
+        carrier (#727).
+        """
+        marker = {
+            b"ARROW:extension:name": b"geoarrow.wkb",
+            b"ARROW:extension:metadata": b"{}",
+        }
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("geometry", pa.large_binary(), metadata=marker),
+                pa.field("geom2", pa.large_binary(), metadata=marker),
+            ],
+            metadata={b"geo": json.dumps(_geo_dict()).encode()},
+        )
+        return pa.table(
+            {
+                "id": [1, 2],
+                "geometry": [_wkb_point(1.0, 2.0), _wkb_point(3.0, 4.0)],
+                "geom2": [_wkb_point(5.0, 6.0), _wkb_point(7.0, 8.0)],
+            },
+            schema=schema,
+        )
+
+    @pytest.mark.parametrize("strategy", STRATEGIES)
+    def test_metadata_only_secondary_is_written_as_plain_wkb_at_1_1(self, strategy, tmp_path):
+        out = str(tmp_path / f"meta_only_{strategy}.parquet")
+        table = self._table_with_metadata_only_secondary()
+        assert getattr(table.schema.field("geom2").type, "extension_name", None) is None
+
+        WriteStrategyFactory.get_strategy(WriteStrategy(strategy)).write_from_table(
+            table=table,
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        assert _carriers(out)["geom2"] == "byte_array", (
+            f"{strategy} carried a metadata-declared geoarrow column into a 1.1 file"
+        )
+        assert _failed_checks(out) == []
+
 
 _DETERMINISM_SCRIPT = textwrap.dedent(
     """

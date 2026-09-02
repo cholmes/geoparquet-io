@@ -434,3 +434,26 @@ class TestKDTreeBinaryIDs:
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower()
+
+
+class TestAddKDTreePythonAPI:
+    """The Python API write path for kdtree (#727).
+
+    ``add_kdtree()`` hands the writer a table whose geometry column is plain
+    ``large_binary`` carrying ``ARROW:extension:name = geoarrow.wkb`` in the
+    *field metadata*. DuckDB honours that metadata on ``register()`` and
+    presents the column as ``GEOMETRY``, so the writer must not wrap it in
+    ``ST_GeomFromWKB``.
+    """
+
+    def test_add_kdtree_then_write(self, buildings_test_file, temp_output_file):
+        """read().add_kdtree().write() must produce a readable GeoParquet file."""
+        import geoparquet_io as gpio
+
+        gpio.read(buildings_test_file).add_kdtree(iterations=3).write(temp_output_file)
+
+        assert os.path.exists(temp_output_file)
+        table = pq.read_table(temp_output_file)
+        assert "kdtree_cell" in table.schema.names
+        assert table.num_rows == pq.read_table(buildings_test_file).num_rows
+        assert b"geo" in (table.schema.metadata or {})

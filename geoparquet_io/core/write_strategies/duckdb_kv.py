@@ -31,6 +31,7 @@ from geoparquet_io.core.duckdb_utils import (
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
+    arrow_extension_name,
     build_geo_metadata,
     resolve_geometry_columns,
 )
@@ -181,7 +182,32 @@ def _plain_wkb_for_secondary_columns(table, geometry_column: str, verbose: bool)
     for column in sorted(secondaries):
         if column in table.column_names:
             table = _strip_geoarrow_to_plain_wkb(table, column, verbose)
+            table = _drop_metadata_declared_geoarrow(table, column)
     return table
+
+
+def _drop_metadata_declared_geoarrow(table, column: str):
+    """Rewrite a column that declares geoarrow in its FIELD METADATA to plain WKB.
+
+    ``_strip_geoarrow_to_plain_wkb`` keys off the resolved Arrow extension type
+    alone, so it leaves this shape untouched -- but DuckDB reads the marker off
+    the field metadata and registers the column as GEOMETRY anyway, and the COPY
+    then writes it as a native Parquet GEOMETRY logical type. That is the #706
+    bug reappearing through the other carrier shape, and it is illegal below
+    GeoParquet 2.0 (#727).
+    """
+    import pyarrow as pa
+
+    from geoparquet_io.core.write_strategies.arrow_streaming import _to_plain_wkb_array
+
+    index = table.schema.get_field_index(column)
+    field = table.schema.field(index)
+    if getattr(field.type, "extension_name", None) is not None:
+        return table  # resolved extension type: already handled by the strip above
+    if arrow_extension_name(field) is None:
+        return table
+    plain_field = pa.field(column, pa.binary(), nullable=field.nullable)
+    return table.set_column(index, plain_field, _to_plain_wkb_array(table.column(index)))
 
 
 def _build_copy_options(
@@ -647,9 +673,13 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
             # Convert WKB bytes to GEOMETRY for proper spatial processing.
             # geoarrow.wkb extension columns already register as GEOMETRY in
-            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error.
-            geom_type = table.schema.field(geometry_column).type
-            if getattr(geom_type, "extension_name", None) == "geoarrow.wkb":
+            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error. The
+            # extension name has to be read from the field metadata as well as
+            # the Arrow type: gpio's own `add` operations hand back a plain
+            # `large_binary` column carrying `ARROW:extension:name`, which
+            # DuckDB still registers as GEOMETRY (#727).
+            geom_field = table.schema.field(geometry_column)
+            if arrow_extension_name(geom_field) == "geoarrow.wkb":
                 query = "SELECT * FROM input_table"
             else:
                 query = f"""

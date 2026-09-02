@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
-from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
+from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, arrow_extension_name
 
 if TYPE_CHECKING:
     import duckdb
@@ -33,24 +33,9 @@ DEFAULT_BATCH_SIZE = 100_000
 _WKB_EXTENSION_NAMES = frozenset({"geoarrow.wkb", "ogc.wkb"})
 
 
-def _extension_name(field: pa.Field) -> str | None:
-    """Extension name of a field, whether PyArrow resolved it or left it as metadata.
-
-    ``geoarrow.pyarrow`` registers its extension types process-globally on
-    import, so the same DuckDB column arrives either as a resolved extension
-    type (registered) or as plain storage carrying ``ARROW:extension:name`` in
-    the field metadata (not registered). Both are the same column (#688).
-    """
-    name = getattr(field.type, "extension_name", None)
-    if name is not None:
-        return str(name)
-    raw = (field.metadata or {}).get(b"ARROW:extension:name")
-    return raw.decode("utf-8") if raw else None
-
-
 def _is_wkb_carrier(field: pa.Field) -> bool:
     """True when a field holds WKB bytes, in any shape DuckDB's Arrow export emits."""
-    name = _extension_name(field)
+    name = arrow_extension_name(field)
     if name is not None and name not in _WKB_EXTENSION_NAMES:
         return False  # native nested GeoArrow (geoarrow.point, ...) — not WKB bytes
     storage = field.type.storage_type if isinstance(field.type, pa.ExtensionType) else field.type
@@ -81,7 +66,7 @@ def canonicalize_wkb_fields(
         pa.field(field.name, pa.binary(), nullable=field.nullable)
         if (
             field.name not in native_columns
-            and (field.name in geometry_columns or _extension_name(field))
+            and (field.name in geometry_columns or arrow_extension_name(field))
             and _is_wkb_carrier(field)
         )
         else field

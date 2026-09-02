@@ -322,7 +322,6 @@ Add balanced spatial partition IDs using KD-tree:
 
 === "Python"
 
-    <!-- doctest: skip="Table.add_kdtree() raises a DuckDB binder error on a valid file" -->
     ```python
     import geoparquet_io as gpio
 

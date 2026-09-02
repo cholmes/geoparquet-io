@@ -1185,3 +1185,56 @@ class TestCompressionLevelValidation:
                 compression_level="1; DROP TABLE t",
                 verbose=False,
             )
+
+
+class TestDuckDBKVGeoarrowFieldMetadata:
+    """geoarrow.wkb carried in field metadata, not in the Arrow type (#727).
+
+    ``geoarrow.pyarrow`` registers its extension types process-globally on
+    import, so the same WKB column reaches the writer either as a resolved
+    ``geoarrow.wkb`` extension type or as plain ``large_binary`` whose *field*
+    metadata carries ``ARROW:extension:name``. DuckDB honours that metadata on
+    ``register()`` and presents the column as ``GEOMETRY`` either way, so the
+    ``ST_GeomFromWKB`` wrapper has to be skipped in both shapes -- wrapping a
+    GEOMETRY is a binder error, which is what ``Table.add_kdtree().write()``
+    used to hit.
+    """
+
+    @staticmethod
+    def _table_with_metadata_only_extension():
+        wkb_point = (
+            b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\x00@"
+        )
+        geometry = pa.field(
+            "geometry",
+            pa.large_binary(),
+            metadata={
+                b"ARROW:extension:name": b"geoarrow.wkb",
+                b"ARROW:extension:metadata": b"{}",
+            },
+        )
+        schema = pa.schema([pa.field("id", pa.int64()), geometry])
+        return pa.table(
+            {"id": [1, 2, 3], "geometry": [wkb_point, wkb_point, wkb_point]},
+            schema=schema,
+        )
+
+    def test_write_from_table_with_metadata_only_extension(self, output_file):
+        """A metadata-carried geoarrow.wkb column writes without a binder error."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
+
+        strategy.write_from_table(
+            table=self._table_with_metadata_only_extension(),
+            output_path=output_file,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        result = pq.read_table(output_file)
+        assert result.num_rows == 3
+        assert b"geo" in (result.schema.metadata or {})

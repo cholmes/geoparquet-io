@@ -23,6 +23,27 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
+def arrow_extension_name(field: pa.Field) -> str | None:
+    """Extension name of a field, whether PyArrow resolved it or left it as metadata.
+
+    ``geoarrow.pyarrow`` registers its extension types process-globally on
+    import, so the same column arrives either as a resolved extension type
+    (registered) or as plain storage carrying ``ARROW:extension:name`` in the
+    field metadata (not registered). Some producers -- DuckDB's Arrow export,
+    and gpio's own ``add`` operations -- hand back the metadata-only shape even
+    when the type is registered.
+
+    Both shapes are the same column, and DuckDB honours the field metadata on
+    ``register()``, so any writer decision keyed on "is this geoarrow?" has to
+    read both (#688, #727).
+    """
+    name = getattr(field.type, "extension_name", None)
+    if name is not None:
+        return str(name)
+    raw = (field.metadata or {}).get(b"ARROW:extension:name")
+    return raw.decode("utf-8") if raw else None
+
+
 def resolve_geometry_columns(
     geometry_column: str,
     geometry_info: dict | None = None,
