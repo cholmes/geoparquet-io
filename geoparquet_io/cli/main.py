@@ -5524,7 +5524,7 @@ def partition_s2(
     is_flag=True,
     help="Keep the A5 column in output files (default: excluded for non-Hive, included for Hive)",
 )
-@partition_options_base
+@partition_options
 @output_format_options
 @verbose_option
 @geoparquet_version_option
@@ -5546,6 +5546,8 @@ def partition_a5(
     preview_limit,
     force,
     skip_analysis,
+    min_size,
+    in_place,
     prefix,
     compression,
     compression_level,
@@ -5590,8 +5592,31 @@ def partition_a5(
 
         # Use Hive-style partitioning (A5 column included by default)
         gpio partition a5 input.parquet output/ --auto --hive
+
+        # Sub-partition all files over 100MB in a directory
+        gpio partition a5 /data/partitions/ --min-size 100MB --resolution 10 --in-place
     """
     with _activate_s3(ctx):
+        # Handle directory input with --min-size
+        if handle_directory_sub_partition(
+            input_parquet=input_parquet,
+            partition_type="a5",
+            min_size=min_size,
+            resolution=resolution,
+            in_place=in_place,
+            hive=hive,
+            overwrite=overwrite,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            compression=compression,
+            compression_level=compression_level,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        ):
+            return
+
         # If preview mode, output_folder is not required
         if not preview and not output_folder:
             raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")

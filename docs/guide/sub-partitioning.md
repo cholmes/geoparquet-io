@@ -46,17 +46,17 @@ by_country/
 | `--resolution` / `--level` | Spatial index resolution (or use `--auto`) |
 | `--auto` | Auto-calculate optimal resolution |
 
-Sub-partitioning is available on `gpio partition h3`, `gpio partition s2`, and
-`gpio partition quadkey`. `gpio partition a5` does not accept `--min-size` or
-`--in-place` yet ([#733](https://github.com/geoparquet/geoparquet-io/issues/733));
-partition A5 files one at a time instead.
+Sub-partitioning is accepted by `gpio partition h3`, `gpio partition a5`,
+`gpio partition quadkey` and `gpio partition s2`. Three of them run today: S2
+alone stops on a missing extension in this release (see the warning below), so
+reach for **H3**, **A5** or **Quadkey**.
 
 !!! warning "S2 sub-partitioning is unavailable in this release"
     `gpio partition s2` needs the `geography` DuckDB community extension, which is
     published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so
     it stops with an explanation instead of partitioning — including when it is
-    reached through `--min-size`. Use the **H3** or **Quadkey** tabs below until the
-    extension is republished upstream; see
+    reached through `--min-size`. Use the **H3**, **A5** or **Quadkey** tabs below
+    until the extension is republished upstream; see
     [S2 Spherical Cells](add.md#s2-spherical-cells) for the details.
 
 ## Examples
@@ -66,6 +66,13 @@ partition A5 files one at a time instead.
     <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
     gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
+    ```
+
+=== "A5"
+
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
+    ```bash
+    gpio partition a5 by_country/ --min-size 100MB --resolution 10 --in-place
     ```
 
 === "S2"

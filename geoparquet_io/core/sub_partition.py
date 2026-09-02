@@ -71,9 +71,9 @@ def sub_partition_directory(
 
     Args:
         directory: Directory containing parquet files
-        partition_type: Type of partition ("h3", "s2", "quadkey")
+        partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
         min_size_bytes: Minimum file size to process
-        resolution: Resolution for H3/quadkey (0-15 for H3)
+        resolution: Resolution for A5/H3/quadkey (0-15 for H3, 0-30 for A5)
         level: Level for S2 (alias for resolution)
         in_place: If True, delete original after successful sub-partition
         hive: Use Hive-style partitioning
@@ -99,6 +99,7 @@ def sub_partition_directory(
         success,
         warn,
     )
+    from geoparquet_io.core.partition.by_a5 import partition_by_a5
     from geoparquet_io.core.partition.by_h3 import partition_by_h3
     from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
     from geoparquet_io.core.partition.by_s2 import partition_by_s2
@@ -107,6 +108,7 @@ def sub_partition_directory(
 
     # Map partition types to their functions and resolution param names
     partition_funcs = {
+        "a5": (partition_by_a5, "resolution"),
         "h3": (partition_by_h3, "resolution"),
         "s2": (partition_by_s2, "level"),
         "quadkey": (partition_by_quadkey, "resolution"),

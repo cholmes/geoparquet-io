@@ -390,3 +390,115 @@ class TestSubPartitionFailuresAreReported:
         assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
         assert len(calls) == 1, f"preflight ran {len(calls)} times for 3 files"
         assert result.output.count("paleolimbot/duckdb-geography#34") == 1
+
+
+class TestA5SubPartitioning:
+    """A5 was the one hierarchical index that could not sub-partition (#733).
+
+    S2 is unavailable in this release, so ``gpio partition s2``'s own error
+    tells users to switch to A5 -- which made A5's missing ``--min-size`` /
+    ``--in-place`` the gap that mattered most.
+    """
+
+    def test_min_size_option_exists_on_a5(self, cli_runner):
+        result = cli_runner.invoke(partition, ["a5", "--help"])
+        assert result.exit_code == 0
+        assert "--min-size" in result.output
+
+    def test_in_place_option_exists_on_a5(self, cli_runner):
+        result = cli_runner.invoke(partition, ["a5", "--help"])
+        assert result.exit_code == 0
+        assert "--in-place" in result.output
+
+    def test_sub_partition_directory_supports_a5(self, temp_partition_dir):
+        """The registry in core/sub_partition.py used to raise for 'a5'."""
+        from pathlib import Path
+
+        from geoparquet_io.core.sub_partition import sub_partition_directory
+
+        buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"
+        large_path = os.path.join(temp_partition_dir, "large.parquet")
+        shutil.copy(buildings_file, large_path)
+
+        threshold = os.path.getsize(large_path) - 100
+
+        result = sub_partition_directory(
+            directory=temp_partition_dir,
+            partition_type="a5",
+            min_size_bytes=threshold,
+            resolution=4,
+            in_place=True,
+            force=True,
+            verbose=False,
+        )
+
+        assert result["errors"] == []
+        assert result["processed"] == 1
+        assert not os.path.exists(large_path)
+
+        subdir = os.path.join(temp_partition_dir, "large_a5")
+        assert os.path.isdir(subdir)
+        assert list(Path(subdir).glob("*.parquet"))
+
+    def test_partition_a5_with_directory_and_min_size(self, cli_runner, temp_partition_dir):
+        """End to end: gpio partition a5 <dir>/ --min-size ... --in-place."""
+        from pathlib import Path
+
+        buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings_file, test_file)
+
+        file_size = os.path.getsize(test_file)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                f"{file_size - 100}B",
+                "--resolution",
+                "4",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert not os.path.exists(test_file)
+        assert os.path.isdir(os.path.join(temp_partition_dir, "test_a5"))
+
+    def test_partition_a5_directory_requires_min_size(self, cli_runner, temp_partition_dir):
+        result = cli_runner.invoke(
+            partition,
+            ["a5", temp_partition_dir, "--resolution", "4"],
+        )
+        assert result.exit_code != 0
+        assert "min-size" in result.output.lower() or "directory" in result.output.lower()
+
+    def test_partition_a5_directory_with_auto_resolution(self, cli_runner, temp_partition_dir):
+        """--auto has to reach the a5 branch of calculate_auto_resolution."""
+        from pathlib import Path
+
+        buildings_file = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings_file, test_file)
+
+        file_size = os.path.getsize(test_file)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                f"{file_size - 100}B",
+                "--auto",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert not os.path.exists(test_file)
+        assert os.path.isdir(os.path.join(temp_partition_dir, "test_a5"))
