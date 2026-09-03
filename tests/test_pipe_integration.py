@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -540,3 +541,149 @@ class TestStdinWithoutGeometryTypes:
         assert result.returncode == 0, result.stderr
         assert "Traceback (most recent call last)" not in result.stderr
         assert pq.read_table(output_file).num_rows > 0
+
+
+class TestZeroRowStreams:
+    """#804: streaming a zero-row result aborted the process with SIGABRT.
+
+    An empty result is an ordinary outcome of a spatial filter, not an error.
+    A DuckDB result with no rows exports an Arrow table whose columns are
+    ChunkedArrays with *zero* chunks; ``geoarrow.pyarrow.as_wkb`` then rebuilds
+    a ChunkedArray from an empty chunk list with no explicit type, which trips
+    an Arrow C++ ``Check failed`` and aborts the interpreter (exit 134). The
+    abort is not a Python exception, so these tests must shell out.
+
+    Note the ``--bbox=VALUE`` form: Windows ``cmd.exe`` does not strip single
+    quotes, so the quoted form only fails on the Windows CI matrix.
+    """
+
+    # Far outside the fixture's extent (Ghana/Burkina Faso), so zero rows match.
+    EMPTY_BBOX = "--bbox=170,-80,171,-79"
+
+    @staticmethod
+    def _read_stream(raw: bytes):
+        import pyarrow.ipc as ipc
+
+        return ipc.RecordBatchStreamReader(pa.BufferReader(pa.py_buffer(raw))).read_all()
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_extract_zero_rows_to_stdout(self):
+        """`gpio extract <empty bbox> in.parquet -` must emit a valid empty stream."""
+        result = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, (
+            f"exit={result.returncode} (134 == SIGABRT): {result.stderr.decode(errors='replace')}"
+        )
+        assert result.stdout, "zero-row stream must still carry a schema, not zero bytes"
+
+        table = self._read_stream(result.stdout)
+        assert table.num_rows == 0
+        assert "geometry" in table.column_names
+        assert "name" in table.column_names
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_stream_matches_file_output_schema(self, output_file):
+        """The stream's schema must match what the file path writes for the same filter."""
+        file_result = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} {output_file}",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert file_result.returncode == 0, file_result.stderr.decode(errors="replace")
+        file_table = pq.read_table(output_file)
+        assert file_table.num_rows == 0
+
+        stream_result = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert stream_result.returncode == 0, stream_result.stderr.decode(errors="replace")
+
+        stream_table = self._read_stream(stream_result.stdout)
+        assert stream_table.column_names == file_table.column_names
+        # Types, not fields: the geometry field carries an extra
+        # ARROW:extension:name entry on the stream side only.
+        assert [f.type for f in stream_table.schema] == [f.type for f in file_table.schema]
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_pipe_to_add_bbox(self, output_file):
+        """A zero-row stream must be readable by the next stage of a pipe."""
+        result = run_pipeline(
+            [
+                f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} -",
+                f"gpio add bbox --bbox-name bbox_test - {output_file}",
+            ]
+        )
+
+        assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
+        table = pq.read_table(output_file)
+        assert table.num_rows == 0
+        assert "bbox_test" in table.column_names
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_pipe_stays_a_stream_through_two_stages(self):
+        """Two streaming stages in a row, ending on stdout, still produce a stream."""
+        result = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} - | "
+            "gpio add bbox --bbox-name bbox_test - -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        table = self._read_stream(result.stdout)
+        assert table.num_rows == 0
+        assert "bbox_test" in table.column_names
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_sort_hilbert_to_stdout(self, tmp_path):
+        """`sort` shares the streaming writer, so it must survive zero rows too."""
+        empty = tmp_path / "empty.parquet"
+        prep = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} {empty}",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert prep.returncode == 0, prep.stderr.decode(errors="replace")
+
+        result = subprocess.run(
+            f"gpio sort hilbert {empty} -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert self._read_stream(result.stdout).num_rows == 0
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_reproject_to_stdout(self, tmp_path):
+        """`convert reproject` shares the streaming writer as well."""
+        empty = tmp_path / "empty.parquet"
+        prep = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} {empty}",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert prep.returncode == 0, prep.stderr.decode(errors="replace")
+
+        result = subprocess.run(
+            f"gpio convert reproject {empty} - --dst-crs EPSG:3857",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert self._read_stream(result.stdout).num_rows == 0
