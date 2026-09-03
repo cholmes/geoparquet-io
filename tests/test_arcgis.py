@@ -114,7 +114,7 @@ def _wkb_polygon_rings(wkb: bytes) -> list[list[tuple[float, float]]]:
 def _signed_ring_area(ring: list[tuple[float, float]]) -> float:
     """Shoelace signed area: positive means counterclockwise winding."""
     total = 0.0
-    for (x1, y1), (x2, y2) in zip(ring, ring[1:]):
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:], strict=False):
         total += x1 * y2 - x2 * y1
     return total / 2
 
