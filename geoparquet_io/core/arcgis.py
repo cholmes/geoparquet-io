@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import tempfile
 import uuid
 from collections.abc import Generator
@@ -960,10 +961,115 @@ def _build_schema_from_layer_info(layer_info: ArcGISLayerInfo) -> pa.Schema:
     return pa.schema(fields)
 
 
+def _ring_signed_area(raw: bytes, num_points: int, point_size: int, endian: str) -> float:
+    """Shoelace signed area of a WKB ring's raw point bytes (positive = CCW)."""
+    fmt = endian + "dd"
+    total = 0.0
+    prev_x, prev_y = struct.unpack_from(fmt, raw, 0)
+    for i in range(1, num_points):
+        x, y = struct.unpack_from(fmt, raw, i * point_size)
+        total += prev_x * y - x * prev_y
+        prev_x, prev_y = x, y
+    return total
+
+
+def _reverse_ring_points(raw: bytes, num_points: int, point_size: int) -> bytes:
+    """Reverse the point order of a WKB ring's raw bytes (flips its winding)."""
+    points = [raw[i * point_size : (i + 1) * point_size] for i in range(num_points)]
+    points.reverse()
+    return b"".join(points)
+
+
+def _process_polygon_wkb(buf: bytes, pos: int) -> tuple[bytes, int]:
+    """Reorient one WKB Polygon's rings in place: shell CCW, holes CW.
+
+    ``pos`` points at the polygon's own byte-order marker (a Polygon nested
+    inside a MultiPolygon has one of these per sub-geometry). Returns the
+    rewritten bytes for just this polygon and the position just past it.
+    """
+    start = pos
+    endian = "<" if buf[pos] == 1 else ">"
+    (type_code,) = struct.unpack_from(endian + "I", buf, pos + 1)
+    base = type_code % 1000
+    band = type_code // 1000
+    if base != 3:
+        raise ValueError(f"expected WKB Polygon (type 3), got type {type_code}")
+    has_z = band in (1, 3)
+    has_m = band in (2, 3)
+    point_size = 8 * (2 + has_z + has_m)
+
+    header_end = pos + 9  # byte order (1) + type (4) + numRings (4)
+    (num_rings,) = struct.unpack_from(endian + "I", buf, pos + 5)
+    out = bytearray(buf[start:header_end])
+    cursor = header_end
+    for ring_index in range(num_rings):
+        (num_points,) = struct.unpack_from(endian + "I", buf, cursor)
+        ring_header = buf[cursor : cursor + 4]
+        cursor += 4
+        ring_len = num_points * point_size
+        raw = buf[cursor : cursor + ring_len]
+        cursor += ring_len
+        if num_points >= 4:
+            wants_ccw = ring_index == 0
+            is_ccw = _ring_signed_area(raw, num_points, point_size, endian) > 0
+            if is_ccw != wants_ccw:
+                raw = _reverse_ring_points(raw, num_points, point_size)
+        out += ring_header
+        out += raw
+    return bytes(out), cursor
+
+
+def _normalize_polygon_winding(wkb: bytes | None) -> bytes | None:
+    """Force RFC 7946 / GeoParquet default polygon ring winding onto WKB.
+
+    ArcGIS's `f=geojson` output winds exterior rings clockwise and interior
+    rings (holes) counterclockwise — the reverse of what RFC 7946 section
+    3.1.6 requires and of the GeoParquet spec's default `orientation`
+    (counterclockwise exterior, clockwise interior). GDAL's GeoJSON/ESRIJSON
+    readers keep the ring order as delivered rather than correcting it, so
+    without normalization the winding-based (rather than nesting-based) hole
+    detection some GeoParquet/GeoJSON consumers use misreads which ring is
+    the shell and which is the hole (portolan-sdi/portolan-cli#809).
+
+    DuckDB's spatial extension has no force-orientation function —
+    ``ST_Normalize`` reorders points into a canonical *comparison* form, it
+    does not enforce winding direction — so this reorients each polygon ring
+    by hand: the first ring of every polygon is forced counterclockwise, and
+    every following ring (a hole) clockwise, per-ring, based on its own
+    shoelace signed area.
+
+    Only WKB Polygon/MultiPolygon (Z/M variants included) are rewritten;
+    other geometry types, empty/undersized rings, and anything that fails to
+    parse as plain (non-EWKB) WKB pass through unchanged.
+    """
+    if not wkb:
+        return wkb
+    try:
+        endian = "<" if wkb[0] == 1 else ">"
+        (type_code,) = struct.unpack_from(endian + "I", wkb, 1)
+        base = type_code % 1000
+        if base == 3:
+            new_bytes, _ = _process_polygon_wkb(wkb, 0)
+            return new_bytes
+        if base == 6:
+            (num_polys,) = struct.unpack_from(endian + "I", wkb, 5)
+            out = bytearray(wkb[:9])
+            pos = 9
+            for _ in range(num_polys):
+                poly_bytes, pos = _process_polygon_wkb(wkb, pos)
+                out += poly_bytes
+            return bytes(out)
+    except (struct.error, IndexError, ValueError):
+        return wkb
+    return wkb
+
+
 def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Table:
     """Write a JSON document to a temp file and convert it via DuckDB ST_Read.
 
-    Shared mechanics for the GeoJSON and EsriJSON page converters.
+    Shared mechanics for the GeoJSON and EsriJSON page converters. Polygon
+    ring winding is normalized afterwards to the RFC 7946 / GeoParquet
+    default (see `_normalize_polygon_winding`).
 
     Args:
         doc: JSON-serializable document (GeoJSON FeatureCollection or raw
@@ -995,7 +1101,14 @@ def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Tab
         # Allow arbitrarily large/complex single features through GDAL's parser
         # (issue #517) — must be in effect while ST_Read reads the temp file.
         with _gdal_geojson_size_limit_lifted():
-            return con.execute(query).arrow().read_all()
+            table = con.execute(query).arrow().read_all()
+
+        geometry_index = table.schema.get_field_index("geometry")
+        fixed_geometry = pa.array(
+            [_normalize_polygon_winding(v.as_py()) for v in table.column(geometry_index)],
+            type=pa.binary(),
+        )
+        return table.set_column(geometry_index, "geometry", fixed_geometry)
 
     finally:
         if owns_con:

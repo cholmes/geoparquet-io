@@ -82,6 +82,43 @@ MOCK_ESRI_FEATURES_PAGE = {
 }
 
 
+def _wkb_polygon_rings(wkb: bytes) -> list[list[tuple[float, float]]]:
+    """Decode a WKB Polygon's rings without a shapely/geopandas dependency.
+
+    Only handles the plain (non-EWKB, no SRID) Polygon encoding DuckDB's
+    ``ST_AsWKB`` produces, which is all this test suite needs.
+    """
+    import struct
+
+    endian = "<" if wkb[0] == 1 else ">"
+    (geom_type,) = struct.unpack_from(endian + "I", wkb, 1)
+    assert geom_type == 3, f"expected WKB Polygon (type 3), got type {geom_type}"
+
+    offset = 5
+    (num_rings,) = struct.unpack_from(endian + "I", wkb, offset)
+    offset += 4
+
+    rings = []
+    for _ in range(num_rings):
+        (num_points,) = struct.unpack_from(endian + "I", wkb, offset)
+        offset += 4
+        points = []
+        for _ in range(num_points):
+            x, y = struct.unpack_from(endian + "dd", wkb, offset)
+            offset += 16
+            points.append((x, y))
+        rings.append(points)
+    return rings
+
+
+def _signed_ring_area(ring: list[tuple[float, float]]) -> float:
+    """Shoelace signed area: positive means counterclockwise winding."""
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:]):
+        total += x1 * y2 - x2 * y1
+    return total / 2
+
+
 class TestResolveToken:
     """Tests for token resolution."""
 
@@ -1349,6 +1386,47 @@ class TestStreamingConversion:
 
         result = _geojson_page_to_table([])
         assert result is None
+
+    def test_geojson_page_to_table_normalizes_arcgis_ring_winding(self):
+        """A mask polygon wound the ArcGIS way (CW shell / CCW hole) comes out
+        RFC 7946 / GeoParquet conformant (CCW shell / CW hole).
+        See portolan-sdi/portolan-cli#809.
+
+        ArcGIS's `f=geojson` output does not follow RFC 7946 section 3.1.6:
+        it winds exterior rings clockwise and interior rings (holes)
+        counterclockwise, the opposite of the spec (and of the GeoParquet
+        `orientation` default). Consumers that rely on winding rather than
+        ring nesting to tell shell from hole misread such geometry.
+
+        Decodes the resulting WKB by hand (only ``struct``, no shapely/
+        geopandas) since those live in the optional ``benchmark`` extra, not
+        the default ``dev`` dependency set this test runs under.
+        """
+        from geoparquet_io.core.arcgis import _geojson_page_to_table
+
+        # Shell: outer square, clockwise (ArcGIS convention). Hole: inner
+        # square, counterclockwise (also ArcGIS convention) — both reversed
+        # from what RFC 7946 requires.
+        arcgis_wound_feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]],  # shell, CW
+                    [[2, 2], [2, 8], [8, 8], [8, 2], [2, 2]],  # hole, CCW
+                ],
+            },
+            "properties": {},
+        }
+
+        table = _geojson_page_to_table([arcgis_wound_feature])
+
+        assert table is not None
+        rings = _wkb_polygon_rings(table.column("geometry")[0].as_py())
+        assert len(rings) == 2
+        shell, hole = rings
+        assert _signed_ring_area(shell) > 0, "exterior ring must be counterclockwise per RFC 7946"
+        assert _signed_ring_area(hole) < 0, "interior ring (hole) must be clockwise per RFC 7946"
 
     def test_gdal_size_limit_lifted_inside_scope_and_unset_after(self, monkeypatch):
         """The limit is lifted inside the scope and removed again on exit (#517)."""
