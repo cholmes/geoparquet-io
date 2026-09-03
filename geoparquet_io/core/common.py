@@ -2438,21 +2438,25 @@ def _prune_metadata_to_output_columns(
     original_metadata: dict | None,
     geometry_column: str | None,
     verbose: bool,
-) -> dict | None:
+) -> tuple[dict | None, list[str] | None]:
     """Drop geo metadata that references columns the output query does not emit.
 
     Best-effort: a schema probe that fails leaves the metadata untouched rather
     than aborting the write.
+
+    Returns the pruned metadata and the output's column names, so a later step
+    that only needs to know which columns exist does not probe the query again.
+    ``None`` column names mean the probe failed, not that there are no columns.
     """
     if not original_metadata:
-        return original_metadata
+        return original_metadata, None
 
     try:
         output_columns = _get_query_columns(con, query)
     except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
         if verbose:
             debug(f"Could not read output schema to prune geo metadata: {e}")
-        return original_metadata
+        return original_metadata, None
 
     pruned = prune_geo_metadata_to_columns(original_metadata, output_columns)
     had_geo = "geo" in original_metadata or b"geo" in original_metadata
@@ -2461,7 +2465,7 @@ def _prune_metadata_to_output_columns(
             "Output has no geometry column - writing plain Parquet without geo metadata "
             f"(columns: {', '.join(output_columns)})"
         )
-    return pruned
+    return pruned, output_columns
 
 
 def extract_preserved_kv_metadata(metadata: dict | None) -> dict[str, str]:
@@ -2557,6 +2561,9 @@ def _geo_block_to_carry_on_fast_path(
     con=None,
     query: str | None = None,
     verbose: bool = False,
+    input_crs=None,
+    input_file: str | None = None,
+    output_columns: list[str] | None = None,
 ) -> dict | None:
     """The `geo` block the 2.0 fast path must write instead of DuckDB's generated one.
 
@@ -2568,23 +2575,45 @@ def _geo_block_to_carry_on_fast_path(
     configuration intact: forcing the rewrite instead would clamp threads and
     memory, drop `--compression-level`, and can add a full stats rescan.
 
-    With `con` and `query`, a conventional `bbox` column the output still
-    carries is also declared as a covering, exactly as the rewrite path does, so
-    both paths produce the same block for the same input. That is the only
-    covering gpio invents: `covering` asserts a relationship between a bbox
+    The carried block goes through `apply_output_crs`, the single source of truth
+    for the null-vs-default CRS rule, so the fast path cannot write a `crs: null`
+    or an explicit CRS84 that the rewrite path would have stripped.
+
+    With `con` and `query`, a conventional `bbox` column the output still carries
+    is also declared as a covering, exactly as the rewrite path does. That is the
+    only covering gpio invents: `covering` asserts a relationship between a bbox
     column and the geometry that cannot be verified from a column name, so
     `declare_carried_bbox_column` recognises the single universal convention and
-    checks the struct's fields before declaring anything.
+    checks the struct's fields before declaring anything. It runs *before* the
+    "says more than DuckDB would" gate below, because for a plain 2.0 input with
+    an undeclared bbox column the derived covering is the whole difference
+    between the two paths (`tests/test_covering_v2.py::
+    test_a_conventional_bbox_column_is_declared_at_v2`). `output_columns` lets it
+    skip its schema probe when the output has no bbox column to declare at all.
 
     Returns None when the version is not 2.0 (1.x already rewrites), when the
-    carried block is too thin to stand in for DuckDB's (a caller invalidated the
-    derived stats and only the rewrite path can recompute them), or when it says
-    nothing DuckDB would not write itself — the caller then keeps its existing
-    behaviour.
+    input resolves to more than one file (see below), when the carried block is
+    too thin to stand in for DuckDB's (a caller invalidated the derived stats and
+    only the rewrite path can recompute them), or when it says nothing DuckDB
+    would not write itself — the caller then keeps its existing behaviour.
     """
+    from geoparquet_io.core.crs_utils import apply_output_crs
     from geoparquet_io.core.geo_metadata import _decode_geo_value, declare_carried_bbox_column
 
     if effective_version != "2.0" or not geometry_column or not original_metadata:
+        return None
+
+    # A glob/directory input merges several files, but `original_metadata` was
+    # read from the FIRST file's footer only. Carrying its bbox/geometry_types
+    # as the merged output's stats UNDER-covers the result, which makes
+    # conformant readers skip data; only the rewrite path can recompute them
+    # over everything written. Same test `extract` uses for the same reason.
+    if input_file and is_partition_path(input_file):
+        if verbose:
+            debug(
+                "Not carrying the input's geo block: a multi-file input's merged "
+                "stats cannot come from the first file's footer"
+            )
         return None
 
     for geo_key in ("geo", b"geo"):
@@ -2600,9 +2629,17 @@ def _geo_block_to_carry_on_fast_path(
             return None
         carried = copy.deepcopy(geo_dict)
         carried["version"] = "2.0.0"
+        # Before the gate: a block whose only extra key was a default or null
+        # `crs` says nothing DuckDB would not write once that key is stripped.
+        apply_output_crs(carried["columns"][geometry_column], input_crs)
         if con is not None and query is not None:
             declare_carried_bbox_column(
-                con, query, carried["columns"][geometry_column], verbose, effective_version
+                con,
+                query,
+                carried["columns"][geometry_column],
+                verbose,
+                effective_version,
+                output_columns=output_columns,
             )
         if not _carries_more_than_duckdb_generates(carried):
             return None
@@ -2710,7 +2747,7 @@ def write_parquet_with_metadata(
     # column a ``covering`` points at, a secondary geometry column, or the
     # geometry column itself. Carrying those references produces metadata that
     # names schema roots the output does not have.
-    original_metadata = _prune_metadata_to_output_columns(
+    original_metadata, output_columns = _prune_metadata_to_output_columns(
         con, query, original_metadata, geometry_column, verbose
     )
 
@@ -2749,7 +2786,9 @@ def write_parquet_with_metadata(
     # the `geo` key, but `_geo_block_to_carry_on_fast_path` substitutes the
     # input's own block -- `epoch`, `orientation`, a declared `covering`, plus
     # one auto-declared for a conventional bbox column the output carries -- so
-    # both paths write the same block for the same input (#772).
+    # for the same input, and absent `custom_metadata`, both paths write the
+    # same block (#772). `custom_metadata` is the exception: only the rewrite
+    # path merges it, and a `covering` in it already forces that path above.
     if extra_kv_metadata and verbose:
         debug(f"Carrying extra KV metadata: {list(extra_kv_metadata.keys())}")
 
@@ -2788,6 +2827,9 @@ def write_parquet_with_metadata(
                     con=con,
                     query=query,
                     verbose=verbose,
+                    input_crs=input_crs,
+                    input_file=input_file,
+                    output_columns=output_columns,
                 ),
                 extra_kv_metadata=extra_kv_metadata,
             )

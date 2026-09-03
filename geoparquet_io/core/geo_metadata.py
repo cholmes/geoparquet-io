@@ -796,6 +796,7 @@ def declare_carried_bbox_column(
     col_meta: dict,
     verbose: bool,
     geoparquet_version: str,
+    output_columns: list[str] | None = None,
 ) -> bool:
     """Declare a conventional ``bbox`` column the output carries but nothing declared.
 
@@ -808,6 +809,10 @@ def declare_carried_bbox_column(
     Shared by both write paths — the metadata rewrite and the 2.0 no-rewrite
     fast path — so that the same input gets the same covering either way (#772).
     Mutates ``col_meta`` in place; returns whether a covering was added.
+
+    ``output_columns``, when the caller already knows the output's column names,
+    settles the common "no bbox column at all" case without paying for the
+    schema probe below.
     """
     import pyarrow as pa
 
@@ -820,6 +825,8 @@ def declare_carried_bbox_column(
         return False
 
     name = SELF_EVIDENT_BBOX_COLUMN
+    if output_columns is not None and name not in output_columns:
+        return False
     schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
     if name not in schema.names:
         return False

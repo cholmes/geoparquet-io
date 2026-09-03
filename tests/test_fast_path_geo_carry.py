@@ -46,26 +46,31 @@ def _write_v2_input(
     geo: dict,
     bbox_expr: str | None = "conventional",
     extra_kv: dict[str, str] | None = None,
+    offset: tuple[float, float] = (0.0, 0.0),
 ) -> str:
     """Write a native-geometry GeoParquet 2.0 file with a hand-built ``geo`` block.
 
     ``bbox_expr`` picks the shape of the carried bbox column: the conventional
     ``bbox`` struct, a struct under another name, a non-struct ``bbox``, or none.
+    ``offset`` shifts every geometry, which is how the multi-file cases below
+    build inputs whose extents are disjoint.
     """
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
 
+    dx, dy = offset
+    geom = "geometry" if (dx, dy) == (0.0, 0.0) else f"ST_Translate(geometry, {dx}, {dy})"
     struct = (
-        "{'xmin': ST_XMin(geometry), 'ymin': ST_YMin(geometry), "
-        "'xmax': ST_XMax(geometry), 'ymax': ST_YMax(geometry)}"
+        f"{{'xmin': ST_XMin({geom}), 'ymin': ST_YMin({geom}), "
+        f"'xmax': ST_XMax({geom}), 'ymax': ST_YMax({geom})}}"
     )
     projections = {
         "conventional": f"{struct} AS bbox",
         "renamed": f"{struct} AS tile_bounds",
-        "not_a_struct": "ST_XMin(geometry) AS bbox",
+        "not_a_struct": f"ST_XMin({geom}) AS bbox",
         None: None,
     }
     bbox_projection = projections[bbox_expr]
-    select = "SELECT * EXCLUDE (geometry), geometry"
+    select = f"SELECT * EXCLUDE (geometry), {geom} AS geometry"
     if bbox_projection:
         select += f", {bbox_projection}"
     query = f"{select} FROM '{source}'"
@@ -86,6 +91,48 @@ def _write_v2_input(
 
 def _geo(path) -> dict:
     return json.loads(pq.ParquetFile(str(path)).schema_arrow.metadata[b"geo"])
+
+
+def _actual_extent(path) -> tuple[float, float, float, float]:
+    """The real envelope of every geometry in ``path``, straight from the data."""
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+    con = get_duckdb_connection(load_spatial=True)
+    try:
+        return con.execute(
+            "SELECT MIN(ST_XMin(geometry)), MIN(ST_YMin(geometry)), "
+            f"MAX(ST_XMax(geometry)), MAX(ST_YMax(geometry)) FROM '{path}'"
+        ).fetchone()
+    finally:
+        con.close()
+
+
+def _write_through(source: str, destination, force_rewrite: bool) -> dict:
+    """Run one write of ``source`` through either the fast path or the rewrite path."""
+    import geoparquet_io.core.write_strategies as write_strategies
+    from geoparquet_io.core.common import write_parquet_with_metadata
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+    original = dict(pq.ParquetFile(source).schema_arrow.metadata or {})
+    real = write_strategies.needs_metadata_rewrite
+    if force_rewrite:
+        write_strategies.needs_metadata_rewrite = lambda *a, **k: True
+    con = get_duckdb_connection()
+    try:
+        write_parquet_with_metadata(
+            con=con,
+            query=f"SELECT * FROM '{source}'",
+            output_file=str(destination),
+            original_metadata=original,
+            compression="ZSTD",
+            compression_level=None,
+            geoparquet_version="2.0",
+            input_file=source,
+        )
+    finally:
+        con.close()
+        write_strategies.needs_metadata_rewrite = real
+    return _geo(destination)
 
 
 def _sort(inp, out) -> str:
@@ -179,29 +226,7 @@ class TestFastPathMatchesTheRewritePath:
     """The strongest guard against this class of bug: the two paths must agree."""
 
     def _write(self, source: str, destination, force_rewrite: bool) -> dict:
-        import geoparquet_io.core.write_strategies as write_strategies
-        from geoparquet_io.core.common import write_parquet_with_metadata
-        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-
-        original = dict(pq.ParquetFile(source).schema_arrow.metadata or {})
-        real = write_strategies.needs_metadata_rewrite
-        if force_rewrite:
-            write_strategies.needs_metadata_rewrite = lambda *a, **k: True
-        con = get_duckdb_connection()
-        try:
-            write_parquet_with_metadata(
-                con=con,
-                query=f"SELECT * FROM '{source}'",
-                output_file=str(destination),
-                original_metadata=original,
-                compression="ZSTD",
-                compression_level=None,
-                geoparquet_version="2.0",
-            )
-        finally:
-            con.close()
-            write_strategies.needs_metadata_rewrite = real
-        return _geo(destination)
+        return _write_through(source, destination, force_rewrite)
 
     def test_both_paths_produce_the_same_geo_block(self, v2_epoch_orientation_bbox, tmp_path):
         fast = self._write(v2_epoch_orientation_bbox, tmp_path / "fast.parquet", False)
@@ -307,3 +332,209 @@ class TestTheCarryDeclines:
 
     def test_metadata_without_a_geo_key(self):
         assert self._carry({"fiboa": FIBOA_VALUE}) is None
+
+    def test_a_block_duckdb_owns_declines_after_the_covering_probe_finds_nothing(
+        self, fields_v2_file, tmp_path
+    ):
+        """con/query in hand, so ``declare_carried_bbox_column`` really runs first.
+
+        The other decline cases short-circuit long before the probe is reachable,
+        so none of them exercises the gate as the write path actually reaches it:
+        after the covering derivation has had its chance and declined.
+        """
+        from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        source = _write_v2_input(
+            fields_v2_file, tmp_path / "no_bbox.parquet", BASE_GEO, bbox_expr=None
+        )
+        thin = self._metadata({"encoding": "WKB", "geometry_types": ["Polygon"]})
+        con = get_duckdb_connection(load_spatial=True)
+        try:
+            carried = _geo_block_to_carry_on_fast_path(
+                thin, "geometry", "2.0", con=con, query=f"SELECT * FROM '{source}'"
+            )
+        finally:
+            con.close()
+
+        assert carried is None
+
+    def test_the_covering_probe_can_still_rescue_a_block_duckdb_would_own(
+        self, v2_epoch_orientation_bbox
+    ):
+        """Non-vacuity for the case above: the probe runs before the gate, not after.
+
+        For a plain 2.0 input with an undeclared conventional bbox column, the
+        derived covering is the whole difference between the fast path and the
+        rewrite path (``test_covering_v2.py::
+        test_a_conventional_bbox_column_is_declared_at_v2``).
+        """
+        from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        thin = self._metadata({"encoding": "WKB", "geometry_types": ["Polygon"]})
+        con = get_duckdb_connection(load_spatial=True)
+        try:
+            carried = _geo_block_to_carry_on_fast_path(
+                thin,
+                "geometry",
+                "2.0",
+                con=con,
+                query=f"SELECT * FROM '{v2_epoch_orientation_bbox}'",
+            )
+        finally:
+            con.close()
+
+        assert carried is not None
+        assert "bbox" in carried["columns"]["geometry"]["covering"]
+
+    def test_the_covering_probe_is_skipped_when_the_output_has_no_bbox_column(
+        self, v2_epoch_orientation_bbox
+    ):
+        """Known output columns settle the common case without a schema probe."""
+        from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
+
+        class _NoQueriesAllowed:
+            def execute(self, *args, **kwargs):  # pragma: no cover - must not run
+                raise AssertionError("declare_carried_bbox_column probed the query anyway")
+
+        metadata = self._metadata(
+            {"encoding": "WKB", "geometry_types": ["Polygon"], "epoch": 2020.5}
+        )
+        carried = _geo_block_to_carry_on_fast_path(
+            metadata,
+            "geometry",
+            "2.0",
+            con=_NoQueriesAllowed(),
+            query=f"SELECT * FROM '{v2_epoch_orientation_bbox}'",
+            output_columns=["id", "geometry"],
+        )
+
+        assert carried is not None
+        assert "covering" not in carried["columns"]["geometry"]
+
+
+class TestMultiFileInputsDeclineTheCarry:
+    """``get_parquet_metadata`` reads the FIRST file's footer only (#793 review).
+
+    Carrying it as the merged output's ``bbox``/``geometry_types`` under-covers
+    the result, which makes conformant readers skip data. Only the rewrite path
+    can recompute stats over every input, so the carry must decline.
+    """
+
+    @pytest.fixture
+    def two_disjoint_files(self, fields_v2_file, tmp_path):
+        directory = tmp_path / "parts"
+        directory.mkdir()
+        _write_v2_input(fields_v2_file, directory / "a.parquet", BASE_GEO)
+        _write_v2_input(fields_v2_file, directory / "b.parquet", BASE_GEO, offset=(30.0, 10.0))
+        return directory
+
+    def test_the_inputs_really_are_disjoint(self, two_disjoint_files):
+        """Non-vacuity: the second file's extent is nowhere near the declared bbox."""
+        second = _actual_extent(two_disjoint_files / "b.parquet")
+
+        assert second[0] > BASE_GEO["columns"]["geometry"]["bbox"][2]
+
+    def test_the_declared_bbox_covers_every_geometry(self, two_disjoint_files, tmp_path):
+        out = tmp_path / "merged.parquet"
+        _sort(two_disjoint_files / "*.parquet", out)
+
+        xmin, ymin, xmax, ymax = _geo(out)["columns"]["geometry"]["bbox"]
+        actual = _actual_extent(out)
+        assert (xmin, ymin) <= (actual[0], actual[1])
+        assert (xmax, ymax) >= (actual[2], actual[3])
+
+    def test_a_directory_input_declines_too(self, two_disjoint_files):
+        """The guard covers both shapes ``is_partition_path`` recognises."""
+        from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
+
+        metadata = {"geo": json.dumps(BASE_GEO)}
+
+        assert (
+            _geo_block_to_carry_on_fast_path(
+                metadata, "geometry", "2.0", input_file=str(two_disjoint_files)
+            )
+            is None
+        )
+        assert (
+            _geo_block_to_carry_on_fast_path(metadata, "geometry", "2.0", input_file=None)
+            is not None
+        )
+
+    def test_a_single_file_still_carries(self, two_disjoint_files, tmp_path):
+        """The guard must be about multi-file inputs, not about sorting at all."""
+        out = tmp_path / "single.parquet"
+        _sort(two_disjoint_files / "a.parquet", out)
+
+        assert _geo(out)["columns"]["geometry"]["epoch"] == 2020.5
+
+
+class TestTheCarriedBlockGoesThroughTheCrsRule:
+    """``apply_output_crs`` is the single source of truth for null-vs-default CRS.
+
+    The carried block bypassed it, so a ``crs: null`` input came back out with
+    ``crs: null`` on the fast path while the rewrite path stripped it.
+    """
+
+    @pytest.fixture
+    def v2_crs_null(self, fields_v2_file, tmp_path):
+        geo = json.loads(json.dumps(BASE_GEO))
+        geo["columns"]["geometry"]["crs"] = None
+        return _write_v2_input(fields_v2_file, tmp_path / "crs_null.parquet", geo)
+
+    @pytest.fixture
+    def v2_explicit_crs84(self, fields_v2_file, tmp_path):
+        geo = json.loads(json.dumps(BASE_GEO))
+        geo["columns"]["geometry"]["crs"] = {
+            "type": "GeographicCRS",
+            "name": "WGS 84 (CRS84)",
+            "id": {"authority": "OGC", "code": "CRS84"},
+        }
+        return _write_v2_input(fields_v2_file, tmp_path / "crs84.parquet", geo)
+
+    def test_a_null_crs_is_not_written_through(self, v2_crs_null, tmp_path):
+        out = tmp_path / "crs_null_out.parquet"
+        _sort(v2_crs_null, out)
+
+        assert "crs" not in _geo(out)["columns"]["geometry"]
+
+    def test_a_null_crs_input_matches_the_rewrite_path(self, v2_crs_null, tmp_path):
+        fast = _write_through(v2_crs_null, tmp_path / "crs_null_fast.parquet", False)
+        rewritten = _write_through(v2_crs_null, tmp_path / "crs_null_rewrite.parquet", True)
+
+        assert fast == rewritten
+
+    def test_an_explicit_default_crs_is_dropped(self, v2_explicit_crs84, tmp_path):
+        out = tmp_path / "crs84_out.parquet"
+        _sort(v2_explicit_crs84, out)
+
+        assert "crs" not in _geo(out)["columns"]["geometry"]
+
+    def test_an_explicit_default_crs_matches_the_rewrite_path(self, v2_explicit_crs84, tmp_path):
+        fast = _write_through(v2_explicit_crs84, tmp_path / "crs84_fast.parquet", False)
+        rewritten = _write_through(v2_explicit_crs84, tmp_path / "crs84_rewrite.parquet", True)
+
+        assert fast == rewritten
+
+    def test_a_stripped_default_crs_alone_does_not_justify_the_carry(self):
+        """The CRS rule runs before the gate, so the block is judged as it will be written."""
+        from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
+
+        metadata = {
+            "geo": json.dumps(
+                {
+                    "version": "2.0.0",
+                    "primary_column": "geometry",
+                    "columns": {
+                        "geometry": {
+                            "encoding": "WKB",
+                            "geometry_types": ["Polygon"],
+                            "crs": None,
+                        }
+                    },
+                }
+            )
+        }
+
+        assert _geo_block_to_carry_on_fast_path(metadata, "geometry", "2.0") is None
