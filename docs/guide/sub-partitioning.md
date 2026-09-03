@@ -23,6 +23,10 @@ When you pass a directory to a partition command with `--min-size`:
 3. Partitions each large file into a sibling subdirectory
 4. With `--in-place`, removes the original file after success
 
+An original is only removed once the sub-partitions hold every row it had. Rows
+with a NULL or empty geometry get a NULL index cell and are dropped by
+partitioning, so those files are reported as errors and left alone.
+
 ## Result Structure
 
 ```
@@ -43,20 +47,26 @@ by_country/
 |--------|-------------|
 | `--min-size` | Size threshold (e.g., '100MB', '1GB'). Required for directory input. |
 | `--in-place` | Delete original files after successful sub-partitioning |
+| `--preview` | List the files that would be processed, then stop |
 | `--resolution` / `--level` | Spatial index resolution (or use `--auto`) |
 | `--auto` | Auto-calculate optimal resolution |
 
-Sub-partitioning is available on `gpio partition h3`, `gpio partition s2`, and
-`gpio partition quadkey`. `gpio partition a5` does not accept `--min-size` or
-`--in-place` yet ([#733](https://github.com/geoparquet/geoparquet-io/issues/733));
-partition A5 files one at a time instead.
+`OUTPUT_FOLDER` and the index column name options (`--h3-name`, `--a5-name`,
+`--s2-name`, `--quadkey-column`) apply to single-file runs only: in directory
+mode each file gets its own sibling `<file>_<index>/` directory and the default
+column name, so passing them is an error rather than a silent no-op.
+
+Sub-partitioning is accepted by `gpio partition h3`, `gpio partition a5`,
+`gpio partition quadkey` and `gpio partition s2`. Three of them run today: S2
+alone stops on a missing extension in this release (see the warning below), so
+reach for **H3**, **A5** or **Quadkey**.
 
 !!! warning "S2 sub-partitioning is unavailable in this release"
     `gpio partition s2` needs the `geography` DuckDB community extension, which is
     published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so
     it stops with an explanation instead of partitioning — including when it is
-    reached through `--min-size`. Use the **H3** or **Quadkey** tabs below until the
-    extension is republished upstream; see
+    reached through `--min-size`. Use the **H3**, **A5** or **Quadkey** tabs below
+    until the extension is republished upstream; see
     [S2 Spherical Cells](add.md#s2-spherical-cells) for the details.
 
 ## Examples
@@ -66,6 +76,16 @@ partition A5 files one at a time instead.
     <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
     gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
+    ```
+
+=== "A5"
+
+    A tiny threshold is used here so the example actually splits the small sample
+    directory; on real data use `100MB` as in the H3 tab.
+
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
+    ```bash
+    gpio partition a5 by_country/ --min-size 1B --resolution 4 --in-place
     ```
 
 === "S2"
@@ -87,15 +107,18 @@ partition A5 files one at a time instead.
 
 ## Preview Mode
 
-Preview what would be processed without making changes:
+`--preview` lists the files that exceed the threshold and the directory each one
+would be written to, then stops. Nothing is partitioned and nothing is deleted,
+even when `--in-place` is also passed.
 
 <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
 ```bash
-# See which files would be sub-partitioned (no --in-place)
-gpio partition h3 by_country/ --min-size 100MB --resolution 7
+# See which files would be sub-partitioned, without touching them
+gpio partition h3 by_country/ --min-size 1B --resolution 7 --preview
 ```
 
-Files are processed but originals are kept when `--in-place` is not specified.
+Without `--preview` the files are partitioned for real; the originals are kept
+unless you pass `--in-place`.
 
 ## Size Threshold Examples
 

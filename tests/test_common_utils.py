@@ -406,9 +406,9 @@ class TestGetDuckdbConnection:
 class TestGetCrsDisplayName:
     """Tests for get_crs_display_name function."""
 
-    def test_none_returns_default(self):
-        """Test that None CRS returns default (OGC:CRS84)."""
-        assert get_crs_display_name(None) == "None (OGC:CRS84)"
+    def test_none_reads_as_an_unknown_crs(self):
+        """An explicit ``crs: null`` means unknown, not the OGC:CRS84 default."""
+        assert get_crs_display_name(None) == "null (CRS unknown)"
 
     def test_string_crs(self):
         """Test string CRS is returned as-is."""

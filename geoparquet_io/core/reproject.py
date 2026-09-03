@@ -41,7 +41,7 @@ from geoparquet_io.core.remote import (
     validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import write_output
-from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
+from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -646,14 +646,11 @@ def _reproject_streaming(
     temp_sanitized = None
 
     try:
-        # If reading from stdin, write to temp file first
+        # If reading from stdin, write to temp file first. The shared bridge
+        # reconciles the stream's geo metadata with its schema on the way, so
+        # the temp file is one DuckDB will actually open (#722).
         if is_stdin(input_path):
-            if verbose:
-                debug("Reading Arrow IPC stream from stdin...")
-            table = read_arrow_stream()
-            temp_fd, temp_input_file = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-            pq.write_table(table, temp_input_file)
+            temp_input_file = read_stdin_to_temp_file(verbose)
             working_file = temp_input_file
         else:
             working_file = input_path

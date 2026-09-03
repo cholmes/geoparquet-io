@@ -23,6 +23,7 @@ Also verifies:
 
 import json
 import logging
+import struct
 
 import duckdb
 import pytest
@@ -189,6 +190,39 @@ def _make_bbox_column_file(path):
         )
     finally:
         con.close()
+
+
+def _make_two_geometry_columns(path):
+    """A file with a primary ``geometry`` and a secondary ``centroid`` column.
+
+    GeoParquet allows more than one geometry column, and a projection that keeps
+    the primary but drops the secondary leaves the ``geo`` metadata describing a
+    column that is no longer in the schema.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    col_meta = {
+        "encoding": "WKB",
+        "geometry_types": ["Point"],
+        "bbox": [1.0, 1.0, 2.0, 2.0],
+    }
+    geo = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": dict(col_meta), "centroid": dict(col_meta)},
+    }
+    table = pa.table(
+        {
+            "id": [1, 2],
+            "name": ["a", "b"],
+            "geometry": [_wkb_point(1, 1), _wkb_point(2, 2)],
+            "centroid": [_wkb_point(1, 1), _wkb_point(2, 2)],
+        }
+    )
+    pq.write_table(
+        table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")}), str(path)
+    )
 
 
 def _primary_col_meta(path):
@@ -481,12 +515,9 @@ class TestStreamingPathsInvalidateStats:
 
         assert _primary_col_meta(out).get("bbox") == [1.0, 1.0, 50.0, 50.0]
 
-    def test_stdout_stream_drops_stale_bbox(self, tmp_path, monkeypatch):
-        """Output to stdout carries schema metadata too — it must not lie."""
+    def _stream_to_stdout(self, monkeypatch, src, **overrides):
+        """Run a streaming extract to stdout and return the emitted Arrow table."""
         import geoparquet_io.core.stream_io as stream_io
-
-        src = tmp_path / "src.parquet"
-        _make_crs84_points(src)
 
         captured = {}
 
@@ -494,13 +525,50 @@ class TestStreamingPathsInvalidateStats:
             captured["table"] = table
 
         monkeypatch.setattr(stream_io, "write_arrow_stream", _capture)
+        self._stream_extract(src, None, **overrides)
+        return captured["table"]
 
-        self._stream_extract(src, None, where="id < 3")
+    def test_stdout_stream_recomputes_derived_stats(self, tmp_path, monkeypatch):
+        """Output to stdout carries schema metadata too — it must not lie.
 
-        geo = json.loads(captured["table"].schema.metadata[b"geo"].decode("utf-8"))
+        The stats are recomputed from the rows actually streamed, not carried
+        from the unfiltered input (bbox [1,1,3,3] here) and not left absent:
+        ``geometry_types`` is required by GeoParquet 1.1, and DuckDB refuses to
+        read a Parquet file whose ``geo`` metadata omits it, which is what broke
+        ``extract | add | partition`` (#722).
+        """
+        src = tmp_path / "src.parquet"
+        _make_crs84_points(src)
+
+        table = self._stream_to_stdout(monkeypatch, src, where="id < 3")
+
+        geo = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
         col = geo["columns"][geo["primary_column"]]
-        assert "bbox" not in col, f"stdout stream advertises a stale bbox: {col.get('bbox')}"
-        assert "geometry_types" not in col
+        assert col["bbox"] == [1.0, 1.0, 2.0, 2.0], "stdout stream advertises a stale bbox"
+        assert col["geometry_types"] == ["Point"]
+
+    def test_stdout_stream_prunes_dropped_geometry_column(self, tmp_path, monkeypatch):
+        """A projection that drops a secondary geometry column must drop its entry.
+
+        The file path prunes the geo metadata to the columns it actually writes;
+        the stream path did not, so an ``--include-cols`` that left ``centroid``
+        behind emitted a ``geo`` block naming a column no longer in the schema --
+        and, once the derived stats were stripped, one with no ``geometry_types``
+        either, which is exactly what DuckDB refuses to read (#722).
+        """
+        src = tmp_path / "two_geom.parquet"
+        _make_two_geometry_columns(src)
+
+        table = self._stream_to_stdout(
+            monkeypatch, src, include_cols=["id", "name", "geometry"], where="id < 3"
+        )
+
+        assert "centroid" not in table.column_names
+        geo = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+        assert set(geo["columns"]) <= set(table.column_names), (
+            f"geo metadata names absent columns: {sorted(set(geo['columns']))}"
+        )
+        assert geo["columns"]["geometry"]["geometry_types"] == ["Point"]
 
     def test_streaming_reproject(self, tmp_path):
         from geoparquet_io.core.reproject import _reproject_streaming
@@ -559,3 +627,105 @@ class TestMetadataPreservationWarns:
             "metadata" in rec.message.lower() and rec.levelno == logging.WARNING
             for rec in caplog.records
         ), f"expected a warning about skipped metadata; got {[r.message for r in caplog.records]}"
+
+
+def _wkb_point(x: float, y: float) -> bytes:
+    """Little-endian WKB for POINT (x y) -- no shapely dependency in tests."""
+    return struct.pack("<BIdd", 1, 1, x, y)
+
+
+class TestBackfillDerivedStats:
+    """Unit tests for the canonical backfill_derived_stats helper (#722).
+
+    ``strip_derived_stats`` drops the stats a filter or transform invalidated;
+    the write path is then responsible for recomputing them from the rows
+    actually written. The file writer already did. The Arrow IPC stream writer
+    did not, which left ``geometry_types`` -- REQUIRED by GeoParquet 1.1 --
+    absent from every piped stage after a filtered ``extract``.
+    """
+
+    def _geo_without_stats(self):
+        return {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB"}},
+        }
+
+    def _points_table(self):
+        """Points at (1,1) and (2,2), WKB-encoded, in a ``geometry`` column."""
+        import pyarrow as pa
+
+        return pa.table({"id": [1, 2], "geometry": [_wkb_point(1, 1), _wkb_point(2, 2)]})
+
+    def test_none_and_empty(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        table = self._points_table()
+        assert backfill_derived_stats(None, table) is None
+        assert backfill_derived_stats({}, table) == {}
+
+    def test_computes_both_stats_from_the_data(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        meta = {b"geo": json.dumps(self._geo_without_stats()).encode("utf-8")}
+        out = backfill_derived_stats(meta, self._points_table())
+
+        col = json.loads(out[b"geo"].decode("utf-8"))["columns"]["geometry"]
+        assert col["geometry_types"] == ["Point"]
+        assert col["bbox"] == [1.0, 1.0, 2.0, 2.0]
+        assert col["encoding"] == "WKB"
+
+    def test_does_not_mutate_the_input(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        meta = {"geo": self._geo_without_stats()}
+        backfill_derived_stats(meta, self._points_table())
+        assert "geometry_types" not in meta["geo"]["columns"]["geometry"]
+
+    def test_existing_stats_are_left_alone(self):
+        """Backfill only FILLS gaps -- it never second-guesses a present value."""
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        geo = self._geo_without_stats()
+        geo["columns"]["geometry"]["geometry_types"] = ["Polygon"]
+        geo["columns"]["geometry"]["bbox"] = [0.0, 0.0, 9.0, 9.0]
+        out = backfill_derived_stats({"geo": geo}, self._points_table())
+
+        col = out["geo"]["columns"]["geometry"]
+        assert col["geometry_types"] == ["Polygon"]
+        assert col["bbox"] == [0.0, 0.0, 9.0, 9.0]
+
+    def test_empty_table_gets_an_empty_type_list_and_no_bbox(self):
+        """Zero rows: [] means "any type" per spec; a bbox would be a lie."""
+        import pyarrow as pa
+
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        empty = pa.table({"id": pa.array([], pa.int64()), "geometry": pa.array([], pa.binary())})
+        out = backfill_derived_stats({"geo": self._geo_without_stats()}, empty)
+
+        col = out["geo"]["columns"]["geometry"]
+        assert col["geometry_types"] == []
+        assert "bbox" not in col
+
+    def test_column_absent_from_the_table_is_skipped(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        geo = self._geo_without_stats()
+        geo["columns"]["other_geom"] = {"encoding": "WKB"}
+        out = backfill_derived_stats({"geo": geo}, self._points_table())
+
+        assert "geometry_types" not in out["geo"]["columns"]["other_geom"]
+        assert out["geo"]["columns"]["geometry"]["geometry_types"] == ["Point"]
+
+    def test_unparseable_geo_left_alone(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        meta = {"geo": "not json at all"}
+        assert backfill_derived_stats(meta, self._points_table()) == meta
+
+    def test_malformed_columns_returns_equal_copy(self):
+        from geoparquet_io.core.geo_metadata import backfill_derived_stats
+
+        meta = {"geo": {"version": "1.1.0"}}  # no "columns"
+        assert backfill_derived_stats(meta, self._points_table()) == meta

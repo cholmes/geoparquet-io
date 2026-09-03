@@ -211,54 +211,44 @@ def collect_divergences() -> list[tuple[str, str, str, str, str]]:
 # --------------------------------------------------------------------------
 # Allowlist -- every entry needs a reason
 # --------------------------------------------------------------------------
+#
+# What is left here is deliberate, not deferred work: two groups where the CLI
+# and the API legitimately spell the same runtime behaviour with different
+# defaults, because one front end is handed a path and the other a live Table.
+# Do not "fix" them by aligning the literals -- that would change behaviour.
+#
+# A divergence that is a *bug* does not belong here. The partition
+# auto-resolution entries used to live in this dict claiming the CLI
+# auto-calculated a resolution when left unset; it never did -- it refused, and
+# it was the API that silently guessed (H3 9, quadkey 13/6, S2 13, A5 15). That
+# was closed in #762 by giving the API the same `auto=True` the CLI has, not by
+# writing a better excuse.
 
-_AUTO_RESOLUTION = (
-    "CLI unset = auto-calculate the resolution from the file on disk; the API is handed an "
-    "in-memory table and falls back to the documented default"
+_GEOMETRY_COLUMN_FROM_TABLE = (
+    "Intentional. The CLI is handed a path and names the conventional column; the API is handed "
+    "a Table that already tracks its own geometry column, so None means 'use that one'. Pinning "
+    "the API to 'geometry' would break every table whose column is named something else."
 )
 _KEEP_TRISTATE = (
-    "CLI flag False and API None both mean 'follow hive'; the API adds an explicit-drop option "
-    "the CLI flag cannot express"
+    "Intentional. CLI flag False and API None both mean 'follow hive' at runtime; the API spells "
+    "it as a tri-state so it can also express an explicit drop, which a bare Click flag cannot."
 )
 
 KNOWN_DIVERGENCES: dict[tuple[str, str, str, str, str], str] = {
-    ("partition a5", "Table.partition_by_a5", "resolution", "'<unset>'", "15"): _AUTO_RESOLUTION,
-    ("partition h3", "Table.partition_by_h3", "resolution", "'<unset>'", "9"): _AUTO_RESOLUTION,
-    (
-        "partition quadkey",
-        "Table.partition_by_quadkey",
-        "partition_resolution",
-        "'<unset>'",
-        "6",
-    ): _AUTO_RESOLUTION,
-    (
-        "partition quadkey",
-        "Table.partition_by_quadkey",
-        "resolution",
-        "'<unset>'",
-        "13",
-    ): _AUTO_RESOLUTION,
-    ("partition s2", "Table.partition_by_s2", "level", "'<unset>'", "13"): _AUTO_RESOLUTION,
     (
         "sort hilbert",
         "ops.sort_hilbert",
         "geometry_column",
         "'geometry'",
         "'<unset>'",
-    ): (
-        "CLI reads a file and names the conventional column; the API holds a Table that already "
-        "tracks its geometry column, so None means 'use that one'"
-    ),
+    ): _GEOMETRY_COLUMN_FROM_TABLE,
     (
         "sort str",
         "ops.sort_str",
         "geometry_column",
         "'geometry'",
         "'<unset>'",
-    ): (
-        "CLI reads a file and names the conventional column; the API holds a Table that already "
-        "tracks its geometry column, so None means 'use that one'"
-    ),
+    ): _GEOMETRY_COLUMN_FROM_TABLE,
     (
         "partition a5",
         "Table.partition_by_a5",

@@ -154,7 +154,7 @@ passed at 2.0.
 Checks row group size optimization for cloud-native access.
 
 !!! tip "Spatial filter pushdown and row group sizing"
-    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, row groups of 10,000-50,000 rows create tighter bounding boxes that enable more row group skipping during spatial queries.
+    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, row groups of 10,000-50,000 rows create tighter bounding boxes that enable more row group skipping during spatial queries. The `gpio sort` commands default to 50,000 rows per group, the top of that band, so a freshly sorted file already sits inside it.
 
 ### Optimization Check
 
@@ -273,6 +273,17 @@ Validates file structure and metadata against the GeoParquet specification:
   the `covering` key that 1.1 introduced, is flagged as inconsistent.
 - **CRS structure** — PROJJSON `crs` objects must carry the required `type`
   member, and it must be a known PROJJSON CRS type.
+- **A null CRS is unknown, not the default** — omitting the `crs` key means
+  OGC:CRS84, but an explicit `"crs": null` says the CRS is *unknown*, and the
+  two are checked as the different claims they are. A null `crs` always warns.
+  In a GeoParquet 2.0 file it also has to be declared on both carriers: pairing
+  `"crs": null` with a Parquet geo type that names no CRS fails
+  `v2_crs_consistency`, because the Parquet type's own default is OGC:CRS84.
+  The spec's pairing for an unknown CRS is `"crs": null` in the geo metadata
+  *and* the string `srid:0` in the Parquet logical type; written that way, the
+  file passes. If the coordinates really are lon/lat WGS84, drop the null
+  instead: `gpio convert reproject in.parquet out.parquet --assume-crs84`
+  writes the default (see [convert](../cli/convert.md)).
 - **Datum-aware epoch validation** — a coordinate `epoch` on a datum ensemble
   (e.g. EPSG:4326, or the OGC:CRS84 default when `crs` is omitted) fails; on a
   specific static frame (e.g. GDA2020) it warns; on a dynamic frame (e.g. ITRF)

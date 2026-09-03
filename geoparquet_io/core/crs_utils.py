@@ -8,9 +8,157 @@ CRS information from GeoParquet files and other spatial formats.
 import json
 import os
 from functools import lru_cache
+from typing import Any
 
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.logging_config import debug, warn
+
+
+class _CrsAbsent:
+    """Type of :data:`CRS_ABSENT`. Singleton, falsy, with a readable repr."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __bool__(self) -> bool:
+        # Call sites guard with ``if crs:`` all over the codebase; an absent CRS
+        # must stay falsy so substituting the sentinel for None cannot flip one.
+        return False
+
+    def __repr__(self) -> str:
+        return "CRS_ABSENT"
+
+
+#: Marker for a geometry column that has **no** ``crs`` key at all.
+#:
+#: The GeoParquet spec gives the two shapes different meanings: an omitted
+#: ``crs`` defaults to OGC:CRS84, while an explicit ``"crs": null`` means the
+#: CRS is *unknown*. Both collapse to ``None`` under ``col_meta.get("crs")``,
+#: so any helper that must tell them apart takes this sentinel for the first
+#: case and ``None`` for the second. Extract with :func:`crs_from_column_meta`.
+CRS_ABSENT = _CrsAbsent()
+
+
+def crs_from_column_meta(col_meta: dict | None) -> Any:
+    """Read a geometry column's ``crs``, preserving absent-vs-explicit-null.
+
+    Returns :data:`CRS_ABSENT` when the key is missing (the OGC:CRS84 default),
+    ``None`` when it is present and null (CRS unknown), else the value itself.
+
+    Use this instead of ``col_meta.get("crs")`` at every call site that feeds a
+    CRS comparison helper — ``.get`` erases the distinction the helpers need.
+    """
+    if not isinstance(col_meta, dict) or "crs" not in col_meta:
+        return CRS_ABSENT
+    return col_meta["crs"]
+
+
+#: Authority ids that name the GeoParquet default CRS.
+#:
+#: OGC:CRS84 and EPSG:4326 differ only in axis order, and GeoParquet fixes the
+#: stored coordinate order to (x, y) regardless of what the CRS itself declares.
+#: The two therefore describe the same coordinates in every GeoParquet file, so
+#: comparison helpers must not report them as different CRSs. Normalized to
+#: upper-case strings because a PROJJSON ``code`` may be an int or a str.
+_CRS84_EQUIVALENT_IDS = frozenset({("OGC", "CRS84"), ("EPSG", "4326")})
+
+
+def is_crs84_identifier(identifier: tuple[Any, Any] | None) -> bool:
+    """True when an ``(authority, code)`` pair names the OGC:CRS84 default.
+
+    Accepts the output of :func:`_extract_crs_identifier` (code may be int or
+    str) as well as ``None``.
+    """
+    if not isinstance(identifier, tuple) or len(identifier) != 2:
+        return False
+    authority, code = identifier
+    return (str(authority).upper(), str(code).upper()) in _CRS84_EQUIVALENT_IDS
+
+
+def _parse_crs_value(crs):
+    """Normalize a CRS that may arrive as a PROJJSON string (from a logical type)."""
+    if isinstance(crs, str):
+        stripped = crs.strip()
+        if stripped.startswith("{"):
+            try:
+                return json.loads(stripped)
+            except (ValueError, TypeError):
+                return crs
+    return crs
+
+
+def _is_ogc_crs84(crs) -> bool:
+    """Check if CRS is OGC:CRS84.
+
+    The two "no CRS value" shapes get opposite answers, per the spec: an
+    absent ``crs`` key (:data:`CRS_ABSENT`) *is* the OGC:CRS84 default, while an
+    explicit ``"crs": null`` (``None``) means the CRS is unknown.
+    """
+    if crs is CRS_ABSENT:
+        return True  # Omitted crs key -> the OGC:CRS84 default
+
+    if crs is None:
+        return False  # Explicit crs: null -> unknown CRS, not the default
+
+    if isinstance(crs, dict):
+        crs_id = crs.get("id", {})
+        if isinstance(crs_id, dict):
+            # str() guards against malformed metadata with non-string values
+            authority = str(crs_id.get("authority", "")).upper()
+            code = str(crs_id.get("code", "")).upper()
+            return authority == "OGC" and code == "CRS84"
+
+    return False
+
+
+def _is_crs84_equivalent(crs) -> bool:
+    """True when a declared CRS is the spec default (OGC:CRS84) or its lon/lat twin.
+
+    GeoParquet fixes coordinate order to (x, y) regardless of the CRS's own
+    axis definition, so EPSG:4326 metadata describes the same coordinates as
+    the OGC:CRS84 default.
+
+    Pass :data:`CRS_ABSENT` for a column with no ``crs`` key (the default, so
+    True) and ``None`` for an explicit ``"crs": null`` (unknown CRS, so False).
+
+    This is *the* "is this value the default CRS?" predicate. Both comparison
+    helpers (``validate._crs_equals`` and ``inspect_utils._crs_are_equivalent``)
+    resolve their absent branch through it, so it lives here rather than in
+    either of them — they used to call different predicates and disagreed on
+    id-less CRS84 PROJJSON and on the ``"SRID:4326"`` spelling.
+    """
+    crs = _parse_crs_value(crs)
+    if _is_ogc_crs84(crs):
+        return True
+    if isinstance(crs, dict):
+        crs_id = crs.get("id", {})
+        if isinstance(crs_id, dict) and crs_id:
+            return is_crs84_identifier((crs_id.get("authority", ""), crs_id.get("code", "")))
+        # No id member (allowed in PROJJSON): fall back to a semantic
+        # comparison. Axis order is ignored because GeoParquet fixes
+        # coordinate order to (x, y) regardless of the CRS definition.
+        try:
+            from pyproj import CRS as PyprojCRS
+
+            return PyprojCRS.from_json_dict(crs).equals(
+                PyprojCRS.from_user_input("OGC:CRS84"), ignore_axis_order=True
+            )
+        except Exception:
+            return False
+    if isinstance(crs, str):
+        return crs.strip().upper() in (
+            "OGC:CRS84",
+            "EPSG:4326",
+            "SRID:4326",
+            "URN:OGC:DEF:CRS:OGC:1.3:CRS84",
+            "URN:OGC:DEF:CRS:OGC::CRS84",
+            "URN:OGC:DEF:CRS:EPSG::4326",
+        )
+    return False
 
 
 def _extract_crs_identifier(crs_info):
@@ -174,6 +322,127 @@ def apply_target_crs_to_geo_meta(geo_meta: dict, geom_col: str, target_crs: str,
         columns[geom_col].pop("crs", None)
     else:
         columns[geom_col]["crs"] = parse_crs_string_to_projjson(target_crs, con)
+
+
+# CRS type values allowed by the PROJJSON v0.7 schema's "crs" definition.
+# validate.py's crs check reads the same set, so a CRS gpio writes and a CRS
+# gpio validates can never disagree about what counts as PROJJSON.
+PROJJSON_CRS_TYPES = frozenset(
+    {
+        "GeodeticCRS",
+        "GeographicCRS",
+        "ProjectedCRS",
+        "VerticalCRS",
+        "CompoundCRS",
+        "BoundCRS",
+        "EngineeringCRS",
+        "ParametricCRS",
+        "TemporalCRS",
+        "DerivedGeodeticCRS",
+        "DerivedGeographicCRS",
+        "DerivedProjectedCRS",
+        "DerivedVerticalCRS",
+        "DerivedEngineeringCRS",
+        "DerivedParametricCRS",
+        "DerivedTemporalCRS",
+    }
+)
+
+
+# PROJJSON members that define a CRS rather than merely identify or annotate it.
+# A type-less dict carrying any of these is not repaired from its id (see
+# normalize_projjson_crs): the body may contradict the id.
+_CRS_DEFINING_MEMBERS = frozenset(
+    {"datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "components"}
+)
+
+
+def _projjson_authority_code(crs: dict) -> tuple[str, str] | None:
+    """Return the ``(authority, code)`` of a PROJJSON ``id`` member, if it has one."""
+    crs_id = crs.get("id")
+    if not isinstance(crs_id, dict):
+        return None
+    authority = crs_id.get("authority")
+    code = crs_id.get("code")
+    if authority in (None, "") or code in (None, ""):
+        return None
+    return str(authority), str(code)
+
+
+@lru_cache(maxsize=64)
+def _projjson_from_authority(authority: str, code: str) -> str | None:
+    """Canonical PROJJSON (as a JSON string, for caching) for an authority code."""
+    try:
+        from pyproj import CRS
+
+        return json.dumps(CRS.from_authority(authority, code).to_json_dict())
+    except Exception:  # unknown authority/code, or no PROJ database entry
+        return None
+
+
+def normalize_projjson_crs(crs, source_description: str):
+    """Return a CRS that is valid PROJJSON, repairing or rejecting one that is not.
+
+    gpio copies an input's CRS straight into the file it writes. A CRS that is
+    not valid PROJJSON therefore becomes an invalid *output* — a file gpio's own
+    ``check spec`` rejects (#705). Rather than pass the defect on:
+
+    * valid PROJJSON (and anything that is not a CRS object, e.g. a
+      ``"EPSG:3857"`` string resolved elsewhere) is returned untouched;
+    * PROJJSON missing only the required ``"type"`` member, carrying an ``id``
+      that resolves to a real CRS and no CRS definition of its own, is repaired
+      from that authority code — the id names the CRS unambiguously, so nothing
+      is guessed;
+    * anything else raises, naming the input and the CRS it could not make sense
+      of, so the user gets an error instead of a silently invalid file.
+
+    ``source_description`` is the input path, quoted back to the user in errors.
+    """
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    if not isinstance(crs, dict):
+        return crs
+
+    crs_type = crs.get("type")
+    if crs_type in PROJJSON_CRS_TYPES:
+        return crs
+
+    authority_code = _projjson_authority_code(crs)
+    name = crs.get("name")
+    described = f"{authority_code[0]}:{authority_code[1]}" if authority_code else "no id"
+    if name:
+        described = f"{described}, name {name!r}"
+
+    # Rebuilding from the id is only safe when the id is all the dict carries:
+    # a body with its own CRS definition (datum, conversion, ...) may contradict
+    # the id, and replacing it with the authority's definition would silently
+    # relabel the data. Those are rejected below instead.
+    defining_members = _CRS_DEFINING_MEMBERS.intersection(crs)
+    if crs_type is None and authority_code is not None and not defining_members:
+        repaired = _projjson_from_authority(*authority_code)
+        if repaired is not None:
+            warn(
+                f'CRS ({described}) carries no PROJJSON "type" member; '
+                f"rebuilt it from {authority_code[0]}:{authority_code[1]}"
+            )
+            return json.loads(repaired)
+
+    if crs_type is None and defining_members:
+        problem = (
+            'is missing the required PROJJSON "type" member, and carries its own '
+            f"CRS definition ({', '.join(sorted(defining_members))}) that gpio "
+            "will not overwrite from the id"
+        )
+    elif crs_type is None:
+        problem = 'is missing the required PROJJSON "type" member'
+    else:
+        problem = f"has unknown PROJJSON type {crs_type!r}"
+    raise GeoParquetError(
+        f"CRS in {source_description} {problem} ({described}), and could not be "
+        "repaired from its identifier. Writing it through would produce a "
+        "GeoParquet file that 'gpio check spec' rejects. Fix the CRS in the "
+        "input, or re-export it from a tool that writes valid PROJJSON."
+    )
 
 
 def _validate_projjson(crs: dict) -> bool:
@@ -476,8 +745,15 @@ def _format_crs_display(crs):
 
 def get_crs_display_name(crs_info: dict | str | None) -> str:
     """Get human-readable CRS name with authority code."""
+    if crs_info is CRS_ABSENT:
+        return "OGC:CRS84 (default)"
+
+    # An explicit ``"crs": null`` means the CRS is *unknown*, not the default —
+    # the opposite of CRS_ABSENT above. This string renders inside validation
+    # failure details, where calling it OGC:CRS84 makes the message contradict
+    # the failure it explains.
     if crs_info is None:
-        return "None (OGC:CRS84)"
+        return "null (CRS unknown)"
 
     if isinstance(crs_info, str):
         return crs_info
@@ -499,7 +775,12 @@ def get_crs_display_name(crs_info: dict | str | None) -> str:
 
 def is_geographic_crs(crs: dict | str | None) -> bool:
     """Check if CRS is geographic (lat/lon) vs projected."""
-    if crs is None:
+    # No crs key at all means the OGC:CRS84 default, which is geographic. An
+    # explicit null (unknown CRS) is answered the same way deliberately, for the
+    # reason ``validate._get_crs_bounds`` gives: callers use this to sanity-check
+    # coordinates, and lon/lat is the only guess worth making about an unknown
+    # CRS. The null itself is reported by validate's ``_check_crs_valid``.
+    if crs is CRS_ABSENT or crs is None:
         return True
 
     if isinstance(crs, dict):

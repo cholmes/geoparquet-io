@@ -232,7 +232,7 @@ def sort_str(
         tile_size: Roughly the rows you intend to put in a row group. STR uses
             it only to choose the number of X strips, as
             ``ceil(sqrt(num_rows / tile_size))``, so it is a coarse control
-            rather than an exact tile capacity (default: 100,000)
+            rather than an exact tile capacity (default: 50,000)
 
     Returns:
         New table with rows reordered into spatially compact tiles
@@ -257,6 +257,10 @@ def extract(
     """
     Extract columns and rows with optional filtering.
 
+    Column names are validated against the schema: an unknown name raises rather
+    than being silently ignored, and a name may not appear in both ``columns``
+    and ``exclude_columns`` (geometry and bbox excepted).
+
     Args:
         table: Input PyArrow Table
         columns: Columns to include (None = all)
@@ -268,7 +272,14 @@ def extract(
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
     Returns:
-        Filtered table
+        Filtered table. Excluding every geometry column yields an attribute
+        table whose ``geo`` metadata is dropped, since it is no longer
+        GeoParquet.
+
+    Raises:
+        InvalidParameterError: If a requested column does not exist, if a column
+            is in both lists, or if ``bbox`` is used on a table with no geometry
+            column.
     """
     return extract_table(
         table,

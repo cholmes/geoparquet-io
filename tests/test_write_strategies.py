@@ -1185,3 +1185,123 @@ class TestCompressionLevelValidation:
                 compression_level="1; DROP TABLE t",
                 verbose=False,
             )
+
+
+class TestDuckDBKVGeoarrowFieldMetadata:
+    """geoarrow.wkb carried in field metadata, not in the Arrow type (#727).
+
+    ``geoarrow.pyarrow`` registers its extension types process-globally on
+    import, so the same WKB column reaches the writer either as a resolved
+    ``geoarrow.wkb`` extension type or as plain ``large_binary`` whose *field*
+    metadata carries ``ARROW:extension:name``. DuckDB honours that metadata on
+    ``register()`` and presents the column as ``GEOMETRY`` either way, so the
+    ``ST_GeomFromWKB`` wrapper has to be skipped in both shapes -- wrapping a
+    GEOMETRY is a binder error, which is what ``Table.add_kdtree().write()``
+    used to hit.
+    """
+
+    @staticmethod
+    def _table_with_metadata_only_extension():
+        wkb_point = (
+            b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\x00@"
+        )
+        geometry = pa.field(
+            "geometry",
+            pa.large_binary(),
+            metadata={
+                b"ARROW:extension:name": b"geoarrow.wkb",
+                b"ARROW:extension:metadata": b"{}",
+            },
+        )
+        schema = pa.schema([pa.field("id", pa.int64()), geometry])
+        return pa.table(
+            {"id": [1, 2, 3], "geometry": [wkb_point, wkb_point, wkb_point]},
+            schema=schema,
+        )
+
+    def test_write_from_table_with_metadata_only_extension(self, output_file):
+        """A metadata-carried geoarrow.wkb column writes without a binder error."""
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
+
+        strategy.write_from_table(
+            table=self._table_with_metadata_only_extension(),
+            output_path=output_file,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=15,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        result = pq.read_table(output_file)
+        assert result.num_rows == 3
+        assert b"geo" in (result.schema.metadata or {})
+
+
+class TestDuckDBArrowExtensionTypeMapping:
+    """Pin the Arrow -> DuckDB type mapping the writers infer rather than ask about.
+
+    ``duckdb_kv.write_from_table`` and ``disk_rewrite.write_from_table`` decide
+    whether to wrap the geometry column in ``ST_GeomFromWKB`` by reading the
+    Arrow extension name themselves, mirroring what DuckDB does on
+    ``register()`` instead of asking DuckDB. That mirror is only correct while
+    the mapping below holds, and a silent change to it would turn back into the
+    binder error of #727 (wrapping a GEOMETRY) or its inverse (feeding raw WKB
+    bytes to a spatial function that wants GEOMETRY).
+
+    So assert the mapping directly, with the same field-metadata carrier shape
+    the writers see: an unresolved ``ARROW:extension:name``, which is what
+    arrives whenever nothing in the process registered ``geoarrow.pyarrow``.
+    """
+
+    WKB_POINT = struct.pack("<BI2d", 1, 1, 1.0, 2.0)
+
+    @staticmethod
+    def _duckdb_type_for(extension_name, arrow_type, values):
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+
+        metadata = (
+            {
+                b"ARROW:extension:name": extension_name.encode(),
+                b"ARROW:extension:metadata": b"{}",
+            }
+            if extension_name
+            else None
+        )
+        schema = pa.schema([pa.field("g", arrow_type, metadata=metadata)])
+        table = pa.table({"g": pa.array(values, type=arrow_type)}, schema=schema)
+
+        con = get_duckdb_connection(load_spatial=True)
+        try:
+            con.register("probe", table)
+            return con.execute("DESCRIBE SELECT * FROM probe").fetchall()[0][1]
+        finally:
+            con.close()
+
+    @pytest.mark.parametrize("storage", [pa.binary(), pa.large_binary()])
+    def test_geoarrow_wkb_registers_as_geometry(self, storage):
+        """Both WKB storage widths become GEOMETRY -- so ST_GeomFromWKB must be skipped."""
+        assert self._duckdb_type_for("geoarrow.wkb", storage, [self.WKB_POINT]) == "GEOMETRY"
+
+    def test_ogc_wkb_registers_as_blob(self):
+        """``ogc.wkb`` is NOT promoted, so it still needs the ST_GeomFromWKB wrapper.
+
+        This is why the writers compare against ``geoarrow.wkb`` exactly rather
+        than testing "has any WKB extension name".
+        """
+        assert self._duckdb_type_for("ogc.wkb", pa.binary(), [self.WKB_POINT]) == "BLOB"
+
+    def test_geoarrow_wkt_registers_as_varchar(self):
+        assert self._duckdb_type_for("geoarrow.wkt", pa.string(), ["POINT (1 2)"]) == "VARCHAR"
+
+    def test_geoarrow_point_registers_as_struct(self):
+        """A native nested carrier stays a STRUCT: not GEOMETRY, and not WKB bytes."""
+        point_type = pa.struct([pa.field("x", pa.float64()), pa.field("y", pa.float64())])
+        duckdb_type = self._duckdb_type_for("geoarrow.point", point_type, [{"x": 1.0, "y": 2.0}])
+        assert duckdb_type.startswith("STRUCT")
+
+    def test_unmarked_binary_registers_as_blob(self):
+        """No marker means no promotion -- the baseline the wrapper is written for."""
+        assert self._duckdb_type_for(None, pa.binary(), [self.WKB_POINT]) == "BLOB"

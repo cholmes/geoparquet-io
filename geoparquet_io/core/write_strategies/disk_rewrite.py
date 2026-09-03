@@ -25,7 +25,11 @@ from geoparquet_io.core.duckdb_utils import (
     quote_identifier,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
-from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, build_geo_metadata
+from geoparquet_io.core.write_strategies.base import (
+    BaseWriteStrategy,
+    arrow_extension_name,
+    build_geo_metadata,
+)
 from geoparquet_io.core.write_strategies.row_group_sizing import (
     _resolve_row_group_rows,
     _resolve_row_group_rows_for_table,
@@ -230,11 +234,18 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         try:
             con.register("input_table", table)
 
-            # Convert WKB bytes to GEOMETRY for proper spatial processing
-            query = f"""
-                SELECT * REPLACE (ST_GeomFromWKB({quote_identifier(geometry_column)}) AS {quote_identifier(geometry_column)})
-                FROM input_table
-            """
+            # Convert WKB bytes to GEOMETRY for proper spatial processing.
+            # A geoarrow.wkb column already registers as GEOMETRY, and
+            # ST_GeomFromWKB(GEOMETRY) is a binder error -- in either shape the
+            # extension name arrives in, resolved on the Arrow type or carried
+            # in the field metadata (#727).
+            if arrow_extension_name(table.schema.field(geometry_column)) == "geoarrow.wkb":
+                query = "SELECT * FROM input_table"
+            else:
+                query = f"""
+                    SELECT * REPLACE (ST_GeomFromWKB({quote_identifier(geometry_column)}) AS {quote_identifier(geometry_column)})
+                    FROM input_table
+                """
 
             self.write_from_query(
                 con=con,
