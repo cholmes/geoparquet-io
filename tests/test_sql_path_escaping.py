@@ -382,9 +382,10 @@ class TestApostropheInOutputPath:
 class TestSqlPathLiteralRatchet:
     """The pre-commit ratchet that stops new hand-written ``FROM '{path}'``.
 
-    54 of the existing sites interpolate an already-escaped ``safe_file_url``
+    Most of the existing sites interpolate an already-escaped ``safe_file_url``
     result and are correct, so a flat ban would demand an unreviewable rewrite.
-    The ratchet records each file's count and fails only when one goes up.
+    The ratchet records each file's count and fails only when one goes up --
+    counting real call sites only, never prose.
     """
 
     @staticmethod
