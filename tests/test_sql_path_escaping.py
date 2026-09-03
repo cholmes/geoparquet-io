@@ -179,6 +179,29 @@ class TestCliCommandsOnApostrophePath:
         assert result.exit_code == 0, result.output
         assert "bbox" in pq.read_schema(out).names
 
+    def test_add_kdtree_succeeds(self, apostrophe_file, tmp_path):
+        """Not just ``--dry-run``: the migrated SQL has to actually execute.
+
+        Both the input and the output path contain the apostrophe, so a missed
+        escape on either side fails here (#802).
+        """
+        out = str(tmp_path / "o'brien" / "kdtree.parquet")
+        runner = CliRunner()
+        result = runner.invoke(add, ["kdtree", apostrophe_file, out, "--partitions", "4"])
+
+        assert result.exit_code == 0, result.output
+        assert "kdtree_cell" in pq.read_schema(out).names
+        assert pq.read_metadata(out).num_rows == 10
+
+    def test_add_quadkey_succeeds(self, apostrophe_file, tmp_path):
+        out = str(tmp_path / "o'brien" / "quadkey.parquet")
+        runner = CliRunner()
+        result = runner.invoke(add, ["quadkey", apostrophe_file, out])
+
+        assert result.exit_code == 0, result.output
+        assert "quadkey" in pq.read_schema(out).names
+        assert pq.read_metadata(out).num_rows == 10
+
     @pytest.mark.parametrize("fmt", ["geojson", "csv"])
     def test_convert_succeeds(self, apostrophe_file, tmp_path, fmt):
         out = str(tmp_path / "o'brien" / f"out.{fmt}")
@@ -206,6 +229,16 @@ class TestSqlPath:
         finally:
             con.close()
         assert rows[0] == 10
+
+    def test_accepts_a_pathlib_path(self, apostrophe_file):
+        """Callers hold ``Path`` objects as often as strings.
+
+        ``_escape_sql_string`` calls ``str.replace``, which on a ``Path`` is the
+        completely unrelated *filesystem rename*, so a ``Path`` argument used to
+        raise ``TypeError`` (or, worse, move a file) instead of being escaped.
+        """
+        assert sql_path(Path(apostrophe_file)) == sql_path(apostrophe_file)
+        assert sql_path(Path("/tmp/it's_data.parquet")) == "'/tmp/it''s_data.parquet'"
 
     def test_takes_a_raw_path_not_a_safe_file_url_result(self, apostrophe_file):
         """The contract is RAW in.
@@ -611,8 +644,8 @@ def _make_countries_file(source_parquet, dest):
     con = get_duckdb_connection(load_spatial=True)
     try:
         con.execute(
-            f"COPY (SELECT geometry, 'US' AS country_code FROM {sql_path(str(source_parquet))}) "
-            f"TO {sql_path(str(dest))} (FORMAT PARQUET)"
+            f"COPY (SELECT geometry, 'US' AS country_code FROM {sql_path(source_parquet)}) "
+            f"TO {sql_path(dest)} (FORMAT PARQUET)"
         )
     finally:
         con.close()
@@ -706,6 +739,40 @@ class TestBboxMetadataNativeGeometryProbe:
             con.execute(f'COPY (SELECT 1 AS "it\'s_geom") TO {sql_path(path)} (FORMAT PARQUET)')
             # No ParserException, and an INTEGER column is not native geometry.
             assert _detect_native_geometry(con, path, "it's_geom") is False
+        finally:
+            con.close()
+
+
+class TestAggregateByAdminSource:
+    """``_get_admin_ref`` interpolates a per-level admin source path.
+
+    That path is either the user's ``--dataset-source`` or a cache file under
+    the user's home directory, so an apostrophe in *either* -- a home directory
+    called ``/Users/o'brien`` is enough -- crashed ``process aggregate admin``
+    with a ``ParserException``.
+    """
+
+    def test_per_level_source_is_escaped(self, apostrophe_file):
+        from geoparquet_io.core.admin_datasets import AdminDatasetFactory
+        from geoparquet_io.core.process.aggregate.by_admin import _get_admin_ref
+
+        dataset = AdminDatasetFactory.create("overture", source_path=apostrophe_file)
+        assert dataset.supports_per_level_sources()
+
+        ref = _get_admin_ref(dataset, None, "country")
+
+        assert ref == f"read_parquet({sql_path(apostrophe_file)})"
+
+    def test_per_level_source_ref_is_runnable_sql(self, apostrophe_file):
+        from geoparquet_io.core.admin_datasets import AdminDatasetFactory
+        from geoparquet_io.core.process.aggregate.by_admin import _get_admin_ref
+
+        dataset = AdminDatasetFactory.create("overture", source_path=apostrophe_file)
+        ref = _get_admin_ref(dataset, None, "country")
+
+        con = get_duckdb_connection(load_spatial=False)
+        try:
+            assert con.execute(f"SELECT count(*) FROM {ref}").fetchone()[0] == 10
         finally:
             con.close()
 

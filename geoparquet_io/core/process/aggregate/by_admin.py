@@ -12,6 +12,7 @@ from geoparquet_io.core.crs_utils import extract_crs_from_parquet
 from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
     validate_where_clause,
     where_sql_fragment,
 )
@@ -50,10 +51,14 @@ def _get_admin_ref(dataset, con, level: str) -> str:
     For datasets with per-level caches (Overture), uses the pre-filtered
     level-specific cache file directly.  For others, falls back to the
     generic prepare_data_source + read_parquet options path.
+
+    ``get_source_for_level`` returns a RAW path -- the user's
+    ``--dataset-source`` or a cache file under the user's home directory -- so
+    :func:`sql_path` quotes and escapes it here (#802).
     """
     if dataset.supports_per_level_sources():
         path = dataset.get_source_for_level(level)
-        return f"read_parquet('{path}')"
+        return f"read_parquet({sql_path(path)})"
     admin_source = dataset.prepare_data_source(con)
     admin_ref: str = _build_admin_table_reference(dataset, admin_source)
     return admin_ref

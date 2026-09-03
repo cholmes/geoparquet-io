@@ -23,7 +23,6 @@
 4 geoparquet_io/core/partition/common.py
 2 geoparquet_io/core/partition/reader.py
 2 geoparquet_io/core/partition/staging.py
-1 geoparquet_io/core/process/aggregate/by_admin.py
 1 geoparquet_io/core/process/aggregate/common.py
 2 geoparquet_io/core/process/aggregate/grid_common.py
 1 geoparquet_io/core/process/overview/detect.py

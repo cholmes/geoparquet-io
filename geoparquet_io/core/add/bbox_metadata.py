@@ -414,7 +414,7 @@ def add_bbox_metadata(
 
         copy_sql = f"""
             COPY ({source_query})
-            TO {sql_path(str(temp_file))}
+            TO {sql_path(temp_file)}
             ({", ".join(copy_options)})
         """
 

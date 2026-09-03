@@ -288,7 +288,7 @@ class AdminDataset(ABC):
                     query = f"SELECT * FROM read_parquet({sql_path(source)})"
 
                 # Write to cache
-                con.execute(f"COPY ({query}) TO {sql_path(str(cache_path))} (FORMAT PARQUET)")
+                con.execute(f"COPY ({query}) TO {sql_path(cache_path)} (FORMAT PARQUET)")
             finally:
                 con.close()
 
@@ -865,7 +865,7 @@ class OvertureAdminDataset(AdminDataset):
 
                     query = self._build_level_cache_query(level, source)
                     con.execute(
-                        f"COPY ({query}) TO {sql_path(str(cache_path))} "
+                        f"COPY ({query}) TO {sql_path(cache_path)} "
                         "(FORMAT PARQUET, COMPRESSION ZSTD)"
                     )
                     info(f"Cached {level} dataset at: {cache_path}")
