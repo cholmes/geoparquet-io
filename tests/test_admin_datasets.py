@@ -181,15 +181,23 @@ class TestOvertureAdminDataset:
 
     def test_get_subtype_filter(self):
         dataset = OvertureAdminDataset()
-        # Test with country level
+        # The country level spans both of Overture's sovereign classes, so
+        # dependent territories are attributed rather than left NULL (#819).
         filter_country = dataset.get_subtype_filter(["country"])
-        assert filter_country == "subtype IN ('country')"
+        assert filter_country == "subtype IN ('country', 'dependency')"
 
         # Test with both levels
         filter_both = dataset.get_subtype_filter(["country", "region"])
         assert "country" in filter_both
+        assert "dependency" in filter_both
         assert "region" in filter_both
         assert "subtype IN" in filter_both
+
+    def test_get_subtype_filter_does_not_duplicate_subtypes(self):
+        """Overlapping level requests must not emit a subtype twice."""
+        dataset = OvertureAdminDataset()
+        filter_both = dataset.get_subtype_filter(["country", "region"])
+        assert filter_both == "subtype IN ('country', 'dependency', 'region')"
 
     def test_get_column_transform_region(self):
         """Test that region level returns SQL transformation for Vecorel compliance."""
@@ -256,7 +264,7 @@ class TestOvertureAdminDataset:
             query = dataset._build_level_cache_query(level, "s3://example/*")
             assert "is_land IS NOT FALSE" in query, f"{level} cache must filter to land"
             assert "is_land = true" not in query, f"{level} must not drop NULL is_land"
-            assert f"subtype = '{level}'" in query
+            assert f"'{level}'" in query and "subtype IN (" in query
 
     def test_per_level_cache_query_excludes_disputed_countries(self):
         """Country cache still excludes disputed (X*) territories and Antarctica."""
@@ -272,12 +280,104 @@ class TestOvertureAdminDataset:
         with pytest.raises(ValueError, match="cache config"):
             dataset._build_level_cache_query("locality", "s3://example/*")
 
+    def test_country_cache_query_includes_dependencies(self):
+        """Overture files dependent territories (French Guiana, Puerto Rico,
+        Reunion, Greenland, Hong Kong, ...) under ``subtype = 'dependency'``,
+        not ``'country'``. They carry ISO 3166-1 alpha-2 codes, so the country
+        level must take both classes or those territories get NULL -> 'ZZ'
+        (#819).
+        """
+        dataset = OvertureAdminDataset()
+        query = dataset._build_level_cache_query("country", "s3://example/*")
+        assert "'dependency'" in query
+        assert "'country'" in query
+        assert "subtype IN (" in query
+
+    def test_region_cache_query_excludes_dependencies(self):
+        """Only the country level widens: a dependency is not a region, and
+        pulling it in would put a country-shaped polygon in the region cache.
+        """
+        dataset = OvertureAdminDataset()
+        query = dataset._build_level_cache_query("region", "s3://example/*")
+        assert "'dependency'" not in query
+        assert "'region'" in query
+
+    def test_cached_path_distinguishes_dependency_aware_country_cache(self):
+        """A country cache built before #819 holds no dependency polygons, so
+        the cache key must change or the fix is invisible to existing users.
+        The region cache is unaffected and must keep its key (no needless
+        ~1GB re-download).
+        """
+        dataset = OvertureAdminDataset()
+        country = dataset.get_cached_path_for_level("country")
+        region = dataset.get_cached_path_for_level("region")
+        assert "dependency" in country.name
+        assert country.name.endswith("-land.parquet")
+        assert "dependency" not in region.name
+        assert region.name.endswith("-region-land.parquet")
+
+    def test_dependency_territory_gets_its_own_country_code(self, tmp_path):
+        """Behavioral: a feature inside a dependency polygon is attributed to
+        that dependency's ISO code, exactly once.
+
+        The fixture mirrors the real Overture shape around French Guiana: a
+        ``dependency`` polygon coded GF, and the neighbouring ``country``
+        polygon for Brazil that shares a border with it. Before #819 the GF
+        point matched nothing (-> NULL -> 'ZZ'); after, it matches GF only.
+        Matching *once* is the invariant the memory-safe plain LEFT JOIN
+        depends on, so the border-sharing BR polygon is here on purpose.
+        """
+        from geoparquet_io.core.admin_datasets import _OVERTURE_SIMPLIFY_TOLERANCE_DEG
+
+        duckdb = pytest.importorskip("duckdb")
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.execute("SET geometry_always_xy=true;")
+        src = tmp_path / "division_area.parquet"
+        con.execute(
+            f"""
+            COPY (
+              SELECT ST_AsWKB(ST_GeomFromText('POLYGON((0 0,0 2,2 2,2 0,0 0))')) AS geometry,
+                     {{'xmin':0.0,'xmax':2.0,'ymin':0.0,'ymax':2.0}} AS bbox,
+                     'GF' AS country, 'dependency' AS subtype, true AS is_land
+              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((2 0,2 2,4 2,4 0,2 0))')),
+                     {{'xmin':2.0,'xmax':4.0,'ymin':0.0,'ymax':2.0}}, 'BR', 'country', true
+            ) TO '{src}' (FORMAT PARQUET)
+            """
+        )
+
+        query = OvertureAdminDataset()._build_level_cache_query("country", str(src))
+        runnable = query.replace(
+            f"ST_SimplifyPreserveTopology(geometry, {_OVERTURE_SIMPLIFY_TOLERANCE_DEG})",
+            "geometry",
+        )
+        con.execute(f"CREATE TABLE land AS SELECT * FROM ({runnable})")
+
+        assert [
+            r[0] for r in con.execute("SELECT country FROM land ORDER BY country").fetchall()
+        ] == [
+            "BR",
+            "GF",
+        ]
+
+        pt = "ST_GeomFromText('POINT(1 1)')"
+        matches = con.execute(
+            f"SELECT country FROM land WHERE ST_Intersects(ST_GeomFromWKB(geometry), {pt})"
+        ).fetchall()
+        assert matches == [("GF",)], "dependency feature must match its own code, exactly once"
+
     def test_cached_path_distinguishes_land_only_caches(self):
         """Cache filename encodes the land-only filter so stale (maritime-
-        contaminated) caches are not silently reused after the fix."""
+        contaminated) caches are not silently reused after the fix.
+
+        The segment between the level and the "-land" marker records the extra
+        subtypes the level draws on (#819), so this pins the level and the
+        marker rather than their adjacency.
+        """
         dataset = OvertureAdminDataset()
         path = dataset.get_cached_path_for_level("country")
-        assert path.name.endswith("-country-land.parquet")
+        assert "-country" in path.name
+        assert path.name.endswith("-land.parquet")
 
     def test_land_filter_removes_maritime_double_match(self, tmp_path):
         """Behavioral: the land-only filter makes a feature match exactly one

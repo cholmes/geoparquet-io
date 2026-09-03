@@ -37,21 +37,56 @@ CACHE_AGE_THRESHOLD_SECONDS = 6 * 30 * 24 * 60 * 60  # ~180 days
 # independently, so shared borders are not perfectly coincident (see todo 016).
 _OVERTURE_SIMPLIFY_TOLERANCE_DEG = 0.0001
 
-# Per-level cache schema for Overture. Declares, in one place, the columns each
-# level's cache projects and any level-specific row filters, so the cache
-# producer (_build_level_cache_query) has a single source of truth and an
-# unknown level fails loudly instead of being silently treated as a region.
+# Per-level cache schema for Overture. Declares, in one place, the Overture
+# subtypes each level draws from, the columns its cache projects, and any
+# level-specific row filters, so the cache producer (_build_level_cache_query)
+# and the no-cache subtype filter share a single source of truth and an unknown
+# level fails loudly instead of being silently treated as a region.
 _OVERTURE_LEVEL_CACHE_CONFIG: dict[str, dict[str, list[str]]] = {
     "country": {
+        # Overture splits sovereign states ("country", 219 land rows) from
+        # dependent territories ("dependency", 53: French Guiana, Puerto Rico,
+        # Reunion, Guadeloupe, Mayotte, New Caledonia, Greenland, Hong Kong,
+        # Macao, Guam, the Channel Islands, ...) — 197 and 50 respectively once
+        # the X*/AQ filters below apply. Both classes carry an ISO 3166-1
+        # alpha-2 `country` code, so the country level takes both; filtering to
+        # 'country' alone left every dependency unattributed (NULL -> 'ZZ'
+        # under --vecorel). See #819.
+        #
+        # This keeps the level non-overlapping, which the memory-safe plain
+        # LEFT JOIN relies on: a dependency is not contained in its sovereign's
+        # polygon (Overture's FR is metropolitan France only). Verified against
+        # release 2026-08-19.0 — the only country/dependency intersections are
+        # six shared borders (GF-BR, GF-SR, GL-CA, GI-ES, HK-CN, MO-CN), all of
+        # zero area, and no dependency intersects another dependency.
+        "subtypes": ["country", "dependency"],
         "cols": ["bbox", "country", "subtype"],
         # Exclude disputed (X*) territories and Antarctica.
         "extra_filters": ["country NOT LIKE 'X%'", "country != 'AQ'"],
     },
     "region": {
+        # Only the country level widens: a dependency polygon is country-shaped,
+        # so admitting it here would shadow the regions nested inside it.
+        "subtypes": ["region"],
         "cols": ["bbox", "country", "region", "subtype"],
         "extra_filters": [],
     },
 }
+
+
+def _overture_subtypes_for_levels(levels: list[str]) -> list[str]:
+    """Overture subtypes backing the given levels, in order, without repeats."""
+    subtypes: list[str] = []
+    for level in levels:
+        for subtype in _OVERTURE_LEVEL_CACHE_CONFIG.get(level, {}).get("subtypes", []):
+            if subtype not in subtypes:
+                subtypes.append(subtype)
+    return subtypes
+
+
+def _overture_subtype_sql(subtypes: list[str]) -> str:
+    """Render an ``IN`` predicate over the given subtypes."""
+    return "subtype IN ({})".format(", ".join(f"'{s}'" for s in subtypes))
 
 
 def get_cache_dir() -> Path:
@@ -654,7 +689,10 @@ class OvertureAdminDataset(AdminDataset):
 
     Provides hierarchical administrative boundaries at two levels, compliant with
     the Vecorel administrative division extension specification:
-    - country: Country level (219 unique countries) → admin:country_code
+    - country: Country level → admin:country_code. Covers both of Overture's
+      sovereign classes, ``subtype`` ``country`` (219 sovereign states) and
+      ``dependency`` (53 dependent territories such as French Guiana, Puerto
+      Rico and Greenland), since both carry ISO 3166-1 alpha-2 codes.
     - region: First-level subdivisions (3,544 unique regions) → admin:subdivision_code
 
     Vecorel Compliance:
@@ -717,16 +755,15 @@ class OvertureAdminDataset(AdminDataset):
         return {"hive_partitioning": 1}
 
     def get_subtype_filter(self, levels: list[str]) -> str | None:
-        """Filter by subtype to only load relevant admin levels."""
-        # Map level names to Overture subtype values
-        level_to_subtype = {
-            "country": "country",
-            "region": "region",
-        }
-        subtypes = [level_to_subtype[level] for level in levels if level in level_to_subtype]
+        """Filter by subtype to only load relevant admin levels.
+
+        Shares :data:`_OVERTURE_LEVEL_CACHE_CONFIG` with the cache producer so
+        the ``--no-cache`` path and the cached path admit the same rows — the
+        country level therefore covers dependent territories here too (#819).
+        """
+        subtypes = _overture_subtypes_for_levels(levels)
         if subtypes:
-            subtype_list = ", ".join([f"'{s}'" for s in subtypes])
-            return f"subtype IN ({subtype_list})"
+            return _overture_subtype_sql(subtypes)
         return None
 
     def get_column_transform(self, level_name: str) -> str | None:
@@ -766,9 +803,16 @@ class OvertureAdminDataset(AdminDataset):
     def get_cached_path_for_level(self, level: str) -> Path:
         cache_dir = get_cache_dir()
         version = self.get_version()
-        # "-land" suffix invalidates pre-fix caches that mixed in maritime (EEZ)
-        # polygons; see _build_level_cache_query for the rationale.
-        return cache_dir / f"overture-{version}-{level}-land.parquet"
+        # The filename encodes the filters baked into the file so a stale cache
+        # is never silently reused. "-land" invalidates pre-fix caches that
+        # mixed in maritime (EEZ) polygons (see _build_level_cache_query); the
+        # subtypes a level draws on beyond its own name are appended, so the
+        # dependency-aware country cache (#819) gets a fresh key while the
+        # unchanged region cache keeps its own and is not re-downloaded.
+        config = _OVERTURE_LEVEL_CACHE_CONFIG.get(level, {})
+        extra = [s for s in config.get("subtypes", [level]) if s != level]
+        suffix = f"-{'-'.join(extra)}" if extra else ""
+        return cache_dir / f"overture-{version}-{level}{suffix}-land.parquet"
 
     def _build_level_cache_query(self, level: str, source: str) -> str:
         """Build the SELECT that produces a non-overlapping per-level cache.
@@ -795,7 +839,11 @@ class OvertureAdminDataset(AdminDataset):
         tol = _OVERTURE_SIMPLIFY_TOLERANCE_DEG
         cols = ", ".join(config["cols"])
         where = " AND ".join(
-            [f"subtype = '{level}'", "is_land IS NOT FALSE", *config["extra_filters"]]
+            [
+                _overture_subtype_sql(config["subtypes"]),
+                "is_land IS NOT FALSE",
+                *config["extra_filters"],
+            ]
         )
         return (
             f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
