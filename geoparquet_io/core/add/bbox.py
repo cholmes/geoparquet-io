@@ -632,7 +632,7 @@ def _preview_copy_instead_of_recomputing(
 
     warn("\n=== DRY RUN MODE - no SQL would be executed ===\n")
     progress(
-        f"Would copy '{input_parquet}' to '{output_parquet}' unchanged "
+        f'Would copy "{input_parquet}" to "{output_parquet}" unchanged '
         f"(existing bbox column '{existing_bbox_col}')."
     )
 
@@ -654,7 +654,7 @@ def _copy_instead_of_recomputing(
 
     copy_file(input_parquet, output_parquet, verbose)
     progress(
-        f"Copied '{input_parquet}' to '{output_parquet}' unchanged - "
+        f'Copied "{input_parquet}" to "{output_parquet}" unchanged - '
         "the existing bbox column was not recomputed."
     )
 
