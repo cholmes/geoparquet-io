@@ -807,6 +807,38 @@ def _compute_unified_schema(schemas: list):
     return pa.schema(unified_fields)
 
 
+def _parse_time_strings(col, target_type):
+    """Parse HH:MM:SS[.fff] strings into a time32/time64 array.
+
+    PyArrow has no string → time cast, but GDAL delivers ArcGIS TimeOnly
+    values as strings (ESRIJSON attributes, and all-null GeoJSON pages are
+    inferred as string), so the conversion must be explicit. Whole-second
+    values take the vectorized strptime path; fractional seconds fall back
+    to Python's ISO parser, which strptime cannot express.
+
+    Raises ValueError on a value that is not a time of day.
+    """
+    import datetime
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    parsed = pc.strptime(col, format="%H:%M:%S", unit="ms", error_is_null=True)
+    unmatched = pc.and_(pc.is_valid(col), pc.is_null(parsed))
+    if pc.any(unmatched).as_py():
+        values = []
+        for value in col.to_pylist():
+            if value is None:
+                values.append(None)
+                continue
+            try:
+                values.append(datetime.time.fromisoformat(value))
+            except ValueError as e:
+                raise ValueError(f"{value!r} is not a time of day: {e}") from e
+        return pa.array(values, type=target_type)
+    return parsed.cast(target_type)
+
+
 def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None):
     """
     Cast a table's columns to match target schema types.
@@ -857,9 +889,16 @@ def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None)
                 # Cast to target type with error context. pa.cast() raises siblings
                 # ArrowInvalid (bad value) and ArrowNotImplementedError (unsupported
                 # conversion); catch both so neither escapes uncontextualized.
+                # ValueError also covers the explicit time-string parse, which
+                # PyArrow cannot do as a cast.
                 try:
-                    col = col.cast(field.type, safe=True)
-                except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as e:
+                    if pa.types.is_time(field.type) and (
+                        pa.types.is_string(col.type) or pa.types.is_large_string(col.type)
+                    ):
+                        col = _parse_time_strings(col, field.type)
+                    else:
+                        col = col.cast(field.type, safe=True)
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError, ValueError) as e:
                     context = f" ({page_info})" if page_info else ""
                     raise ValueError(
                         f"Failed to cast column '{field.name}' from {col.type} to "

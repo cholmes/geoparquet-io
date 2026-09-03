@@ -924,6 +924,27 @@ class TestSchemaBuilding:
         assert schema.field("date_field").type == pa.timestamp("ms")
         assert schema.field("date_field").nullable
 
+    def test_date_only_and_time_only_types(self):
+        """Test DateOnly and TimeOnly type mappings (added in ArcGIS Server 10.9)."""
+        from geoparquet_io.core.arcgis import ArcGISLayerInfo, _build_schema_from_layer_info
+
+        layer_info = ArcGISLayerInfo(
+            name="test",
+            geometry_type="esriGeometryPoint",
+            spatial_reference={"wkid": 4326},
+            fields=[
+                {"name": "date_only", "type": "esriFieldTypeDateOnly", "nullable": True},
+                {"name": "time_only", "type": "esriFieldTypeTimeOnly", "nullable": True},
+            ],
+            max_record_count=2000,
+            total_count=100,
+        )
+
+        schema = _build_schema_from_layer_info(layer_info)
+
+        assert schema.field("date_only").type == pa.date32()
+        assert schema.field("time_only").type == pa.time32("ms")
+
     def test_all_numeric_types(self):
         """Test all numeric type mappings."""
         from geoparquet_io.core.arcgis import ArcGISLayerInfo, _build_schema_from_layer_info
@@ -935,6 +956,7 @@ class TestSchemaBuilding:
             fields=[
                 {"name": "small_int", "type": "esriFieldTypeSmallInteger", "nullable": True},
                 {"name": "int", "type": "esriFieldTypeInteger", "nullable": True},
+                {"name": "big_int", "type": "esriFieldTypeBigInteger", "nullable": True},
                 {"name": "single", "type": "esriFieldTypeSingle", "nullable": True},
                 {"name": "double", "type": "esriFieldTypeDouble", "nullable": True},
             ],
@@ -946,6 +968,7 @@ class TestSchemaBuilding:
 
         assert schema.field("small_int").type == pa.int16()
         assert schema.field("int").type == pa.int32()
+        assert schema.field("big_int").type == pa.int64()
         assert schema.field("single").type == pa.float32()
         assert schema.field("double").type == pa.float64()
 
@@ -1771,6 +1794,73 @@ class TestCastTableToSchema:
         assert result.column("missing").to_pylist() == [None, None]
         assert result.column("z").to_pylist() == [9, 10]
         assert "extra" not in result.column_names
+
+    def test_casts_time_strings_to_time32(self):
+        """HH:MM:SS strings (GDAL's TimeOnly shape) cast to a declared time32.
+
+        PyArrow has no built-in string → time cast, so the helper parses these
+        explicitly; without that, any layer with a TimeOnly field crashes.
+        """
+        import datetime
+
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table(
+            {"time_only": pa.array(["14:30:00", "05:06:07", None], type=pa.large_string())}
+        )
+        target_schema = pa.schema([pa.field("time_only", pa.time32("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.column("time_only").to_pylist() == [
+            datetime.time(14, 30, 0),
+            datetime.time(5, 6, 7),
+            None,
+        ]
+
+    def test_casts_fractional_time_strings_to_time32(self):
+        """Fractional seconds survive the string → time32(ms) parse."""
+        import datetime
+
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"t": pa.array(["14:30:00.123", "00:00:01"], type=pa.string())})
+        target_schema = pa.schema([pa.field("t", pa.time32("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.column("t").to_pylist() == [
+            datetime.time(14, 30, 0, 123000),
+            datetime.time(0, 0, 1),
+        ]
+
+    def test_casts_all_null_string_column_to_time32(self):
+        """An all-null page inferred as string still casts to a declared time32.
+
+        DuckDB's GeoJSON driver infers an all-null TimeOnly column as string, so
+        this shape shows up on any sparse page even without --output-crs.
+        """
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"t": pa.array([None, None], type=pa.string())})
+        target_schema = pa.schema([pa.field("t", pa.time32("ms"))])
+
+        result = _cast_table_to_schema(source, target_schema)
+
+        assert result.column("t").to_pylist() == [None, None]
+        assert result.schema.field("t").type == pa.time32("ms")
+
+    def test_unparseable_time_string_raises_with_context(self):
+        """A non-time string still fails loudly, with the column named."""
+        import pytest
+
+        from geoparquet_io.core.common import _cast_table_to_schema
+
+        source = pa.table({"t": pa.array(["not a time"], type=pa.string())})
+        target_schema = pa.schema([pa.field("t", pa.time32("ms"))])
+
+        with pytest.raises(ValueError, match="'t'"):
+            _cast_table_to_schema(source, target_schema, page_info="batch 2")
 
     def test_geometry_binary_is_preserved(self):
         """A WKB geometry column stays binary even when attributes are strings.
