@@ -28,7 +28,7 @@ Options:
 | `--add-bbox` | - | Add bbox column if missing |
 | `--compression` | ZSTD | Compression codec (ZSTD, SNAPPY, GZIP, etc.) |
 | `--compression-level` | - | Compression level |
-| `--row-group-size` | - | Exact row count per group (10k-50k recommended for spatial pushdown) |
+| `--row-group-size` | 50,000 | Exact row count per group (10k-50k recommended for spatial pushdown) |
 | `--row-group-size-mb` | - | Target group size in MB/GB |
 | `--geoparquet-version` | 1.1 | Output version: `1.1`, `2.0`, or `parquet-geo-only` |
 | `--overwrite` | - | Overwrite existing output file |
@@ -52,8 +52,8 @@ it selects how many X strips STR builds, as
 values often produce an identical ordering. STR does not pack rows into
 row-group-sized tiles, and because the writer rounds row groups up to a
 multiple of 2048, strips and row groups only line up when `--row-group-size` is
-itself a multiple of 2048. Pass an exact row count anyway: without it the
-writer emits 122,880-row groups while STR sizes its strips from 100,000.
+itself a multiple of 2048. Left unset, both uses take the sort default of
+50,000 rows (written as 51,200-row groups after that rounding).
 
 The `str` subcommand supports the same geometry, bbox, compression, row-group,
 GeoParquet version, overwrite, verbosity, and SQL-display options as `hilbert`.

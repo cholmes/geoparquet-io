@@ -608,20 +608,22 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "ops",
         "tile_size",
         "None",
-        "100000",
+        "50000",
     ): (
-        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
-        "in-memory API spells the same effective default explicitly as tile_size=100000."
+        "The file core resolves row_group_rows=None to the sort default of 50,000 rows "
+        "(DEFAULT_SORT_ROW_GROUP_ROWS); the in-memory API spells that same effective default "
+        "explicitly as tile_size=50000."
     ),
     (
         "sort str",
         "table",
         "tile_size",
         "None",
-        "100000",
+        "50000",
     ): (
-        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
-        "fluent API spells the same effective default explicitly as tile_size=100000."
+        "The file core resolves row_group_rows=None to the sort default of 50,000 rows "
+        "(DEFAULT_SORT_ROW_GROUP_ROWS); the fluent API spells that same effective default "
+        "explicitly as tile_size=50000."
     ),
     (
         "add kdtree",
