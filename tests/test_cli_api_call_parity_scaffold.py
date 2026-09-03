@@ -498,14 +498,19 @@ CASES: list[ParityCase] = [
         cli=_cli(
             "partition_by_h3_impl",
             core_part_h3.partition_by_h3,
-            lambda c: ["partition", "h3", c.input_file, c.output_dir],
+            lambda c: ["partition", "h3", c.input_file, c.output_dir, "--resolution", "6"],
         ),
         # No `ops.partition_by_*`; Table is the only API front end for partitioning.
         table=_table(
             core_part_h3,
             "partition_by_h3",
             core_part_h3.partition_by_h3,
-            lambda c: c.gpio_table.partition_by_h3(c.output_dir),
+            lambda c: c.gpio_table.partition_by_h3(c.output_dir, resolution=6),
+        ),
+        notes=(
+            "A resolution is supplied on both sides because neither front end accepts a "
+            "call without one: the CLI errors from core, and the API now errors in front "
+            "of the temp-file write. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("h3_column_name", "h3_column_name"),
@@ -524,13 +529,29 @@ CASES: list[ParityCase] = [
         cli=_cli(
             "partition_by_quadkey_impl",
             core_part_quadkey.partition_by_quadkey,
-            lambda c: ["partition", "quadkey", c.input_file, c.output_dir],
+            lambda c: [
+                "partition",
+                "quadkey",
+                c.input_file,
+                c.output_dir,
+                "--resolution",
+                "13",
+                "--partition-resolution",
+                "6",
+            ],
         ),
         table=_table(
             core_part_quadkey,
             "partition_by_quadkey",
             core_part_quadkey.partition_by_quadkey,
-            lambda c: c.gpio_table.partition_by_quadkey(c.output_dir),
+            lambda c: c.gpio_table.partition_by_quadkey(
+                c.output_dir, resolution=13, partition_resolution=6
+            ),
+        ),
+        notes=(
+            "Both resolutions are supplied on both sides because neither front end accepts "
+            "a call without them: the CLI errors from core, and the API now errors in front "
+            "of the temp-file write. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("quadkey_column_name", "quadkey_column_name"),

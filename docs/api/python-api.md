@@ -823,6 +823,22 @@ arrow_table = table.to_arrow()
 
 All spatial partitioning methods need to be told how finely to split. Give them an explicit resolution (or `level`), or pass `auto=True` to size one from the data -- the same choice `gpio partition` offers, and the same calculation behind it. A call that gives neither raises `InvalidParameterError` rather than picking a default for you. Under `auto=True`, `target_rows` (default 100,000) sets the rows you want per partition and `max_partitions` (default 10,000) caps how many are created; passing `auto=True` together with an explicit resolution is an error.
 
+!!! warning "Breaking change: the implicit resolutions are gone"
+    These methods used to fall back to a hardcoded resolution when you gave
+    them none, so a call that named no resolution still wrote partitions --
+    just not the ones `gpio partition` would have written from the same bytes.
+    The same call now raises `InvalidParameterError`. To keep the output you
+    had, pass the old default explicitly:
+
+    | Method | Old implicit default |
+    |--------|----------------------|
+    | `partition_by_h3` | `resolution=9` |
+    | `partition_by_quadkey` | `resolution=13, partition_resolution=6` |
+    | `partition_by_s2` | `level=13` |
+    | `partition_by_a5` | `resolution=15` |
+
+    To get what the CLI gives you instead, pass `auto=True`.
+
 #### `partition_by_quadkey(output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
 Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).

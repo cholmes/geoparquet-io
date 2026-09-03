@@ -790,14 +790,32 @@ class TestPartitionAutoResolution:
             self._h3_resolution(Path(name).stem) for name in self._partition_names(tmp_path / "api")
         }
 
+        assert expected != 9, (
+            "fixture precondition: the calculated resolution must differ from the old "
+            "hardcoded 9, or this test cannot tell the two apart"
+        )
         assert written == {expected}
-        assert 9 not in written, "API still applied the old hardcoded H3 resolution"
 
     def test_quadkey_auto_matches_the_cli(self, sample_table, tmp_path):
-        self._run_cli(["partition", "quadkey", PLACES_PARQUET, tmp_path / "cli", "--auto"])
-        stats = sample_table.partition_by_quadkey(tmp_path / "api", auto=True)
+        """A target small enough to split the 766-row sample into several partitions.
 
-        assert stats["file_count"] > 0
+        At the default target_rows the sample collapses to a single resolution-0
+        partition, which two different implementations would agree on by accident.
+        """
+        self._run_cli(
+            [
+                "partition",
+                "quadkey",
+                PLACES_PARQUET,
+                tmp_path / "cli",
+                "--auto",
+                "--target-rows",
+                "100",
+            ]
+        )
+        stats = sample_table.partition_by_quadkey(tmp_path / "api", auto=True, target_rows=100)
+
+        assert stats["file_count"] > 1, "target_rows=100 should split the 766-row sample"
         assert self._partition_names(tmp_path / "api") == self._partition_names(tmp_path / "cli")
 
     def test_a5_auto_matches_the_cli(self, sample_table, tmp_path):
@@ -866,6 +884,75 @@ class TestPartitionAutoResolution:
 
         with pytest.raises(InvalidParameterError, match="auto"):
             getattr(sample_table, method)(tmp_path / method, auto=True, **kwargs)
+
+    # -- and it refuses before it has spent any I/O on the table --------------
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [
+            ("partition_by_h3", {}),
+            ("partition_by_a5", {}),
+            ("partition_by_s2", {}),
+            ("partition_by_quadkey", {}),
+            ("partition_by_quadkey", {"partition_resolution": 3}),
+            ("partition_by_h3", {"auto": True, "resolution": 5}),
+            ("partition_by_a5", {"auto": True, "resolution": 5}),
+            ("partition_by_s2", {"auto": True, "level": 5}),
+            ("partition_by_quadkey", {"auto": True, "resolution": 5, "partition_resolution": 3}),
+        ],
+    )
+    def test_an_invalid_call_never_serializes_the_table(
+        self, sample_table, tmp_path, method, kwargs
+    ):
+        """The gate belongs in front of the temp-file write, not behind it.
+
+        Every auto method routes through a temp parquet; letting core raise means
+        paying a full serialization of the table for a call that was never going
+        to run.
+        """
+        from geoparquet_io.api import table as table_module
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with patch.object(table_module, "write_geoparquet_table") as write:
+            with pytest.raises(InvalidParameterError, match="auto"):
+                getattr(sample_table, method)(tmp_path / "out", **kwargs)
+
+        write.assert_not_called()
+
+
+class TestPublicExceptionExports:
+    """The errors the docs tell users to catch must be importable from the package.
+
+    ``docs/api/python-api.md`` tells callers a partition method with neither a
+    resolution nor ``auto`` raises ``InvalidParameterError``; that is only
+    actionable if the name is reachable without reaching into ``core``.
+    """
+
+    def test_invalid_parameter_error_is_importable_from_the_package(self):
+        import geoparquet_io
+        from geoparquet_io import InvalidParameterError
+        from geoparquet_io.core.exceptions import (
+            InvalidParameterError as CoreInvalidParameterError,
+        )
+
+        assert InvalidParameterError is CoreInvalidParameterError
+        assert "InvalidParameterError" in geoparquet_io.__all__
+
+    def test_invalid_parameter_error_is_importable_from_the_api_package(self):
+        from geoparquet_io import api
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        assert api.InvalidParameterError is InvalidParameterError
+        assert "InvalidParameterError" in api.__all__
+
+    def test_the_documented_error_is_what_a_partition_call_raises(self, tmp_path):
+        from geoparquet_io import InvalidParameterError
+
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+
+        with pytest.raises(InvalidParameterError):
+            read(PLACES_PARQUET).partition_by_h3(tmp_path / "out")
 
 
 class TestReadPartition:

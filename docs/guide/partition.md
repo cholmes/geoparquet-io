@@ -10,6 +10,16 @@ All spatial partitioning commands (H3, S2, A5, Quadkey) support **automatic reso
 
 Neither front end guesses for you: pass a resolution, or ask for `auto`. A call with neither raises rather than silently partitioning at some arbitrary default.
 
+!!! warning "Breaking change for the Python API: the implicit resolutions are gone"
+    The `Table.partition_by_*` methods used to fall back to a hardcoded
+    resolution the CLI never applied, so the same file partitioned differently
+    depending on which front end you used. Such a call now raises
+    `InvalidParameterError`. Pass `auto=True` to get what the CLI gives you, or
+    pass the old value explicitly to keep the output you had:
+    `partition_by_h3(resolution=9)`,
+    `partition_by_quadkey(resolution=13, partition_resolution=6)`,
+    `partition_by_s2(level=13)`, `partition_by_a5(resolution=15)`.
+
 ### How It Works
 
 Auto-resolution analyzes your dataset and calculates the optimal spatial index resolution to achieve your target partition size:
@@ -31,7 +41,6 @@ Auto-resolution analyzes your dataset and calculates the optimal spatial index r
 
 === "CLI"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```bash
     # H3 with ~100K rows per partition (default)
     gpio partition h3 input.parquet output/ --auto
@@ -45,7 +54,6 @@ Auto-resolution analyzes your dataset and calculates the optimal spatial index r
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -215,7 +223,6 @@ Use `--auto` to let gpio calculate the optimal H3 resolution:
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -416,7 +423,6 @@ Use `--auto` to let gpio calculate the optimal A5 resolution:
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
@@ -516,7 +522,6 @@ Use `--auto` to let gpio calculate the optimal quadkey zoom level:
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 

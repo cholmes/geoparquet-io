@@ -285,7 +285,7 @@ gpio.read('input.parquet') \
 # Partition by quadkey
 gpio.read('input.parquet') \
     .add_quadkey(resolution=12) \
-    .partition_by_quadkey('output/', resolution=13, partition_resolution=4)
+    .partition_by_quadkey('output/', resolution=12, partition_resolution=4)
 
 # Partition by A5
 gpio.read('input.parquet').partition_by_a5('output/', resolution=12)

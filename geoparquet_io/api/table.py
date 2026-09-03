@@ -47,6 +47,47 @@ def _safe_unlink(path: Path, attempts: int = 3) -> None:
             time.sleep(0.1 * (attempt + 1))
 
 
+def _require_auto_or_resolution(
+    auto: bool,
+    values: dict[str, int | None],
+    *,
+    conflict: str,
+    missing: str,
+) -> None:
+    """
+    Mirror the core partition gate before any I/O is spent on the call.
+
+    The auto-capable partition methods hand an in-memory table to core through a
+    temporary parquet file. Core raises for a call that names neither a
+    resolution nor ``auto`` -- but only after the whole table has been
+    serialized. Checking here makes an invalid call cost nothing; core keeps its
+    own gate as the backstop for every other caller.
+
+    Args:
+        auto: Whether the caller asked for auto-sizing
+        values: The resolution-ish parameters by their public name, in the order
+            core reports them
+        conflict: Reason for the error when ``auto`` is combined with an
+            explicit value (worded as core words it)
+        missing: Reason for the error when neither was given
+
+    Raises:
+        InvalidParameterError: If ``auto`` conflicts with an explicit value, or
+            neither was given
+    """
+    from geoparquet_io.core.exceptions import InvalidParameterError
+
+    given = [name for name, value in values.items() if value is not None]
+
+    if auto:
+        if given:
+            raise InvalidParameterError("auto", conflict)
+        return
+
+    if len(given) != len(values):
+        raise InvalidParameterError(next(iter(values)), missing)
+
+
 def _run_partition_with_temp_file(
     table: pa.Table,
     geometry_column: str | None,
@@ -1861,6 +1902,13 @@ class Table:
         """
         from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
 
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution, "partition_resolution": partition_resolution},
+            conflict="cannot specify --resolution or --partition-resolution with --auto",
+            missing="must specify either --auto or both --resolution and --partition-resolution",
+        )
+
         return _run_partition_with_temp_file(
             self._table,
             self._geometry_column,
@@ -1928,6 +1976,13 @@ class Table:
             >>> auto = table.partition_by_h3('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_h3 import partition_by_h3
+
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution},
+            conflict="cannot specify both --auto and --resolution",
+            missing="must specify either --resolution or --auto",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1999,6 +2054,13 @@ class Table:
         """
         from geoparquet_io.core.partition.by_s2 import partition_by_s2
 
+        _require_auto_or_resolution(
+            auto,
+            {"level": level},
+            conflict="cannot specify both --auto and --level",
+            missing="must specify either --level or --auto",
+        )
+
         return _run_partition_with_temp_file(
             self._table,
             self._geometry_column,
@@ -2068,6 +2130,13 @@ class Table:
             >>> auto = table.partition_by_a5('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_a5 import partition_by_a5
+
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution},
+            conflict="cannot specify both --auto and --resolution",
+            missing="must specify either --resolution or --auto",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
