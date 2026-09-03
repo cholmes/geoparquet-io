@@ -1413,7 +1413,7 @@ class TestStreamingConversion:
                 "type": "Polygon",
                 "coordinates": [
                     [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]],  # shell, CW
-                    [[2, 2], [2, 8], [8, 8], [8, 2], [2, 2]],  # hole, CCW
+                    [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]],  # hole, CCW
                 ],
             },
             "properties": {},
