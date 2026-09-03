@@ -45,8 +45,8 @@ class TestGetCrsDisplayName:
     """Tests for get_crs_display_name function (shared from common.py)."""
 
     def test_none_crs(self):
-        """Test with None CRS."""
-        assert get_crs_display_name(None) == "None (OGC:CRS84)"
+        """None is an explicit ``crs: null`` — an unknown CRS, not the default."""
+        assert get_crs_display_name(None) == "null (CRS unknown)"
 
     def test_string_crs(self):
         """Test with string CRS."""
