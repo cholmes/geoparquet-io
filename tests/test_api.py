@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from geoparquet_io.api import Table, convert, ops, pipe, read
-from tests.conftest import safe_unlink
+from tests.conftest import safe_unlink, skip_if_geography_available
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_PARQUET = TEST_DATA_DIR / "places_test.parquet"
@@ -1789,3 +1789,188 @@ class TestReadPartitionS3:
             raise
         except Exception:
             pass
+
+
+class TestOpsPartition:
+    """`ops.partition_by_*` is the function-style twin of every partition subcommand.
+
+    Partitioning used to be reachable from Python only as a ``Table`` method
+    (#799), which made it the one command group without the ``ops`` front door
+    that ``add``, ``sort``, ``convert``, ``extract`` and ``process`` all have.
+    These functions take a plain ``pa.Table`` plus an output directory and must
+    behave exactly like the method they mirror -- including the refusal to guess
+    a resolution that #762 gave the four spatial-index methods.
+    """
+
+    @pytest.fixture
+    def arrow_table(self):
+        """A plain PyArrow table -- the input an ops caller actually holds."""
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return pq.read_table(PLACES_PARQUET)
+
+    @staticmethod
+    def _partition_names(output_dir):
+        files = sorted(Path(output_dir).rglob("*.parquet"))
+        assert files, f"no parquet files written to {output_dir}"
+        return sorted(f.name for f in files)
+
+    # -- each function writes partitions from a bare pa.Table ---------------
+
+    def test_partition_by_h3(self, arrow_table, tmp_path):
+        stats = ops.partition_by_h3(arrow_table, tmp_path / "out", resolution=2)
+
+        assert stats["file_count"] > 0
+        assert self._partition_names(tmp_path / "out")
+
+    def test_partition_by_a5(self, arrow_table, tmp_path):
+        stats = ops.partition_by_a5(arrow_table, tmp_path / "out", resolution=4)
+
+        assert stats["file_count"] > 0
+        assert self._partition_names(tmp_path / "out")
+
+    def test_partition_by_quadkey(self, arrow_table, tmp_path):
+        stats = ops.partition_by_quadkey(
+            arrow_table, tmp_path / "out", resolution=13, partition_resolution=3
+        )
+
+        assert stats["file_count"] > 0
+        assert self._partition_names(tmp_path / "out")
+
+    def test_partition_by_kdtree(self, arrow_table, tmp_path):
+        """kdtree/string/admin return the core result, not the file-count stats."""
+        result = ops.partition_by_kdtree(arrow_table, tmp_path / "out", iterations=2)
+
+        assert isinstance(result, dict)
+        assert len(self._partition_names(tmp_path / "out")) == 4
+
+    def test_partition_by_string(self, arrow_table, tmp_path):
+        # A column with two values: the partition-size guard rejects the tiny
+        # partitions a per-name split of 766 rows would produce.
+        regions = pa.array(["north" if i % 2 else "south" for i in range(arrow_table.num_rows)])
+        table = arrow_table.append_column("region", regions)
+
+        result = ops.partition_by_string(table, tmp_path / "out", column="region")
+
+        assert isinstance(result, dict)
+        assert len(self._partition_names(tmp_path / "out")) == 2
+
+    def test_partition_by_s2_forwards_to_core(self, arrow_table, tmp_path):
+        """`gpio partition s2` cannot run without the 'geography' extension (#737).
+
+        The wiring is still checked: patch core and assert the arguments arrive.
+        """
+        from geoparquet_io.core.partition import by_s2 as core_by_s2
+
+        with patch.object(core_by_s2, "partition_by_s2") as fake:
+            ops.partition_by_s2(
+                arrow_table, tmp_path / "out", auto=True, target_rows=5000, max_partitions=50
+            )
+
+        kwargs = fake.call_args.kwargs
+        assert kwargs["level"] is None
+        assert kwargs["auto"] is True
+        assert kwargs["target_rows"] == 5000
+        assert kwargs["max_partitions"] == 50
+
+    def test_partition_by_s2_fails_like_the_table_method(self, arrow_table, tmp_path):
+        """S2's unavailability (#737) must read the same through `ops` and `Table`.
+
+        The forwarding test above patches core away, so it says nothing about
+        what a real caller sees. This one runs the whole path unpatched: an
+        ``ops`` twin that swallowed the error, or re-raised it as something
+        else, would leave a caller unable to tell why S2 failed -- and would do
+        it differently from the method it is supposed to mirror.
+        """
+        skip_if_geography_available()
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+        with pytest.raises(ExtensionUnavailableError) as via_ops:
+            ops.partition_by_s2(arrow_table, tmp_path / "ops", level=5)
+        with pytest.raises(ExtensionUnavailableError) as via_table:
+            Table(arrow_table).partition_by_s2(tmp_path / "table", level=5)
+
+        assert via_ops.value.name == "geography"
+        assert "geography" in str(via_ops.value)
+        assert str(via_ops.value) == str(via_table.value)
+
+    def test_partition_by_admin_forwards_to_core(self, arrow_table, tmp_path):
+        """Admin partitioning downloads a boundaries dataset; check the wiring only."""
+        from geoparquet_io.core.partition import admin_hierarchical as core_admin
+
+        with patch.object(core_admin, "partition_by_admin_hierarchical") as fake:
+            ops.partition_by_admin(
+                arrow_table, tmp_path / "out", dataset="overture", levels=["country"], hive=True
+            )
+
+        kwargs = fake.call_args.kwargs
+        assert kwargs["dataset_name"] == "overture"
+        assert kwargs["levels"] == ["country"]
+        assert kwargs["hive"] is True
+
+    def test_partition_by_admin_vecorel_forces_overture_country_region(self, arrow_table, tmp_path):
+        """Same vecorel shorthand the Table method applies, not a second spelling."""
+        from geoparquet_io.core.partition import admin_hierarchical as core_admin
+
+        with patch.object(core_admin, "partition_by_admin_hierarchical") as fake:
+            ops.partition_by_admin(arrow_table, tmp_path / "out", vecorel=True)
+
+        kwargs = fake.call_args.kwargs
+        assert kwargs["dataset_name"] == "overture"
+        assert kwargs["levels"] == ["country", "region"]
+        assert kwargs["vecorel"] is True
+
+    # -- the ops twin and the Table method are the same operation -----------
+
+    def test_ops_and_table_write_the_same_partitions(self, arrow_table, tmp_path):
+        ops.partition_by_h3(arrow_table, tmp_path / "ops", resolution=2)
+        Table(arrow_table).partition_by_h3(tmp_path / "table", resolution=2)
+
+        assert self._partition_names(tmp_path / "ops") == self._partition_names(tmp_path / "table")
+
+    def test_auto_is_forwarded(self, arrow_table, tmp_path):
+        """`auto=True` sizes the resolution from the data, as `--auto` does."""
+        stats = ops.partition_by_h3(arrow_table, tmp_path / "out", auto=True)
+
+        assert stats["file_count"] > 0
+
+    def test_hive_produces_key_value_directories(self, arrow_table, tmp_path):
+        ops.partition_by_h3(arrow_table, tmp_path / "out", resolution=2, hive=True)
+
+        subdirs = [d for d in (tmp_path / "out").iterdir() if d.is_dir()]
+        assert subdirs and all("h3_cell=" in d.name for d in subdirs)
+
+    def test_keep_column_escape_hatch_is_exposed(self, arrow_table, tmp_path):
+        ops.partition_by_h3(arrow_table, tmp_path / "out", resolution=2, keep_h3_column=True)
+
+        first = sorted(Path(tmp_path / "out").rglob("*.parquet"))[0]
+        assert "h3_cell" in pq.ParquetFile(first).schema_arrow.names
+
+    # -- refuse to guess, exactly as the CLI and the Table methods do -------
+
+    @pytest.mark.parametrize(
+        "function",
+        ["partition_by_h3", "partition_by_a5", "partition_by_s2", "partition_by_quadkey"],
+    )
+    def test_refuses_to_guess_a_resolution(self, arrow_table, tmp_path, function):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            getattr(ops, function)(arrow_table, tmp_path / function)
+
+    @pytest.mark.parametrize(
+        ("function", "kwargs"),
+        [
+            ("partition_by_h3", {"resolution": 5}),
+            ("partition_by_a5", {"resolution": 5}),
+            ("partition_by_s2", {"level": 5}),
+            ("partition_by_quadkey", {"resolution": 5, "partition_resolution": 3}),
+        ],
+    )
+    def test_auto_and_an_explicit_resolution_are_mutually_exclusive(
+        self, arrow_table, tmp_path, function, kwargs
+    ):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            getattr(ops, function)(arrow_table, tmp_path / function, auto=True, **kwargs)

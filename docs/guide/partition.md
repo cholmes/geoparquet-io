@@ -838,6 +838,46 @@ gpio partition h3 by_country/ --min-size 100MB --resolution 7 --in-place
 
 See [Sub-Partitioning Large Files](sub-partitioning.md) for details.
 
+## Function-Style API
+
+Every partition subcommand also has an `ops` function, for callers holding a plain
+PyArrow table rather than the fluent `Table` wrapper. Each takes the table plus an
+output directory and accepts the same keywords as the CLI command it mirrors --
+including `auto`, `target_rows` and `max_partitions` on the four spatial-index
+schemes:
+
+| CLI command | `ops` function |
+|-------------|----------------|
+| `gpio partition h3` | `ops.partition_by_h3(table, output_dir, resolution=..., auto=...)` |
+| `gpio partition a5` | `ops.partition_by_a5(table, output_dir, resolution=..., auto=...)` |
+| `gpio partition s2` | `ops.partition_by_s2(table, output_dir, level=..., auto=...)` |
+| `gpio partition quadkey` | `ops.partition_by_quadkey(table, output_dir, resolution=..., partition_resolution=..., auto=...)` |
+| `gpio partition kdtree` | `ops.partition_by_kdtree(table, output_dir, iterations=...)` |
+| `gpio partition string` | `ops.partition_by_string(table, output_dir, column, chars=...)` |
+| `gpio partition admin` | `ops.partition_by_admin(table, output_dir, dataset=..., levels=...)` |
+
+<!-- doctest: skip="the 766-row sample is too small to partition meaningfully, has no 'region' column for partition_by_string, and partition_by_admin would download a boundaries dataset" -->
+```python
+import pyarrow.parquet as pq
+from geoparquet_io.api import ops
+
+table = pq.read_table('input.parquet')
+
+# An explicit resolution, or auto=True -- neither front end guesses one for you
+stats = ops.partition_by_h3(table, 'output/', resolution=7)
+stats = ops.partition_by_a5(table, 'output/', auto=True, target_rows=50000)
+
+# Non-spatial schemes
+ops.partition_by_string(table, 'output/', column='region', hive=True)
+ops.partition_by_admin(table, 'output/', levels=['country'])
+
+print(f"Created {stats['file_count']} files")
+```
+
+`ops.partition_by_s2` is wired for symmetry but cannot run in this release -- S2 needs
+the `geography` DuckDB extension (see the [S2 section](#by-s2-cells) above). Use
+`ops.partition_by_a5` instead.
+
 ## See Also
 
 - [CLI Reference](../cli/overview.md) - Full command reference

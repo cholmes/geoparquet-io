@@ -215,6 +215,16 @@ def _table(module: Any, attr: str, reference: Callable, call: Callable[[Ctx], An
     )
 
 
+# An `ops` front end that reaches core through `Table`.
+#
+# `ops.partition_by_*` delegates to the matching `Table` method rather than keeping a
+# second copy of the temp-file plumbing, and `Table` imports its core function inside
+# the method body -- so this one is patched on the *core* module, like a `Table` front
+# end, not on `ops`. That makes it constructed exactly like `_table`; the alias keeps
+# the call sites at the case list reading as "ops, via Table" without a duplicate body.
+_ops_via_table = _table
+
+
 def _install_write_strategy(_frontend, recorder: _Recorder):
     """Patch the strategy factory so Table.write's core write call is recorded.
 
@@ -500,7 +510,12 @@ CASES: list[ParityCase] = [
             core_part_h3.partition_by_h3,
             lambda c: ["partition", "h3", c.input_file, c.output_dir, "--resolution", "6"],
         ),
-        # No `ops.partition_by_*`; Table is the only API front end for partitioning.
+        ops=_ops_via_table(
+            core_part_h3,
+            "partition_by_h3",
+            core_part_h3.partition_by_h3,
+            lambda c: ops.partition_by_h3(c.table, c.output_dir, resolution=6),
+        ),
         table=_table(
             core_part_h3,
             "partition_by_h3",
@@ -508,9 +523,11 @@ CASES: list[ParityCase] = [
             lambda c: c.gpio_table.partition_by_h3(c.output_dir, resolution=6),
         ),
         notes=(
-            "A resolution is supplied on both sides because neither front end accepts a "
+            "A resolution is supplied on all three sides because no front end accepts a "
             "call without one: the CLI errors from core, and the API now errors in front "
-            "of the temp-file write. Every other knob is still left at its default.",
+            "of the temp-file write. `ops.partition_by_h3` inherits that gate by "
+            "delegating to `Table.partition_by_h3`, so it has to be called with a "
+            "resolution too. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("h3_column_name", "h3_column_name"),
@@ -540,6 +557,14 @@ CASES: list[ParityCase] = [
                 "6",
             ],
         ),
+        ops=_ops_via_table(
+            core_part_quadkey,
+            "partition_by_quadkey",
+            core_part_quadkey.partition_by_quadkey,
+            lambda c: ops.partition_by_quadkey(
+                c.table, c.output_dir, resolution=13, partition_resolution=6
+            ),
+        ),
         table=_table(
             core_part_quadkey,
             "partition_by_quadkey",
@@ -549,9 +574,11 @@ CASES: list[ParityCase] = [
             ),
         ),
         notes=(
-            "Both resolutions are supplied on both sides because neither front end accepts "
+            "Both resolutions are supplied on all three sides because no front end accepts "
             "a call without them: the CLI errors from core, and the API now errors in front "
-            "of the temp-file write. Every other knob is still left at its default.",
+            "of the temp-file write. `ops.partition_by_quadkey` inherits that gate by "
+            "delegating to `Table.partition_by_quadkey`, so it has to be called with both "
+            "resolutions too. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("quadkey_column_name", "quadkey_column_name"),

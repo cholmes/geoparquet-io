@@ -251,6 +251,41 @@ KNOWN_DIVERGENCES: dict[tuple[str, str, str, str, str], str] = {
     ): _GEOMETRY_COLUMN_FROM_TABLE,
     (
         "partition a5",
+        "ops.partition_by_a5",
+        "keep_a5_column",
+        "False",
+        "'<unset>'",
+    ): _KEEP_TRISTATE,
+    (
+        "partition h3",
+        "ops.partition_by_h3",
+        "keep_h3_column",
+        "False",
+        "'<unset>'",
+    ): _KEEP_TRISTATE,
+    (
+        "partition kdtree",
+        "ops.partition_by_kdtree",
+        "keep_kdtree_column",
+        "False",
+        "'<unset>'",
+    ): _KEEP_TRISTATE,
+    (
+        "partition quadkey",
+        "ops.partition_by_quadkey",
+        "keep_quadkey_column",
+        "False",
+        "'<unset>'",
+    ): _KEEP_TRISTATE,
+    (
+        "partition s2",
+        "ops.partition_by_s2",
+        "keep_s2_column",
+        "False",
+        "'<unset>'",
+    ): _KEEP_TRISTATE,
+    (
+        "partition a5",
         "Table.partition_by_a5",
         "keep_a5_column",
         "False",
@@ -355,6 +390,107 @@ class TestEveryCommandHasAnApiTwin:
     def test_every_allowlist_entry_has_a_reason(self):
         for command, reason in NO_API_TWIN.items():
             assert reason and reason.strip(), f"No justification recorded for {command!r}"
+
+
+# --------------------------------------------------------------------------
+# "...and `ops` is the function half of that API" -- allowlisted exceptions
+# --------------------------------------------------------------------------
+
+# `NO_API_TWIN` above only asks for *some* twin, so a `Table` method alone
+# satisfies it and a missing `ops` function is invisible (#799). That is a real
+# gap: `ops` is the front door for callers holding a plain `pa.Table` rather
+# than the fluent wrapper, and "this group is Table-only" should be a decision
+# somebody wrote down, not an accident nobody noticed. Every command that has a
+# `Table` method but no `ops` function needs an entry here with a reason.
+#
+# Commands with no API at all are covered by `NO_API_TWIN` and skipped here, so
+# a twin-less command is recorded in exactly one place.
+
+_REPORT_NOT_A_TABLE = (
+    "Returns a report -- a dict of findings about a file -- not GeoParquet. There is no "
+    "`table in -> table out` shape for an `ops` function to have, and the receiver is "
+    "naturally the Table (or a path). An `ops` twin taking a path would be a thin "
+    "wrapper; if one is ever added, delete this entry."
+)
+_INSPECTION_NOT_A_TABLE = (
+    "Inspection: renders or returns a description of a table (metadata, a preview, "
+    "column statistics) rather than transforming one, so an `ops.<fn>(table) -> table` "
+    "twin would have nothing to return. `Table` is the reviewed home for it."
+)
+
+NO_OPS_TWIN: dict[str, str] = {
+    "check all": _REPORT_NOT_A_TABLE,
+    "check bbox": _REPORT_NOT_A_TABLE,
+    "check compression": _REPORT_NOT_A_TABLE,
+    "check optimization": _REPORT_NOT_A_TABLE,
+    "check row-group": _REPORT_NOT_A_TABLE,
+    "check spatial": _REPORT_NOT_A_TABLE,
+    "check spec": _REPORT_NOT_A_TABLE,
+    "inspect head": _INSPECTION_NOT_A_TABLE,
+    "inspect meta": _INSPECTION_NOT_A_TABLE,
+    "inspect stats": _INSPECTION_NOT_A_TABLE,
+    "inspect summary": _INSPECTION_NOT_A_TABLE,
+    "inspect tail": _INSPECTION_NOT_A_TABLE,
+    "convert geoparquet": (
+        "The API twin is `Table.write`, the terminal step of the fluent chain. A caller "
+        "holding a bare `pa.Table` writes it with `Table(t).write(path)`; an "
+        "`ops.write(table, path)` would only re-spell that constructor."
+    ),
+    "publish upload": (
+        "Uploads a file that already exists on disk to object storage. The unit of work "
+        "is a path, not the in-memory table an `ops` function receives -- `Table.upload` "
+        "writes first and uploads that."
+    ),
+}
+
+
+def commands_without_ops_twin() -> set[str]:
+    """CLI commands that resolve to a `Table` method but to no `ops` function.
+
+    Commands with no API twin at all are excluded: they are already pinned by
+    `NO_API_TWIN`, and listing them twice would mean two allowlists to update
+    when one of them finally grows an API.
+    """
+    out: set[str] = set()
+    for path, _cmd in _walk(cli):
+        twins = _api_twins(path)
+        if not twins:
+            continue
+        if not any(label.startswith("ops.") for label, _fn in twins):
+            out.add(" ".join(path))
+    return out
+
+
+class TestEveryCommandHasAnOpsTwin:
+    """A `Table` method alone is not the whole Python API; `ops` is the other half."""
+
+    def test_ops_less_commands_are_exactly_the_allowlist(self):
+        actual = commands_without_ops_twin()
+        missing = actual - set(NO_OPS_TWIN)
+        stale = set(NO_OPS_TWIN) - actual
+        assert not missing, (
+            "CLI command(s) with a `Table` method but no `ops` function. `ops` is the "
+            "function-style half of the Python API -- add one, or add an entry to "
+            "NO_OPS_TWIN saying why this command is Table-only:\n"
+            + "\n".join(f"  {c}" for c in sorted(missing))
+        )
+        assert not stale, (
+            "NO_OPS_TWIN lists command(s) that now have an `ops` function (or no longer "
+            "exist); delete the entries:\n" + "\n".join(f"  {c}" for c in sorted(stale))
+        )
+
+    def test_every_allowlist_entry_has_a_reason(self):
+        for command, reason in NO_OPS_TWIN.items():
+            assert reason and reason.strip(), f"No justification recorded for {command!r}"
+
+    def test_allowlists_do_not_overlap(self):
+        """A twin-less command belongs to NO_API_TWIN only."""
+        both = set(NO_API_TWIN) & set(NO_OPS_TWIN)
+        assert not both, (
+            "Command(s) listed in both NO_API_TWIN and NO_OPS_TWIN; a command with no "
+            "API at all is recorded once, in NO_API_TWIN:\n"
+            + "\n".join(f"  {c}" for c in sorted(both))
+        )
 
 
 class TestNoNewDefaultDrift:
