@@ -449,3 +449,74 @@ class TestCountryCodesLocalCountriesFile:
         assert "Could not summarize the output file" in caplog.text
         assert "HTTP 403 while reading the output" in caplog.text
         assert "Successfully wrote output to" in caplog.text
+
+
+class TestDryRunDefaultCountriesSqlPath:
+    """Dry-run SQL for the default (Overture) countries source uses sql_path (#802).
+
+    These call the module helpers directly with a patched Overture URL, so the
+    printed SQL is exercised with no network access.
+    """
+
+    def test_bounds_info_bbox_branch_escapes_path(self, caplog):
+        """With a bbox column, the printed bounds SQL quotes the RAW input path."""
+        from geoparquet_io.core.add.country_codes import _print_dry_run_bounds_info
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            _print_dry_run_bounds_info("bbox", "/tmp/it's_data.parquet", "geometry")
+
+        assert '"bbox".xmin' in caplog.text
+        # sql_path doubles the apostrophe so the echoed statement is runnable.
+        assert "'/tmp/it''s_data.parquet'" in caplog.text
+
+    def test_bounds_info_geometry_branch_escapes_path(self, caplog):
+        """Without a bbox column, the ST_XMin bounds SQL quotes the RAW input path."""
+        from geoparquet_io.core.add.country_codes import _print_dry_run_bounds_info
+
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            _print_dry_run_bounds_info(None, "/tmp/it's_data.parquet", "geometry")
+
+        assert 'ST_XMin("geometry")' in caplog.text
+        assert "'/tmp/it''s_data.parquet'" in caplog.text
+
+    def test_setup_countries_source_default_dry_run(self, buildings_test_file, caplog):
+        """using_default resolves the Overture URL and prints sql_path-quoted SQL.
+
+        The Overture URL lookup is patched (no network); bounds come from the
+        local input fixture; dry-run only prints the filter-table SQL.
+        """
+        from unittest.mock import patch
+
+        from geoparquet_io.core.add.country_codes import _setup_countries_source
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+
+        fake_url = "s3://overture-fake/release/theme=divisions/it's_a_url/*.parquet"
+        con = get_duckdb_connection()
+        try:
+            with (
+                caplog.at_level(logging.INFO, logger="geoparquet_io"),
+                patch(
+                    "geoparquet_io.core.overture.get_overture_divisions_url",
+                    return_value=fake_url,
+                ),
+            ):
+                result = _setup_countries_source(
+                    con,
+                    using_default=True,
+                    countries_path=None,
+                    input_parquet=buildings_test_file,
+                    input_path=buildings_test_file,
+                    input_geom_col="geometry",
+                    input_bbox_col=None,
+                    countries_bbox_col="bbox",
+                    dry_run=True,
+                    verbose=False,
+                )
+        finally:
+            con.close()
+
+        # The default source is staged into a filtered temp table (by name).
+        assert result == "filtered_countries"
+        assert "-- Step 2: Create filtered countries table" in caplog.text
+        # The remote URL lands in the printed SQL as one escaped literal.
+        assert sql_path(fake_url) in caplog.text

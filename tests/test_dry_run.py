@@ -205,3 +205,65 @@ class TestDryRunCommands:
         # The message must match the predicate that actually runs (bbox pre-filter).
         assert "Using bbox columns for optimized spatial join" in result.output
         assert "no bbox optimization" not in result.output
+
+
+class TestPerLevelJoinsDryRun:
+    """Dry-run of the per-level-source join path (Overture) with no network.
+
+    ``add admin-divisions`` only reaches ``_execute_per_level_joins`` for
+    datasets with per-level sources, which the CLI dry-run tests above never
+    exercise. Calling it directly with a dataset pinned to a local
+    ``source_path`` keeps ``get_source_for_level`` off the network, and
+    ``dry_run=True`` only prints the chained per-level SQL.
+    """
+
+    def test_dry_run_prints_chained_per_level_queries(self, buildings_test_file, caplog):
+        import logging
+
+        from geoparquet_io.core.add.admin_divisions import _execute_per_level_joins
+        from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+        from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+
+        dataset = OvertureAdminDataset(source_path=buildings_test_file)
+        levels = ["country", "region"]
+        partition_columns = dataset.get_partition_columns(levels)
+
+        con = get_duckdb_connection()
+        try:
+            with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+                result = _execute_per_level_joins(
+                    con,
+                    dataset,
+                    levels,
+                    partition_columns,
+                    buildings_test_file,
+                    admin_geom_col="geometry",
+                    admin_bbox_col=None,
+                    input_geom_col="geometry",
+                    input_bbox_col=None,
+                    output_parquet="output.parquet",
+                    metadata=None,
+                    dry_run=True,
+                    verbose=False,
+                    compression="ZSTD",
+                    compression_level=None,
+                    row_group_size_mb=None,
+                    row_group_rows=None,
+                    profile=None,
+                    geoparquet_version=None,
+                    prefix=None,
+                    no_cache=False,
+                )
+        finally:
+            con.close()
+
+        # Dry-run returns the no-stats triple and writes nothing.
+        assert result == (None, None, None)
+        # One step per level, chained: step 2 reads the step-1 temp table.
+        assert "-- Step 1: Add" in caplog.text
+        assert "-- Step 2: Add" in caplog.text
+        assert "_gpio_admin_step_0" in caplog.text
+        # The per-level admin source is interpolated via sql_path with the
+        # dataset's read options (#802).
+        assert sql_path(buildings_test_file) in caplog.text
+        assert "hive_partitioning=1" in caplog.text

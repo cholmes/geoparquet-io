@@ -36,6 +36,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -238,7 +239,9 @@ class TestSqlPath:
         raise ``TypeError`` (or, worse, move a file) instead of being escaped.
         """
         assert sql_path(Path(apostrophe_file)) == sql_path(apostrophe_file)
-        assert sql_path(Path("/tmp/it's_data.parquet")) == "'/tmp/it''s_data.parquet'"
+        p = Path("/tmp") / "it's_data.parquet"
+        expected = "'" + os.fspath(p).replace("'", "''") + "'"
+        assert sql_path(p) == expected
 
     def test_takes_a_raw_path_not_a_safe_file_url_result(self, apostrophe_file):
         """The contract is RAW in.

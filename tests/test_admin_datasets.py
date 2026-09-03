@@ -21,6 +21,9 @@ from geoparquet_io.core.admin_datasets import (
     get_cached_path,
     get_or_cache_dataset,
 )
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+
+TEST_DATA_DIR = Path(__file__).parent / "data"
 
 
 class TestCurrentAdminDataset:
@@ -1089,3 +1092,88 @@ class TestCacheEdgeCases:
         # This is a placeholder for thread-safety testing
         # The implementation should use atomic file operations
         pass
+
+
+class TestDownloadToCache:
+    """Test AdminDataset._download_to_cache() -- the default DuckDB download path.
+
+    ``get_default_source`` is monkeypatched to a local test fixture, so this
+    exercises the read_parquet/COPY SQL (built via sql_path (#802)) without any
+    network access.
+    """
+
+    def test_download_to_cache_no_read_options(self, tmp_path):
+        """No per-dataset read_parquet options -> the plain read_parquet branch."""
+        dataset = GAULAdminDataset()
+        local_source = str(TEST_DATA_DIR / "buildings_test.parquet")
+        cache_path = tmp_path / "cache" / "gaul-test.parquet"
+
+        with patch.object(dataset, "get_default_source", return_value=local_source):
+            result = dataset._download_to_cache(cache_path)
+
+        assert result == cache_path
+        assert cache_path.exists()
+
+        con = get_duckdb_connection(load_spatial=True)
+        try:
+            count = con.execute(f"SELECT COUNT(*) FROM {sql_path(str(cache_path))}").fetchone()[0]
+        finally:
+            con.close()
+        assert count > 0
+
+    def test_download_to_cache_with_read_options(self, tmp_path):
+        """Non-empty read_parquet options (e.g. Overture's hive_partitioning) build the options branch."""
+        dataset = GAULAdminDataset()
+        local_source = str(TEST_DATA_DIR / "buildings_test.parquet")
+        cache_path = tmp_path / "cache2" / "gaul-test2.parquet"
+
+        with (
+            patch.object(dataset, "get_default_source", return_value=local_source),
+            patch.object(
+                dataset, "get_read_parquet_options", return_value={"hive_partitioning": 1}
+            ),
+        ):
+            result = dataset._download_to_cache(cache_path)
+
+        assert result == cache_path
+        assert cache_path.exists()
+
+
+class TestPrepareDataSource:
+    """Test AdminDataset.prepare_data_source() -- returns a SQL table reference (#802)."""
+
+    def test_remote_source_returns_sql_path_literal(self):
+        """A remote (s3://) source is quoted/escaped via sql_path, not verified on disk."""
+        dataset = GAULAdminDataset(verbose=True)
+        con = get_duckdb_connection()
+        try:
+            result = dataset.prepare_data_source(con)
+        finally:
+            con.close()
+
+        assert result == sql_path(dataset.get_default_source())
+
+    def test_local_source_returns_sql_path_literal(self, tmp_path):
+        """A local source is verified to exist, then also returned via sql_path."""
+        local_file = tmp_path / "local_admin.parquet"
+        local_file.write_bytes(b"not a real parquet file, just needs to exist")
+        dataset = GAULAdminDataset(source_path=str(local_file))
+        con = get_duckdb_connection()
+        try:
+            result = dataset.prepare_data_source(con)
+        finally:
+            con.close()
+
+        assert result == sql_path(str(local_file))
+
+    def test_local_source_missing_raises(self):
+        """A local source that does not exist raises FileNotFoundGeoParquetError."""
+        from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError
+
+        dataset = GAULAdminDataset(source_path="/nonexistent/admin-source.parquet")
+        con = get_duckdb_connection()
+        try:
+            with pytest.raises(FileNotFoundGeoParquetError):
+                dataset.prepare_data_source(con)
+        finally:
+            con.close()
