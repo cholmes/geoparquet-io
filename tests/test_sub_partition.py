@@ -26,6 +26,22 @@ def temp_partition_dir():
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# buildings_test.parquet splits into several A5 cells at resolution 12, so a run
+# at that resolution actually exercises partitioning instead of copying one file.
+A5_SPLITTING_RESOLUTION = 12
+BUILDINGS_ROWS = 42
+
+
+def _partition_files(directory) -> list:
+    from pathlib import Path
+
+    return sorted(Path(directory).glob("**/*.parquet"))
+
+
+def _total_rows(directory) -> int:
+    return sum(pq.read_metadata(f).num_rows for f in _partition_files(directory))
+
+
 class TestMinSizeOption:
     """Test --min-size option parsing."""
 
@@ -426,7 +442,7 @@ class TestA5SubPartitioning:
             directory=temp_partition_dir,
             partition_type="a5",
             min_size_bytes=threshold,
-            resolution=4,
+            resolution=A5_SPLITTING_RESOLUTION,
             in_place=True,
             force=True,
             verbose=False,
@@ -438,7 +454,10 @@ class TestA5SubPartitioning:
 
         subdir = os.path.join(temp_partition_dir, "large_a5")
         assert os.path.isdir(subdir)
-        assert list(Path(subdir).glob("*.parquet"))
+        # A single-file copy would satisfy "a parquet exists", so assert the file
+        # was really split and that every row survived the split.
+        assert len(_partition_files(subdir)) > 1
+        assert _total_rows(subdir) == BUILDINGS_ROWS
 
     def test_partition_a5_with_directory_and_min_size(self, cli_runner, temp_partition_dir):
         """End to end: gpio partition a5 <dir>/ --min-size ... --in-place."""
@@ -458,7 +477,7 @@ class TestA5SubPartitioning:
                 "--min-size",
                 f"{file_size - 100}B",
                 "--resolution",
-                "4",
+                str(A5_SPLITTING_RESOLUTION),
                 "--in-place",
                 "--force",
             ],
@@ -466,7 +485,10 @@ class TestA5SubPartitioning:
 
         assert result.exit_code == 0, f"Failed: {result.output}"
         assert not os.path.exists(test_file)
-        assert os.path.isdir(os.path.join(temp_partition_dir, "test_a5"))
+        subdir = os.path.join(temp_partition_dir, "test_a5")
+        assert os.path.isdir(subdir)
+        assert len(_partition_files(subdir)) > 1
+        assert _total_rows(subdir) == BUILDINGS_ROWS
 
     def test_partition_a5_directory_requires_min_size(self, cli_runner, temp_partition_dir):
         result = cli_runner.invoke(
@@ -501,7 +523,9 @@ class TestA5SubPartitioning:
 
         assert result.exit_code == 0, f"Failed: {result.output}"
         assert not os.path.exists(test_file)
-        assert os.path.isdir(os.path.join(temp_partition_dir, "test_a5"))
+        subdir = os.path.join(temp_partition_dir, "test_a5")
+        assert os.path.isdir(subdir)
+        assert _total_rows(subdir) == BUILDINGS_ROWS
 
     def test_an_unavailable_a5_extension_is_reported_once_not_once_per_file(
         self, cli_runner, temp_partition_dir, monkeypatch
@@ -544,3 +568,236 @@ class TestA5SubPartitioning:
 
         assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
         assert calls == ["a5"], f"preflight ran {len(calls)} times for 3 files"
+
+
+def _seed_with_a_null_geometry_row(directory) -> str:
+    """Write a copy of the buildings fixture with one extra NULL-geometry row.
+
+    A NULL geometry produces a NULL index cell, and ``partition_by_column``
+    drops rows whose partition value is NULL -- so the sub-partition output has
+    fewer rows than the input it was built from.
+    """
+    from pathlib import Path
+
+    buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+    table = pq.read_table(buildings)
+    null_row = pa.table(
+        {"id": pa.array(["null-geom"]), "geometry": pa.array([None], type=pa.binary())},
+        schema=table.schema.remove_metadata(),
+    )
+    combined = pa.concat_tables([table.replace_schema_metadata(None), null_row])
+    combined = combined.replace_schema_metadata(table.schema.metadata)
+
+    target = os.path.join(directory, "large.parquet")
+    pq.write_table(combined, target)
+    return target
+
+
+class TestInPlaceRowCountGuard:
+    """--in-place deleted the original after checking only that SOME output existed.
+
+    Rows whose partition value is NULL are dropped, so a file with a NULL or
+    empty geometry lost those rows and the original was removed anyway.
+    """
+
+    def test_in_place_keeps_the_original_when_rows_are_lost(self, temp_partition_dir):
+        from geoparquet_io.core.sub_partition import sub_partition_directory
+
+        large_path = _seed_with_a_null_geometry_row(temp_partition_dir)
+        source_rows = pq.read_metadata(large_path).num_rows
+        assert source_rows == BUILDINGS_ROWS + 1
+
+        result = sub_partition_directory(
+            directory=temp_partition_dir,
+            partition_type="a5",
+            min_size_bytes=os.path.getsize(large_path) - 100,
+            resolution=A5_SPLITTING_RESOLUTION,
+            in_place=True,
+            force=True,
+            verbose=False,
+        )
+
+        assert os.path.exists(large_path), "original deleted despite losing rows"
+        assert result["processed"] == 0
+        assert len(result["errors"]) == 1
+
+        message = result["errors"][0]["error"]
+        assert str(source_rows) in message
+        assert str(BUILDINGS_ROWS) in message
+        assert "keeping original" in message
+
+    def test_in_place_still_removes_the_original_when_every_row_survives(self, temp_partition_dir):
+        from pathlib import Path
+
+        from geoparquet_io.core.sub_partition import sub_partition_directory
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        large_path = os.path.join(temp_partition_dir, "large.parquet")
+        shutil.copy(buildings, large_path)
+
+        result = sub_partition_directory(
+            directory=temp_partition_dir,
+            partition_type="a5",
+            min_size_bytes=os.path.getsize(large_path) - 100,
+            resolution=A5_SPLITTING_RESOLUTION,
+            in_place=True,
+            force=True,
+            verbose=False,
+        )
+
+        assert result["errors"] == []
+        assert result["processed"] == 1
+        assert not os.path.exists(large_path)
+
+
+class TestDirectorySubPartitionPreview:
+    """--preview was accepted, ignored, and the originals deleted anyway."""
+
+    def test_preview_with_in_place_leaves_everything_untouched(
+        self, cli_runner, temp_partition_dir
+    ):
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings, test_file)
+        file_size = os.path.getsize(test_file)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                f"{file_size - 100}B",
+                "--resolution",
+                str(A5_SPLITTING_RESOLUTION),
+                "--preview",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert os.path.exists(test_file), "--preview deleted the original"
+        assert not os.path.exists(os.path.join(temp_partition_dir, "test_a5"))
+        assert "test.parquet" in result.output
+
+    def test_preview_reports_when_nothing_matches(self, cli_runner, temp_partition_dir):
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        shutil.copy(buildings, os.path.join(temp_partition_dir, "test.parquet"))
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                "100MB",
+                "--resolution",
+                str(A5_SPLITTING_RESOLUTION),
+                "--preview",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert "No files" in result.output
+
+
+class TestDirectorySubPartitionIgnoredOptions:
+    """Options that only apply to single-file partitioning were silently dropped."""
+
+    def test_custom_column_name_is_rejected(self, cli_runner, temp_partition_dir):
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings, test_file)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "a5",
+                temp_partition_dir,
+                "--min-size",
+                f"{os.path.getsize(test_file) - 100}B",
+                "--resolution",
+                str(A5_SPLITTING_RESOLUTION),
+                "--a5-name",
+                "my_cell",
+            ],
+        )
+
+        assert result.exit_code != 0, f"ignored option exited 0: {result.output}"
+        assert "--a5-name" in result.output
+        assert os.path.exists(test_file)
+
+    def test_output_folder_is_rejected(self, cli_runner, temp_partition_dir):
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings, test_file)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "h3",
+                temp_partition_dir,
+                os.path.join(temp_partition_dir, "out"),
+                "--min-size",
+                f"{os.path.getsize(test_file) - 100}B",
+                "--resolution",
+                "4",
+            ],
+        )
+
+        assert result.exit_code != 0, f"ignored OUTPUT_FOLDER exited 0: {result.output}"
+        assert "OUTPUT_FOLDER" in result.output
+        assert os.path.exists(test_file)
+
+
+class TestH3ExtensionPreflight:
+    """h3 was missing from the preflight registry that a5 and s2 were in."""
+
+    def test_an_unavailable_h3_extension_is_reported_once_not_once_per_file(
+        self, cli_runner, temp_partition_dir, monkeypatch
+    ):
+        from pathlib import Path
+
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        first = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings, first)
+        size = os.path.getsize(first)
+        for extra in ("second.parquet", "third.parquet"):
+            shutil.copy(first, os.path.join(temp_partition_dir, extra))
+
+        calls = []
+
+        def _unavailable(name, feature=None):
+            calls.append(name)
+            raise ExtensionUnavailableError(name, "1.5.5", "HTTP 404", feature=feature)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.duckdb_utils.require_community_extension", _unavailable
+        )
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "h3",
+                temp_partition_dir,
+                "--min-size",
+                f"{size - 100}B",
+                "--resolution",
+                "4",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
+        assert calls == ["h3"], f"preflight ran {len(calls)} times for 3 files"
