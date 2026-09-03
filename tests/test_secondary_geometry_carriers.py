@@ -250,6 +250,177 @@ class TestSecondaryCarrierOnTheTableEntryPoint:
         )
         assert _failed_checks(out) == []
 
+    @staticmethod
+    def _table_with_metadata_only_secondary():
+        """The same table, with the extension name carried in FIELD METADATA only.
+
+        This is the shape gpio's own ``add`` operations hand back (``Table.add_kdtree()``
+        and friends): plain ``large_binary`` plus ``ARROW:extension:name``, which
+        PyArrow leaves unresolved but DuckDB still registers as GEOMETRY. It is the
+        same column as the resolved-extension shape above, so it must get the same
+        carrier (#727).
+        """
+        marker = {
+            b"ARROW:extension:name": b"geoarrow.wkb",
+            b"ARROW:extension:metadata": b"{}",
+        }
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("geometry", pa.large_binary(), metadata=marker),
+                pa.field("geom2", pa.large_binary(), metadata=marker),
+            ],
+            metadata={b"geo": json.dumps(_geo_dict()).encode()},
+        )
+        return pa.table(
+            {
+                "id": [1, 2],
+                "geometry": [_wkb_point(1.0, 2.0), _wkb_point(3.0, 4.0)],
+                "geom2": [_wkb_point(5.0, 6.0), _wkb_point(7.0, 8.0)],
+            },
+            schema=schema,
+        )
+
+    @pytest.mark.parametrize("strategy", STRATEGIES)
+    def test_metadata_only_secondary_is_written_as_plain_wkb_at_1_1(self, strategy, tmp_path):
+        out = str(tmp_path / f"meta_only_{strategy}.parquet")
+        table = self._table_with_metadata_only_secondary()
+        assert getattr(table.schema.field("geom2").type, "extension_name", None) is None
+
+        WriteStrategyFactory.get_strategy(WriteStrategy(strategy)).write_from_table(
+            table=table,
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        assert _carriers(out)["geom2"] == "byte_array", (
+            f"{strategy} carried a metadata-declared geoarrow column into a 1.1 file"
+        )
+        assert _failed_checks(out) == []
+
+    @staticmethod
+    def _table_with_plain_binary_secondary():
+        """The same table with NO extension marker anywhere on the secondary.
+
+        A declared geometry column that is already the canonical plain ``binary``
+        carrier: the writer has nothing to do, and must leave it exactly as it is
+        rather than round-tripping it through a cast.
+        """
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("geometry", pa.binary()),
+                pa.field("geom2", pa.binary()),
+            ],
+            metadata={b"geo": json.dumps(_geo_dict()).encode()},
+        )
+        return pa.table(
+            {
+                "id": [1, 2],
+                "geometry": [_wkb_point(1.0, 2.0), _wkb_point(3.0, 4.0)],
+                "geom2": [_wkb_point(5.0, 6.0), _wkb_point(7.0, 8.0)],
+            },
+            schema=schema,
+        )
+
+    @pytest.mark.parametrize("strategy", STRATEGIES)
+    def test_unmarked_plain_binary_secondary_is_left_alone_at_1_1(self, strategy, tmp_path):
+        out = str(tmp_path / f"unmarked_{strategy}.parquet")
+        table = self._table_with_plain_binary_secondary()
+        assert table.schema.field("geom2").metadata is None
+
+        WriteStrategyFactory.get_strategy(WriteStrategy(strategy)).write_from_table(
+            table=table,
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        assert _carriers(out)["geom2"] == "byte_array", (
+            f"{strategy} changed the carrier of an already-canonical secondary column"
+        )
+        assert pq.read_table(out).column("geom2").to_pylist() == [
+            _wkb_point(5.0, 6.0),
+            _wkb_point(7.0, 8.0),
+        ]
+        assert _failed_checks(out) == []
+
+    @staticmethod
+    def _table_with_native_geoarrow_point_secondary():
+        """A secondary declared as native GeoArrow ``point`` over unresolved storage.
+
+        GeoParquet 1.1 allows a geometry column to use the ``point`` encoding: a
+        ``struct<x: double, y: double>`` carrying ``ARROW:extension:name =
+        geoarrow.point``. When nothing in the process registered
+        ``geoarrow.pyarrow``, PyArrow leaves the extension unresolved and the
+        column arrives as a plain struct plus that field-metadata marker.
+
+        Those are NOT WKB bytes, so nothing may force-cast them to ``binary`` --
+        doing so raises ``ArrowNotImplementedError`` ("Unsupported cast from
+        struct<x: double, y: double> to binary") out of the middle of a write.
+        """
+        geo = _geo_dict()
+        geo["columns"]["geom2"] = {"encoding": "point", "geometry_types": ["Point"]}
+        point_type = pa.struct([pa.field("x", pa.float64()), pa.field("y", pa.float64())])
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("geometry", pa.binary()),
+                pa.field(
+                    "geom2",
+                    point_type,
+                    metadata={
+                        b"ARROW:extension:name": b"geoarrow.point",
+                        b"ARROW:extension:metadata": b"{}",
+                    },
+                ),
+            ],
+            metadata={b"geo": json.dumps(geo).encode()},
+        )
+        return pa.table(
+            {
+                "id": [1, 2],
+                "geometry": [_wkb_point(1.0, 2.0), _wkb_point(3.0, 4.0)],
+                "geom2": pa.array([{"x": 5.0, "y": 6.0}, {"x": 7.0, "y": 8.0}], type=point_type),
+            },
+            schema=schema,
+        )
+
+    def test_native_geoarrow_point_secondary_is_not_cast_to_binary(self, tmp_path):
+        """duckdb-kv must not force a non-WKB geoarrow carrier through a binary cast."""
+        out = str(tmp_path / "native_point_secondary.parquet")
+        table = self._table_with_native_geoarrow_point_secondary()
+
+        WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV).write_from_table(
+            table=table,
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="1.1",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        written = pq.read_table(out)
+        assert pa.types.is_struct(written.schema.field("geom2").type)
+        assert written.column("geom2").to_pylist() == [
+            {"x": 5.0, "y": 6.0},
+            {"x": 7.0, "y": 8.0},
+        ]
+
 
 _DETERMINISM_SCRIPT = textwrap.dedent(
     """

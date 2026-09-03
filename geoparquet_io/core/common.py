@@ -1489,7 +1489,7 @@ def _strip_geo_metadata_key(table, verbose: bool = False):
     return table.replace_schema_metadata(new_metadata)
 
 
-def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
+def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False, native_columns=None):
     """Give every 1.x geometry column the canonical plain-``binary`` carrier.
 
     ``_process_geometry_column_for_version`` handles the case where PyArrow
@@ -1501,7 +1501,18 @@ def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
     what the process had imported (#688's shape, on a secondary column — #706).
 
     Reuses the streaming strategy's ``canonicalize_wkb_fields`` so both paths
-    agree on what "canonical" means.
+    agree on what "canonical" means -- including its ``_WKB_EXTENSION_NAMES``
+    guard, which is what keeps a native nested carrier (``geoarrow.point`` over
+    ``struct<x, y>``) out of a binary cast that PyArrow cannot perform.
+
+    Args:
+        table: PyArrow Table to rewrite.
+        geometry_columns: Names of the declared geometry columns.
+        verbose: Whether to log a skipped column.
+        native_columns: Columns to leave exactly as they are, because the target
+            version writes them as a native geo type or because the caller
+            converts them itself. Passed straight through to
+            ``canonicalize_wkb_fields``.
     """
     import pyarrow as pa
 
@@ -1510,7 +1521,9 @@ def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
         canonicalize_wkb_fields,
     )
 
-    target = canonicalize_wkb_fields(table.schema, set(geometry_columns), native_columns=set())
+    target = canonicalize_wkb_fields(
+        table.schema, set(geometry_columns), native_columns=set(native_columns or ())
+    )
     # check_metadata=True matters: the leak this exists to stop is a stale
     # ARROW:extension:name on a field whose *type* is already plain binary, and
     # the default comparison ignores metadata entirely.

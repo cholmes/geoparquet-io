@@ -2,13 +2,17 @@
 Tests for KD-tree partitioning commands.
 """
 
+import json
 import os
+import sys
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import add, partition
+from geoparquet_io.core.validate import validate_geoparquet
 
 
 # Shared CliRunner to avoid repeated instantiation
@@ -16,6 +20,24 @@ from geoparquet_io.cli.main import add, partition
 def cli_runner():
     """Module-scoped CliRunner for test efficiency."""
     return CliRunner()
+
+
+def _failed_checks(path: str) -> list[str]:
+    """Validator failures, minus the one Windows fails for a platform reason.
+
+    On win32 `native_geo_stats_contains_data_*` reports every geometry as
+    outside its own column's geospatial statistics, for any native GEOMETRY
+    column written by any code path (#721, #748). The identical write produces a
+    clean result on macOS and Linux, so it is a platform read/write gap rather
+    than anything the write path under test decides. Same excuse, by name and
+    only on win32, as `tests/test_secondary_geometry_carriers.py`.
+    """
+    failed = sorted(
+        {c.name for c in validate_geoparquet(path).checks if c.status.value == "failed"}
+    )
+    if sys.platform == "win32":
+        failed = [f for f in failed if not f.startswith("native_geo_stats_contains_data")]
+    return failed
 
 
 class TestAddKDTreeColumn:
@@ -434,3 +456,48 @@ class TestKDTreeBinaryIDs:
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower()
+
+
+class TestAddKDTreePythonAPI:
+    """The Python API write path for kdtree (#727).
+
+    ``add_kdtree()`` hands the writer a table whose geometry column is plain
+    ``large_binary`` carrying ``ARROW:extension:name = geoarrow.wkb`` in the
+    *field metadata*. DuckDB honours that metadata on ``register()`` and
+    presents the column as ``GEOMETRY``, so the writer must not wrap it in
+    ``ST_GeomFromWKB``.
+    """
+
+    def test_add_kdtree_then_write(self, buildings_test_file, temp_output_file):
+        """read().add_kdtree().write() must produce a valid GeoParquet file."""
+        import geoparquet_io as gpio
+
+        gpio.read(buildings_test_file).add_kdtree(iterations=3).write(temp_output_file)
+
+        assert os.path.exists(temp_output_file)
+        table = pq.read_table(temp_output_file)
+        assert "kdtree_cell" in table.schema.names
+        assert table.num_rows == pq.read_table(buildings_test_file).num_rows
+        assert b"geo" in (table.schema.metadata or {})
+
+        # Not just "readable": the geometry has to survive intact. The bug this
+        # covers lived in the writer's carrier decision for the geometry column,
+        # so a file that parses but declares the wrong encoding, or carries a
+        # native GEOMETRY type inside a 1.x file, is still a regression.
+        geo = json.loads(table.schema.metadata[b"geo"])
+        primary = geo["primary_column"]
+        assert geo["columns"][primary]["encoding"] == "WKB"
+        assert pa.types.is_binary(table.schema.field(primary).type)
+        assert table.column(primary).null_count == 0
+
+        # Every validator check except one, which is excused by name and for a
+        # reason outside this branch: in a session that imported
+        # `geoarrow.pyarrow`, PyArrow resolves the geometry extension type and
+        # `Table.crs` (via `core/streaming.py::extract_crs_from_table`)
+        # stringifies the resolved CRS object to "ProjJsonCrs(OGC:CRS84)". The
+        # writer parses that back as authority "PROJJSONCRS(OGC" / code
+        # "CRS84)", so `crs_valid_geometry` fails. That is pre-existing on main
+        # in a module this branch does not touch, which is also why the failure
+        # depends on what else the test session had imported.
+        failed = [name for name in _failed_checks(temp_output_file) if name != "crs_valid_geometry"]
+        assert failed == []

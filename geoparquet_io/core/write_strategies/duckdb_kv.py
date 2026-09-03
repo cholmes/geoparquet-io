@@ -31,6 +31,7 @@ from geoparquet_io.core.duckdb_utils import (
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
+    arrow_extension_name,
     build_geo_metadata,
     resolve_geometry_columns,
 )
@@ -165,23 +166,35 @@ def _wrap_query_with_crs(
 
 
 def _plain_wkb_for_secondary_columns(table, geometry_column: str, verbose: bool):
-    """Strip geoarrow extension typing from every NON-primary geometry column.
+    """Give every NON-primary geometry column the canonical plain-WKB carrier.
 
     Named from the table's own carried ``geo`` key, which is the only place a
-    table entry point learns about secondaries. The primary is left alone: the
-    caller converts it explicitly.
+    table entry point learns about secondaries. The primary is left alone (it is
+    passed as ``native_columns``): the caller converts it explicitly, and casting
+    it here would both copy the whole geometry column and undo the
+    field-metadata detection the query wrapper depends on (#727).
+
+    Both carrier shapes reach here -- a resolved ``geoarrow.wkb`` extension type,
+    and plain ``large_binary`` carrying only an ``ARROW:extension:name`` field
+    metadata key, which PyArrow leaves unresolved but DuckDB still registers as
+    GEOMETRY, making the COPY write a native Parquet GEOMETRY type that is
+    illegal below GeoParquet 2.0 (#706, #727). ``_canonicalize_wkb_columns``
+    handles both, and its ``_WKB_EXTENSION_NAMES`` guard leaves a *native* nested
+    carrier (``geoarrow.point`` over ``struct<x, y>``) alone rather than forcing
+    it through a binary cast PyArrow cannot perform.
     """
     from geoparquet_io.core.common import (
+        _canonicalize_wkb_columns,
         _parse_geo_metadata_quietly,
-        _strip_geoarrow_to_plain_wkb,
     )
 
     carried_geo = _parse_geo_metadata_quietly(table.schema.metadata)
     secondaries = resolve_geometry_columns(geometry_column, None, carried_geo) - {geometry_column}
-    for column in sorted(secondaries):
-        if column in table.column_names:
-            table = _strip_geoarrow_to_plain_wkb(table, column, verbose)
-    return table
+    if not secondaries:
+        return table
+    return _canonicalize_wkb_columns(
+        table, sorted(secondaries), verbose, native_columns={geometry_column}
+    )
 
 
 def _build_copy_options(
@@ -647,9 +660,13 @@ class DuckDBKVStrategy(BaseWriteStrategy):
 
             # Convert WKB bytes to GEOMETRY for proper spatial processing.
             # geoarrow.wkb extension columns already register as GEOMETRY in
-            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error.
-            geom_type = table.schema.field(geometry_column).type
-            if getattr(geom_type, "extension_name", None) == "geoarrow.wkb":
+            # DuckDB, where ST_GeomFromWKB(GEOMETRY) is a binder error. The
+            # extension name has to be read from the field metadata as well as
+            # the Arrow type: gpio's own `add` operations hand back a plain
+            # `large_binary` column carrying `ARROW:extension:name`, which
+            # DuckDB still registers as GEOMETRY (#727).
+            geom_field = table.schema.field(geometry_column)
+            if arrow_extension_name(geom_field) == "geoarrow.wkb":
                 query = "SELECT * FROM input_table"
             else:
                 query = f"""
