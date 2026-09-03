@@ -135,6 +135,24 @@ repos:
               echo "       Justify a rare exception with a trailing '# allow-manual-quote'."
               errors=1
             fi
+            # Hand-written `FROM '{path}'` interpolation. The quotes belong to
+            # sql_path(), which quotes and escapes in one step, so the escape
+            # cannot be forgotten - it was forgotten for `add admin-divisions`,
+            # which wrote its output file and then died with a ParserException on
+            # an output path containing an apostrophe (#718). Most existing sites
+            # interpolate an already-escaped safe_file_url() result and are
+            # correct, so this is a per-file ratchet over a checked-in baseline
+            # (counts may fall, never rise) rather than a ban that would demand a
+            # 160-site rewrite. Regenerate after migrating call sites:
+            #   uv run python scripts/check_sql_path_literals.py --update
+            # The -f guard keeps this block runnable from a scratch workspace
+            # (tests/test_duckdb_connection_factory_bypass.py runs the script
+            # against a synthetic tree); test_sql_path_escaping.py asserts the
+            # checker is present and wired in, so it cannot go missing for real.
+            if [ -f scripts/check_sql_path_literals.py ] \
+                && ! python3 scripts/check_sql_path_literals.py; then
+              errors=1
+            fi
             exit $errors
         language: system
         pass_filenames: false
