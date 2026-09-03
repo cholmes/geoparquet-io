@@ -19,6 +19,7 @@ from geoparquet_io.core.common import format_size
 from geoparquet_io.core.crs_utils import (
     CRS_ABSENT,
     _extract_crs_identifier,
+    _is_crs84_equivalent,
     is_crs84_identifier,
     is_default_crs,
 )
@@ -153,15 +154,17 @@ def _crs_are_equivalent(crs1: Any, crs2: Any) -> bool:
         True if CRS values represent the same coordinate system
     """
     # An omitted crs key means the OGC:CRS84 default; an explicit null means the
-    # CRS is unknown and matches only another unknown. Kept identical to
-    # ``validate._crs_equals`` so the two helpers cannot drift apart again.
+    # CRS is unknown and matches only another unknown. ``_is_crs84_equivalent``
+    # is the shared "is this the default?" predicate, called here and by
+    # ``validate._crs_equals`` so the two helpers cannot drift apart again — they
+    # once resolved this branch with different predicates and disagreed on
+    # id-less CRS84 PROJJSON and on the "SRID:4326" spelling. It answers False
+    # for None and for the value-less {} / "" shapes, which is what this branch
+    # needs.
     if crs1 is CRS_ABSENT or crs2 is CRS_ABSENT:
         if crs1 is CRS_ABSENT and crs2 is CRS_ABSENT:
             return True
-        other = crs2 if crs1 is CRS_ABSENT else crs1
-        # bool(other) first: is_default_crs answers True for *any* falsy value,
-        # but None means "unknown" and {} / "" name no CRS at all.
-        return bool(other) and is_default_crs(other)
+        return _is_crs84_equivalent(crs2 if crs1 is CRS_ABSENT else crs1)
 
     if crs1 is None or crs2 is None:
         return crs1 is None and crs2 is None
