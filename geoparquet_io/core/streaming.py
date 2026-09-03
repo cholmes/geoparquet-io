@@ -556,35 +556,6 @@ def extract_crs_from_table(
     return None
 
 
-def strip_geoarrow_extension_type(
-    table: pa.Table,
-    geometry_column: str,
-) -> pa.Table:
-    """
-    Convert geoarrow extension type back to plain binary WKB.
-
-    Used when writing GeoParquet 1.x output which uses plain binary
-    geometry with CRS only in metadata.
-
-    Args:
-        table: PyArrow Table with geoarrow geometry column
-        geometry_column: Name of the geometry column
-
-    Returns:
-        Table with geometry column as plain binary
-    """
-    if geometry_column not in table.column_names:
-        return table
-
-    # One implementation, so this path cannot drift from the metadata path's.
-    # It also has to unwrap the metadata-declared carrier shape, whose storage
-    # is `large_binary` and whose stale `ARROW:extension:name` has to come off
-    # the field -- neither of which the old inline unwrap here did (#792).
-    from geoparquet_io.core.common import _strip_geoarrow_to_plain_wkb
-
-    return _strip_geoarrow_to_plain_wkb(table, geometry_column, verbose=False)
-
-
 def extract_version_from_metadata(metadata: dict | None) -> str | None:
     """
     Extract GeoParquet version string from schema metadata.

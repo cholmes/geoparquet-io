@@ -47,7 +47,10 @@ from geoparquet_io.core.geo_metadata import (
     prune_geo_metadata_to_columns,
     strip_derived_stats,
 )
-from geoparquet_io.core.geoarrow_encoding import is_geoarrow_extension_field
+from geoparquet_io.core.geoarrow_encoding import (
+    is_geoarrow_extension_field,
+    is_wkb_extension_field,
+)
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     _detect_geometry_from_query,
@@ -1125,13 +1128,19 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
 
     geom_col = table.column(geometry_column)
 
-    # Check if it's a geoarrow extension type, in EITHER carrier shape: the
-    # resolved Arrow type, or a plain binary type whose field metadata declares
+    # Check if it's a WKB extension type, in EITHER carrier shape: the resolved
+    # Arrow type, or a plain binary type whose field metadata declares
     # `ARROW:extension:name`. Reading only the type left the metadata-declared
     # shape in place, so the same column got a different carrier depending on
     # whether the process had imported geoarrow.pyarrow (#792).
-    if not is_geoarrow_extension_field(table.schema.field(geometry_column)):
-        return table  # Already plain binary
+    #
+    # WKB names only, not any geoarrow.* name: this rewrites the column to plain
+    # `binary`, which is a lossless re-carrier for WKB bytes and destructive for
+    # anything else -- `geoarrow.point` over `struct<x, y>` cannot be cast at all,
+    # and `geoarrow.wkt` over `string` casts into a binary column still declared
+    # `encoding: WKT`. A native carrier is simply not this function's business.
+    if not is_wkb_extension_field(table.schema.field(geometry_column)):
+        return table  # Already plain binary, or a non-WKB carrier to leave alone
 
     if verbose:
         debug("v1.x: stripping geoarrow extension type to plain binary WKB")
@@ -1247,9 +1256,13 @@ def _process_geometry_column_for_version(
             col_index = table.schema.get_field_index(geometry_column)
             table = table.set_column(col_index, geometry_column, wkb_arr)
         else:
-            # For v1.x: ensure plain binary WKB (strip geoarrow if present)
-            # CRS goes only in metadata, not in schema
-            if is_geoarrow_extension_field(table.schema.field(geometry_column)):
+            # For v1.x: ensure plain binary WKB (strip a WKB extension carrier if
+            # present). CRS goes only in metadata, not in schema.
+            # A non-WKB geoarrow carrier is left alone: casting it here is either
+            # impossible (`geoarrow.point` over `struct<x, y>`) or silently wrong
+            # (`geoarrow.wkt` over `string`), so the broad geoarrow predicate is
+            # the wrong gate for a rewrite (#792).
+            if is_wkb_extension_field(table.schema.field(geometry_column)):
                 table = _strip_geoarrow_to_plain_wkb(table, geometry_column, verbose)
             elif verbose:
                 debug("v1.x: geometry is already plain binary WKB (CRS in metadata only)")
