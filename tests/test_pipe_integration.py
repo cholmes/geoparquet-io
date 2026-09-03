@@ -338,7 +338,7 @@ class TestExtractIntoPartition:
         import pyarrow.ipc as ipc
 
         result = subprocess.run(
-            f"gpio extract --bbox '-0.5,9.8,0.5,11.0' {PLACES_PARQUET} -",
+            f"gpio extract --bbox=-0.5,9.8,0.5,11.0 {PLACES_PARQUET} -",
             shell=True,
             capture_output=True,
             timeout=60,
@@ -356,7 +356,7 @@ class TestExtractIntoPartition:
         """piping.md "Spatial Filter and Partition", verbatim."""
         result = run_pipeline(
             [
-                f"gpio extract --bbox '-4,4,4,12' {PLACES_PARQUET} -",
+                f"gpio extract --bbox=-4,4,4,12 {PLACES_PARQUET} -",
                 "gpio add quadkey -",
                 f"gpio partition string --column quadkey --chars 4 - {output_dir}",
             ]
@@ -381,7 +381,7 @@ class TestExtractIntoPartition:
         """
         result = run_pipeline(
             [
-                f"gpio extract --bbox '-4,4,4,12' {PLACES_PARQUET} -",
+                f"gpio extract --bbox=-4,4,4,12 {PLACES_PARQUET} -",
                 "gpio add bbox --force -",
                 "gpio add h3 --resolution 2 -",
                 "gpio sort hilbert -",
