@@ -4,6 +4,7 @@ Tests for the Python API (fluent Table class and ops module).
 
 from __future__ import annotations
 
+import struct
 import tempfile
 import uuid
 from pathlib import Path
@@ -18,6 +19,10 @@ from tests.conftest import safe_unlink
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_PARQUET = TEST_DATA_DIR / "places_test.parquet"
+
+#: Little-endian WKB POINTs, for building geometry columns without a fixture file.
+_WKB_POINT_0 = b"\x01\x01\x00\x00\x00" + struct.pack("<dd", 0.0, 0.0)
+_WKB_POINT_1 = b"\x01\x01\x00\x00\x00" + struct.pack("<dd", 1.0, 1.0)
 
 
 class TestRead:
@@ -127,6 +132,61 @@ class TestTable:
         """Test extract() with row limit."""
         result = sample_table.extract(limit=10)
         assert result.num_rows == 10
+
+    def test_extract_excluding_geometry_is_writable(self, sample_table):
+        """Dropping geometry yields an attribute table that write() can emit.
+
+        extract() used to keep pointing at the excluded geometry column, so
+        write() failed deep in the writer with a KeyError naming it (#731).
+        """
+        result = sample_table.extract(columns=["name", "address"], exclude_columns=["geometry"])
+        assert "geometry" not in result.column_names
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "attributes.parquet"
+            result.write(out)
+            written = pq.read_table(out)
+            assert "geometry" not in written.column_names
+            assert "name" in written.column_names
+            # No geometry column left, so the file is plain Parquet: advertising
+            # geo metadata here would name a column the schema does not have.
+            assert b"geo" not in (pq.ParquetFile(out).schema_arrow.metadata or {})
+
+    def test_extract_repoints_at_a_surviving_geometry_column(self):
+        """Excluding the primary geometry keeps the file GeoParquet if another remains.
+
+        The result used to report ``geometry_column=None`` whenever the primary
+        was dropped, which silently threw away the geo metadata of a secondary
+        geometry column that was still there.
+        """
+        import json
+
+        table = pa.table(
+            {
+                "id": [1, 2],
+                "geom_a": [_WKB_POINT_0, _WKB_POINT_1],
+                "geom_b": [_WKB_POINT_1, _WKB_POINT_0],
+            }
+        )
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geom_a",
+            "columns": {"geom_a": {"encoding": "WKB"}, "geom_b": {"encoding": "WKB"}},
+        }
+        table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+
+        result = Table(table, geometry_column="geom_a").extract(exclude_columns=["geom_a"])
+
+        assert result.geometry_column == "geom_b"
+
+    def test_extract_unknown_column_names_the_missing_one(self, sample_table):
+        """Unknown names fail early and name themselves, not another column (#731)."""
+        from geoparquet_io.core.exceptions import GeoParquetError
+
+        with pytest.raises(GeoParquetError) as exc_info:
+            sample_table.extract(columns=["name", "population"])
+
+        assert "population" in str(exc_info.value)
 
     def test_chaining(self, sample_table):
         """Test chaining multiple operations."""

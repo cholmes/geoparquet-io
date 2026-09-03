@@ -103,8 +103,8 @@ table = gpio.read('input.parquet').extract(limit=1000)
 # Select specific columns
 table = gpio.read('input.parquet').extract(columns=['name', 'geometry'])
 
-# Exclude columns
-table = gpio.read('input.parquet').extract(exclude_columns=['temp_id'])
+# Exclude columns (unknown names raise instead of being ignored)
+table = gpio.read('input.parquet').extract(exclude_columns=['placemaker_url'])
 
 # Spatial filter by bounding box
 table = gpio.read('input.parquet').extract(

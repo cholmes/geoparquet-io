@@ -714,12 +714,17 @@ table = gpio.read('unknown_crs.parquet').reproject(assume_crs84=True)
 
 Filter columns and rows.
 
+Names in `columns` and `exclude_columns` are checked against the schema:
+an unknown name raises `InvalidParameterError` naming it, rather than being
+silently ignored. A column may not appear in both lists, except for the
+geometry and bbox columns.
+
 ```python
 # Select specific columns
 table = gpio.read('input.parquet').extract(columns=['name', 'address'])
 
 # Exclude columns
-table = gpio.read('input.parquet').extract(exclude_columns=['temp_id'])
+table = gpio.read('input.parquet').extract(exclude_columns=['placemaker_url'])
 
 # Limit rows
 table = gpio.read('input.parquet').extract(limit=1000)

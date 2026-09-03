@@ -419,11 +419,14 @@ def _prune_coverings(col_meta, columns: set[str]) -> None:
         del col_meta["covering"]
 
 
-def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str]):
+def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str], repoint_primary: bool = False):
     """Drop column entries and coverings that reference absent columns.
 
-    Returns :data:`_DROP_GEO` when the primary geometry column itself is gone,
-    meaning the file must not advertise ``geo`` metadata at all.
+    Returns :data:`_DROP_GEO` when no declared geometry column survives, meaning
+    the file must not advertise ``geo`` metadata at all. When the primary column
+    itself is gone but another declared geometry column remains,
+    ``repoint_primary`` decides between naming that survivor as the new primary
+    and dropping the whole block.
     """
     col_entries = geo_dict.get("columns")
     if not isinstance(col_entries, dict):
@@ -434,14 +437,18 @@ def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str]):
 
     primary = geo_dict.get("primary_column")
     if primary is not None and primary not in col_entries:
-        return _DROP_GEO
+        if not (repoint_primary and col_entries):
+            return _DROP_GEO
+        geo_dict["primary_column"] = next(iter(col_entries))
 
     for col_meta in col_entries.values():
         _prune_coverings(col_meta, columns)
     return geo_dict
 
 
-def prune_geo_metadata_to_columns(metadata: dict | None, columns: list[str]) -> dict | None:
+def prune_geo_metadata_to_columns(
+    metadata: dict | None, columns: list[str], repoint_primary: bool = False
+) -> dict | None:
     """Return a copy of KV ``metadata`` with references to absent columns removed.
 
     A column projection (``gpio extract --exclude-cols``) can remove the bbox
@@ -450,9 +457,18 @@ def prune_geo_metadata_to_columns(metadata: dict | None, columns: list[str]) -> 
     and ``gpio check spec`` both reject. Entries for columns missing from
     ``columns`` are dropped; if the primary geometry column is among them the
     whole ``geo`` key is dropped, since the output is no longer GeoParquet.
+
+    ``repoint_primary`` keeps the block alive in the one case where the output
+    is still GeoParquet: the primary column was dropped but another *declared*
+    geometry column survives, which then becomes the primary. Callers that
+    rebuild the geo metadata from the output schema anyway (the DuckDB write
+    path) leave it off; callers that carry the input's block forward verbatim
+    (``extract_table``, on Arrow tables) turn it on.
     """
     present = set(columns)
-    return _rewrite_geo_metadata(metadata, lambda geo: _prune_geo_dict_to_columns(geo, present))
+    return _rewrite_geo_metadata(
+        metadata, lambda geo: _prune_geo_dict_to_columns(geo, present, repoint_primary)
+    )
 
 
 def create_geo_metadata(

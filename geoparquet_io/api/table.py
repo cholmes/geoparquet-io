@@ -207,6 +207,35 @@ def _calculate_bounds_from_table(
             con.close()
 
 
+def _surviving_geometry_column(current: str | None, result: pa.Table) -> str | None:
+    """Which geometry column a projected table should report, if any.
+
+    A column projection can drop the geometry column the Table was pointing at.
+    Keeping the old name made ``write()`` ask the writer for a column that is no
+    longer there (#731), but collapsing straight to ``None`` was equally wrong
+    when the input declared more than one geometry column: the survivor's geo
+    metadata was then silently thrown away. So prefer the carried
+    ``primary_column`` (``extract_table`` has already re-pointed it at a
+    survivor), then any other declared geometry column, and only then ``None``
+    — the same state ``read()`` reports for a plain Parquet file.
+    """
+    if current is not None and current in result.column_names:
+        return current
+
+    from geoparquet_io.core.geo_metadata import parse_geo_metadata
+
+    geo = parse_geo_metadata(result.schema.metadata)
+    if not geo:
+        return None
+
+    declared = geo.get("columns")
+    candidates = [geo.get("primary_column")] + list(declared if isinstance(declared, dict) else [])
+    for name in candidates:
+        if isinstance(name, str) and name in result.column_names:
+            return name
+    return None
+
+
 def read(path: str | Path, **kwargs) -> Table:
     """
     Read a GeoParquet file into a Table.
@@ -1432,6 +1461,10 @@ class Table:
         """
         Extract columns and rows with optional filtering.
 
+        Column names are validated against the schema: an unknown name raises
+        rather than being silently ignored, and a name may not appear in both
+        ``columns`` and ``exclude_columns`` (geometry and bbox excepted).
+
         Args:
             columns: Columns to include (None = all)
             exclude_columns: Columns to exclude
@@ -1441,7 +1474,13 @@ class Table:
             repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
         Returns:
-            New filtered Table
+            New filtered Table. Excluding every geometry column yields an
+            attribute table, which ``write()`` emits as plain Parquet.
+
+        Raises:
+            InvalidParameterError: If a requested column does not exist, if a
+                column is in both lists, or if ``bbox`` is used on a table with
+                no geometry column.
         """
         from geoparquet_io.core.extract import extract_table
 
@@ -1455,7 +1494,10 @@ class Table:
             geometry_column=self._geometry_column,
             repair_geometry=repair_geometry,
         )
-        return self._wrap(result, self._geometry_column)
+        # Excluding the geometry column is a documented way to build an
+        # attribute table, so the derived Table must re-resolve which geometry
+        # column (if any) it now points at (#731).
+        return self._wrap(result, _surviving_geometry_column(self._geometry_column, result))
 
     def add_h3(
         self,
