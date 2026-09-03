@@ -28,6 +28,7 @@ from geoparquet_io.core.duckdb_utils import (
     _get_query_column_type,
     quote_identifier,
 )
+from geoparquet_io.core.geoarrow_encoding import is_geoarrow_extension_field
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -755,15 +756,10 @@ def _detect_version_from_table(table: pa.Table, verbose: bool = False) -> str | 
     Returns:
         Version string (e.g., "1.1", "2.0", "parquet-geo-only") or None
     """
-    # Lazy import to avoid circular dependency
-    from geoparquet_io.core.streaming import is_geoarrow_type
-
-    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only)
-    has_native_geo = False
-    for field in table.schema:
-        if is_geoarrow_type(field.type):
-            has_native_geo = True
-            break
+    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only).
+    # Reads the field, not just the type, so the metadata-declared carrier shape
+    # is detected too and this agrees with its twin in common.py (#792).
+    has_native_geo = any(is_geoarrow_extension_field(field) for field in table.schema)
 
     # Check schema metadata for geo version
     metadata = table.schema.metadata
@@ -980,21 +976,6 @@ def _get_geometry_type_name(code: int) -> str:
 
     suffix = _DIMENSION_SUFFIXES.get(dimension, "")
     return base_name + suffix
-
-
-def _is_geoarrow_extension_type(arrow_type) -> bool:
-    """
-    Check if an Arrow type is a geoarrow extension type.
-
-    Args:
-        arrow_type: PyArrow type to check
-
-    Returns:
-        True if the type is a geoarrow extension type
-    """
-    if hasattr(arrow_type, "extension_name"):
-        return arrow_type.extension_name.startswith("geoarrow")
-    return False
 
 
 # =============================================================================

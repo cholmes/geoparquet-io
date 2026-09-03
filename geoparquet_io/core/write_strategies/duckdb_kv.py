@@ -29,10 +29,10 @@ from geoparquet_io.core.duckdb_utils import (
     validate_compression_level,
 )
 from geoparquet_io.core.geo_metadata import declare_carried_bbox_column
+from geoparquet_io.core.geoarrow_encoding import arrow_extension_name
 from geoparquet_io.core.logging_config import configure_verbose, debug, success
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
-    arrow_extension_name,
     build_geo_metadata,
     resolve_geometry_columns,
 )

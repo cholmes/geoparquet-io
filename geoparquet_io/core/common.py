@@ -47,6 +47,7 @@ from geoparquet_io.core.geo_metadata import (
     prune_geo_metadata_to_columns,
     strip_derived_stats,
 )
+from geoparquet_io.core.geoarrow_encoding import is_geoarrow_extension_field
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     _detect_geometry_from_query,
@@ -980,14 +981,12 @@ def _detect_version_from_table(table, verbose: bool = False) -> str | None:
     """
     import json
 
-    from geoparquet_io.core.streaming import is_geoarrow_type
-
-    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only)
-    has_native_geo = False
-    for field in table.schema:
-        if is_geoarrow_type(field.type):
-            has_native_geo = True
-            break
+    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only).
+    # `is_geoarrow_extension_field` reads the field, not just the type, so a
+    # metadata-declared geoarrow column is detected too -- without that, the
+    # same table resolved to "parquet-geo-only" or to the 1.1 default purely
+    # according to whether geoarrow.pyarrow had been imported (#792).
+    has_native_geo = any(is_geoarrow_extension_field(field) for field in table.schema)
 
     # Check schema metadata for geo version
     metadata = table.schema.metadata
@@ -1115,13 +1114,6 @@ def _get_geometry_type_name(code: int) -> str:
     return base_name + suffix
 
 
-def _is_geoarrow_extension_type(arrow_type) -> bool:
-    """Check if an Arrow type is a geoarrow extension type."""
-    if hasattr(arrow_type, "extension_name"):
-        return arrow_type.extension_name.startswith("geoarrow")
-    return False
-
-
 def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     """
     Convert geoarrow extension type back to plain binary WKB.
@@ -1132,10 +1124,13 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     import pyarrow as pa
 
     geom_col = table.column(geometry_column)
-    geom_type = geom_col.type
 
-    # Check if it's a geoarrow extension type
-    if not _is_geoarrow_extension_type(geom_type):
+    # Check if it's a geoarrow extension type, in EITHER carrier shape: the
+    # resolved Arrow type, or a plain binary type whose field metadata declares
+    # `ARROW:extension:name`. Reading only the type left the metadata-declared
+    # shape in place, so the same column got a different carrier depending on
+    # whether the process had imported geoarrow.pyarrow (#792).
+    if not is_geoarrow_extension_field(table.schema.field(geometry_column)):
         return table  # Already plain binary
 
     if verbose:
@@ -1154,6 +1149,10 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     try:
         plain_col = _to_plain_wkb_array(geom_col)
         col_index = table.schema.get_field_index(geometry_column)
+        # Passing the bare name rebuilds the field from scratch, which is what
+        # drops a stale `ARROW:extension:name` on the metadata-declared shape --
+        # left behind, DuckDB reads it back off `register()` and the COPY writes
+        # a native Parquet GEOMETRY type into a 1.x file (#706, #727).
         return table.set_column(col_index, geometry_column, plain_col)
 
     except (TypeError, ValueError, AttributeError, pa.ArrowInvalid) as e:
@@ -1250,7 +1249,7 @@ def _process_geometry_column_for_version(
         else:
             # For v1.x: ensure plain binary WKB (strip geoarrow if present)
             # CRS goes only in metadata, not in schema
-            if _is_geoarrow_extension_type(geom_col.type):
+            if is_geoarrow_extension_field(table.schema.field(geometry_column)):
                 table = _strip_geoarrow_to_plain_wkb(table, geometry_column, verbose)
             elif verbose:
                 debug("v1.x: geometry is already plain binary WKB (CRS in metadata only)")

@@ -19,8 +19,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.geoarrow_encoding import arrow_extension_name
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
-from geoparquet_io.core.write_strategies.base import BaseWriteStrategy, arrow_extension_name
+from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
 
 if TYPE_CHECKING:
     import duckdb
