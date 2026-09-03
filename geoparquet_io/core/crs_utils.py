@@ -203,6 +203,14 @@ PROJJSON_CRS_TYPES = frozenset(
 )
 
 
+# PROJJSON members that define a CRS rather than merely identify or annotate it.
+# A type-less dict carrying any of these is not repaired from its id (see
+# normalize_projjson_crs): the body may contradict the id.
+_CRS_DEFINING_MEMBERS = frozenset(
+    {"datum", "datum_ensemble", "coordinate_system", "base_crs", "conversion", "components"}
+)
+
+
 def _projjson_authority_code(crs: dict) -> tuple[str, str] | None:
     """Return the ``(authority, code)`` of a PROJJSON ``id`` member, if it has one."""
     crs_id = crs.get("id")
@@ -235,9 +243,10 @@ def normalize_projjson_crs(crs, source_description: str):
 
     * valid PROJJSON (and anything that is not a CRS object, e.g. a
       ``"EPSG:3857"`` string resolved elsewhere) is returned untouched;
-    * PROJJSON missing only the required ``"type"`` member, but carrying an
-      ``id`` that resolves to a real CRS, is repaired from that authority code —
-      the id names the CRS unambiguously, so nothing is guessed;
+    * PROJJSON missing only the required ``"type"`` member, carrying an ``id``
+      that resolves to a real CRS and no CRS definition of its own, is repaired
+      from that authority code — the id names the CRS unambiguously, so nothing
+      is guessed;
     * anything else raises, naming the input and the CRS it could not make sense
       of, so the user gets an error instead of a silently invalid file.
 
@@ -258,20 +267,30 @@ def normalize_projjson_crs(crs, source_description: str):
     if name:
         described = f"{described}, name {name!r}"
 
-    if crs_type is None and authority_code is not None:
+    # Rebuilding from the id is only safe when the id is all the dict carries:
+    # a body with its own CRS definition (datum, conversion, ...) may contradict
+    # the id, and replacing it with the authority's definition would silently
+    # relabel the data. Those are rejected below instead.
+    defining_members = _CRS_DEFINING_MEMBERS.intersection(crs)
+    if crs_type is None and authority_code is not None and not defining_members:
         repaired = _projjson_from_authority(*authority_code)
         if repaired is not None:
             warn(
-                f"Input CRS ({described}) is missing the required PROJJSON "
-                f'"type" member; rebuilt it from {authority_code[0]}:{authority_code[1]}'
+                f'CRS ({described}) carries no PROJJSON "type" member; '
+                f"rebuilt it from {authority_code[0]}:{authority_code[1]}"
             )
             return json.loads(repaired)
 
-    problem = (
-        'is missing the required PROJJSON "type" member'
-        if crs_type is None
-        else f"has unknown PROJJSON type {crs_type!r}"
-    )
+    if crs_type is None and defining_members:
+        problem = (
+            'is missing the required PROJJSON "type" member, and carries its own '
+            f"CRS definition ({', '.join(sorted(defining_members))}) that gpio "
+            "will not overwrite from the id"
+        )
+    elif crs_type is None:
+        problem = 'is missing the required PROJJSON "type" member'
+    else:
+        problem = f"has unknown PROJJSON type {crs_type!r}"
     raise GeoParquetError(
         f"CRS in {source_description} {problem} ({described}), and could not be "
         "repaired from its identifier. Writing it through would produce a "

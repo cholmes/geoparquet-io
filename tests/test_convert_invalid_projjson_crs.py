@@ -122,4 +122,74 @@ def test_valid_projjson_crs_is_untouched(tmp_path):
     result = validate_geoparquet(str(out), validate_data=False)
     assert result.is_valid, [c.message for c in result.checks if c.status.name == "FAILED"]
     geo = json.loads(pq.read_schema(str(out)).metadata[b"geo"])
-    assert geo["columns"][geo["primary_column"]]["crs"]["type"] == "ProjectedCRS"
+    # Byte-for-byte: the repair path must not have rewritten a valid CRS at all.
+    assert geo["columns"][geo["primary_column"]]["crs"] == crs
+
+
+def test_python_api_convert_rejects_unresolvable_crs(tmp_path):
+    """The Python API read path must repair-or-reject like the CLI (#705)."""
+    import geoparquet_io as gpio
+
+    src = _write_geoparquet_with_crs(tmp_path / "bad.parquet", UNRESOLVABLE_CRS)
+    with pytest.raises(GeoParquetError, match="PROJJSON"):
+        gpio.convert(str(src))
+
+
+def test_python_api_convert_repairs_repairable_crs(tmp_path):
+    """The Python API repairs a type-less id-only CRS instead of copying it."""
+    import geoparquet_io as gpio
+
+    src = _write_geoparquet_with_crs(tmp_path / "src.parquet", REPAIRABLE_CRS)
+    out = tmp_path / "out.parquet"
+    gpio.convert(str(src)).write(str(out))
+
+    result = validate_geoparquet(str(out), validate_data=False)
+    assert result.is_valid, [c.message for c in result.checks if c.status.name == "FAILED"]
+    geo = json.loads(pq.read_schema(str(out)).metadata[b"geo"])
+    crs = geo["columns"][geo["primary_column"]]["crs"]
+    assert crs["type"] == "ProjectedCRS", crs
+    assert str(crs["id"]["code"]) == "3857", crs
+
+
+class TestNormalizeProjjsonCrs:
+    """Unit contract of the repair-or-reject helper itself."""
+
+    def test_valid_projjson_returned_untouched(self):
+        import pyproj
+
+        from geoparquet_io.core.crs_utils import normalize_projjson_crs
+
+        crs = pyproj.CRS.from_authority("EPSG", "32633").to_json_dict()
+        assert normalize_projjson_crs(crs, "in.parquet") == crs
+
+    def test_non_dict_values_pass_through(self):
+        from geoparquet_io.core.crs_utils import normalize_projjson_crs
+
+        assert normalize_projjson_crs(None, "in.parquet") is None
+        assert normalize_projjson_crs("EPSG:3857", "in.parquet") == "EPSG:3857"
+
+    def test_unknown_type_is_rejected(self):
+        from geoparquet_io.core.crs_utils import normalize_projjson_crs
+
+        with pytest.raises(GeoParquetError, match="unknown PROJJSON type"):
+            normalize_projjson_crs({"type": "NotACRS", "name": "x"}, "in.parquet")
+
+    def test_id_only_dict_is_repaired(self):
+        from geoparquet_io.core.crs_utils import normalize_projjson_crs
+
+        repaired = normalize_projjson_crs(dict(REPAIRABLE_CRS), "in.parquet")
+        assert repaired["type"] == "ProjectedCRS"
+        assert str(repaired["id"]["code"]) == "3857"
+
+    def test_type_less_dict_with_own_definition_is_rejected_not_overwritten(self):
+        """A body that defines a CRS may contradict its id; never rebuild over it."""
+        import pyproj
+
+        from geoparquet_io.core.crs_utils import normalize_projjson_crs
+
+        full = pyproj.CRS.from_authority("EPSG", "32633").to_json_dict()
+        tampered = dict(full)
+        del tampered["type"]  # invalid, but still carries datum/conversion/...
+
+        with pytest.raises(GeoParquetError, match="will not overwrite"):
+            normalize_projjson_crs(tampered, "in.parquet")
