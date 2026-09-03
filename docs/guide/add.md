@@ -44,12 +44,19 @@ Creates a struct column with `{xmin, ymin, xmax, ymax}` for each feature, plus t
 
 The command automatically checks for existing bbox columns:
 
-- **If bbox exists with metadata**: Informs you and exits successfully (no action needed)
-- **If bbox exists without metadata**: Suggests using `gpio add bbox-metadata` instead
+- **If bbox exists with metadata**: Nothing is recomputed, and the input is copied to the output file unchanged
+- **If bbox exists without metadata**: Same copy, plus a suggestion to use `gpio add bbox-metadata`
+- **If `--bbox-name` asks for a different name**: That column is computed and added alongside the existing one, with a warning that the file will have two bbox columns
+- **If a write option is asked for explicitly** (`--geoparquet-version`, `--compression`, `--compression-level`, `--row-group-size`): the column is recomputed instead of copied, because a verbatim copy reproduces the input's settings and cannot honour the requested ones
 - **Use `--force`**: Replace existing bbox column with a freshly computed one
 
+The copy matters for pipelines: `gpio add bbox in.parquet out.parquet` always leaves a file at `out.parquet` with a bbox column, whether or not one had to be computed, so the next step in a script has something to read ([#728](https://github.com/geoparquet/geoparquet-io/issues/728)). Every copy is reported on the console, so a recomputed bbox is never confused with a copied one. `--dry-run` says which of the two it would be. When no output file is given there is nothing to write, and the command only reports.
+
+The same holds for a stream: `... | gpio add bbox - out.parquet` on an input that already has a bbox column passes the data through untouched and declares no covering for a column gpio did not compute.
+
+<!-- doctest: menu -->
 ```bash
-# Check and skip if bbox already exists
+# Already has a bbox: copies input to output, computing nothing
 gpio add bbox input.parquet output.parquet
 
 # Force replace existing bbox

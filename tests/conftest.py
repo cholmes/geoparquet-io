@@ -85,6 +85,7 @@ def walk_cli_commands(cmd, path: tuple[str, ...] = ()):
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_TEST_FILE = TEST_DATA_DIR / "places_test.parquet"
 BUILDINGS_TEST_FILE = TEST_DATA_DIR / "buildings_test.parquet"
+CANONICAL_PLACES_FILE = TEST_DATA_DIR / "canonical" / "places.parquet"
 COUNTRY_PARTITION_DIR = TEST_DATA_DIR / "country_partition"
 
 
@@ -98,6 +99,18 @@ def test_data_dir():
 def places_test_file():
     """Return the path to the places test parquet file."""
     return str(PLACES_TEST_FILE)
+
+
+@pytest.fixture
+def places_with_covering_file():
+    """A places file that already has a bbox column *and* covering metadata.
+
+    The counterpart to ``places_v11_file``: this one is "optimal" for
+    ``check_bbox_structure``, so it exercises the branch where nothing at all
+    needs recomputing. ``places_test.parquet`` declares 1.0.0 and carries no
+    covering key, which is the "suboptimal" branch instead.
+    """
+    return str(CANONICAL_PLACES_FILE)
 
 
 @pytest.fixture
