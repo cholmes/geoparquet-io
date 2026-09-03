@@ -7465,6 +7465,21 @@
        "type": "boolean"
       },
       {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "multiple": false,
+       "name": "in_place",
+       "nargs": 1,
+       "opts": [
+        "--in-place"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
        "default": "<unset>",
        "hidden": false,
        "is_flag": false,
@@ -7508,6 +7523,21 @@
        "required": false,
        "secondary_opts": [],
        "type": "integer"
+      },
+      {
+       "default": "None",
+       "hidden": false,
+       "is_flag": false,
+       "multiple": false,
+       "name": "min_size",
+       "nargs": 1,
+       "opts": [
+        "--min-size"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "text"
       },
       {
        "default": "<unset>",
