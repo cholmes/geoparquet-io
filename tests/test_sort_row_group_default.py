@@ -17,19 +17,25 @@ rather than an exact equality.
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import random
 import re
 import struct
+import sys
+from unittest import mock
 
 import pyarrow as pa
+import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import cli
+from geoparquet_io.core.hilbert_order import hilbert_order
 from geoparquet_io.core.parquet_writer import DEFAULT_SORT_ROW_GROUP_ROWS
+from geoparquet_io.core.str_order import DEFAULT_STR_TILE_SIZE
 
 # Enough rows that the old 122,880-row default and the new 50,000-row one are
 # unambiguously different layouts (3 groups vs 5), while staying fast to build
@@ -191,3 +197,46 @@ def test_row_group_size_mb_is_not_overridden_by_the_default(points_file, tmp_pat
     # A 1MB target on this data is far smaller than 50,000 rows, so the MB path
     # is demonstrably the one that sized the groups.
     assert max(_row_group_rows(output)) < DEFAULT_SORT_ROW_GROUP_ROWS
+
+
+def test_streaming_path_receives_the_resolved_default(points_file, tmp_path, monkeypatch):
+    """The streaming branch gets the resolved default, not a bare ``None``.
+
+    ``hilbert_order`` forks into a streaming path whenever input is stdin or
+    output is stdout, and that path writes through a different code path than
+    the file-based one. The default is resolved *before* the fork precisely so
+    both sides get it; a resolver placed in the CLI, or after the branch, would
+    leave ``gpio sort hilbert - out.parquet`` on DuckDB's 122,880-row default.
+    """
+    with pq.ParquetFile(points_file) as source:
+        table = source.read()
+
+    ipc_buffer = io.BytesIO()
+    writer = ipc.RecordBatchStreamWriter(ipc_buffer, table.schema)
+    writer.write_table(table)
+    writer.close()
+    ipc_buffer.seek(0)
+
+    mock_stdin = mock.MagicMock()
+    mock_stdin.isatty.return_value = False
+    mock_stdin.buffer = ipc_buffer
+    monkeypatch.setattr(sys, "stdin", mock_stdin)
+
+    output = tmp_path / "streamed.parquet"
+    hilbert_order("-", str(output))
+
+    rows = _row_group_rows(output)
+    assert sum(rows) == table.num_rows
+    assert max(rows) == _round_up_to_chunk(DEFAULT_SORT_ROW_GROUP_ROWS)
+
+
+def test_str_tile_size_tracks_the_sort_default():
+    """``sort str``'s in-memory tile size is the sort default, not a stray constant.
+
+    ``DEFAULT_STR_TILE_SIZE`` is the public default of ``ops.sort_str()`` and
+    ``Table.sort_str()``, and it also picks the strip count the CLI builds. If
+    it drifts from ``DEFAULT_SORT_ROW_GROUP_ROWS``, ``gpio sort str`` lays out
+    different strips depending on whether ``--row-group-size-mb`` was passed,
+    and the documented Python default stops matching the CLI's.
+    """
+    assert DEFAULT_STR_TILE_SIZE == DEFAULT_SORT_ROW_GROUP_ROWS == 50_000

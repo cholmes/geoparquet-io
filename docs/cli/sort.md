@@ -28,7 +28,7 @@ Options:
 | `--add-bbox` | - | Add bbox column if missing |
 | `--compression` | ZSTD | Compression codec (ZSTD, SNAPPY, GZIP, etc.) |
 | `--compression-level` | - | Compression level |
-| `--row-group-size` | - | Exact row count per group (10k-50k recommended for spatial pushdown) |
+| `--row-group-size` | 50,000 | Exact row count per group (10k-50k recommended for spatial pushdown) |
 | `--row-group-size-mb` | - | Target group size in MB/GB |
 | `--geoparquet-version` | 1.1 | Output version: `1.1`, `2.0`, or `parquet-geo-only` |
 | `--overwrite` | - | Overwrite existing output file |

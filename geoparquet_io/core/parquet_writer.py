@@ -15,9 +15,9 @@ from geoparquet_io.core.logging_config import warn
 # Sorting exists to make spatial filters prune row groups, and gpio's own
 # advice for that workload -- printed by ``gpio check`` and repeated in the
 # guide -- is 10,000-50,000 rows per group. This is the top of that band: the
-# smallest bounding boxes the band allows without multiplying the per-group
-# footer overhead. It is deliberately *not* the general write default: only the
-# sort commands are sized for spatial pruning.
+# largest groups the band allows, so bounding boxes stay tight enough to prune
+# without multiplying per-group footer overhead. It is deliberately *not* the
+# general write default: only the sort commands are sized for spatial pruning.
 DEFAULT_SORT_ROW_GROUP_ROWS = 50_000
 
 

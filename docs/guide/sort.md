@@ -27,7 +27,9 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
     ```python
     import geoparquet_io as gpio
 
-    gpio.read('input.parquet').sort_hilbert().write('output.parquet')
+    # row_group_rows is what the CLI defaults to; the Python API does not
+    # apply it for you (see "Optimal row group size for spatial queries" below).
+    gpio.read('input.parquet').sort_hilbert().write('output.parquet', row_group_rows=50000)
     ```
 
     <!-- doctest: skip="needs cloud credentials" -->
@@ -35,7 +37,7 @@ The `sort` command reorders GeoParquet files for optimal performance and query e
     # With upload to S3
     gpio.read('https://example.com/data.parquet') \
         .sort_hilbert() \
-        .upload('s3://bucket/sorted.parquet', profile='prod')
+        .upload('s3://bucket/sorted.parquet', row_group_rows=50000, profile='prod')
     ```
 
 Reorders rows using a [Hilbert space-filling curve](https://en.wikipedia.org/wiki/Hilbert_curve), which:
@@ -100,9 +102,11 @@ gpio sort hilbert input.parquet output.parquet --row-group-size-mb 1GB
 ```
 
 !!! tip "Optimal row group size for spatial queries"
-    Every `gpio sort` subcommand defaults to **50,000 rows per group** - the top of the 10,000-50,000 band that suits GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups, so pass a smaller `--row-group-size` when query selectivity matters more than file size.
+    Every `gpio sort` subcommand's CLI defaults to **50,000 rows per group** - the top of the 10,000-50,000 band that suits GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting. Smaller row groups create tighter bounding boxes that enable more row group skipping during spatial queries. Benchmarks show 10k rows + Hilbert + v2.0 enables ~67% row group skipping vs 0% with large row groups, so pass a smaller `--row-group-size` when query selectivity matters more than file size.
 
     The writer rounds a row-group target up to a multiple of 2048, so the 50,000 default lands as 51,200-row groups. The default applies to the sort commands only; other write paths (`convert`, `add`, `partition`) leave the choice to the Parquet writer unless you pass `--row-group-size` yourself.
+
+    **The Python API does not apply it.** `Table.write()` hands the writer whatever `row_group_rows` you give it, and `None` means the writer's own default (122,880 rows for DuckDB-backed writes) - so `gpio.read(...).sort_hilbert().write(out)` is *not* the equivalent of `gpio sort hilbert in out`. Pass `row_group_rows=50000` explicitly, as the Python examples in this guide do.
 
 ## Sort-Tile-Recursive Ordering
 
@@ -202,16 +206,19 @@ Sort by any column(s) for non-spatial ordering needs:
     import geoparquet_io as gpio
     from geoparquet_io.api import ops
 
-    # Sort by a single column (fluent API)
-    gpio.read('input.parquet').sort_column('name').write('output.parquet')
+    # Sort by a single column (fluent API). row_group_rows matches the CLI
+    # default; the Python API does not apply it for you.
+    gpio.read('input.parquet').sort_column('name').write('output.parquet', row_group_rows=50000)
 
     # Sort in descending order
-    gpio.read('input.parquet').sort_column('date', descending=True).write('output.parquet')
+    gpio.read('input.parquet') \
+        .sort_column('date', descending=True) \
+        .write('output.parquet', row_group_rows=50000)
 
     # Multi-column sorting (requires ops API)
     table = gpio.read('input.parquet')
     sorted_arrow = ops.sort_column(table.to_arrow(), ['country', 'city'])
-    gpio.Table(sorted_arrow).write('output.parquet')
+    gpio.Table(sorted_arrow).write('output.parquet', row_group_rows=50000)
     ```
 
 !!! note "Multi-column sorting"

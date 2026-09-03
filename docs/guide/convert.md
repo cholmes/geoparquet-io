@@ -18,11 +18,14 @@ The `convert` command transforms between GeoParquet and other vector formats wit
     Automatically applies:
 
     - ZSTD compression (level 15)
-    - 100,000 row groups
     - Bbox column with proper metadata
     - Hilbert spatial ordering
     - GeoParquet metadata (version auto-detected — see
       [GeoParquet Version](#geoparquet-version); 1.1 for non-GeoParquet inputs)
+
+    Row groups are left to the Parquet writer's own default (122,880 rows for
+    DuckDB-backed writes). `convert` does not apply the 50,000-row default
+    `gpio sort` uses — pass `--row-group-size` if you want it.
 
 === "Python"
 

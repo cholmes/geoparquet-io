@@ -24,7 +24,10 @@ from geoparquet_io.core.geometry_detection import (
     find_primary_geometry_column,
 )
 from geoparquet_io.core.logging_config import debug, info, success, warn
-from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
+from geoparquet_io.core.parquet_writer import (
+    DEFAULT_SORT_ROW_GROUP_ROWS,
+    resolve_sort_row_group_rows,
+)
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import (
     get_remote_error_hint,
@@ -288,13 +291,13 @@ def hilbert_order(
 
     if (
         row_group_rows
-        and row_group_rows > 50000
+        and row_group_rows > DEFAULT_SORT_ROW_GROUP_ROWS
         and effective_version in ("2.0", "parquet-geo-only")
     ):
         info(
             "For optimal spatial filter pushdown with Hilbert sorting, consider using "
-            "--row-group-size between 10,000 and 50,000. Smaller row groups create tighter "
-            "bounding boxes that enable more row group skipping."
+            f"--row-group-size between 10,000 and {DEFAULT_SORT_ROW_GROUP_ROWS:,}. Smaller row "
+            "groups create tighter bounding boxes that enable more row group skipping."
         )
 
     # Check for streaming mode (stdin input or stdout output)
