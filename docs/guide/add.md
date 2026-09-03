@@ -558,6 +558,13 @@ The `--vecorel` flag:
     boundaries are downloaded and cached as separate files rather than one
     combined file.
 
+    The country level covers **dependent territories** as well as sovereign
+    states, each attributed to its own ISO 3166-1 alpha-2 code — `GF` for
+    French Guiana, `PR` for Puerto Rico, `RE` for Réunion, `GL`, `HK`, `NC`
+    and the rest, plus `BQ` and `SJ` for the Caribbean and Arctic islands
+    Overture files under placeholder codes. They are not folded into their
+    sovereign's code.
+
     Overture boundaries are simplified with `ST_SimplifyPreserveTopology` at a
     tolerance of `0.0001` degrees (roughly 11 m near the equator, ~7 m at
     50°N). Country and region layers are simplified **independently**, so

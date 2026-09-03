@@ -339,6 +339,36 @@ def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None
     return total_features, features_with_admin, unique_counts
 
 
+def _warn_if_row_count_changed(input_rows, output_rows):
+    """Warn when the per-level admin join did not preserve the row count.
+
+    The per-level caches are built to be non-overlapping precisely so a plain
+    LEFT JOIN is row-preserving (see ``_build_level_cache_query``). When that
+    breaks — a maritime polygon slipping back in, overlapping territories, a
+    custom ``--admin-source`` — nothing errors: the output just silently gains
+    duplicate features. Naming both counts turns the whole class of bug into a
+    visible one, at the cost of a metadata-only ``COUNT(*)``.
+    """
+    if input_rows is None or output_rows is None or input_rows == output_rows:
+        return
+    verb = "duplicated" if output_rows > input_rows else "dropped"
+    warn(
+        f"Admin join {verb} rows: {input_rows} input features, {output_rows} in the "
+        "output. Overlapping admin polygons emit one row per match; check the "
+        "admin dataset for overlapping boundaries."
+    )
+
+
+def _count_rows(con, source, is_table_ref=False):
+    """Row count for a file/URL or a temp table, or None if it cannot be read."""
+    try:
+        return con.execute(
+            f"SELECT COUNT(*) FROM {_format_input_ref(source, is_table_ref)}"
+        ).fetchone()[0]
+    except Exception:
+        return None
+
+
 def _setup_dataset_and_columns(
     input_parquet, dataset_name, dataset_source, levels, verbose, no_cache=False
 ):
@@ -438,10 +468,14 @@ def _build_admin_where_clauses_list(
     dry_run,
     is_table_ref=False,
     source_crs=None,
+    admin_source=None,
 ):
     """Build WHERE clauses for admin boundaries."""
     admin_where_clauses = []
-    subtype_filter = dataset.get_subtype_filter(levels)
+    # The admin source decides how much filtering the clause has to do: a
+    # pre-filtered cache needs only the subtype clause, a raw release needs the
+    # level's whole predicate (#819).
+    subtype_filter = dataset.get_subtype_filter(levels, source=admin_source)
     if subtype_filter:
         admin_where_clauses.append(subtype_filter)
         if verbose and not dry_run:
@@ -530,6 +564,7 @@ def _build_query_components(
         dry_run,
         is_table_ref=is_table_ref,
         source_crs=source_crs,
+        admin_source=admin_source,
     )
 
     admin_select_clause = _build_admin_select_clause(
@@ -663,6 +698,8 @@ def _execute_per_level_joins(
     normally preserves the row count.
     """
     current_source = input_url
+    # Cheap (metadata-only) baseline for the row-preservation check below.
+    input_rows = None if dry_run else _count_rows(con, input_url)
 
     for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
         level_admin_source = dataset.get_source_for_level(level, no_cache=no_cache)
@@ -728,6 +765,7 @@ def _execute_per_level_joins(
     total_features, features_with_admin, unique_counts = _get_result_stats(
         con, output_parquet, dataset, levels, verbose, prefix=prefix
     )
+    _warn_if_row_count_changed(input_rows, total_features)
     return total_features, features_with_admin, unique_counts
 
 

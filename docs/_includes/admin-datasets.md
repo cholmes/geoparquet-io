@@ -3,7 +3,7 @@ Two remote admin boundary datasets are supported:
 | Dataset | Standard | Columns Added | Description |
 |---------|----------|---------------|-------------|
 | `gaul` (default) | GAUL naming + ISO 3166-1 alpha-3 | `admin:continent`, `admin:country`, `admin:department` | FAO Global Administrative Unit Layers (GAUL) L2 - worldwide coverage with standardized naming |
-| `overture` | **Vecorel compliant** (ISO 3166-1/2) | `admin:country_code`, `admin:subdivision_code` | Overture Maps Divisions with ISO 3166 codes (219 countries, 3,544 regions) - [docs](https://docs.overturemaps.org/guides/divisions/) |
+| `overture` | **Vecorel compliant** (ISO 3166-1/2) | `admin:country_code`, `admin:subdivision_code` | Overture Maps Divisions with ISO 3166 codes (219 countries + 53 dependent territories, 3,544 regions) - [docs](https://docs.overturemaps.org/guides/divisions/) |
 
 ### Vecorel Compliance (Overture Dataset Only)
 
