@@ -17,6 +17,7 @@ from geoparquet_io.core.crs_utils import (
     detect_crs_from_spatial_file,
     extract_crs_from_parquet,
     is_default_crs,
+    normalize_projjson_crs,
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import (
@@ -1402,7 +1403,9 @@ def read_spatial_to_arrow(
         elif is_parquet:
             crs_from_file = extract_crs_from_parquet(input_url, verbose=verbose)
             if crs_from_file and not is_default_crs(crs_from_file):
-                detected_crs = crs_from_file
+                # Same repair-or-reject as _determine_effective_crs: the API
+                # write path copies this CRS into the output verbatim (#705).
+                detected_crs = normalize_projjson_crs(crs_from_file, input_file)
                 if verbose:
                     debug(f"Preserving input CRS: {_format_crs_display(detected_crs)}")
         else:
@@ -1419,7 +1422,7 @@ def read_spatial_to_arrow(
                         f"Spatial files (GeoPackage, Shapefile, GeoJSON, etc.) must have a defined CRS."
                     )
             if crs_from_file is not None and not is_default_crs(crs_from_file):
-                detected_crs = crs_from_file
+                detected_crs = normalize_projjson_crs(crs_from_file, input_file)
                 if verbose:
                     debug(f"Detected input CRS: {_format_crs_display(detected_crs)}")
 
@@ -1804,11 +1807,16 @@ def _determine_effective_crs(
 
     if is_parquet:
         detected = extract_crs_from_parquet(input_url, verbose=verbose)
-        if detected and not is_default_crs(detected):
-            if verbose:
-                debug(f"Preserving input CRS: {_format_crs_display(detected)}")
-            return detected
-        return None
+        if not detected or is_default_crs(detected):
+            return None
+        # Repair or reject before writing: an input CRS that is not valid
+        # PROJJSON would otherwise be copied verbatim into the output (#705).
+        # After the default check, so an id-only default CRS (which gpio itself
+        # synthesizes for some drivers) is skipped, not "repaired" and warned on.
+        detected = normalize_projjson_crs(detected, input_file)
+        if verbose:
+            debug(f"Preserving input CRS: {_format_crs_display(detected)}")
+        return detected
 
     # Spatial files (GPKG, GeoJSON, Shapefile) - CRS must be present
     detected = detect_crs_from_spatial_file(input_url, con, verbose=verbose)
@@ -1827,6 +1835,7 @@ def _determine_effective_crs(
             debug("Input has default CRS (WGS84), not writing explicit CRS")
         return None
 
+    detected = normalize_projjson_crs(detected, input_file)
     if verbose:
         debug(f"Detected input CRS: {_format_crs_display(detected)}")
     return detected

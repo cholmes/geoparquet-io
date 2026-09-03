@@ -317,6 +317,24 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
     that genuinely match. Declare such a column deliberately with
     [`gpio add bbox-metadata`](add.md); `gpio check bbox` will point this out.
 
+!!! note "When the input's CRS is not valid PROJJSON"
+    GeoParquet requires a column's `crs` to be a PROJJSON object, which means it
+    must carry a `type` member such as `"GeographicCRS"` or `"ProjectedCRS"`.
+    `gpio convert` writes the input's CRS into the output, so it checks that CRS
+    before writing rather than passing a defect on:
+
+    - a CRS missing only `type`, but carrying an `id` such as
+      `{"authority": "EPSG", "code": 3857}`, is **repaired** — the identifier
+      names the CRS unambiguously, so gpio rebuilds the full PROJJSON from it
+      and says so
+    - anything else — no usable identifier, an identifier no CRS database
+      knows, or a `type` that is not a PROJJSON CRS type — **fails the
+      conversion** with an error naming the file and the CRS
+
+    The result is either a valid file or a clear error, never a file that
+    `gpio check spec` would reject. Fix such a CRS in the source data, or
+    re-export it from a tool that writes valid PROJJSON.
+
 ### Custom Geometry Column Names
 
 GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:

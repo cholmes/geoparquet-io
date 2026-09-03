@@ -15,7 +15,12 @@ from typing import Any
 from rich.console import Console
 
 from geoparquet_io.core.common import split_zm_suffix, zm_suffix_sql
-from geoparquet_io.core.crs_utils import NULL_CRS_HINT, get_crs_display_name, is_geographic_crs
+from geoparquet_io.core.crs_utils import (
+    NULL_CRS_HINT,
+    PROJJSON_CRS_TYPES,
+    get_crs_display_name,
+    is_geographic_crs,
+)
 from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     _geoarrow_coord_exprs,
@@ -335,26 +340,9 @@ def _check_geometry_types_list(col_meta: dict, col_name: str) -> ValidationCheck
 
 
 # CRS type values allowed by the PROJJSON v0.7 schema's "crs" definition.
-_PROJJSON_CRS_TYPES = frozenset(
-    {
-        "GeodeticCRS",
-        "GeographicCRS",
-        "ProjectedCRS",
-        "VerticalCRS",
-        "CompoundCRS",
-        "BoundCRS",
-        "EngineeringCRS",
-        "ParametricCRS",
-        "TemporalCRS",
-        "DerivedGeodeticCRS",
-        "DerivedGeographicCRS",
-        "DerivedProjectedCRS",
-        "DerivedVerticalCRS",
-        "DerivedEngineeringCRS",
-        "DerivedParametricCRS",
-        "DerivedTemporalCRS",
-    }
-)
+# Shared with the convert write path so gpio never writes a CRS its own
+# validator rejects (see crs_utils.normalize_projjson_crs).
+_PROJJSON_CRS_TYPES = PROJJSON_CRS_TYPES
 
 
 def _check_crs_valid(col_meta: dict, col_name: str) -> ValidationCheck:
