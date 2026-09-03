@@ -1433,3 +1433,245 @@ class TestPerLevelJoinRowCountGuard:
         admin_divisions._warn_if_row_count_changed(1000, None)
 
         assert messages == []
+
+    def test_count_rows_returns_the_count_for_a_readable_source(self, tmp_path):
+        """The happy path: a metadata-only ``COUNT(*)`` against a real file."""
+        duckdb = pytest.importorskip("duckdb")
+        from geoparquet_io.core.add.admin_divisions import _count_rows
+
+        con = duckdb.connect()
+        src = tmp_path / "rows.parquet"
+        con.execute(f"COPY (SELECT * FROM range(7) AS t(i)) TO '{src}' (FORMAT PARQUET)")
+
+        assert _count_rows(con, str(src)) == 7
+
+    def test_count_rows_returns_the_count_for_a_table_ref(self, tmp_path):
+        """``is_table_ref=True`` emits the source bare, not single-quoted, so a
+        chained per-level temp table (not a file path) can be counted too."""
+        duckdb = pytest.importorskip("duckdb")
+        from geoparquet_io.core.add.admin_divisions import _count_rows
+
+        con = duckdb.connect()
+        con.execute("CREATE TEMP TABLE _gpio_admin_step_0 AS SELECT * FROM range(3) AS t(i)")
+
+        assert _count_rows(con, "_gpio_admin_step_0", is_table_ref=True) == 3
+
+    def test_count_rows_returns_none_when_the_source_cannot_be_read(self, tmp_path):
+        """A missing/unreadable source must not raise — the row-count guard is
+        a best-effort diagnostic, not something that should break the join."""
+        duckdb = pytest.importorskip("duckdb")
+        from geoparquet_io.core.add.admin_divisions import _count_rows
+
+        con = duckdb.connect()
+
+        assert _count_rows(con, str(tmp_path / "does-not-exist.parquet")) is None
+
+
+def _write_country_admin_fixture(con, tmp_path, polygons, name="admin.parquet"):
+    """A minimal Overture-country-shaped admin fixture: subtype/country/bbox.
+
+    ``polygons`` are ``(wkt, country_code)`` pairs.
+    """
+    selects = [
+        f"SELECT 'country' AS subtype, '{country}' AS country, ST_GeomFromText('{wkt}') AS geometry"
+        for wkt, country in polygons
+    ]
+    src = tmp_path / name
+    con.execute(
+        f"""
+        COPY (
+            SELECT subtype, country, geometry,
+                {{'xmin': ST_XMin(geometry), 'xmax': ST_XMax(geometry),
+                  'ymin': ST_YMin(geometry), 'ymax': ST_YMax(geometry)}} AS bbox
+            FROM ({" UNION ALL ".join(selects)})
+        ) TO '{src}' (FORMAT PARQUET)
+        """
+    )
+    return src
+
+
+def _write_points_fixture(con, tmp_path, points, name="input.parquet"):
+    """A plain points input fixture: one ``geometry`` column, no bbox/metadata."""
+    selects = [f"SELECT ST_GeomFromText('POINT({x} {y})') AS geometry" for x, y in points]
+    src = tmp_path / name
+    con.execute(f"COPY ({' UNION ALL '.join(selects)}) TO '{src}' (FORMAT PARQUET)")
+    return src
+
+
+class TestPerLevelJoinRowCountGuardEndToEnd:
+    """``add admin-divisions`` runs the row-count guard on the real per-level
+    join path (``_execute_per_level_joins``), not just the standalone helper.
+
+    Uses a local, offline ``--admin-source`` (Overture-shaped, per #819) so no
+    network access or real cache is involved.
+    """
+
+    def test_row_count_preserved_stays_silent(self, tmp_path, monkeypatch):
+        import duckdb
+
+        from geoparquet_io.core.add import admin_divisions
+        from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+
+        messages = []
+        monkeypatch.setattr(admin_divisions, "warn", messages.append)
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        admin_file = _write_country_admin_fixture(
+            con,
+            tmp_path,
+            [
+                ("POLYGON((0 0,0 1,1 1,1 0,0 0))", "AA"),
+                ("POLYGON((10 10,10 11,11 11,11 10,10 10))", "BB"),
+            ],
+        )
+        input_file = _write_points_fixture(con, tmp_path, [(0.5, 0.5), (10.5, 10.5)])
+        con.close()
+
+        out = str(tmp_path / "out.parquet")
+        add_admin_divisions_multi(
+            input_parquet=str(input_file),
+            output_parquet=out,
+            dataset_name="overture",
+            levels=["country"],
+            dataset_source=str(admin_file),
+            verbose=False,
+        )
+
+        con = duckdb.connect()
+        assert con.execute(f"SELECT COUNT(*) FROM '{out}'").fetchone()[0] == 2
+        # Other warnings (e.g. bbox-optimization advice) may fire; the row-count
+        # guard itself must stay silent.
+        assert [m for m in messages if "Admin join" in m] == []
+
+    def test_overlapping_admin_polygons_duplicate_rows_and_warn(self, tmp_path, monkeypatch):
+        """Two overlapping country polygons make one input point match twice —
+        exactly the join-multiplication bug the guard exists to name.
+        """
+        import duckdb
+
+        from geoparquet_io.core.add import admin_divisions
+        from geoparquet_io.core.add.admin_divisions import add_admin_divisions_multi
+
+        messages = []
+        monkeypatch.setattr(admin_divisions, "warn", messages.append)
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        admin_file = _write_country_admin_fixture(
+            con,
+            tmp_path,
+            [
+                # Both polygons cover (0.5, 0.5) - an overlapping-territory bug.
+                ("POLYGON((0 0,0 2,2 2,2 0,0 0))", "AA"),
+                ("POLYGON((0 0,0 2,2 2,2 0,0 0))", "BB"),
+                ("POLYGON((10 10,10 11,11 11,11 10,10 10))", "CC"),
+            ],
+        )
+        input_file = _write_points_fixture(con, tmp_path, [(0.5, 0.5), (10.5, 10.5)])
+        con.close()
+
+        out = str(tmp_path / "out.parquet")
+        add_admin_divisions_multi(
+            input_parquet=str(input_file),
+            output_parquet=out,
+            dataset_name="overture",
+            levels=["country"],
+            dataset_source=str(admin_file),
+            verbose=False,
+        )
+
+        con = duckdb.connect()
+        # Duplicated: 1 input point matched 2 polygons, the other matched 1.
+        assert con.execute(f"SELECT COUNT(*) FROM '{out}'").fetchone()[0] == 3
+        guard_messages = [m for m in messages if "Admin join" in m]
+        assert len(guard_messages) == 1
+        assert "duplicated" in guard_messages[0]
+        assert "2 input features" in guard_messages[0]
+        assert "3 in the" in guard_messages[0]
+
+
+class TestOvertureLevelPredicates:
+    """The predicate helpers' "unconfigured level" branches return None, so the
+    ``--no-cache`` SQL builders fall back cleanly instead of emitting a bogus
+    ``WHERE``."""
+
+    def test_level_predicate_is_none_for_an_unconfigured_level(self):
+        from geoparquet_io.core.admin_datasets import _overture_level_predicate
+
+        assert _overture_level_predicate("locality") is None
+
+    def test_levels_predicate_is_none_when_no_level_is_configured(self):
+        from geoparquet_io.core.admin_datasets import _overture_levels_predicate
+
+        assert _overture_levels_predicate(["locality"]) is None
+        assert _overture_levels_predicate([]) is None
+
+
+class TestStaleCacheCleanupResilience:
+    """Cache pruning is best-effort housekeeping: a file we cannot delete (say,
+    held open on Windows) must not fail the run."""
+
+    def test_unlink_oserror_is_swallowed(self, tmp_path, monkeypatch):
+        from geoparquet_io.core.admin_datasets import _remove_stale_level_caches
+
+        version = "2026-07-22.0"
+        current = tmp_path / f"overture-{version}-country-dependency-land.parquet"
+        stubborn = tmp_path / f"overture-{version}-country-land.parquet"
+        current.write_bytes(b"stub")
+        stubborn.write_bytes(b"stub")
+
+        original_unlink = Path.unlink
+
+        def failing_unlink(self, *args, **kwargs):
+            if self == stubborn:
+                raise OSError("file is locked")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+        # Must not raise.
+        _remove_stale_level_caches(tmp_path, version, "country", current)
+
+        assert current.exists()
+        assert stubborn.exists(), "the undeletable file is simply left behind"
+
+
+class TestDownloadPerLevelCachesHousekeeping:
+    """``_download_per_level_caches`` prunes superseded caches for every level
+    before checking freshness, and skips the download when each level's cache
+    is already present — fully offline via a mocked connection."""
+
+    def test_prunes_stale_caches_and_skips_fresh_levels(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from geoparquet_io.core import admin_datasets
+        from geoparquet_io.core.admin_datasets import OvertureAdminDataset
+
+        version = "2026-07-22.0"
+        monkeypatch.setattr(admin_datasets, "get_cache_dir", lambda: tmp_path)
+        mock_con = MagicMock()
+        monkeypatch.setattr(admin_datasets, "get_duckdb_connection", lambda **kwargs: mock_con)
+
+        dataset = OvertureAdminDataset()
+        # Keep version/source resolution offline and deterministic.
+        monkeypatch.setattr(dataset, "get_version", lambda: version)
+        monkeypatch.setattr(dataset, "get_default_source", lambda: "s3://stub/divisions")
+
+        fresh = {
+            level: dataset.get_cached_path_for_level(level)
+            for level in dataset.get_available_levels()
+        }
+        for path in fresh.values():
+            path.write_bytes(b"stub")
+        # Superseded by the "-dependency" cache key (#819); must be pruned.
+        stale = tmp_path / f"overture-{version}-country-land.parquet"
+        stale.write_bytes(b"stale")
+
+        dataset._download_per_level_caches()
+
+        assert not stale.exists()
+        for path in fresh.values():
+            assert path.exists()
+        mock_con.execute.assert_not_called()
+        mock_con.close.assert_called_once()
