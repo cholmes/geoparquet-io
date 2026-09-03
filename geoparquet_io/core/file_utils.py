@@ -189,6 +189,10 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
     so the output it was asked for is a verbatim copy rather than a rewrite
     (``gpio add bbox`` on a file that already has a bbox column, #728).
 
+    The remote branch opens its own fsspec filesystem, so it does not see gpio's
+    ``--s3-endpoint``/``--s3-region``/``--s3-no-ssl`` configuration, and a
+    ``gs://``/``abfs://`` copy fails for want of gcsfs/adlfs. Tracked in #810.
+
     Args:
         source_path: Local path or remote URL to read
         dest_path: Local path or remote URL to write

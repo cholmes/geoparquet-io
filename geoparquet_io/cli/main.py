@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 import duckdb
+from click.core import ParameterSource
 from click_plugins import with_plugins
 
 from geoparquet_io.cli.decorators import (
@@ -4331,8 +4332,10 @@ def add_bbox(
 
     If the file already has a bbox column, nothing is recomputed, but OUTPUT_FILE is
     still written: the input is copied to it verbatim and the copy is reported, so a
-    pipeline step never ends with no output file. Use --force to recompute and replace
-    an existing bbox column.
+    pipeline step never ends with no output file. Explicitly asking for
+    --geoparquet-version, --compression, --compression-level or --row-group-size
+    recomputes instead, since a copy cannot honour them. Use --force to recompute and
+    replace an existing bbox column.
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
 
@@ -4367,6 +4370,13 @@ def add_bbox(
 
         from geoparquet_io.core.streaming import StreamingError
 
+        # An input that already has a bbox column is answered with a verbatim copy,
+        # which cannot honour a --compression the user actually typed. Pass None
+        # when they did not, so the copy branch can tell the two apart.
+        compression_requested = (
+            ctx.get_parameter_source("compression") is not ParameterSource.DEFAULT
+        )
+
         try:
             add_bbox_column_impl(
                 input_parquet,
@@ -4374,7 +4384,7 @@ def add_bbox(
                 bbox_column_name=bbox_name,
                 dry_run=dry_run,
                 verbose=verbose,
-                compression=compression.upper(),
+                compression=compression.upper() if compression_requested else None,
                 compression_level=compression_level,
                 row_group_size_mb=row_group_mb,
                 row_group_rows=row_group_size,

@@ -668,12 +668,12 @@ class TestPrivateHelpersForwardMemoryLimit:
         mocked.assert_called_once()
         assert mocked.call_args.kwargs.get("memory_limit") == "607MB"
 
-    def test_add_bbox_streaming_forwards_memory_limit(self):
+    def test_add_bbox_streaming_forwards_memory_limit(self, places_test_file):
         from geoparquet_io.core.add.bbox import _add_bbox_streaming
 
-        with mock.patch("geoparquet_io.core.add.bbox.execute_transform") as mocked:
+        with mock.patch("geoparquet_io.core.add.bbox.write_output") as mocked:
             _add_bbox_streaming(
-                input_path="in.parquet",
+                input_path=places_test_file,
                 output_path="out.parquet",
                 bbox_column_name="bbox",
                 verbose=False,

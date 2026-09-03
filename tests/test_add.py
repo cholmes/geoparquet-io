@@ -134,6 +134,113 @@ class TestAddCommands:
         assert "bbox" in column_names  # existing column left alone
         assert "bounds" in column_names  # the requested column was computed
 
+        # The covering must point at the column gpio actually computed, not at the
+        # pre-existing one it left alone: a covering asserts a relationship gpio
+        # can only vouch for when it did the computation (docs/guide/add.md).
+        geo = _read_geo_metadata(temp_output_file)
+        primary = geo["primary_column"]
+        assert geo["columns"][primary]["covering"]["bbox"]["xmin"][0] == "bounds"
+
+    def test_add_bbox_explicit_write_option_beats_the_copy(
+        self, places_test_file, temp_output_file
+    ):
+        """An explicitly requested write option is not discarded by the copy path.
+
+        The input already has a bbox column, so the default run copies it. But a
+        byte-for-byte copy cannot honour --geoparquet-version/--compression/
+        --compression-level/--row-group-size, so when one of those is asked for,
+        the column is recomputed into a file that has it.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["bbox", places_test_file, temp_output_file, "--geoparquet-version", "1.1"],
+        )
+        assert result.exit_code == 0, result.output
+        assert os.path.exists(temp_output_file)
+
+        # The input declares 1.0; the request was 1.1, so the output must be 1.1.
+        geo = _read_geo_metadata(temp_output_file)
+        assert geo["version"].startswith("1.1"), geo["version"]
+        primary = geo["primary_column"]
+        assert geo["columns"][primary]["covering"]["bbox"]["xmin"][0] == "bbox"
+
+        # Recomputed in place of the existing column, not appended next to it.
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
+        column_names = [col[0] for col in columns]
+        assert column_names.count("bbox") == 1
+        assert "bbox_1" not in column_names
+
+    def test_add_bbox_without_write_options_still_copies(self, places_test_file, temp_output_file):
+        """The plain form is unchanged: no explicit write option, so still a copy."""
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox", places_test_file, temp_output_file])
+        assert result.exit_code == 0, result.output
+        assert "Copied" in result.output
+
+        # A verbatim copy keeps the input's 1.0 version, covering key and all.
+        geo = _read_geo_metadata(temp_output_file)
+        assert geo["version"].startswith("1.0"), geo["version"]
+
+    def test_add_bbox_dry_run_previews_the_copy_instead_of_sql(
+        self, places_with_covering_file, temp_output_file
+    ):
+        """--dry-run must preview what the real run would do, not SQL it would skip."""
+        runner = CliRunner()
+        result = runner.invoke(
+            add, ["bbox", places_with_covering_file, temp_output_file, "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+
+        assert "Would copy" in result.output
+        assert "STRUCT_PACK" not in result.output
+        assert not os.path.exists(temp_output_file)
+
+    def test_add_bbox_stdin_to_file_passthrough_declares_no_covering(
+        self, places_test_file, tmp_path, monkeypatch, caplog
+    ):
+        """stdin -> file must honour the same contract as file -> file (#798 review).
+
+        The input already carries a bbox column gpio did not compute, so the
+        stream is passed through unchanged: no covering may be declared for it,
+        and the input's declared version must survive the copy.
+        """
+        import io
+        import logging
+        import sys
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.add.bbox import add_bbox_column
+
+        table = pq.read_table(places_test_file)
+        ipc_buffer = io.BytesIO()
+        writer = ipc.RecordBatchStreamWriter(ipc_buffer, table.schema)
+        writer.write_table(table)
+        writer.close()
+        ipc_buffer.seek(0)
+
+        mock_stdin = mock.MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.buffer = ipc_buffer
+        monkeypatch.setattr(sys, "stdin", mock_stdin)
+
+        output = str(tmp_path / "from_stdin.parquet")
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_bbox_column("-", output)
+
+        geo = _read_geo_metadata(output)
+        primary = geo["primary_column"]
+        assert "covering" not in geo["columns"][primary], geo["columns"][primary]
+        assert geo["version"].startswith("1.0"), geo["version"]
+
+        # And it must not claim to have added anything.
+        assert "not recomputed" in caplog.text
+        assert "Successfully added bbox column" not in caplog.text
+
     def test_add_bbox_streaming_does_not_duplicate_existing_bbox(
         self, places_test_file, monkeypatch, caplog
     ):
