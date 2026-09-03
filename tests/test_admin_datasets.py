@@ -23,6 +23,35 @@ from geoparquet_io.core.admin_datasets import (
 )
 
 
+def _spatial_connection(duckdb):
+    """An in-memory DuckDB with spatial loaded, configured as gpio configures it."""
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute("SET geometry_always_xy=true;")
+    return con
+
+
+def _write_divisions_fixture(con, tmp_path, rows, name="division_area.parquet"):
+    """Write an Overture-divisions-shaped fixture and return its path.
+
+    ``rows`` are ``(wkt, (xmin, xmax, ymin, ymax), country, subtype, is_land)``.
+    The geometry column is written as a real ``GEOMETRY`` (as Overture's own
+    files read back), so the emitted queries — ``ST_SimplifyPreserveTopology``
+    included — can be run verbatim instead of being rewritten by the test.
+    """
+    src = tmp_path / name
+    selects = []
+    for wkt, (xmin, xmax, ymin, ymax), country, subtype, is_land in rows:
+        land = "NULL" if is_land is None else str(is_land).lower()
+        selects.append(
+            f"SELECT ST_GeomFromText('{wkt}') AS geometry, "
+            f"{{'xmin':{xmin},'xmax':{xmax},'ymin':{ymin},'ymax':{ymax}}} AS bbox, "
+            f"'{country}' AS country, '{subtype}' AS subtype, {land}::BOOLEAN AS is_land"
+        )
+    con.execute(f"COPY ({' UNION ALL '.join(selects)}) TO '{src}' (FORMAT PARQUET)")
+    return src
+
+
 class TestCurrentAdminDataset:
     """Test CurrentAdminDataset implementation."""
 
@@ -184,7 +213,7 @@ class TestOvertureAdminDataset:
         # The country level spans both of Overture's sovereign classes, so
         # dependent territories are attributed rather than left NULL (#819).
         filter_country = dataset.get_subtype_filter(["country"])
-        assert filter_country == "subtype IN ('country', 'dependency')"
+        assert "subtype IN ('country', 'dependency')" in filter_country
 
         # Test with both levels
         filter_both = dataset.get_subtype_filter(["country", "region"])
@@ -193,11 +222,153 @@ class TestOvertureAdminDataset:
         assert "region" in filter_both
         assert "subtype IN" in filter_both
 
-    def test_get_subtype_filter_does_not_duplicate_subtypes(self):
-        """Overlapping level requests must not emit a subtype twice."""
+    def test_get_subtype_filter_carries_the_whole_level_predicate(self):
+        """``--no-cache`` must admit exactly the rows the cache holds (#819).
+
+        The cache bakes ``is_land IS NOT FALSE`` and the country level's
+        placeholder/Antarctica filters into the file. A ``--no-cache`` run reads
+        the raw Overture release instead, so the same filters have to travel in
+        the subtype predicate or a feature matches both a territory's land
+        polygon and its maritime (EEZ) polygon and the LEFT JOIN emits it twice.
+        """
+        dataset = OvertureAdminDataset()
+        filter_country = dataset.get_subtype_filter(["country"])
+        assert "is_land IS NOT FALSE" in filter_country
+        assert "NOT LIKE 'X%'" in filter_country
+        assert "'AQ'" in filter_country
+
+        # The region level has no extra filters but still needs the land filter.
+        filter_region = dataset.get_subtype_filter(["region"])
+        assert "is_land IS NOT FALSE" in filter_region
+        assert "NOT LIKE 'X%'" not in filter_region
+
+    def test_get_subtype_filter_drops_the_extras_for_a_prefiltered_source(self):
+        """A per-level cache already holds exactly those rows — and does not
+        project ``is_land`` at all — so only the subtype clause is emitted.
+
+        Same for a user-supplied ``--admin-source``: gpio does not control its
+        schema, so it keeps the pre-#819 clause.
+        """
+        dataset = OvertureAdminDataset()
+        cached = dataset.get_subtype_filter(
+            ["country"], source=str(get_cache_dir() / "overture-x-country-dependency-land.parquet")
+        )
+        assert cached == "subtype IN ('country', 'dependency')"
+
+        custom = OvertureAdminDataset(source_path="/data/my-divisions.parquet")
+        assert custom.get_subtype_filter(["country"], source="/data/my-divisions.parquet") == (
+            "subtype IN ('country', 'dependency')"
+        )
+
+    def test_get_subtype_filter_ors_levels_with_different_filters(self):
+        """A multi-level request keeps each level's own filters.
+
+        The country level's placeholder/Antarctica filters must not leak onto
+        the region level, so the levels are OR'd rather than AND'd, and the
+        whole predicate is parenthesised because callers AND it with an extent
+        filter.
+        """
         dataset = OvertureAdminDataset()
         filter_both = dataset.get_subtype_filter(["country", "region"])
-        assert filter_both == "subtype IN ('country', 'dependency', 'region')"
+        assert filter_both.startswith("(") and filter_both.endswith(")")
+        assert ") OR (" in filter_both
+
+    def test_get_subtype_filter_does_not_duplicate_levels(self):
+        """A repeated level must not emit its predicate twice."""
+        dataset = OvertureAdminDataset()
+        assert dataset.get_subtype_filter(["country", "country"]) == dataset.get_subtype_filter(
+            ["country"]
+        )
+
+    def test_get_subtype_filter_no_cache_matches_each_feature_once(self, tmp_path):
+        """Behavioral (#819): a dependency's feature matches ONE polygon on the
+        ``--no-cache`` path.
+
+        Overture stores a land polygon and a maritime (EEZ) polygon per
+        territory; the EEZ polygon covers the landmass too. Filtering on
+        ``subtype`` alone matched both, so the plain LEFT JOIN duplicated every
+        row in French Guiana (and in the 50+ other dependencies this level now
+        attributes).
+        """
+        duckdb = pytest.importorskip("duckdb")
+        con = _spatial_connection(duckdb)
+        src = _write_divisions_fixture(
+            con,
+            tmp_path,
+            [
+                ("POLYGON((0 0,0 2,2 2,2 0,0 0))", (0.0, 2.0, 0.0, 2.0), "GF", "dependency", True),
+                # French Guiana's maritime polygon spans the landmass as well.
+                (
+                    "POLYGON((-5 -5,-5 5,5 5,5 -5,-5 -5))",
+                    (-5.0, 5.0, -5.0, 5.0),
+                    "GF",
+                    "dependency",
+                    False,
+                ),
+                ("POLYGON((2 0,2 2,4 2,4 0,2 0))", (2.0, 4.0, 0.0, 2.0), "BR", "country", True),
+            ],
+        )
+
+        predicate = OvertureAdminDataset().get_subtype_filter(["country"])
+        matches = con.execute(
+            f"""
+            SELECT country FROM read_parquet('{src}', hive_partitioning=1)
+            WHERE {predicate}
+              AND ST_Intersects(geometry, ST_GeomFromText('POINT(1 1)'))
+            """
+        ).fetchall()
+        assert matches == [("GF",)], "no-cache predicate must match each feature exactly once"
+
+    def test_placeholder_country_codes_map_to_their_iso_codes(self, tmp_path):
+        """Saba, Sint Eustatius and Jan Mayen carry Overture placeholder X*
+        codes but are not disputed: their ISO 3166-1 codes are BQ, BQ and SJ.
+
+        Without the remap the disputed-territory filter dropped them to NULL ->
+        'ZZ' under ``--vecorel``. Genuinely disputed X* codes (XK) stay out.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        con = _spatial_connection(duckdb)
+        src = _write_divisions_fixture(
+            con,
+            tmp_path,
+            [
+                ("POLYGON((0 0,0 1,1 1,1 0,0 0))", (0.0, 1.0, 0.0, 1.0), "XS", "dependency", True),
+                ("POLYGON((2 0,2 1,3 1,3 0,2 0))", (2.0, 3.0, 0.0, 1.0), "XE", "dependency", True),
+                ("POLYGON((4 0,4 1,5 1,5 0,4 0))", (4.0, 5.0, 0.0, 1.0), "XJ", "dependency", True),
+                ("POLYGON((6 0,6 1,7 1,7 0,6 0))", (6.0, 7.0, 0.0, 1.0), "XK", "country", True),
+                ("POLYGON((8 0,8 1,9 1,9 0,8 0))", (8.0, 9.0, 0.0, 1.0), "AQ", "country", True),
+            ],
+        )
+
+        dataset = OvertureAdminDataset()
+        cached = con.execute(
+            f"SELECT country FROM ({dataset._build_level_cache_query('country', str(src))}) "
+            "ORDER BY country"
+        ).fetchall()
+        assert [r[0] for r in cached] == ["BQ", "BQ", "SJ"]
+
+        # The --no-cache path reads the raw release, so the same codes have to
+        # survive its predicate and be remapped by the join's column transform.
+        no_cache = con.execute(
+            f"""
+            SELECT {dataset.get_column_transform("country")} AS code
+            FROM read_parquet('{src}', hive_partitioning=1) b
+            WHERE {dataset.get_subtype_filter(["country"])}
+            ORDER BY code
+            """
+        ).fetchall()
+        assert [r[0] for r in no_cache] == ["BQ", "BQ", "SJ"]
+
+    def test_country_transform_leaves_real_codes_alone(self):
+        """The remap is a no-op on already-correct codes, so re-applying it to a
+        cache that already stores BQ/SJ cannot corrupt them."""
+        duckdb = pytest.importorskip("duckdb")
+        con = _spatial_connection(duckdb)
+        expr = OvertureAdminDataset().get_column_transform("country").replace('b."country"', "c")
+        rows = con.execute(
+            f"SELECT {expr} FROM (VALUES ('US'), ('BQ'), ('SJ'), (NULL)) t(c)"
+        ).fetchall()
+        assert [r[0] for r in rows] == ["US", "BQ", "SJ", None]
 
     def test_get_column_transform_region(self):
         """Test that region level returns SQL transformation for Vecorel compliance."""
@@ -213,12 +384,22 @@ class TestOvertureAdminDataset:
         assert 'ELSE b."region" END' in transform
 
     def test_get_column_transform_country(self):
-        """Test that country level returns None (no transformation needed)."""
+        """The country level remaps Overture's placeholder X* codes to the ISO
+        codes those territories actually hold (XS/XE -> BQ, XJ -> SJ).
+
+        Column refs are qualified with the admin alias ``b.`` (and quoted) so
+        the transform stays unambiguous when the input carries its own
+        ``country`` column.
+        """
         dataset = OvertureAdminDataset()
         transform = dataset.get_column_transform("country")
 
-        # Country doesn't need transformation
-        assert transform is None
+        assert transform is not None
+        assert "'XS' THEN 'BQ'" in transform
+        assert "'XE' THEN 'BQ'" in transform
+        assert "'XJ' THEN 'SJ'" in transform
+        assert 'ELSE b."country" END' in transform
+        assert "country" not in transform.replace('b."country"', "").replace("'BQ'", "")
 
     def test_get_column_transform_unknown_level(self):
         """Test that unknown levels return None."""
@@ -326,32 +507,28 @@ class TestOvertureAdminDataset:
         point matched nothing (-> NULL -> 'ZZ'); after, it matches GF only.
         Matching *once* is the invariant the memory-safe plain LEFT JOIN
         depends on, so the border-sharing BR polygon is here on purpose.
-        """
-        from geoparquet_io.core.admin_datasets import _OVERTURE_SIMPLIFY_TOLERANCE_DEG
 
+        The probe sits a hair inside GF *at the shared border* (x=2), where a
+        double match would actually show up, and the cache query is run exactly
+        as emitted — simplification included. Simplification is why the
+        invariant is approximate rather than exact: two independently simplified
+        borders leave sub-hectare slivers, so an interior probe is the honest
+        assertion and the sliver caveat is documented on
+        ``_OVERTURE_LEVEL_CACHE_CONFIG``.
+        """
         duckdb = pytest.importorskip("duckdb")
-        con = duckdb.connect()
-        con.execute("INSTALL spatial; LOAD spatial;")
-        con.execute("SET geometry_always_xy=true;")
-        src = tmp_path / "division_area.parquet"
-        con.execute(
-            f"""
-            COPY (
-              SELECT ST_AsWKB(ST_GeomFromText('POLYGON((0 0,0 2,2 2,2 0,0 0))')) AS geometry,
-                     {{'xmin':0.0,'xmax':2.0,'ymin':0.0,'ymax':2.0}} AS bbox,
-                     'GF' AS country, 'dependency' AS subtype, true AS is_land
-              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((2 0,2 2,4 2,4 0,2 0))')),
-                     {{'xmin':2.0,'xmax':4.0,'ymin':0.0,'ymax':2.0}}, 'BR', 'country', true
-            ) TO '{src}' (FORMAT PARQUET)
-            """
+        con = _spatial_connection(duckdb)
+        src = _write_divisions_fixture(
+            con,
+            tmp_path,
+            [
+                ("POLYGON((0 0,0 2,2 2,2 0,0 0))", (0.0, 2.0, 0.0, 2.0), "GF", "dependency", True),
+                ("POLYGON((2 0,2 2,4 2,4 0,2 0))", (2.0, 4.0, 0.0, 2.0), "BR", "country", True),
+            ],
         )
 
         query = OvertureAdminDataset()._build_level_cache_query("country", str(src))
-        runnable = query.replace(
-            f"ST_SimplifyPreserveTopology(geometry, {_OVERTURE_SIMPLIFY_TOLERANCE_DEG})",
-            "geometry",
-        )
-        con.execute(f"CREATE TABLE land AS SELECT * FROM ({runnable})")
+        con.execute(f"CREATE TABLE land AS SELECT * FROM ({query})")
 
         assert [
             r[0] for r in con.execute("SELECT country FROM land ORDER BY country").fetchall()
@@ -360,11 +537,48 @@ class TestOvertureAdminDataset:
             "GF",
         ]
 
-        pt = "ST_GeomFromText('POINT(1 1)')"
+        # Just inside GF, right on the GF/BR border — where a duplicate match
+        # would surface if the two polygons overlapped.
+        pt = "ST_GeomFromText('POINT(1.999999 1)')"
         matches = con.execute(
-            f"SELECT country FROM land WHERE ST_Intersects(ST_GeomFromWKB(geometry), {pt})"
+            f"SELECT country FROM land WHERE ST_Intersects(geometry, {pt})"
         ).fetchall()
         assert matches == [("GF",)], "dependency feature must match its own code, exactly once"
+
+    def test_cached_path_rejects_unknown_level(self):
+        """An unconfigured level must fail the same way the cache producer does,
+        instead of inventing a plausible-looking filename for a cache that
+        ``_build_level_cache_query`` will refuse to build."""
+        dataset = OvertureAdminDataset()
+        with pytest.raises(ValueError, match="cache config"):
+            dataset.get_cached_path_for_level("locality")
+
+    def test_stale_level_caches_are_removed(self, tmp_path):
+        """Every superseded cache for this level/version is unlinked, not just
+        the legacy unsuffixed one.
+
+        The country cache key gained a "-dependency" segment in #819, so the
+        ~40MB ``-country-land.parquet`` file it supersedes would otherwise sit
+        in the cache dir forever.
+        """
+        from geoparquet_io.core.admin_datasets import _remove_stale_level_caches
+
+        version = "2026-07-22.0"
+        current = tmp_path / f"overture-{version}-country-dependency-land.parquet"
+        superseded = tmp_path / f"overture-{version}-country-land.parquet"
+        legacy = tmp_path / f"overture-{version}-country.parquet"
+        other_level = tmp_path / f"overture-{version}-region-land.parquet"
+        other_version = tmp_path / "overture-2026-01-01.0-country-land.parquet"
+        for path in (current, superseded, legacy, other_level, other_version):
+            path.write_bytes(b"stub")
+
+        _remove_stale_level_caches(tmp_path, version, "country", current)
+
+        assert current.exists(), "the current cache must survive"
+        assert other_level.exists(), "another level's cache must survive"
+        assert other_version.exists(), "another version's cache must survive"
+        assert not superseded.exists()
+        assert not legacy.exists()
 
     def test_cached_path_distinguishes_land_only_caches(self):
         """Cache filename encodes the land-only filter so stale (maritime-
@@ -384,40 +598,36 @@ class TestOvertureAdminDataset:
         polygon per level instead of two (land + maritime EEZ) — the root cause
         of the ~2.6x row multiplication (PR #474).
 
-        Runs the real ``_build_level_cache_query`` output, only substituting the
-        ``ST_SimplifyPreserveTopology`` wrapper (not implemented in the test
-        DuckDB build; the multiplication is in the join/filter, not the
-        simplification).
+        Runs the ``_build_level_cache_query`` output verbatim.
         """
-        from geoparquet_io.core.admin_datasets import _OVERTURE_SIMPLIFY_TOLERANCE_DEG
-
         duckdb = pytest.importorskip("duckdb")
-        con = duckdb.connect()
-        con.execute("INSTALL spatial; LOAD spatial;")
-        con.execute("SET geometry_always_xy=true;")
-        src = tmp_path / "division_area.parquet"
+        con = _spatial_connection(duckdb)
         # US: a land polygon AND a maritime (EEZ) polygon spanning the whole
         # territory (incl. the landmass). CA: a land polygon with NULL is_land.
-        con.execute(
-            f"""
-            COPY (
-              SELECT ST_AsWKB(ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))')) AS geometry,
-                     {{'xmin':0.0,'xmax':1.0,'ymin':0.0,'ymax':1.0}} AS bbox,
-                     'US' AS country, 'country' AS subtype, true AS is_land
-              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((-5 -5,-5 5,5 5,5 -5,-5 -5))')),
-                     {{'xmin':-5.0,'xmax':5.0,'ymin':-5.0,'ymax':5.0}}, 'US', 'country', false
-              UNION ALL SELECT ST_AsWKB(ST_GeomFromText('POLYGON((10 10,10 11,11 11,11 10,10 10))')),
-                     {{'xmin':10.0,'xmax':11.0,'ymin':10.0,'ymax':11.0}}, 'CA', 'country', NULL
-            ) TO '{src}' (FORMAT PARQUET)
-            """
+        src = _write_divisions_fixture(
+            con,
+            tmp_path,
+            [
+                ("POLYGON((0 0,0 1,1 1,1 0,0 0))", (0.0, 1.0, 0.0, 1.0), "US", "country", True),
+                (
+                    "POLYGON((-5 -5,-5 5,5 5,5 -5,-5 -5))",
+                    (-5.0, 5.0, -5.0, 5.0),
+                    "US",
+                    "country",
+                    False,
+                ),
+                (
+                    "POLYGON((10 10,10 11,11 11,11 10,10 10))",
+                    (10.0, 11.0, 10.0, 11.0),
+                    "CA",
+                    "country",
+                    None,
+                ),
+            ],
         )
 
         query = OvertureAdminDataset()._build_level_cache_query("country", str(src))
-        runnable = query.replace(
-            f"ST_SimplifyPreserveTopology(geometry, {_OVERTURE_SIMPLIFY_TOLERANCE_DEG})",
-            "geometry",
-        )
-        con.execute(f"CREATE TABLE land AS SELECT * FROM ({runnable})")
+        con.execute(f"CREATE TABLE land AS SELECT * FROM ({query})")
 
         # Maritime US polygon dropped; NULL-is_land CA land polygon kept.
         countries = [
@@ -427,7 +637,7 @@ class TestOvertureAdminDataset:
 
         pt = "ST_GeomFromText('POINT(0.5 0.5)')"
         n_land = con.execute(
-            f"SELECT count(*) FROM land WHERE ST_Intersects(ST_GeomFromWKB(geometry), {pt})"
+            f"SELECT count(*) FROM land WHERE ST_Intersects(geometry, {pt})"
         ).fetchone()[0]
         assert n_land == 1, "land-only cache must match each feature exactly once"
 
@@ -435,7 +645,7 @@ class TestOvertureAdminDataset:
         n_all = con.execute(
             f"""
             SELECT count(*) FROM read_parquet('{src}')
-            WHERE subtype='country' AND ST_Intersects(ST_GeomFromWKB(geometry), {pt})
+            WHERE subtype='country' AND ST_Intersects(geometry, {pt})
             """
         ).fetchone()[0]
         assert n_all == 2
@@ -1189,3 +1399,37 @@ class TestCacheEdgeCases:
         # This is a placeholder for thread-safety testing
         # The implementation should use atomic file operations
         pass
+
+
+class TestPerLevelJoinRowCountGuard:
+    """Runtime guard for the join-multiplication class of bugs.
+
+    The per-level caches are built to be non-overlapping so a plain LEFT JOIN
+    preserves the row count (see ``_build_level_cache_query``). When that
+    invariant breaks — a maritime polygon slipping back in, an overlapping
+    dependency, a custom ``--admin-source`` — the failure is silent duplication.
+    A cheap count comparison after the join names it instead.
+    """
+
+    def test_warns_when_the_join_changed_the_row_count(self, monkeypatch):
+        from geoparquet_io.core.add import admin_divisions
+
+        messages = []
+        monkeypatch.setattr(admin_divisions, "warn", messages.append)
+
+        admin_divisions._warn_if_row_count_changed(1000, 2600)
+
+        assert len(messages) == 1
+        assert "1000" in messages[0] and "2600" in messages[0]
+
+    def test_silent_when_the_row_count_is_preserved(self, monkeypatch):
+        from geoparquet_io.core.add import admin_divisions
+
+        messages = []
+        monkeypatch.setattr(admin_divisions, "warn", messages.append)
+
+        admin_divisions._warn_if_row_count_changed(1000, 1000)
+        admin_divisions._warn_if_row_count_changed(None, 1000)
+        admin_divisions._warn_if_row_count_changed(1000, None)
+
+        assert messages == []
