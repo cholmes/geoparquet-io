@@ -215,6 +215,24 @@ def _table(module: Any, attr: str, reference: Callable, call: Callable[[Ctx], An
     )
 
 
+def _ops_via_table(
+    module: Any, attr: str, reference: Callable, call: Callable[[Ctx], Any]
+) -> Frontend:
+    """An `ops` front end that reaches core through `Table`.
+
+    `ops.partition_by_*` delegates to the matching `Table` method rather than
+    keeping a second copy of the temp-file plumbing, and `Table` imports its
+    core function inside the method body -- so this one is patched on the *core*
+    module, like a `Table` front end, not on `ops`.
+    """
+    return Frontend(
+        patch_site=(module, attr),
+        reference=reference,
+        invoke=call,
+        result=ECHO_FIRST_ARG,
+    )
+
+
 def _install_write_strategy(_frontend, recorder: _Recorder):
     """Patch the strategy factory so Table.write's core write call is recorded.
 
@@ -500,7 +518,12 @@ CASES: list[ParityCase] = [
             core_part_h3.partition_by_h3,
             lambda c: ["partition", "h3", c.input_file, c.output_dir, "--resolution", "6"],
         ),
-        # No `ops.partition_by_*`; Table is the only API front end for partitioning.
+        ops=_ops_via_table(
+            core_part_h3,
+            "partition_by_h3",
+            core_part_h3.partition_by_h3,
+            lambda c: ops.partition_by_h3(c.table, c.output_dir),
+        ),
         table=_table(
             core_part_h3,
             "partition_by_h3",
@@ -539,6 +562,12 @@ CASES: list[ParityCase] = [
                 "--partition-resolution",
                 "6",
             ],
+        ),
+        ops=_ops_via_table(
+            core_part_quadkey,
+            "partition_by_quadkey",
+            core_part_quadkey.partition_by_quadkey,
+            lambda c: ops.partition_by_quadkey(c.table, c.output_dir),
         ),
         table=_table(
             core_part_quadkey,
