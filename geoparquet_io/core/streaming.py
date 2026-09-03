@@ -424,6 +424,27 @@ def _rebatch_wkb_under_byte_limit(
     return pa.chunked_array(rebatched, type=geom_col.type)
 
 
+def _ensure_at_least_one_chunk(
+    geom_col: pa.ChunkedArray | pa.Array,
+) -> pa.ChunkedArray | pa.Array:
+    """Give a zero-chunk ChunkedArray a single empty chunk of its own type.
+
+    A DuckDB result with no rows exports its columns as ChunkedArrays holding
+    *zero* chunks. ``geoarrow.pyarrow.as_wkb`` converts chunk by chunk and then
+    rebuilds a ChunkedArray from the results without passing a type, and Arrow
+    C++ aborts the whole process on ``ChunkedArray([])`` with an omitted type
+    ("cannot construct ChunkedArray from empty vector and omitted type",
+    SIGABRT). That is not a Python exception, so it cannot be caught -- the
+    zero-chunk case has to be avoided rather than handled (issue #804).
+
+    One empty chunk of the same type carries the type through the conversion
+    and leaves the column's length at 0.
+    """
+    if isinstance(geom_col, pa.ChunkedArray) and geom_col.num_chunks == 0:
+        return pa.chunked_array([pa.array([], type=geom_col.type)], type=geom_col.type)
+    return geom_col
+
+
 def apply_geoarrow_extension_type(
     table: pa.Table,
     geometry_column: str,
@@ -456,6 +477,11 @@ def apply_geoarrow_extension_type(
 
     try:
         geom_col = table.column(geometry_column)
+
+        # A zero-row result has zero chunks, which aborts the process inside
+        # geoarrow's conversion. Materialize one empty, typed chunk first so an
+        # empty result streams as a valid, correctly-typed empty column (#804).
+        geom_col = _ensure_at_least_one_chunk(geom_col)
 
         # Keep each Arrow chunk under the 32-bit binary offset ceiling before
         # geoarrow re-encodes it. DuckDB exports geometry as 64-bit
