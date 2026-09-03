@@ -1481,7 +1481,9 @@ class TestStreamingConversion:
         # off well before that many bytes exist: unpacking the ring's points
         # raises struct.error, which must be swallowed and the input returned
         # unchanged.
-        truncated = struct.pack("<BII", 1, 3, 1) + struct.pack("<I", 4) + struct.pack("<dd", 0.0, 0.0)
+        truncated = (
+            struct.pack("<BII", 1, 3, 1) + struct.pack("<I", 4) + struct.pack("<dd", 0.0, 0.0)
+        )
         assert _normalize_polygon_winding(truncated) == truncated
 
     def test_process_polygon_wkb_rejects_non_polygon_type(self):
