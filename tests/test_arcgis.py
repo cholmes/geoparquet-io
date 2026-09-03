@@ -1428,6 +1428,72 @@ class TestStreamingConversion:
         assert _signed_ring_area(shell) > 0, "exterior ring must be counterclockwise per RFC 7946"
         assert _signed_ring_area(hole) < 0, "interior ring (hole) must be clockwise per RFC 7946"
 
+    def test_geojson_page_to_table_normalizes_multipolygon_ring_winding(self):
+        """MultiPolygon shells/holes are normalized per-sub-polygon, same as Polygon."""
+        from geoparquet_io.core.arcgis import _geojson_page_to_table
+
+        arcgis_wound_feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [
+                        [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]],  # shell, CW
+                        [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]],  # hole, CCW
+                    ],
+                    [[[20, 20], [20, 30], [30, 30], [30, 20], [20, 20]]],  # shell, CW
+                ],
+            },
+            "properties": {},
+        }
+
+        table = _geojson_page_to_table([arcgis_wound_feature])
+
+        assert table is not None
+        wkb = table.column("geometry")[0].as_py()
+        # WKB MultiPolygon: byte order (1) + type (4) + numPolygons (4), then each
+        # polygon is itself a full WKB Polygon (with its own byte-order/type marker).
+        import struct
+
+        endian = "<" if wkb[0] == 1 else ">"
+        (geom_type,) = struct.unpack_from(endian + "I", wkb, 1)
+        assert geom_type == 6, f"expected WKB MultiPolygon (type 6), got type {geom_type}"
+        (num_polys,) = struct.unpack_from(endian + "I", wkb, 5)
+        assert num_polys == 2
+
+        pos = 9
+        first_poly_rings = _wkb_polygon_rings(wkb[pos:])
+        assert len(first_poly_rings) == 2
+        shell, hole = first_poly_rings
+        assert _signed_ring_area(shell) > 0
+        assert _signed_ring_area(hole) < 0
+
+    def test_normalize_polygon_winding_passthrough_on_malformed_wkb(self):
+        """Truncated/unparseable WKB is returned unchanged rather than raising."""
+        from geoparquet_io.core.arcgis import _normalize_polygon_winding
+
+        assert _normalize_polygon_winding(None) is None
+        assert _normalize_polygon_winding(b"") == b""
+
+        import struct
+
+        # Valid Polygon header claiming a 4-point ring, but the buffer is cut
+        # off well before that many bytes exist: unpacking the ring's points
+        # raises struct.error, which must be swallowed and the input returned
+        # unchanged.
+        truncated = struct.pack("<BII", 1, 3, 1) + struct.pack("<I", 4) + struct.pack("<dd", 0.0, 0.0)
+        assert _normalize_polygon_winding(truncated) == truncated
+
+    def test_process_polygon_wkb_rejects_non_polygon_type(self):
+        """`_process_polygon_wkb` refuses to run on a non-Polygon WKB type code."""
+        import struct
+
+        from geoparquet_io.core.arcgis import _process_polygon_wkb
+
+        point_wkb = struct.pack("<BI", 1, 1) + struct.pack("<dd", 0.0, 0.0)  # WKB Point (type 1)
+        with pytest.raises(ValueError, match="expected WKB Polygon"):
+            _process_polygon_wkb(point_wkb, 0)
+
     def test_gdal_size_limit_lifted_inside_scope_and_unset_after(self, monkeypatch):
         """The limit is lifted inside the scope and removed again on exit (#517)."""
         import os
