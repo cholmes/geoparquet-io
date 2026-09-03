@@ -70,7 +70,7 @@ gpio.read('buildings.parquet') \
 # Partition by quadkey
 gpio.read('buildings.parquet') \
     .add_quadkey(resolution=12) \
-    .partition_by_quadkey('output/', partition_resolution=4)
+    .partition_by_quadkey('output/', resolution=12, partition_resolution=4)
 ```
 
 ---

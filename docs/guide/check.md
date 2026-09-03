@@ -154,7 +154,7 @@ passed at 2.0.
 Checks row group size optimization for cloud-native access.
 
 !!! tip "Spatial filter pushdown and row group sizing"
-    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, row groups of 10,000-50,000 rows create tighter bounding boxes that enable more row group skipping during spatial queries.
+    For GeoParquet 2.0 or parquet-geo-only files with Hilbert sorting, row groups of 10,000-50,000 rows create tighter bounding boxes that enable more row group skipping during spatial queries. The `gpio sort` commands default to 50,000 rows per group, the top of that band, so a freshly sorted file already sits inside it.
 
 ### Optimization Check
 

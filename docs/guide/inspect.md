@@ -148,13 +148,12 @@ gpio inspect head data.parquet --json
 
 === "Python"
 
-    <!-- doctest: skip="reads col['column'], but ops.compression_stats() returns 'column_name'" -->
     ```python
     from geoparquet_io.api import ops
 
     stats = ops.compression_stats('data.parquet')
     for col in stats:
-        print(f"{col['column']}: {col['compression']} ratio={col['ratio']:.2f}")
+        print(f"{col['column_name']}: {col['compression']} ratio={col['ratio']:.2f}")
     ```
 
 Output includes a "Compression Ratios" table showing which columns benefit most from compression.

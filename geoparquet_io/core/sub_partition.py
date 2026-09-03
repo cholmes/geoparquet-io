@@ -8,8 +8,41 @@ from pathlib import Path
 # Community extensions a partition type cannot run without, checked once before
 # the file loop so an unavailable one is reported once instead of per file.
 _REQUIRED_EXTENSIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "a5": (("a5", "gpio partition a5"),),
+    "h3": (("h3", "gpio partition h3"),),
     "s2": (("geography", "gpio partition s2"),),
 }
+
+
+def _assert_no_rows_lost(source_file: str, output_dir: str) -> None:
+    """Refuse to delete an original whose rows did not all reach the output.
+
+    Partitioning drops rows whose partition value is NULL, and a NULL or empty
+    geometry yields a NULL index cell -- so "some output parquet exists" was
+    never proof the data survived. Compare row counts before ``--in-place``
+    removes the only copy.
+
+    Raises:
+        RuntimeError: If the output holds no files, or fewer rows than the source.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_row_count
+
+    output_files = sorted(Path(output_dir).glob("**/*.parquet"))
+    if not output_files:
+        raise RuntimeError(
+            f"Sub-partition created no output files, keeping original: {source_file}"
+        )
+
+    source_rows = get_row_count(source_file)
+    output_rows = sum(get_row_count(str(f)) for f in output_files)
+
+    if output_rows != source_rows:
+        raise RuntimeError(
+            f"Sub-partition wrote {output_rows} row(s) from a {source_rows}-row source, "
+            f"keeping original: {source_file}. Rows with a NULL or empty geometry get a "
+            f"NULL index cell and are dropped by partitioning; the sub-partitions are in "
+            f"{output_dir}"
+        )
 
 
 def find_large_files(
@@ -71,9 +104,9 @@ def sub_partition_directory(
 
     Args:
         directory: Directory containing parquet files
-        partition_type: Type of partition ("h3", "s2", "quadkey")
+        partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
         min_size_bytes: Minimum file size to process
-        resolution: Resolution for H3/quadkey (0-15 for H3)
+        resolution: Resolution for A5/H3/quadkey (0-15 for H3, 0-30 for A5)
         level: Level for S2 (alias for resolution)
         in_place: If True, delete original after successful sub-partition
         hive: Use Hive-style partitioning
@@ -99,6 +132,7 @@ def sub_partition_directory(
         success,
         warn,
     )
+    from geoparquet_io.core.partition.by_a5 import partition_by_a5
     from geoparquet_io.core.partition.by_h3 import partition_by_h3
     from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
     from geoparquet_io.core.partition.by_s2 import partition_by_s2
@@ -107,6 +141,7 @@ def sub_partition_directory(
 
     # Map partition types to their functions and resolution param names
     partition_funcs = {
+        "a5": (partition_by_a5, "resolution"),
         "h3": (partition_by_h3, "resolution"),
         "s2": (partition_by_s2, "level"),
         "quadkey": (partition_by_quadkey, "resolution"),
@@ -179,11 +214,7 @@ def sub_partition_directory(
 
             if in_place:
                 # Validate output before deleting original
-                output_files = list(Path(output_dir).glob("**/*.parquet"))
-                if not output_files:
-                    raise RuntimeError(
-                        f"Sub-partition created no output files, keeping original: {file_path}"
-                    )
+                _assert_no_rows_lost(file_path, output_dir)
                 os.remove(file_path)
                 debug(f"Removed original: {file_path}")
 

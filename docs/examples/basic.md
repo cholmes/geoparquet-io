@@ -103,8 +103,8 @@ table = gpio.read('input.parquet').extract(limit=1000)
 # Select specific columns
 table = gpio.read('input.parquet').extract(columns=['name', 'geometry'])
 
-# Exclude columns
-table = gpio.read('input.parquet').extract(exclude_columns=['temp_id'])
+# Exclude columns (unknown names raise instead of being ignored)
+table = gpio.read('input.parquet').extract(exclude_columns=['placemaker_url'])
 
 # Spatial filter by bounding box
 table = gpio.read('input.parquet').extract(
@@ -164,7 +164,7 @@ print(f"Created {stats['file_count']} files")
 # Partition by quadkey
 stats = gpio.read('input.parquet') \
     .add_quadkey() \
-    .partition_by_quadkey('output/', partition_resolution=4)
+    .partition_by_quadkey('output/', resolution=13, partition_resolution=4)
 print(f"Created {stats['file_count']} files")
 ```
 

@@ -163,22 +163,23 @@ def test_existing_covering_survives_v2_roundtrip(tmp_path, command):
     assert _geometry_column_meta(out)["covering"]["bbox"] == BBOX_COVERING
 
 
-def test_undeclared_bbox_column_is_not_silently_declared_at_v2(tmp_path):
-    """An undeclared bbox column stays undeclared -- gpio cannot vouch for it.
+def test_a_conventional_bbox_column_is_declared_at_v2(tmp_path):
+    """The one covering gpio derives: a struct column literally named ``bbox``.
 
-    A ``covering`` asserts that a column's values bound the geometry. For a
-    column gpio did not compute it has no evidence of that beyond the name, and
-    a covering pointing at unrelated values makes readers prune away rows that
-    genuinely match -- strictly worse than declaring nothing. ``gpio check``
-    flags the column and points at ``gpio add bbox-metadata``, which is where a
-    user asserts the relationship deliberately (#738).
+    ``bbox``, as a struct of xmin/ymin/xmax/ymax, is the universal GeoParquet
+    convention and is what every 1.0-era writer emitted before ``covering``
+    existed, so a writer may vouch for it; broader names may not (#738, and
+    ``test_unrelated_bbox_shaped_column_never_becomes_a_covering`` below). The
+    rewrite path has always declared it — a 2.0 output used to miss out purely
+    because it took the no-rewrite fast path, which is the path difference #772
+    closed.
     """
     src = _write_v2_wkb(tmp_path / "in.parquet", with_bbox_column=True, with_covering=False)
     out = tmp_path / "out.parquet"
 
     _run("sort", "hilbert", src, out)
 
-    assert "covering" not in _geometry_column_meta(out)
+    assert _geometry_column_meta(out)["covering"]["bbox"] == BBOX_COVERING
 
 
 def test_unrelated_bbox_shaped_column_never_becomes_a_covering(tmp_path):
@@ -460,7 +461,7 @@ def test_resolve_output_version_honours_an_explicit_version():
 def test_fast_path_carry_declines_a_geo_block_too_thin_to_stand_in(tmp_path):
     """Carrying a block that lacks the fields DuckDB would have written is worse
     than letting DuckDB write it, so the carry declines and the write falls back."""
-    from geoparquet_io.core.common import _covering_to_carry_on_fast_path
+    from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
 
     thin = {
         "geo": json.dumps(
@@ -472,11 +473,12 @@ def test_fast_path_carry_declines_a_geo_block_too_thin_to_stand_in(tmp_path):
             }
         )
     }
-    assert _covering_to_carry_on_fast_path(thin, "geometry", "2.0") is None
+    assert _geo_block_to_carry_on_fast_path(thin, "geometry", "2.0") is None
 
 
-def test_fast_path_carry_declines_when_no_covering_is_declared():
-    from geoparquet_io.core.common import _covering_to_carry_on_fast_path
+def test_fast_path_carry_declines_a_block_duckdb_would_write_itself():
+    """No covering, no epoch, no orientation: DuckDB's own generated block stands."""
+    from geoparquet_io.core.common import _geo_block_to_carry_on_fast_path
 
     plain = {
         "geo": json.dumps(
@@ -487,7 +489,7 @@ def test_fast_path_carry_declines_when_no_covering_is_declared():
             }
         )
     }
-    assert _covering_to_carry_on_fast_path(plain, "geometry", "2.0") is None
+    assert _geo_block_to_carry_on_fast_path(plain, "geometry", "2.0") is None
 
 
 def test_a_non_bbox_covering_survives_a_write_that_adds_a_bbox_covering(tmp_path):

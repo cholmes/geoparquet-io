@@ -9,8 +9,6 @@ import functools
 
 import click
 
-from geoparquet_io.core.parquet_writer import ParquetWriteSettings
-
 
 def handle_geoparquet_errors(func):
     """
@@ -96,22 +94,51 @@ def compression_options(func):
     return func
 
 
-def row_group_options(func):
+def _row_group_size_help(default_rows: int | None) -> str:
+    """Help text for --row-group-size, naming a default only where one exists.
+
+    Only commands that resolve their own default (the ``gpio sort`` family, via
+    ``resolve_sort_row_group_rows``) may name a number here. Everywhere else the
+    option falls through as ``None`` and the writer picks -- DuckDB's COPY uses
+    122,880 rows -- so quoting a figure would repeat the #775 bug of advertising
+    a default that nothing applies.
+    """
+    if default_rows is None:
+        return (
+            "Exact number of rows per row group. Mutually exclusive with "
+            "--row-group-size-mb; if neither is given the Parquet writer's own "
+            "default applies (122,880 rows for DuckDB-backed writes)."
+        )
+    return (
+        f"Exact number of rows per row group (default: {default_rows} "
+        "if --row-group-size-mb not set)"
+    )
+
+
+def row_group_options(func=None, *, default_rows: int | None = None):
     """
     Add row group sizing options to a command.
 
     Adds:
-    - --row-group-size: Exact number of rows per row group (default if neither option set)
+    - --row-group-size: Exact number of rows per row group
     - --row-group-size-mb: Target row group size in MB or with units (e.g., '256MB', '1GB')
 
-    These options are mutually exclusive. If neither is set, row_group_size defaults to
-    ParquetWriteSettings.DEFAULT_ROW_GROUP_ROWS.
+    These options are mutually exclusive. Both default to ``None``: a Click default
+    would make ``--row-group-size-mb`` collide with it and raise the
+    mutually-exclusive usage error, so a command that wants a default resolves it
+    downstream and declares the number here via ``default_rows`` purely so the help
+    text matches what the command actually does.
+
+    Usable bare (``@row_group_options``) or called
+    (``@row_group_options(default_rows=50_000)``).
     """
+    if func is None:
+        return lambda inner: row_group_options(inner, default_rows=default_rows)
     func = click.option(
         "--row-group-size",
         type=int,
         default=None,
-        help=f"Exact number of rows per row group (default: {ParquetWriteSettings.DEFAULT_ROW_GROUP_ROWS} if --row-group-size-mb not set)",
+        help=_row_group_size_help(default_rows),
     )(func)
     func = click.option(
         "--row-group-size-mb", help="Target row group size (e.g. '256MB', '1GB', '128' assumes MB)"
@@ -119,15 +146,17 @@ def row_group_options(func):
     return func
 
 
-def output_format_options(func):
+def output_format_options(func=None, *, default_rows: int | None = None):
     """
     Add all output format options (compression + row groups + memory limit).
 
     This is a convenience decorator that combines compression_options, row_group_options,
-    and write_memory_option.
+    and write_memory_option. ``default_rows`` is forwarded to ``row_group_options``.
     """
+    if func is None:
+        return lambda inner: output_format_options(inner, default_rows=default_rows)
     func = compression_options(func)
-    func = row_group_options(func)
+    func = row_group_options(func, default_rows=default_rows)
     func = write_memory_option(func)
     return func
 
@@ -672,6 +701,44 @@ class SingleFileCommand(GlobAwareCommand):
     supports_glob = False
 
 
+# Options that only make sense for a single-file partition run. In directory
+# --min-size mode each file gets its own sibling output directory and the index
+# column is created with its default name, so accepting these silently dropped
+# them (#790).
+_SUB_PARTITION_COLUMN_OPTIONS: dict[str, tuple[str, str]] = {
+    "h3": ("--h3-name", "h3_cell"),
+    "s2": ("--s2-name", "s2_cell"),
+    "a5": ("--a5-name", "a5_cell"),
+    "quadkey": ("--quadkey-column", "quadkey"),
+}
+
+
+def _reject_single_file_only_options(
+    partition_type: str,
+    column_name: str | None,
+    output_folder: str | None,
+) -> None:
+    """Fail loudly on options a directory --min-size run cannot honour."""
+    ignored = []
+
+    option, default = _SUB_PARTITION_COLUMN_OPTIONS.get(partition_type, (None, None))
+    if option and column_name is not None and column_name != default:
+        ignored.append(option)
+    if output_folder:
+        ignored.append("OUTPUT_FOLDER")
+
+    if not ignored:
+        return
+
+    verb = "does" if len(ignored) == 1 else "do"
+    raise click.UsageError(
+        f"{' and '.join(ignored)} {verb} not apply to directory input with --min-size.\n\n"
+        f"Each file over the threshold is partitioned into a sibling <file>_{partition_type}/\n"
+        "directory, using the default index column name. Run the command on a single\n"
+        "file if you need to control those."
+    )
+
+
 def handle_directory_sub_partition(
     input_parquet: str,
     partition_type: str,
@@ -689,6 +756,9 @@ def handle_directory_sub_partition(
     auto: bool = False,
     target_rows: int = 100000,
     max_partitions: int = 10000,
+    preview: bool = False,
+    column_name: str | None = None,
+    output_folder: str | None = None,
 ) -> bool:
     """
     Handle directory input with --min-size for partition commands.
@@ -699,9 +769,9 @@ def handle_directory_sub_partition(
 
     Args:
         input_parquet: Path to input file or directory
-        partition_type: Type of partition ("h3", "s2", "quadkey")
+        partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
         min_size: Size threshold string (e.g., "100MB") or None
-        resolution: Resolution for H3/quadkey
+        resolution: Resolution for A5/H3/quadkey
         level: Level for S2
         in_place: Delete originals after sub-partition
         hive: Use Hive-style partitioning
@@ -714,12 +784,16 @@ def handle_directory_sub_partition(
         auto: Auto-calculate resolution
         target_rows: Target rows per partition (auto mode)
         max_partitions: Max partitions (auto mode)
+        preview: List the files that would be processed and stop
+        column_name: Index column name from the command's --<index>-name option
+        output_folder: OUTPUT_FOLDER argument, if the user supplied one
 
     Returns:
         True if directory was handled, False if it's a file (continue to single-file logic)
 
     Raises:
-        click.UsageError: If directory input provided without --min-size
+        click.UsageError: If directory input provided without --min-size, or with
+            options that only apply to single-file partitioning
     """
     import os
 
@@ -731,14 +805,33 @@ def handle_directory_sub_partition(
             "Directory input requires --min-size to specify which files to process"
         )
 
+    _reject_single_file_only_options(partition_type, column_name, output_folder)
+
     from geoparquet_io.core.common import parse_size_string
-    from geoparquet_io.core.logging_config import warn
-    from geoparquet_io.core.sub_partition import sub_partition_directory
+    from geoparquet_io.core.logging_config import info, progress, warn
+    from geoparquet_io.core.sub_partition import find_large_files, sub_partition_directory
 
     try:
         min_size_bytes = parse_size_string(min_size)
     except ValueError as e:
         raise click.UsageError(str(e)) from None
+
+    if preview:
+        # --preview used to be accepted, ignored, and the originals deleted
+        # anyway under --in-place (#790). Show the plan and change nothing.
+        candidates = find_large_files(input_parquet, min_size_bytes)
+        if not candidates:
+            info(f"No files found exceeding {min_size} in {input_parquet}")
+            return True
+
+        progress(f"Would sub-partition {len(candidates)} file(s) by {partition_type}:")
+        for candidate in candidates:
+            size_mb = os.path.getsize(candidate) / (1024 * 1024)
+            stem = os.path.splitext(os.path.basename(candidate))[0]
+            destination = os.path.join(os.path.dirname(candidate), f"{stem}_{partition_type}")
+            info(f"  {candidate} ({size_mb:.1f}MB) -> {destination}/")
+        info("Preview only: no files were partitioned or removed.")
+        return True
 
     try:
         result = sub_partition_directory(

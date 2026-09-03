@@ -68,6 +68,7 @@ from geoparquet_io.core.inspect import (
     inspect_summary as _inspect_summary_core,
 )
 from geoparquet_io.core.logging_config import configure_verbose, setup_cli_logging
+from geoparquet_io.core.parquet_writer import DEFAULT_SORT_ROW_GROUP_ROWS
 from geoparquet_io.core.partition.admin_hierarchical import (
     partition_by_admin_hierarchical as partition_admin_hierarchical_impl,
 )
@@ -3650,7 +3651,7 @@ def sort(ctx):
 @click.option(
     "--add-bbox", is_flag=True, help="Automatically add bbox column and metadata if missing."
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3729,7 +3730,7 @@ def hilbert_order(
 @click.option(
     "--add-bbox", is_flag=True, help="Automatically add bbox column and metadata if missing."
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3803,7 +3804,7 @@ def str_order_command(
     is_flag=True,
     help="Sort in descending order (default: ascending)",
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -3887,7 +3888,7 @@ def sort_column(
     is_flag=True,
     help="Exclude quadkey column from output after sorting",
 )
-@output_format_options
+@output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
 @verbose_option
@@ -5261,6 +5262,9 @@ def partition_h3(
             partition_type="h3",
             min_size=min_size,
             resolution=resolution,
+            preview=preview,
+            column_name=h3_name,
+            output_folder=output_folder,
             in_place=in_place,
             hive=hive,
             overwrite=overwrite,
@@ -5437,6 +5441,9 @@ def partition_s2(
             partition_type="s2",
             min_size=min_size,
             level=level,  # S2 uses "level" not "resolution"
+            preview=preview,
+            column_name=s2_name,
+            output_folder=output_folder,
             in_place=in_place,
             hive=hive,
             overwrite=overwrite,
@@ -5524,7 +5531,7 @@ def partition_s2(
     is_flag=True,
     help="Keep the A5 column in output files (default: excluded for non-Hive, included for Hive)",
 )
-@partition_options_base
+@partition_options
 @output_format_options
 @verbose_option
 @geoparquet_version_option
@@ -5546,6 +5553,8 @@ def partition_a5(
     preview_limit,
     force,
     skip_analysis,
+    min_size,
+    in_place,
     prefix,
     compression,
     compression_level,
@@ -5590,8 +5599,34 @@ def partition_a5(
 
         # Use Hive-style partitioning (A5 column included by default)
         gpio partition a5 input.parquet output/ --auto --hive
+
+        # Sub-partition all files over 100MB in a directory
+        gpio partition a5 /data/partitions/ --min-size 100MB --resolution 10 --in-place
     """
     with _activate_s3(ctx):
+        # Handle directory input with --min-size
+        if handle_directory_sub_partition(
+            input_parquet=input_parquet,
+            partition_type="a5",
+            min_size=min_size,
+            resolution=resolution,
+            preview=preview,
+            column_name=a5_name,
+            output_folder=output_folder,
+            in_place=in_place,
+            hive=hive,
+            overwrite=overwrite,
+            verbose=verbose,
+            force=force,
+            skip_analysis=skip_analysis,
+            compression=compression,
+            compression_level=compression_level,
+            auto=auto,
+            target_rows=target_rows,
+            max_partitions=max_partitions,
+        ):
+            return
+
         # If preview mode, output_folder is not required
         if not preview and not output_folder:
             raise click.UsageError("OUTPUT_FOLDER is required unless using --preview")
@@ -5928,6 +5963,9 @@ def partition_quadkey(
             partition_type="quadkey",
             min_size=min_size,
             resolution=resolution,
+            preview=preview,
+            column_name=quadkey_column,
+            output_folder=output_folder,
             in_place=in_place,
             hive=hive,
             overwrite=overwrite,

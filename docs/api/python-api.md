@@ -645,7 +645,7 @@ Reorder rows using Hilbert curve ordering for better spatial locality.
 table = gpio.read('input.parquet').sort_hilbert()
 ```
 
-#### `sort_str(tile_size=100000)`
+#### `sort_str(tile_size=50000)`
 
 Reorder rows with Sort-Tile-Recursive packing: X strips, each sorted on Y with
 alternating direction. `tile_size` only selects the number of strips, as
@@ -714,12 +714,17 @@ table = gpio.read('unknown_crs.parquet').reproject(assume_crs84=True)
 
 Filter columns and rows.
 
+Names in `columns` and `exclude_columns` are checked against the schema:
+an unknown name raises `InvalidParameterError` naming it, rather than being
+silently ignored. A column may not appear in both lists, except for the
+geometry and bbox columns.
+
 ```python
 # Select specific columns
 table = gpio.read('input.parquet').extract(columns=['name', 'address'])
 
 # Exclude columns
-table = gpio.read('input.parquet').extract(exclude_columns=['temp_id'])
+table = gpio.read('input.parquet').extract(exclude_columns=['placemaker_url'])
 
 # Limit rows
 table = gpio.read('input.parquet').extract(limit=1000)
@@ -821,9 +826,25 @@ arrow_table = table.to_arrow()
 
 #### Spatial Partitioning Methods
 
-All spatial partitioning methods support automatic resolution calculation via CLI (`--auto` flag). Python API currently requires explicit resolution specification; auto-resolution support is planned.
+All spatial partitioning methods need to be told how finely to split. Give them an explicit resolution (or `level`), or pass `auto=True` to size one from the data -- the same choice `gpio partition` offers, and the same calculation behind it. A call that gives neither raises `InvalidParameterError` rather than picking a default for you. Under `auto=True`, `target_rows` (default 100,000) sets the rows you want per partition and `max_partitions` (default 10,000) caps how many are created; passing `auto=True` together with an explicit resolution is an error.
 
-#### `partition_by_quadkey(output_dir, resolution=13, partition_resolution=6, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
+!!! warning "Breaking change: the implicit resolutions are gone"
+    These methods used to fall back to a hardcoded resolution when you gave
+    them none, so a call that named no resolution still wrote partitions --
+    just not the ones `gpio partition` would have written from the same bytes.
+    The same call now raises `InvalidParameterError`. To keep the output you
+    had, pass the old default explicitly:
+
+    | Method | Old implicit default |
+    |--------|----------------------|
+    | `partition_by_h3` | `resolution=9` |
+    | `partition_by_quadkey` | `resolution=13, partition_resolution=6` |
+    | `partition_by_s2` | `level=13` |
+    | `partition_by_a5` | `resolution=15` |
+
+    To get what the CLI gives you instead, pass `auto=True`.
+
+#### `partition_by_quadkey(output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
 Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -831,19 +852,23 @@ With `hive=False` the partition value lives only in the file name, so the genera
 
 ```python
 # Partition to a directory
-stats = table.partition_by_quadkey('output/', resolution=12)
+stats = table.partition_by_quadkey('output/', resolution=12, partition_resolution=6)
 print(f"Created {stats['file_count']} files")
+
+# Let gpio size both resolutions from the data
+stats = table.partition_by_quadkey('output/', auto=True)
 
 # With custom options
 stats = table.partition_by_quadkey(
     'output/',
+    resolution=13,
     partition_resolution=4,
     compression='SNAPPY',
     overwrite=True
 )
 ```
 
-#### `partition_by_h3(output_dir, resolution=9, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False)`
+#### `partition_by_h3(output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False)`
 
 Partition the table into a directory by H3 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -853,9 +878,12 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by H3
 stats = table.partition_by_h3('output/', resolution=6)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the resolution from the data
+stats = table.partition_by_h3('output/', auto=True, target_rows=50000)
 ```
 
-#### `partition_by_s2(output_dir, level=13, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False)`
+#### `partition_by_s2(output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False)`
 
 Partition the table into a directory by S2 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -874,9 +902,12 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by S2
 stats = table.partition_by_s2('output/', level=10)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the level from the data
+stats = table.partition_by_s2('output/', auto=True)
 ```
 
-#### `partition_by_a5(output_dir, resolution=15, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False)`
+#### `partition_by_a5(output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False)`
 
 Partition the table into a directory by A5 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
@@ -886,6 +917,9 @@ With `hive=False` the partition value lives only in the file name, so the genera
 # Partition by A5
 stats = table.partition_by_a5('output/', resolution=12)
 print(f"Created {stats['file_count']} files")
+
+# Or let gpio size the resolution from the data
+stats = table.partition_by_a5('output/', auto=True)
 ```
 
 #### `partition_by_string(output_dir, column, chars=None, hive=False, overwrite=False)`
@@ -1495,7 +1529,7 @@ pq.write_table(table, 'output.parquet')
 | `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
-| `ops.sort_str(table, geometry_column=None, tile_size=100000)` | Reorder with Sort-Tile-Recursive ordering (`tile_size` picks the strip count) |
+| `ops.sort_str(table, geometry_column=None, tile_size=50000)` | Reorder with Sort-Tile-Recursive ordering (`tile_size` picks the strip count) |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |
 | `ops.sort_quadkey(table, column_name='quadkey', resolution=13, use_centroid=False, remove_column=False)` | Sort by quadkey |
 | `ops.reproject(table, target_crs='EPSG:4326', source_crs=None, geometry_column=None, assume_crs84=False)` | Reproject geometry (`assume_crs84` treats an unknown/null CRS as OGC:CRS84) |
