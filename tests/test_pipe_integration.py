@@ -586,6 +586,44 @@ class TestZeroRowStreams:
         assert "geometry" in table.column_names
         assert "name" in table.column_names
 
+    @staticmethod
+    def _narrow(type_: pa.DataType) -> pa.DataType:
+        """Reduce a type to the shape that is stable across readers.
+
+        Two differences here are real but orthogonal to this fix:
+
+        * DuckDB exports strings and blobs as ``large_string``/``large_binary``
+          while the Parquet writer stores the 32-bit forms -- for *every*
+          result, empty or not, so it is not a zero-row artifact.
+        * Whether ``geoarrow.pyarrow`` happens to be imported in *this* process
+          decides if the stream's ``ARROW:extension:name`` resolves into a
+          registered ``WkbType`` or stays a bare ``binary`` field carrying
+          metadata. Under ``pytest -n auto`` that depends on which other tests
+          share the worker, so comparing the raw types is order-dependent.
+
+        Unwrapping to storage type and narrowing the offsets leaves the part
+        the assertion is actually about: which columns there are, and what
+        they hold.
+        """
+        if isinstance(type_, pa.ExtensionType):
+            type_ = type_.storage_type
+        if type_ == pa.large_string():
+            return pa.string()
+        if type_ == pa.large_binary():
+            return pa.binary()
+        return type_
+
+    @staticmethod
+    def _extension_name(field: pa.Field) -> str:
+        """The geoarrow extension name, however this process chose to expose it.
+
+        A registered extension type carries it as ``extension_name``; an
+        unregistered one leaves it in the field metadata. See ``_narrow``.
+        """
+        if isinstance(field.type, pa.ExtensionType):
+            return field.type.extension_name
+        return (field.metadata or {}).get(b"ARROW:extension:name", b"").decode()
+
     @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
     def test_zero_row_stream_matches_file_output_schema(self, output_file):
         """The stream's schema must match what the file path writes for the same filter."""
@@ -611,7 +649,45 @@ class TestZeroRowStreams:
         assert stream_table.column_names == file_table.column_names
         # Types, not fields: the geometry field carries an extra
         # ARROW:extension:name entry on the stream side only.
-        assert [f.type for f in stream_table.schema] == [f.type for f in file_table.schema]
+        assert [self._narrow(f.type) for f in stream_table.schema] == [
+            self._narrow(f.type) for f in file_table.schema
+        ]
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_zero_row_stream_schema_matches_a_non_empty_stream(self):
+        """The empty stream must be the same stream, minus the rows.
+
+        The bug this guards was a *typing* failure -- geoarrow rebuilding the
+        geometry column with no type at all -- so an empty result that merely
+        parses is not enough. Compared stream-to-stream, with no normalizing,
+        every field including the geoarrow extension metadata must be identical
+        to what the same command emits when rows do match.
+        """
+        empty = subprocess.run(
+            f"gpio extract {self.EMPTY_BBOX} {PLACES_PARQUET} -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert empty.returncode == 0, empty.stderr.decode(errors="replace")
+
+        populated = subprocess.run(
+            f"gpio extract --limit 5 {PLACES_PARQUET} -",
+            shell=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert populated.returncode == 0, populated.stderr.decode(errors="replace")
+
+        empty_table = self._read_stream(empty.stdout)
+        populated_table = self._read_stream(populated.stdout)
+        assert empty_table.num_rows == 0
+        assert populated_table.num_rows == 5
+
+        empty_geometry = empty_table.schema.field("geometry")
+        assert empty_geometry == populated_table.schema.field("geometry")
+        assert self._extension_name(empty_geometry) == "geoarrow.wkb"
+        assert list(empty_table.schema) == list(populated_table.schema)
 
     @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
     def test_zero_row_pipe_to_add_bbox(self, output_file):
