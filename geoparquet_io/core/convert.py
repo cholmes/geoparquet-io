@@ -365,15 +365,23 @@ def set_csv_max_line_size(value):
     _csv_max_line_size_override = value
 
 
-def _build_csv_read_expr(input_file, delimiter):
-    """Build DuckDB CSV read expression with geospatial-appropriate max_line_size."""
+def _build_csv_read_expr(input_url, delimiter):
+    """Build DuckDB CSV read expression with geospatial-appropriate max_line_size.
+
+    Args:
+        input_url: An **already SQL-escaped** ``safe_file_url()`` result, not a
+            raw path -- this function writes the surrounding quotes but does not
+            escape. (A raw path would need ``sql_path()`` instead; the CSV read
+            chain has not been migrated, see #718.)
+        delimiter: CSV delimiter, or None to auto-detect.
+    """
     max_line_size = get_csv_max_line_size()
     if delimiter:
         return (
-            f"read_csv('{input_file}', delim='{delimiter}', header=true, "
+            f"read_csv('{input_url}', delim='{delimiter}', header=true, "
             f"AUTO_DETECT=TRUE, max_line_size={max_line_size})"
         )
-    return f"read_csv_auto('{input_file}', max_line_size={max_line_size})"
+    return f"read_csv_auto('{input_url}', max_line_size={max_line_size})"
 
 
 def _get_csv_columns(con, csv_read):
@@ -854,11 +862,14 @@ def _calculate_csv_bounds(con, geom_info, skip_invalid, verbose):
     return bounds_result
 
 
-def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimiter=None):
+def _build_plain_select_query(input_url, is_parquet=False, is_csv=False, delimiter=None):
     """Build a SELECT * query for non-geometry file conversion.
 
     Args:
-        input_file: Path to input file
+        input_url: An **already SQL-escaped** ``safe_file_url()`` result, not a
+            raw path -- this function writes the surrounding quotes but does not
+            escape. (A raw path would need ``sql_path()`` instead; this branch
+            has not been migrated, see #718.)
         is_parquet: True if input is a parquet file
         is_csv: True if input is a CSV/TSV file
         delimiter: CSV delimiter (only used if is_csv=True)
@@ -867,12 +878,12 @@ def _build_plain_select_query(input_file, is_parquet=False, is_csv=False, delimi
         SQL SELECT query string
     """
     if is_parquet:
-        return f"SELECT * FROM read_parquet('{input_file}')"
+        return f"SELECT * FROM read_parquet('{input_url}')"
     if is_csv:
-        csv_read = _build_csv_read_expr(input_file, delimiter)
+        csv_read = _build_csv_read_expr(input_url, delimiter)
         return f"SELECT * FROM {csv_read}"
     # Spatial formats (GeoJSON, Shapefile, GeoPackage, etc.) - use ST_Read
-    return f"SELECT * FROM ST_Read('{input_file}')"
+    return f"SELECT * FROM ST_Read('{input_url}')"
 
 
 #: Warned when Hilbert ordering is skipped for want of an envelope (#649). Both

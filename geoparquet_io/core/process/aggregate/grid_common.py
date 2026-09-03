@@ -463,16 +463,18 @@ def _resolve_bbox_column_for_table(table, bbox_column: str | None) -> str:
     return detected
 
 
-def _warn_files_missing_column(con, input_url: str, column: str) -> None:
+def _warn_files_missing_column(con, input_path: str, column: str) -> None:
     """Warn when a glob input has files that lack the keying ``column``.
 
     With ``union_by_name=true`` those files' rows get NULL for the column, so
     all of their features silently land in the unassigned bucket. Detection
     (and up-front validation) only sees the merged schema, hence this check.
+
+    ``input_path`` is a RAW path: this function does its own escaping (#718).
     """
-    if not any(ch in input_url for ch in "*?["):
+    if not any(ch in input_path for ch in "*?["):
         return
-    url_lit = _escape_sql_string(input_url)
+    url_lit = _escape_sql_string(input_path)
     col_lit = _escape_sql_string(column)
     try:
         total, with_col = con.execute(

@@ -17,6 +17,10 @@ file's current count is recorded in the baseline, and the check fails only when
 a file's count *goes up* (or a file not in the baseline grows one). Lowering a
 count is always allowed -- run ``--update`` after migrating call sites.
 
+Only real call sites are counted: comments and docstrings are skipped, so a
+file's baseline is not a budget that a reworded docstring can free up for a
+genuine new violation.
+
 Usage::
 
     uv run python scripts/check_sql_path_literals.py            # check
@@ -26,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 from pathlib import Path
@@ -39,11 +44,14 @@ SCAN_ROOTS = ("geoparquet_io", "plugins")
 PATTERN = re.compile(
     r"""(?ix)
     (?:
-        \b (?: FROM | TO ) \s
+        \b (?: FROM | TO | ATTACH ) \s
       | \b (?: read_parquet
              | read_csv(?:_auto)?
              | read_json(?:_auto)?
+             | read_ndjson(?:_auto|_objects)?
+             | read_text
              | read_blob
+             | parquet_scan
              | ST_Read(?:_Meta)?
              | parquet_schema
              | parquet_metadata
@@ -64,12 +72,35 @@ def source_files() -> list[Path]:
     return files
 
 
+def docstring_lines(text: str) -> set[int]:
+    """Line numbers covered by a docstring.
+
+    Prose is not a call site, and counting it made each file's baseline a budget
+    that documentation could free up: shortening the docstring that quotes the
+    bad form would pay for a real new interpolation with no change in the count.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+
+    covered: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            covered.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return covered
+
+
 def count_in(path: Path) -> int:
     text = path.read_text(encoding="utf-8")
+    skip = docstring_lines(text)
     return sum(
         1
-        for line in text.splitlines()
-        if not line.lstrip().startswith("#") and PATTERN.search(line)
+        for lineno, line in enumerate(text.splitlines(), start=1)
+        if lineno not in skip and not line.lstrip().startswith("#") and PATTERN.search(line)
     )
 
 

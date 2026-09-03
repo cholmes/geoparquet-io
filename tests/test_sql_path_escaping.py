@@ -61,6 +61,7 @@ from geoparquet_io.core.exceptions import FileNotFoundGeoParquetError
 from geoparquet_io.core.file_utils import safe_file_url
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TEST_DATA_DIR = Path(__file__).parent / "data"
 
 
 @pytest.fixture
@@ -266,6 +267,52 @@ class TestApostropheInInputPath:
         # No exception: the file is plainly there, whatever the CRS turns out to be.
         extract_crs_from_parquet(apostrophe_file)
 
+    @pytest.mark.parametrize(
+        ("fixture", "extra_args"),
+        [
+            # The plain read path...
+            ("buildings_test.gpkg", []),
+            # ...and the linearized one, which re-reads the source separately.
+            ("curved_geometry_test.gpkg", ["--linearize-curves"]),
+        ],
+    )
+    def test_convert_geoparquet_from_gpkg_with_apostrophe(self, tmp_path, fixture, extra_args):
+        """Was: ``Error: No CRS found in input file: .../o''brien.gpkg``.
+
+        A GeoPackage takes the *spatial* branch of the CRS detection, which
+        double-escaped the path: ``detect_crs_from_spatial_file`` escapes its own
+        argument, so ST_Read looked for ``o''brien.gpkg`` and found nothing --
+        and the empty result was reported as a missing CRS, not a missing file.
+        """
+        source = TEST_DATA_DIR / fixture
+        gpkg = tmp_path / "o'brien.gpkg"
+        gpkg.write_bytes(source.read_bytes())
+        out = str(tmp_path / "out.parquet")
+
+        runner = CliRunner()
+        result = runner.invoke(convert, ["geoparquet", str(gpkg), out, *extra_args])
+
+        assert result.exit_code == 0, result.output
+        assert "o''brien" not in result.output
+        assert pq.read_metadata(out).num_rows > 0
+
+    def test_get_row_group_geo_stats_takes_a_raw_path(self, tmp_path):
+        """Was: ``FileNotFoundGeoParquetError`` on ``.../o''brien.parquet``.
+
+        The public API escaped the path itself and then handed the escaped
+        string to getters that escape their own argument.
+        """
+        from geoparquet_io.api import ops
+
+        source = TEST_DATA_DIR / "fields_pgo_crs84_bbox_snappy.parquet"
+        path = tmp_path / "o'brien.parquet"
+        path.write_bytes(source.read_bytes())
+
+        stats = ops.get_row_group_geo_stats(str(path))
+
+        assert stats
+        assert {"row_group_id", "xmin", "ymin", "xmax", "ymax"} <= set(stats[0])
+
 
 class TestApostropheInOutputPath:
     """Commands that mangled or failed to escape the output path (issue #718)."""
@@ -380,6 +427,10 @@ class TestSqlPathLiteralRatchet:
             'q = f"SELECT * FROM {sql_path(path)}"\n',
             "# FROM '{path}' in a comment is prose, not code\n",
             "q = f\"SELECT {col} FROM t WHERE name = '{value}'\"\n",
+            # Prose in a docstring is not a call site either -- and counting it
+            # would let a reworded docstring pay for a real new violation.
+            '"""Never write FROM \'{path}\' by hand; use sql_path()."""\n',
+            'def f():\n    """Bad:  FROM \'{path}\'\n\n    Good: FROM {sql_path(path)}\n    """\n',
         ],
     )
     def test_correct_code_is_not_flagged(self, source, tmp_path):
@@ -389,6 +440,63 @@ class TestSqlPathLiteralRatchet:
         probe = tmp_path / "probe.py"
         probe.write_text(source, encoding="utf-8")
         assert module.count_in(probe) == 0
+
+    def test_docstring_prose_cannot_pay_for_a_new_violation(self, tmp_path):
+        """End-to-end: the ratchet must not be satisfiable by rewording prose.
+
+        Counting docstring lines made each file's baseline a *budget* that
+        documentation could free up: shorten the docstring that mentions
+        ``FROM '{path}'``, spend the slot on a real interpolation, and the
+        per-file count is unchanged -- so the checker passes a genuine new
+        violation. Only real call sites are counted now.
+        """
+        checker = tmp_path / "scripts" / "check_sql_path_literals.py"
+        checker.parent.mkdir()
+        checker.write_text(self._checker().read_text(encoding="utf-8"), encoding="utf-8")
+        for root in ("geoparquet_io", "plugins"):
+            (tmp_path / root).mkdir()
+        module = tmp_path / "geoparquet_io" / "reader.py"
+
+        # A file whose docstring explains the rule by quoting the bad form.
+        module.write_text(
+            '"""Read a file.\n'
+            "\n"
+            "Never write FROM '{path}' by hand -- the escape gets forgotten.\n"
+            "Prefer FROM {sql_path(path)}, which quotes and escapes in one step.\n"
+            '"""\n'
+            "\n"
+            "\n"
+            "def read(con, path):\n"
+            "    return con.execute(f'SELECT * FROM {sql_path(path)}')\n",
+            encoding="utf-8",
+        )
+
+        def run(*args):
+            return subprocess.run(
+                [sys.executable, str(checker), *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+
+        assert run("--update").returncode == 0
+        assert run().returncode == 0, "the unmodified tree is its own baseline"
+
+        # Reword the docstring down to one line, and spend the freed slot on a
+        # real hand-written interpolation.
+        module.write_text(
+            '"""Read a file."""\n'
+            "\n"
+            "\n"
+            "def read(con, path):\n"
+            "    return con.execute(f\"SELECT * FROM '{path}'\")\n",
+            encoding="utf-8",
+        )
+
+        result = run()
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "geoparquet_io/reader.py" in result.stdout
 
 
 if __name__ == "__main__":
