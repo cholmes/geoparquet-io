@@ -1,13 +1,90 @@
-"""WKB-to-native GeoArrow conversion helpers for GeoParquet 1.1-geoarrow output.
+"""GeoArrow field introspection, and WKB-to-native conversion for 1.1-geoarrow output.
 
-Pure pyarrow/geoarrow utilities (no DuckDB, no Click). Used by the
-arrow-streaming write strategy to emit nested-coordinate GeoArrow encoding.
+Pure pyarrow/geoarrow utilities (no DuckDB, no Click). The conversion half is
+used by the arrow-streaming write strategy to emit nested-coordinate GeoArrow
+encoding; the introspection half (``arrow_extension_name``,
+``is_geoarrow_extension_field``, ``is_wkb_extension_field``) is the single
+definition of "is this field GeoArrow?" -- and of the narrower "is it WKB
+bytes?" -- shared by the write strategies, the metadata paths and streaming.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from geoparquet_io.core.crs_utils import is_default_crs
 from geoparquet_io.core.logging_config import debug
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+
+
+def arrow_extension_name(field: pa.Field) -> str | None:
+    """Extension name of a field, whether PyArrow resolved it or left it as metadata.
+
+    ``geoarrow.pyarrow`` registers its extension types process-globally on
+    import, so the same column arrives either as a resolved extension type
+    (registered) or as plain storage carrying ``ARROW:extension:name`` in the
+    field metadata (not registered). Some producers -- DuckDB's Arrow export,
+    and gpio's own ``add`` operations -- hand back the metadata-only shape even
+    when the type is registered.
+
+    Both shapes are the same column, and DuckDB honours the field metadata on
+    ``register()``, so any decision keyed on "is this geoarrow?" has to read
+    both (#688, #727, #792).
+
+    Args:
+        field: PyArrow field to inspect
+
+    Returns:
+        The extension name, or None when the field declares none.
+    """
+    name = getattr(field.type, "extension_name", None)
+    if name is not None:
+        return str(name)
+    raw = (field.metadata or {}).get(b"ARROW:extension:name")
+    return raw.decode("utf-8") if raw else None
+
+
+# Extension names that mean "this column holds WKB bytes", as opposed to a
+# native nested GeoArrow geometry (``geoarrow.point`` over ``struct<x, y>``) or a
+# text one (``geoarrow.wkt`` over ``string``). Only these carry bytes that a
+# plain-``binary`` field can hold unchanged.
+WKB_EXTENSION_NAMES = frozenset({"geoarrow.wkb", "ogc.wkb"})
+
+
+def is_geoarrow_extension_field(field: pa.Field) -> bool:
+    """True when a field declares a GeoArrow extension type, in either carrier shape.
+
+    Takes a *field* rather than a type on purpose: shape (2) puts the marker on
+    the field's metadata, which a bare ``pa.DataType`` cannot see. Keying off
+    the resolved type alone made the answer depend on whether anything in the
+    process had imported ``geoarrow.pyarrow`` (#792).
+
+    Deliberately broad -- *any* ``geoarrow.*`` name. This answers "is there
+    native geo in this table?", which is what version detection needs. It is the
+    wrong question for anything that then rewrites the column: use
+    ``is_wkb_extension_field`` there.
+    """
+    name = arrow_extension_name(field)
+    return name is not None and name.startswith("geoarrow.")
+
+
+def is_wkb_extension_field(field: pa.Field) -> bool:
+    """True when a field declares a WKB extension type, in either carrier shape.
+
+    The narrow counterpart of ``is_geoarrow_extension_field``, and the right gate
+    for every path that rewrites the column to plain ``binary``. A GeoArrow name
+    alone does not mean WKB bytes, and casting on the broad predicate is
+    destructive in two different ways:
+
+    * ``geoarrow.point`` over ``struct<x, y>`` cannot be cast to binary at all --
+      PyArrow raises ``ArrowNotImplementedError`` mid-write;
+    * ``geoarrow.wkt`` over ``string`` casts happily, and leaves WKT *text* in a
+      binary column whose ``geo`` block still says ``encoding: WKT``.
+    """
+    return arrow_extension_name(field) in WKB_EXTENSION_NAMES
+
 
 # GeoParquet geometry_types base names (including Multi* types) -> geoarrow.pyarrow
 # factory attribute names. geometry_type_common handles promotion and unification.

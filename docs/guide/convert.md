@@ -572,6 +572,12 @@ explicit `--geoparquet-version` always wins. The Python API resolves the
 version the same way, so `gpio.read('native.parquet').write('out.parquet')`
 writes true 2.0 native output just like the CLI.
 
+The "bare native geo types" rule holds for an in-memory Arrow table too: a table
+with no `geo` metadata whose geometry field declares a GeoArrow extension type —
+whether PyArrow resolved that type or it arrives as an `ARROW:extension:name`
+field-metadata key — is the same shape as a native-geo file, and auto mode
+writes it as 2.0. A `geo` block that declares a version still wins over both.
+
 === "CLI"
 
     ```bash

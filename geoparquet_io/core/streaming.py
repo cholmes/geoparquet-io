@@ -582,63 +582,6 @@ def extract_crs_from_table(
     return None
 
 
-def strip_geoarrow_extension_type(
-    table: pa.Table,
-    geometry_column: str,
-) -> pa.Table:
-    """
-    Convert geoarrow extension type back to plain binary WKB.
-
-    Used when writing GeoParquet 1.x output which uses plain binary
-    geometry with CRS only in metadata.
-
-    Args:
-        table: PyArrow Table with geoarrow geometry column
-        geometry_column: Name of the geometry column
-
-    Returns:
-        Table with geometry column as plain binary
-    """
-    if geometry_column not in table.column_names:
-        return table
-
-    geom_col = table.column(geometry_column)
-    geom_type = geom_col.type
-
-    # Check if it's a geoarrow extension type
-    if not hasattr(geom_type, "extension_name"):
-        return table  # Already plain binary
-
-    if not geom_type.extension_name.startswith("geoarrow"):
-        return table  # Not a geoarrow type
-
-    try:
-        # Extract storage (plain binary) from extension type
-        new_chunks = []
-        for chunk in geom_col.chunks:
-            if hasattr(chunk, "storage"):
-                new_chunks.append(chunk.storage)
-            else:
-                new_chunks.append(chunk)
-
-        # Create new binary column
-        plain_col = pa.chunked_array(new_chunks, type=pa.binary())
-
-        # Replace in table
-        col_index = table.schema.get_field_index(geometry_column)
-        return table.set_column(col_index, geometry_column, plain_col)
-
-    except (TypeError, ValueError, AttributeError):
-        return table
-
-
-def is_geoarrow_type(arrow_type) -> bool:
-    """Check if an Arrow type is a geoarrow extension type."""
-    if hasattr(arrow_type, "extension_name"):
-        return arrow_type.extension_name.startswith("geoarrow")
-    return False
-
-
 def extract_version_from_metadata(metadata: dict | None) -> str | None:
     """
     Extract GeoParquet version string from schema metadata.
@@ -686,10 +629,12 @@ def has_geoarrow_extension_in_table(table: pa.Table) -> bool:
     Returns:
         True if table has geoarrow extension type columns
     """
-    for field in table.schema:
-        if is_geoarrow_type(field.type):
-            return True
-    return False
+    from geoparquet_io.core.geoarrow_encoding import is_geoarrow_extension_field
+
+    # Field, not type: the extension name may be carried in the field metadata
+    # instead of a resolved extension type, and both shapes are the same
+    # column (#792).
+    return any(is_geoarrow_extension_field(field) for field in table.schema)
 
 
 def detect_version_for_output(
