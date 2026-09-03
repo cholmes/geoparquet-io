@@ -975,9 +975,14 @@ def _ring_signed_area(raw: bytes, num_points: int, point_size: int, endian: str)
 
 def _reverse_ring_points(raw: bytes, num_points: int, point_size: int) -> bytes:
     """Reverse the point order of a WKB ring's raw bytes (flips its winding)."""
-    points = [raw[i * point_size : (i + 1) * point_size] for i in range(num_points)]
-    points.reverse()
-    return b"".join(points)
+    reversed_raw = bytearray(len(raw))
+    for source_index in range(num_points):
+        source_start = source_index * point_size
+        destination_start = (num_points - source_index - 1) * point_size
+        reversed_raw[destination_start : destination_start + point_size] = raw[
+            source_start : source_start + point_size
+        ]
+    return bytes(reversed_raw)
 
 
 def _process_polygon_wkb(buf: bytes, pos: int) -> tuple[bytes, int]:
