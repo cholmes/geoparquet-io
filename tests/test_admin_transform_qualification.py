@@ -53,7 +53,7 @@ def test_admin_divisions_handles_input_with_region_column():
         )
 
         query = _build_spatial_join_query(
-            input_url="_gpio_test_input",
+            input_source="_gpio_test_input",
             admin_subquery="(SELECT geometry, region FROM _admin)",
             admin_select_clause=select_clause,
             input_bbox_col=None,

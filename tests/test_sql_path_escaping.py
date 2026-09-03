@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -498,6 +499,215 @@ class TestSqlPathLiteralRatchet:
         result = run()
         assert result.returncode != 0, result.stdout + result.stderr
         assert "geoparquet_io/reader.py" in result.stdout
+
+
+class TestDisplayedPathsAreNotEscaped:
+    """Issue #802 part 1: a message shows the path the user typed.
+
+    The escape belongs to the SQL string, not to the human reading the log. A
+    dry-run header that prints ``o''brien/data.parquet`` for a file called
+    ``o'brien/data.parquet`` is confusing to read and wrong to copy-paste.
+    """
+
+    @staticmethod
+    def _assert_shows_raw(text, path):
+        """No ``--`` prose line may carry an escaped path.
+
+        The SQL these runs echo is another matter: there ``o''brien`` is the
+        correct literal, and ``add/country_codes.py:_print_dry_run_bounds_info``
+        prints SQL on purpose.
+        """
+        prose = [line for line in text.splitlines() if line.strip().startswith("--")]
+        assert prose, text
+        for line in prose:
+            assert "o''brien" not in line, line
+        assert str(path) in text, text
+
+    def test_add_computed_column_dry_run_header(self, apostrophe_file, tmp_path, caplog):
+        """``common.add_computed_column`` sanitized the *escaped* URL (#802)."""
+        from geoparquet_io.core.common import add_computed_column
+
+        out = str(tmp_path / "o'brien" / "computed.parquet")
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_computed_column(
+                apostrophe_file,
+                out,
+                column_name="answer",
+                sql_expression="42",
+                dry_run=True,
+            )
+
+        assert f"-- Input file: {apostrophe_file}" in caplog.text
+        self._assert_shows_raw(caplog.text, apostrophe_file)
+        # The echoed COPY is SQL, so there the escape is correct -- and the
+        # printed statement has to be runnable.
+        assert f"TO {sql_path(out)}" in caplog.text
+
+    def test_add_kdtree_dry_run_header(self, apostrophe_file, tmp_path):
+        out = str(tmp_path / "kdtree.parquet")
+        runner = CliRunner()
+        result = runner.invoke(
+            add, ["kdtree", apostrophe_file, out, "--partitions", "4", "--dry-run"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"-- Input: {apostrophe_file}" in result.output
+        self._assert_shows_raw(result.output, apostrophe_file)
+
+    def test_add_quadkey_dry_run_header(self, apostrophe_file, tmp_path):
+        out = str(tmp_path / "quadkey.parquet")
+        runner = CliRunner()
+        result = runner.invoke(add, ["quadkey", apostrophe_file, out, "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        assert f"-- Input file: {apostrophe_file}" in result.output
+        self._assert_shows_raw(result.output, apostrophe_file)
+
+    def test_add_admin_divisions_dry_run_header(self, apostrophe_file, tmp_path):
+        out = str(tmp_path / "adm.parquet")
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            [
+                "admin-divisions",
+                apostrophe_file,
+                out,
+                "--dataset",
+                "gaul",
+                "--levels",
+                "continent",
+                "--dry-run",
+                "--no-cache",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert f"-- Input file: {apostrophe_file}" in result.output
+        self._assert_shows_raw(result.output, apostrophe_file)
+
+    def test_add_country_codes_dry_run_header(self, apostrophe_file, tmp_path, caplog):
+        """Both the input and the ``--countries`` path are shown raw (#802)."""
+        from geoparquet_io.core.add.country_codes import add_country_codes
+
+        countries = _make_countries_file(apostrophe_file, tmp_path / "o'brien" / "c.parquet")
+        with caplog.at_level(logging.INFO, logger="geoparquet_io"):
+            add_country_codes(
+                input_parquet=apostrophe_file,
+                countries_parquet=countries,
+                output_parquet=str(tmp_path / "o'brien" / "cc_out.parquet"),
+                add_bbox_flag=False,
+                dry_run=True,
+                verbose=False,
+            )
+
+        assert f"-- Input file: {apostrophe_file}" in caplog.text
+        assert f"-- Countries file: {countries}" in caplog.text
+        self._assert_shows_raw(caplog.text, apostrophe_file)
+
+
+def _make_countries_file(source_parquet, dest):
+    """A countries file built from ``source_parquet``'s own geometries."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    con = get_duckdb_connection(load_spatial=True)
+    try:
+        con.execute(
+            f"COPY (SELECT geometry, 'US' AS country_code FROM {sql_path(str(source_parquet))}) "
+            f"TO {sql_path(str(dest))} (FORMAT PARQUET)"
+        )
+    finally:
+        con.close()
+    return str(dest)
+
+
+class TestEscapedValuesDoNotCrossFunctionBoundaries:
+    """Issue #802 part 2: a function hands back a RAW path.
+
+    None of these is a bug today -- every consumer happens to be SQL -- but the
+    escaped value outliving the function that escaped it is exactly the shape
+    that produced #718's crashes: the next consumer added has to know.
+    """
+
+    def test_get_countries_config_returns_a_raw_path(self, apostrophe_file, tmp_path):
+        from geoparquet_io.core.add.country_codes import _get_countries_config
+
+        countries = _make_countries_file(apostrophe_file, tmp_path / "o'brien" / "c.parquet")
+        countries_path, _, _ = _get_countries_config(countries, using_default=False, verbose=False)
+
+        assert countries_path == countries
+
+    def test_get_input_file_info_returns_a_raw_path(self, apostrophe_file):
+        from geoparquet_io.core.partition.admin_hierarchical import _get_input_file_info
+
+        input_path, _, _ = _get_input_file_info(apostrophe_file, verbose=False)
+
+        assert input_path == apostrophe_file
+
+    def test_admin_divisions_input_ref_escapes_a_raw_path(self, apostrophe_file):
+        """``current_source`` alternately holds a table name, so the RAW path
+        has to be the thing that reaches the SQL boundary."""
+        from geoparquet_io.core.add.admin_divisions import _format_input_ref
+
+        assert _format_input_ref(apostrophe_file) == sql_path(apostrophe_file)
+        assert _format_input_ref("_gpio_admin_step_0", is_table_ref=True) == "_gpio_admin_step_0"
+
+    def test_admin_hierarchical_enrichment_query_escapes_a_raw_path(self, apostrophe_file):
+        from geoparquet_io.core.partition.admin_hierarchical import _build_enrichment_query
+
+        query = _build_enrichment_query(
+            apostrophe_file,
+            "admin_tbl",
+            "",
+            "b.country AS admin_country",
+            "geometry",
+            None,
+            ["country"],
+            "geometry",
+            None,
+            "_enriched",
+        )
+
+        assert f"FROM {sql_path(apostrophe_file)} a" in query
+
+    def test_admin_hierarchical_enrichment_query_keeps_a_table_ref_bare(self, apostrophe_file):
+        from geoparquet_io.core.partition.admin_hierarchical import _build_enrichment_query
+
+        query = _build_enrichment_query(
+            "_admin_step_0",
+            "admin_tbl",
+            "",
+            "b.country AS admin_country",
+            "geometry",
+            None,
+            ["country"],
+            "geometry",
+            None,
+            "_enriched",
+            input_is_table_ref=True,
+        )
+
+        assert "FROM _admin_step_0 a" in query
+
+
+class TestBboxMetadataNativeGeometryProbe:
+    """``_detect_native_geometry`` interpolates the file's own column name.
+
+    The name comes from the file's ``geo`` metadata, so it is untrusted input
+    like any other: an apostrophe in it broke the probe's SQL, and the caller
+    reads the result as "this file is not GeoParquet 2.0".
+    """
+
+    def test_apostrophe_in_the_geometry_column_name(self, tmp_path):
+        from geoparquet_io.core.add.bbox_metadata import _detect_native_geometry
+
+        path = str(tmp_path / "o'brien" / "odd_col.parquet")
+        (tmp_path / "o'brien").mkdir()
+        con = get_duckdb_connection(load_spatial=False)
+        try:
+            con.execute(f'COPY (SELECT 1 AS "it\'s_geom") TO {sql_path(path)} (FORMAT PARQUET)')
+            # No ParserException, and an INTEGER column is not native geometry.
+            assert _detect_native_geometry(con, path, "it's_geom") is False
+        finally:
+            con.close()
 
 
 if __name__ == "__main__":

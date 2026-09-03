@@ -25,9 +25,9 @@ from geoparquet_io.core.crs_utils import (
     source_crs_string,
     transform_geom_sql,
 )
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import quote_identifier, sql_path
 from geoparquet_io.core.exceptions import PartitionError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress, success, warn
 from geoparquet_io.core.partition.common import sanitize_filename
@@ -44,7 +44,7 @@ from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
 def _build_enrichment_query(
-    input_url,
+    input_source,
     admin_table_ref,
     admin_where_clause,
     admin_select_clause,
@@ -59,9 +59,11 @@ def _build_enrichment_query(
 ):
     """Build enrichment query for spatial join.
 
-    ``input_is_table_ref`` marks ``input_url`` as a DuckDB temp-table name
+    ``input_is_table_ref`` marks ``input_source`` as a DuckDB temp-table name
     (per-level chaining) rather than a file path, so it is referenced without
-    surrounding quotes.
+    surrounding quotes. A file path arrives RAW and is quoted and escaped here
+    by :func:`sql_path` -- escaping it earlier would carry the escape into the
+    branch that emits a bare table name (#802).
 
     ``source_crs`` (an ``"AUTH:CODE"`` string) reprojects a non-CRS84 input to
     the admin CRS before ``ST_Intersects`` (#525). When set, the input's stored
@@ -76,7 +78,7 @@ def _build_enrichment_query(
             subquery_cols.append(quote_identifier(col))
     subquery_cols_str = ", ".join(subquery_cols)
 
-    input_ref = input_url if input_is_table_ref else f"'{input_url}'"
+    input_ref = input_source if input_is_table_ref else sql_path(input_source)
 
     q_input_geom = quote_identifier(input_geom_col)
     bbox_filter = f"""
@@ -146,8 +148,10 @@ def _build_enrichment_query(
         """
 
 
-def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source_crs=None):
+def _compute_input_extent(con, input_path, input_bbox_col, input_geom_col, source_crs=None):
     """Compute the input's (xmin, xmax, ymin, ymax) extent in one scan.
+
+    ``input_path`` is RAW; ``sql_path`` escapes it at each interpolation (#802).
 
     The extent does not change across admin levels, so callers compute it once
     and reuse it for every level's WHERE clause (issue #480) rather than
@@ -165,7 +169,7 @@ def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source
                 MAX({input_bbox_col}.xmax) as xmax,
                 MIN({input_bbox_col}.ymin) as ymin,
                 MAX({input_bbox_col}.ymax) as ymax
-            FROM '{input_url}'
+            FROM {sql_path(input_path)}
         """
     else:
         geom_ref = transform_geom_sql(quote_identifier(input_geom_col), source_crs)
@@ -175,7 +179,7 @@ def _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source
                 MAX(ST_XMax({geom_ref})) as xmax,
                 MIN(ST_YMin({geom_ref})) as ymin,
                 MAX(ST_YMax({geom_ref})) as ymax
-            FROM '{input_url}'
+            FROM {sql_path(input_path)}
         """
     extent = con.execute(extent_query).fetchone()
     if extent and all(v is not None for v in extent):
@@ -235,13 +239,18 @@ def _setup_admin_dataset(dataset_name, verbose, levels):
 
 
 def _get_input_file_info(input_parquet, verbose):
-    """Get input file info (URL, geometry column, bbox column)."""
-    input_url = safe_file_url(input_parquet, verbose)
+    """Get input file info (RAW path, geometry column, bbox column).
+
+    The path is returned unescaped: it is chained through ``current_source``,
+    which alternately holds a temp-table name, so the escape belongs at the SQL
+    boundary (:func:`sql_path`) rather than in this return value (#802).
+    """
+    input_path = resolve_file_url(input_parquet, verbose)
     input_geom_col = find_primary_geometry_column(input_parquet, verbose)
     input_bbox_info = check_bbox_structure(input_parquet, verbose)
     input_bbox_col = input_bbox_info["bbox_column_name"]
 
-    return input_url, input_geom_col, input_bbox_col
+    return input_path, input_geom_col, input_bbox_col
 
 
 def _setup_admin_join_connection(dataset, get_duckdb_connection):
@@ -326,7 +335,7 @@ def _build_admin_table_reference(dataset, admin_source):
 def _perform_enrichment_join(
     con,
     enriched_table,
-    input_url,
+    input_path,
     admin_table_ref,
     admin_where_clause,
     admin_select_clause,
@@ -339,7 +348,7 @@ def _perform_enrichment_join(
 ):
     """Perform spatial join enrichment."""
     enrichment_query = _build_enrichment_query(
-        input_url,
+        input_path,
         admin_table_ref,
         admin_where_clause,
         admin_select_clause,
@@ -360,7 +369,7 @@ def _perform_per_level_enrichment_join(
     levels,
     boundary_columns,
     enriched_table,
-    input_url,
+    input_path,
     admin_geom_col,
     admin_bbox_col,
     input_geom_col,
@@ -383,18 +392,18 @@ def _perform_per_level_enrichment_join(
 
     Returns the list of output admin column names.
     """
-    current_source = input_url
+    current_source = input_path
     current_is_table_ref = False
     output_column_names = []
     intermediate_tables = []
 
     # The data extent does not change across levels, so compute it once and reuse
     # it for every level's WHERE clause rather than re-scanning per level (#480).
-    extent = _compute_input_extent(con, input_url, input_bbox_col, input_geom_col, source_crs)
+    extent = _compute_input_extent(con, input_path, input_bbox_col, input_geom_col, source_crs)
 
     for i, (level, col) in enumerate(zip(levels, boundary_columns, strict=True)):
         level_source = dataset.get_source_for_level(level)
-        admin_table_ref = _build_admin_table_reference(dataset, f"'{level_source}'")
+        admin_table_ref = _build_admin_table_reference(dataset, sql_path(level_source))
         select_clause, level_outputs = _build_admin_select_for_partitioning(
             [level], [col], dataset=dataset, vecorel=vecorel
         )
@@ -477,9 +486,9 @@ def _verify_enrichment_results(con, enriched_table, output_column_names):
     return total_count, with_admin_count
 
 
-def _get_original_columns(con, input_url):
-    """Get original column names from input file."""
-    original_columns_query = f"SELECT * FROM '{input_url}' LIMIT 0"
+def _get_original_columns(con, input_path):
+    """Get original column names from the (RAW) input file path."""
+    original_columns_query = f"SELECT * FROM {sql_path(input_path)} LIMIT 0"
     original_schema = con.execute(original_columns_query)
     return [desc[0] for desc in original_schema.description]
 
@@ -704,7 +713,7 @@ def partition_by_admin_hierarchical(
     try:
         # Setup dataset and get input file info
         dataset, boundary_columns = _setup_admin_dataset(dataset_name, verbose, levels)
-        input_url, input_geom_col, input_bbox_col = _get_input_file_info(actual_input, verbose)
+        input_path, input_geom_col, input_bbox_col = _get_input_file_info(actual_input, verbose)
 
         # Admin boundaries are OGC:CRS84; reproject a non-CRS84 input before the
         # join so ST_Intersects neither errors on a CRS mismatch nor silently
@@ -740,7 +749,7 @@ def partition_by_admin_hierarchical(
                     levels,
                     boundary_columns,
                     enriched_table,
-                    input_url,
+                    input_path,
                     admin_geom_col,
                     admin_bbox_col,
                     input_geom_col,
@@ -756,7 +765,7 @@ def partition_by_admin_hierarchical(
                 )
                 admin_table_ref = _build_admin_table_reference(dataset, admin_source)
                 extent = _compute_input_extent(
-                    con, input_url, input_bbox_col, input_geom_col, source_crs
+                    con, input_path, input_bbox_col, input_geom_col, source_crs
                 )
                 admin_where_clause = _build_admin_where_clause(
                     dataset, levels, admin_bbox_col, extent, verbose
@@ -764,7 +773,7 @@ def partition_by_admin_hierarchical(
                 _perform_enrichment_join(
                     con,
                     enriched_table,
-                    input_url,
+                    input_path,
                     admin_table_ref,
                     admin_where_clause,
                     admin_select_clause,
@@ -811,7 +820,7 @@ def partition_by_admin_hierarchical(
             os.makedirs(output_folder, exist_ok=True)
 
             # Get original columns (exclude temporary admin columns)
-            original_cols = _get_original_columns(con, input_url)
+            original_cols = _get_original_columns(con, input_path)
 
             # Create each partition
             partition_count = _create_all_partitions(

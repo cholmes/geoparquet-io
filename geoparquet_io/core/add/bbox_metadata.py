@@ -25,11 +25,13 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
 )
 from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
     _wrap_query_with_blob_conversion,
     build_kv_metadata_clause,
+    sql_path,
 )
 from geoparquet_io.core.exceptions import GeoParquetError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geo_metadata import covering_supported, parse_geo_metadata
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, success
@@ -51,16 +53,18 @@ def _detect_native_geometry(
 
     Args:
         conn: DuckDB connection (reused to avoid repeated INSTALL/LOAD)
-        parquet_file: Path to the parquet file
+        parquet_file: RAW (unescaped) path to the parquet file
         geometry_column: Name of the geometry column to check
 
     Returns:
         True if the file has native GEOMETRY type, False otherwise
     """
+    # The column name comes from the file's own `geo` metadata, so it is
+    # untrusted input, not a constant: escape it like any other SQL literal.
     result = conn.execute(f"""
         SELECT logical_type
-        FROM parquet_schema('{parquet_file}')
-        WHERE name = '{geometry_column}'
+        FROM parquet_schema({sql_path(parquet_file)})
+        WHERE name = '{_escape_sql_string(geometry_column)}'
     """).fetchone()
 
     if result and result[0]:
@@ -74,13 +78,13 @@ def _get_existing_kv_metadata(conn: duckdb.DuckDBPyConnection, parquet_file: str
 
     Args:
         conn: DuckDB connection
-        parquet_file: Path to the parquet file
+        parquet_file: RAW (unescaped) path to the parquet file
 
     Returns:
         Dict mapping metadata keys to values (both as strings)
     """
     result = conn.execute(
-        f"SELECT key, value FROM parquet_kv_metadata('{parquet_file}')"
+        f"SELECT key, value FROM parquet_kv_metadata({sql_path(parquet_file)})"
     ).fetchall()
 
     metadata = {}
@@ -282,10 +286,10 @@ def add_bbox_metadata(
             "Download the file locally, modify it, then upload."
         )
 
-    # ``safe_url`` is only for SQL interpolation below. The metadata helpers take
-    # a RAW path -- each escapes its own argument, and pre-escaping here sent
-    # ``bm''s.parquet`` on to pyarrow (issue #718).
-    safe_url = safe_file_url(parquet_file, verbose)
+    # RAW path throughout: the metadata helpers each escape their own argument
+    # (pre-escaping here sent ``bm''s.parquet`` on to pyarrow, issue #718), and
+    # the SQL below escapes at the point of interpolation via ``sql_path``.
+    read_url = resolve_file_url(parquet_file, verbose)
 
     # Check current bbox structure
     bbox_info = check_bbox_structure(parquet_file, verbose)
@@ -358,10 +362,10 @@ def add_bbox_metadata(
 
         # Detect if file uses native GEOMETRY type (GeoParquet 2.0)
         # Pass the actual geometry column name - it might not be 'geometry'
-        has_native_geometry = _detect_native_geometry(conn, safe_url, primary_col)
+        has_native_geometry = _detect_native_geometry(conn, read_url, primary_col)
 
         # Read existing KV metadata to preserve non-geo keys
-        existing_kv = _get_existing_kv_metadata(conn, safe_url)
+        existing_kv = _get_existing_kv_metadata(conn, read_url)
 
         if verbose:
             debug("\nPreserving file properties:")
@@ -401,7 +405,7 @@ def add_bbox_metadata(
         # needs that cast, not just the primary one -- the validator names any
         # native column, and a 1.1 file may carry several. A file that is *already*
         # native is left alone: there the native type is the correct output.
-        source_query = f"SELECT * FROM '{safe_url}'"
+        source_query = f"SELECT * FROM {sql_path(read_url)}"
         if not has_native_geometry:
             secondary_cols = [col for col in geo_meta["columns"] if col != primary_col]
             source_query = _wrap_query_with_blob_conversion(
@@ -410,7 +414,7 @@ def add_bbox_metadata(
 
         copy_sql = f"""
             COPY ({source_query})
-            TO '{temp_file}'
+            TO {sql_path(str(temp_file))}
             ({", ".join(copy_options)})
         """
 

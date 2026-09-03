@@ -87,7 +87,7 @@ def test_country_codes_join_query_quotes_identifiers():
     from geoparquet_io.core.add.country_codes import _build_spatial_join_query
 
     query = _build_spatial_join_query(
-        input_url="input.parquet",
+        input_path="input.parquet",
         countries_source="'countries.parquet'",
         select_clause="b.iso_a2 as country",
         input_geom_col=MALICIOUS_GEOM_NAME,
