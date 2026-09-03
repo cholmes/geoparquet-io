@@ -304,12 +304,13 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
     This is a shared utility for commands that need file-based processing
     but want to support stdin input. The caller is responsible for cleanup.
 
-    Any derived geo stat the stream left out is computed from the stream's own
-    rows before the temp file is written. gpio's own producers now carry
-    ``geometry_types``, but a stream can come from anywhere, and DuckDB refuses
-    to open a Parquet file whose ``geo`` metadata declares a geometry column
-    without it — so filling the gap here is what keeps a pipe readable by the
-    file-based command on the other end (issue #722).
+    The stream's ``geo`` metadata is reconciled with the stream's own schema
+    before the temp file is written: entries naming a column the stream does not
+    carry are dropped, then any derived stat left out is computed from the rows.
+    gpio's own producers now carry ``geometry_types``, but a stream can come from
+    anywhere, and DuckDB refuses to open a Parquet file whose ``geo`` metadata
+    declares a geometry column without it — so closing both gaps here is what
+    keeps a pipe readable by the file-based command on the other end (#722).
 
     Args:
         verbose: Whether to print verbose output
@@ -323,7 +324,10 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
 
     import pyarrow.parquet as pq
 
-    from geoparquet_io.core.geo_metadata import backfill_derived_stats
+    from geoparquet_io.core.geo_metadata import (
+        backfill_derived_stats,
+        prune_geo_metadata_to_columns,
+    )
     from geoparquet_io.core.logging_config import debug
 
     if verbose:
@@ -333,6 +337,7 @@ def read_stdin_to_temp_file(verbose: bool = False) -> str:
 
     metadata = dict(table.schema.metadata) if table.schema.metadata else None
     if metadata:
+        metadata = prune_geo_metadata_to_columns(metadata, table.column_names)
         table = table.replace_schema_metadata(backfill_derived_stats(metadata, table, verbose))
 
     # Write to temp file with UUID for uniqueness

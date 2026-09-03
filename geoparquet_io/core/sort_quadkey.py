@@ -7,7 +7,6 @@ import tempfile
 import uuid
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
@@ -23,7 +22,7 @@ from geoparquet_io.core.remote import (
     validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import write_output
-from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
+from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
 
 def sort_by_quadkey_table(
@@ -306,14 +305,11 @@ def _sort_by_quadkey_streaming(
     temp_input_file = None
     temp_quadkey_file = None
     try:
-        # If reading from stdin, write to temp file first
+        # If reading from stdin, write to temp file first. The shared bridge
+        # reconciles the stream's geo metadata with its schema on the way, so
+        # the temp file is one DuckDB will actually open (#722).
         if is_stdin(input_path):
-            if verbose:
-                debug("Reading Arrow IPC stream from stdin...")
-            table = read_arrow_stream()
-            temp_fd, temp_input_file = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-            pq.write_table(table, temp_input_file)
+            temp_input_file = read_stdin_to_temp_file(verbose)
             working_file = temp_input_file
         else:
             working_file = input_path

@@ -192,6 +192,39 @@ def _make_bbox_column_file(path):
         con.close()
 
 
+def _make_two_geometry_columns(path):
+    """A file with a primary ``geometry`` and a secondary ``centroid`` column.
+
+    GeoParquet allows more than one geometry column, and a projection that keeps
+    the primary but drops the secondary leaves the ``geo`` metadata describing a
+    column that is no longer in the schema.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    col_meta = {
+        "encoding": "WKB",
+        "geometry_types": ["Point"],
+        "bbox": [1.0, 1.0, 2.0, 2.0],
+    }
+    geo = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": dict(col_meta), "centroid": dict(col_meta)},
+    }
+    table = pa.table(
+        {
+            "id": [1, 2],
+            "name": ["a", "b"],
+            "geometry": [_wkb_point(1, 1), _wkb_point(2, 2)],
+            "centroid": [_wkb_point(1, 1), _wkb_point(2, 2)],
+        }
+    )
+    pq.write_table(
+        table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")}), str(path)
+    )
+
+
 def _primary_col_meta(path):
     geo = get_geo_metadata(str(path))
     return geo["columns"][geo["primary_column"]]
@@ -513,6 +546,29 @@ class TestStreamingPathsInvalidateStats:
         col = geo["columns"][geo["primary_column"]]
         assert col["bbox"] == [1.0, 1.0, 2.0, 2.0], "stdout stream advertises a stale bbox"
         assert col["geometry_types"] == ["Point"]
+
+    def test_stdout_stream_prunes_dropped_geometry_column(self, tmp_path, monkeypatch):
+        """A projection that drops a secondary geometry column must drop its entry.
+
+        The file path prunes the geo metadata to the columns it actually writes;
+        the stream path did not, so an ``--include-cols`` that left ``centroid``
+        behind emitted a ``geo`` block naming a column no longer in the schema --
+        and, once the derived stats were stripped, one with no ``geometry_types``
+        either, which is exactly what DuckDB refuses to read (#722).
+        """
+        src = tmp_path / "two_geom.parquet"
+        _make_two_geometry_columns(src)
+
+        table = self._stream_to_stdout(
+            monkeypatch, src, include_cols=["id", "name", "geometry"], where="id < 3"
+        )
+
+        assert "centroid" not in table.column_names
+        geo = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+        assert set(geo["columns"]) <= set(table.column_names), (
+            f"geo metadata names absent columns: {sorted(set(geo['columns']))}"
+        )
+        assert geo["columns"]["geometry"]["geometry_types"] == ["Point"]
 
     def test_streaming_reproject(self, tmp_path):
         from geoparquet_io.core.reproject import _reproject_streaming

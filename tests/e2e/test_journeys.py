@@ -183,7 +183,6 @@ def test_journey_03b_extract_into_partition_chain(tmp_path):
             f"gpio partition string --column quadkey --chars 4 - {q(partitions)}",
         ],
         3,
-        expect_success=False,
     )
     assert result.returncode == 0, result.stderr
     assert "Traceback (most recent call last)" not in result.stderr

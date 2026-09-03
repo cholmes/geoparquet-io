@@ -50,11 +50,21 @@ _MISSING_GEOMETRY_TYPES_RE = re.compile(
 def readable_geoparquet(input_parquet: str):
     """Translate DuckDB's refusal to open a non-conformant GeoParquet (#722).
 
-    Every gpio writer emits ``geometry_types``, and a piped Arrow stream gets it
-    filled in on its way to a temp file, so what reaches here is an input written
-    elsewhere. Say which column is missing what instead of letting a raw
+    Wraps the two DuckDB reads the partition commands make of the *input* — the
+    pre-flight aggregate in :func:`analyze_partition_strategy` and the schema
+    probe in :func:`partition_by_column`. Every gpio writer emits
+    ``geometry_types``, and the partition commands spool a piped stream through
+    :func:`~geoparquet_io.core.streaming.read_stdin_to_temp_file`, which fills it
+    in, so what reaches here is normally a file written elsewhere. Say which
+    column is missing what instead of letting a raw
     ``_duckdb.InvalidInputException`` and its traceback out. Anything else
     propagates untouched.
+
+    Not every read of the input goes through here: ``preview_partition`` and the
+    index-adding pre-steps (``_ensure_h3_column`` and its siblings) open the file
+    themselves, so a non-conformant input reaching those still surfaces DuckDB's
+    own wording. Widen the wrapper rather than restating the claim if that
+    changes.
     """
     try:
         yield
@@ -774,71 +784,80 @@ def partition_by_column(
         # Get metadata before processing
         metadata, _ = get_parquet_metadata(input_parquet, verbose)
 
-        # Create output directory
-        os.makedirs(actual_output, exist_ok=True)
-        if verbose:
-            debug(f"Created output directory: {actual_output}")
-
         # Create DuckDB connection with httpfs if needed
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
-
-        _, partition_description = _build_column_expression(column_name, column_prefix_length)
-        if verbose:
-            debug(f"Partitioning by {partition_description} in a single pass...")
-
-        # A partition alias that cannot collide with a real input column. This is
-        # the first DuckDB read when --skip-analysis skipped the pre-flight, so it
-        # is the other place a non-conformant input surfaces.
-        with readable_geoparquet(input_parquet):
-            describe = con.execute(f"SELECT * FROM '{input_url}' LIMIT 0").description
-        input_cols = [d[0] for d in describe]
-        alias = make_partition_aliases(1, input_cols)[0]
-
-        write_options = PartitionWriteOptions(
-            geoparquet_version=geoparquet_version,
-            compression=compression,
-            compression_level=compression_level,
-            row_group_size_mb=row_group_size_mb,
-            row_group_rows=row_group_rows,
-            memory_limit=memory_limit,
-            profile=profile,
-        )
-
-        # Single pass: COPY ... PARTITION_BY routes every row in one input scan
-        # into a staging dir, then each (small) staging partition is rewritten
-        # into its final file with correct per-partition metadata (issue #478).
-        staging_dir = create_staging_dir(actual_output)
-        partition_count = 0
-        seen_outputs: dict[str, str] = {}
         try:
-            select_sql = _build_staging_select(
-                input_url, column_name, column_prefix_length, keep_partition_column, alias
+            _, partition_description = _build_column_expression(column_name, column_prefix_length)
+            if verbose:
+                debug(f"Partitioning by {partition_description} in a single pass...")
+
+            # A partition alias that cannot collide with a real input column. This
+            # is the first DuckDB read when --skip-analysis skipped the pre-flight,
+            # so it is the other place a non-conformant input surfaces -- probed
+            # before the output directory exists, so a refusal leaves nothing behind.
+            with readable_geoparquet(input_parquet):
+                describe = con.execute(f"SELECT * FROM '{input_url}' LIMIT 0").description
+            input_cols = [d[0] for d in describe]
+            alias = make_partition_aliases(1, input_cols)[0]
+
+            # Create output directory
+            os.makedirs(actual_output, exist_ok=True)
+            if verbose:
+                debug(f"Created output directory: {actual_output}")
+
+            write_options = PartitionWriteOptions(
+                geoparquet_version=geoparquet_version,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_size_mb=row_group_size_mb,
+                row_group_rows=row_group_rows,
+                memory_limit=memory_limit,
+                profile=profile,
             )
-            run_partitioned_copy(con, select_sql, [alias], staging_dir, verbose, memory_limit)
 
-            if not os.path.isdir(staging_dir) or not any("=" in d for d in os.listdir(staging_dir)):
-                raise PartitionError(f"No non-NULL values found in column '{column_name}'")
-
-            for values, partition_dir in iter_staging_partitions(staging_dir):
-                output_filename = _determine_output_path(
-                    actual_output,
-                    values[0],
-                    column_name,
-                    column_prefix_length,
-                    hive,
-                    filename_prefix,
+            # Single pass: COPY ... PARTITION_BY routes every row in one input scan
+            # into a staging dir, then each (small) staging partition is rewritten
+            # into its final file with correct per-partition metadata (issue #478).
+            staging_dir = create_staging_dir(actual_output)
+            partition_count = 0
+            seen_outputs: dict[str, str] = {}
+            try:
+                select_sql = _build_staging_select(
+                    input_url, column_name, column_prefix_length, keep_partition_column, alias
                 )
-                check_output_collision(seen_outputs, output_filename, values[0])
-                if finalize_partition_file(
-                    con, partition_dir, output_filename, metadata, overwrite, verbose, write_options
-                ):
-                    partition_count += 1
-                # Incremental cleanup caps peak staging disk at ~one partition.
-                shutil.rmtree(partition_dir, ignore_errors=True)
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+                run_partitioned_copy(con, select_sql, [alias], staging_dir, verbose, memory_limit)
 
-        con.close()
+                if not os.path.isdir(staging_dir) or not any(
+                    "=" in d for d in os.listdir(staging_dir)
+                ):
+                    raise PartitionError(f"No non-NULL values found in column '{column_name}'")
+
+                for values, partition_dir in iter_staging_partitions(staging_dir):
+                    output_filename = _determine_output_path(
+                        actual_output,
+                        values[0],
+                        column_name,
+                        column_prefix_length,
+                        hive,
+                        filename_prefix,
+                    )
+                    check_output_collision(seen_outputs, output_filename, values[0])
+                    if finalize_partition_file(
+                        con,
+                        partition_dir,
+                        output_filename,
+                        metadata,
+                        overwrite,
+                        verbose,
+                        write_options,
+                    ):
+                        partition_count += 1
+                    # Incremental cleanup caps peak staging disk at ~one partition.
+                    shutil.rmtree(partition_dir, ignore_errors=True)
+            finally:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+        finally:
+            con.close()
 
         # Upload to remote if needed
         if is_remote:

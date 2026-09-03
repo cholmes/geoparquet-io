@@ -392,3 +392,151 @@ class TestExtractIntoPartition:
         assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
         assert "Traceback (most recent call last)" not in result.stderr
         assert list(Path(output_dir).glob("**/*.parquet")), "no partitions written"
+
+
+def _two_geometry_file(path: Path) -> Path:
+    """Write a GeoParquet with a primary ``geometry`` and a secondary ``centroid``."""
+    import json
+    import struct
+
+    import pyarrow as pa
+
+    def wkb_point(x, y):
+        return struct.pack("<BIdd", 1, 1, x, y)
+
+    col_meta = {"encoding": "WKB", "geometry_types": ["Point"], "bbox": [0.0, 0.0, 5.0, 5.0]}
+    geo = {
+        "version": "1.1.0",
+        "primary_column": "geometry",
+        "columns": {"geometry": dict(col_meta), "centroid": dict(col_meta)},
+    }
+    n = 12
+    table = pa.table(
+        {
+            "id": list(range(n)),
+            "name": [f"{chr(ord('a') + i % 4)}-{i}" for i in range(n)],
+            "geometry": [wkb_point(i % 5, i % 5) for i in range(n)],
+            "centroid": [wkb_point(i % 5, i % 5) for i in range(n)],
+        }
+    )
+    pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")}), path)
+    return path
+
+
+def _stream_without_geometry_types(dst: Path) -> Path:
+    """Write an Arrow IPC stream file whose ``geo`` omits ``geometry_types``.
+
+    A stream can come from any producer, not just gpio, and DuckDB refuses to
+    open a Parquet file whose ``geo`` metadata declares a geometry column
+    without the key GeoParquet 1.1 requires -- so every command that spools its
+    stdin to a temp Parquet has to fill the gap in the file it owns (#722).
+    """
+    import json
+
+    import pyarrow.ipc as ipc
+
+    table = pq.read_table(PLACES_PARQUET)
+    metadata = dict(table.schema.metadata or {})
+    geo = json.loads(metadata[b"geo"].decode("utf-8"))
+    for col_meta in geo["columns"].values():
+        col_meta.pop("geometry_types", None)
+        col_meta.pop("bbox", None)
+    metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+    table = table.replace_schema_metadata(metadata)
+
+    with open(dst, "wb") as fh:
+        with ipc.new_stream(fh, table.schema) as writer:
+            writer.write_table(table)
+    return dst
+
+
+class TestProjectionDropsSecondaryGeometry:
+    """#722, the projection half: pruning, not just backfilling.
+
+    ``extract --include-cols`` can drop a secondary geometry column. The file
+    path prunes the ``geo`` metadata to the columns it writes; the stream path
+    did not, so the next stage got a ``geo`` block naming an absent column with
+    no ``geometry_types`` -- and DuckDB refused to read the temp Parquet.
+    """
+
+    def test_stream_geo_metadata_names_only_present_columns(self, tmp_path):
+        import json
+
+        import pyarrow.ipc as ipc
+
+        src = _two_geometry_file(tmp_path / "two_geom.parquet")
+        result = subprocess.run(
+            [
+                "gpio",
+                "extract",
+                "--include-cols",
+                "id,name,geometry",
+                "--where",
+                "id < 8",
+                str(src),
+                "-",
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+
+        table = ipc.RecordBatchStreamReader(result.stdout).read_all()
+        geo = json.loads(table.schema.metadata[b"geo"].decode("utf-8"))
+        assert "centroid" not in table.column_names
+        assert set(geo["columns"]) <= set(table.column_names), sorted(geo["columns"])
+
+    def test_projected_stream_pipes_into_partition(self, tmp_path, output_dir):
+        src = _two_geometry_file(tmp_path / "two_geom.parquet")
+        result = run_pipeline(
+            [
+                f'gpio extract --include-cols id,name,geometry --where "id < 8" {src} -',
+                f"gpio partition string --column name --chars 1 --force --skip-analysis - {output_dir}",
+            ]
+        )
+
+        assert result.returncode == 0, f"Pipeline failed: {result.stderr}"
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert list(Path(output_dir).glob("**/*.parquet")), "no partitions written"
+
+
+class TestStdinWithoutGeometryTypes:
+    """Commands that spool stdin to a temp Parquet must fill in the missing key.
+
+    ``reproject`` and ``sort quadkey`` hand-rolled the bridge instead of using
+    ``read_stdin_to_temp_file``, so a stream whose ``geo`` omits
+    ``geometry_types`` reached DuckDB as an unreadable file and the command died
+    with a raw ``InvalidInputException`` (#722).
+    """
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_reproject_from_stdin(self, tmp_path, output_file):
+        stream = _stream_without_geometry_types(tmp_path / "nogt.arrows")
+        with open(stream, "rb") as fh:
+            result = subprocess.run(
+                ["gpio", "convert", "reproject", "--dst-crs", "EPSG:3857", "-", output_file],
+                stdin=fh,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert pq.read_table(output_file).num_rows > 0
+
+    @pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+    def test_sort_quadkey_from_stdin(self, tmp_path, output_file):
+        stream = _stream_without_geometry_types(tmp_path / "nogt.arrows")
+        with open(stream, "rb") as fh:
+            result = subprocess.run(
+                ["gpio", "sort", "quadkey", "-", output_file],
+                stdin=fh,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        assert result.returncode == 0, result.stderr
+        assert "Traceback (most recent call last)" not in result.stderr
+        assert pq.read_table(output_file).num_rows > 0

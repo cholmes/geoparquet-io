@@ -179,18 +179,29 @@ class TestNonConformantGeoMetadata:
         assert "gpio check spec" in message  # tells the user what to run next
 
     def test_analysis_error_is_not_swallowed_by_force(self, places_test_file, tmp_path):
-        """``--force`` waives *analysis* findings, not an unreadable input."""
+        """``--force`` waives *analysis* findings, not an unreadable input.
+
+        Also: the refusal must not litter. ``--skip-analysis`` pushes the first
+        DuckDB read past the pre-flight into ``partition_by_column``, which used
+        to create the output directory first -- so a raise left an empty
+        directory behind that a later ``--overwrite``-less run would trip over.
+        """
         from geoparquet_io.core.exceptions import PartitionError
 
         bad = _strip_geometry_types(places_test_file, str(tmp_path / "bad.parquet"))
+        out = tmp_path / "out"
 
         with pytest.raises(PartitionError, match="geometry_types"):
             partition_by_string(
                 input_parquet=bad,
-                output_folder=str(tmp_path / "out"),
+                output_folder=str(out),
                 column="name",
                 chars=1,
                 force=True,
                 skip_analysis=True,
                 verbose=False,
             )
+
+        assert not out.exists(), (
+            f"an unreadable input left an output directory: {list(out.iterdir())}"
+        )
