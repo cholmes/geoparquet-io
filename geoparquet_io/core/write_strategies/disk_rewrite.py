@@ -24,10 +24,10 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
 )
+from geoparquet_io.core.geoarrow_encoding import arrow_extension_name
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
-    arrow_extension_name,
     build_geo_metadata,
 )
 from geoparquet_io.core.write_strategies.row_group_sizing import (

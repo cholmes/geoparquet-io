@@ -25,6 +25,7 @@ from geoparquet_io.core.duckdb_utils import (
     build_spatial_join_condition,
     quote_identifier,
     spatial_join_strategy,
+    sql_path,
 )
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -318,7 +319,7 @@ def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None
     SELECT
         COUNT(*) as total_features,
         COUNT(CASE WHEN {admin_cols_check} THEN 1 END) as features_with_admin
-    FROM '{output_parquet}';
+    FROM {sql_path(output_parquet)};
     """
 
     stats = con.execute(stats_query).fetchone()
@@ -329,7 +330,7 @@ def _get_result_stats(con, output_parquet, dataset, levels, verbose, prefix=None
     for level, output_col in zip(levels, output_col_names, strict=True):
         count_query = f"""
         SELECT COUNT(DISTINCT {quote_identifier(output_col)}) as unique_count
-        FROM '{output_parquet}'
+        FROM {sql_path(output_parquet)}
         WHERE {quote_identifier(output_col)} IS NOT NULL;
         """
         result = con.execute(count_query).fetchone()
@@ -619,7 +620,7 @@ def _handle_dry_run_mode(
 
     duckdb_compression = compression.lower() if compression != "UNCOMPRESSED" else "uncompressed"
     display_query = f"""COPY ({query.strip()})
-TO '{output_parquet}'
+TO {sql_path(output_parquet)}
 (FORMAT PARQUET, COMPRESSION '{duckdb_compression}');"""
     progress(display_query)
 

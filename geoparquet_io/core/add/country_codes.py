@@ -17,6 +17,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
     spatial_join_strategy,
+    sql_path,
 )
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import safe_file_url
@@ -378,8 +379,10 @@ def _print_dry_run_query(
     )
     duckdb_compression = compression.lower() if compression != "UNCOMPRESSED" else "uncompressed"
 
+    # sql_path: the printed query has to be valid SQL the user can paste, and
+    # output_parquet is a raw CLI argument that may contain an apostrophe (#718).
     display_query = f"""COPY ({query.strip()})
-TO '{output_parquet}'
+TO {sql_path(output_parquet)}
 (FORMAT PARQUET, COMPRESSION '{duckdb_compression}');"""
     progress(display_query)
 

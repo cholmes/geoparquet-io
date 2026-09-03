@@ -826,6 +826,8 @@ arrow_table = table.to_arrow()
 
 #### Spatial Partitioning Methods
 
+Each method below has an `ops.partition_by_*` twin taking a `pa.Table` plus the output directory, for callers who are not using the fluent wrapper -- `ops.partition_by_h3(table, 'output/', resolution=7)` does exactly what `Table.partition_by_h3('output/', resolution=7)` does. See [Pure Functions](#pure-functions-ops-module).
+
 All spatial partitioning methods need to be told how finely to split. Give them an explicit resolution (or `level`), or pass `auto=True` to size one from the data -- the same choice `gpio partition` offers, and the same calculation behind it. A call that gives neither raises `InvalidParameterError` rather than picking a default for you. Under `auto=True`, `target_rows` (default 100,000) sets the rows you want per partition and `max_partitions` (default 10,000) caps how many are created; passing `auto=True` together with an explicit resolution is an error.
 
 !!! warning "Breaking change: the implicit resolutions are gone"
@@ -1515,6 +1517,27 @@ pq.write_table(table, 'output.parquet')
 
 > **Note:** `pq.write_table()` may not preserve all GeoParquet metadata (such as the `geo` key with CRS and geometry column info). For proper metadata preservation, wrap the result in `Table(table).write('output.parquet')` or use `write_parquet_with_metadata()` from `geoparquet_io.core.common`. The fluent API's `.write()` method is recommended.
 
+Partitioning is the exception to the `table in -> table out` shape: like the CLI it
+writes a *directory*, so `ops.partition_by_*` takes the table plus an output
+directory and returns the run's statistics.
+
+```python
+import pyarrow.parquet as pq
+from geoparquet_io.api import ops
+
+table = pq.read_table('input.parquet')
+
+# An explicit resolution, or auto=True -- gpio never guesses one for you
+stats = ops.partition_by_h3(table, 'output/', resolution=7)
+stats = ops.partition_by_a5(table, 'output/', auto=True, target_rows=50000)
+
+# Non-spatial schemes
+ops.partition_by_string(table, 'output/', column='region', hive=True)
+ops.partition_by_admin(table, 'output/', levels=['country'])
+
+print(f"Created {stats['file_count']} files")
+```
+
 ### Available Functions
 
 | Function | Description |
@@ -1545,6 +1568,13 @@ pq.write_table(table, 'output.parquet')
 | `ops.from_wfs_layers(service_url, typenames, output_dir, parallel_layers=1, max_workers=1, page_size=100000, ...)` | Fetch multiple WFS layers to directory |
 | `ops.create_overviews(input_parquet, levels=None, max_tile_kb=500, bytes_per_cell=None, cell_column=None, scheme=None, output_dir=None, force=False, ...)` | Build coarser overview levels from an aggregate file |
 | `ops.create_pmtiles_pyramid(input_path, output_path, levels=None, max_tile_kb=500, layer_mode='grouped', include_features=False, features_source=None, max_zoom=None, ...)` | Build a zoom-banded multi-level PMTiles archive from an aggregate file (requires tippecanoe + tile-join) |
+| `ops.partition_by_h3(table, output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by H3 cell |
+| `ops.partition_by_a5(table, output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by A5 cell |
+| `ops.partition_by_s2(table, output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by S2 cell — **unavailable in this release**, use `ops.partition_by_a5` |
+| `ops.partition_by_quadkey(table, output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by quadkey |
+| `ops.partition_by_kdtree(table, output_dir, iterations=9, hive=False, keep_kdtree_column=None, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by KD-tree cell |
+| `ops.partition_by_string(table, output_dir, column, chars=None, hive=False, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by string column value |
+| `ops.partition_by_admin(table, output_dir, dataset='gaul', levels=None, hive=False, overwrite=False, vecorel=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by administrative boundaries |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

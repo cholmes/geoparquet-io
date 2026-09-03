@@ -574,3 +574,19 @@ def skip_if_geography_unavailable() -> None:
             f"DuckDB community extension 'geography' (S2) is not published for "
             f"DuckDB {duckdb.__version__}"
         )
+
+
+def skip_if_geography_available() -> None:
+    """Skip a test that pins S2's *unavailability* once 'geography' is published.
+
+    The mirror of `skip_if_geography_unavailable`. A test asserting that S2
+    raises `ExtensionUnavailableError` (#737) is pinning a temporary state: the
+    day the extension is republished for gpio's DuckDB floor, the call starts
+    succeeding and the assertion becomes wrong rather than broken. Skipping is
+    the honest outcome -- the feature tests take over from there.
+    """
+    if _community_extension_available("geography"):
+        pytest.skip(
+            f"DuckDB community extension 'geography' (S2) is published for "
+            f"DuckDB {duckdb.__version__}, so S2 no longer raises"
+        )

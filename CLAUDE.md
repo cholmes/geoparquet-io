@@ -138,13 +138,24 @@ from pathlib import Path  # Prefer over os.path
 | `TRY_CAST(x AS GEOMETRY)` | `TRY(ST_GeomFromText(x))` |
 | `f'"{col}"'` / `col.replace('"', '""')` | `quote_identifier(col)` |
 | `WHERE path = '{value}'` | `_escape_sql_string(value)` |
+| `FROM '{path}'` | `FROM {sql_path(path)}` |
 
 Never hand-roll SQL escaping. `quote_identifier()` is for **identifiers**
 (column/table names — doubles embedded `"`); `_escape_sql_string()` is for SQL
-**string literals** (doubles embedded `'`). Both live in `core/duckdb_utils.py`
-and take a RAW value — escaping is not idempotent, so escape exactly once.
-Column names arrive from a file's own `geo.primary_column` and from
-`--column`/`--bbox-name`, so this is an injection surface, not a style nit.
+**string literals** (doubles embedded `'`); `sql_path()` is for a **file path**
+and returns the quotes too, so a call site cannot forget the escape. All three
+live in `core/duckdb_utils.py` and take a RAW value — escaping is not
+idempotent, so escape exactly once. Column names arrive from a file's own
+`geo.primary_column` and from `--column`/`--bbox-name`, so this is an injection
+surface, not a style nit.
+
+A path is escaped **either** by `safe_file_url()` (which also resolves remote
+URLs and checks existence; callers quote its bare result) **or** by `sql_path()`
+— never both. Handing an already-escaped path to a helper that escapes its own
+argument, or to a filesystem API, turns `o'brien` into `o''brien` and the file
+"disappears" (#718). A function takes a RAW path or a SQL-ready literal, never
+ambiguously both. `scripts/check_sql_path_literals.py` ratchets new
+`FROM '{path}'` sites out of the tree (`--update` regenerates its baseline).
 
 Additional patterns (not yet enforced):
 - `ST_Transform(..., always_xy := true)` → `SET geometry_always_xy = true` at session level

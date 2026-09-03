@@ -752,6 +752,58 @@ class TestApplyGeoArrowExtensionType:
         table = pa.table({"id": [1, 2]})
         assert apply_geoarrow_extension_type(table, "geometry") is table
 
+    def _zero_chunk_table(self, geom_type=pa.large_binary()):
+        """A zero-row table whose geometry column holds zero chunks.
+
+        This is exactly what ``con.execute(...).arrow().read_all()`` returns for
+        a DuckDB result with no rows -- not one empty chunk, but none at all.
+        """
+        table = pa.table(
+            {
+                "id": pa.chunked_array([], type=pa.int64()),
+                "geometry": pa.chunked_array([], type=geom_type),
+            }
+        )
+        assert table.column("geometry").num_chunks == 0
+        return table
+
+    def test_zero_chunk_column_converts_without_aborting(self):
+        """A zero-row (zero-chunk) geometry column yields a typed empty column.
+
+        Regression guard for #804: geoarrow rebuilt a ChunkedArray from an empty
+        chunk list with no type, which aborted the interpreter (SIGABRT) instead
+        of raising. Streaming an empty spatial filter must be ordinary.
+        """
+        table = self._zero_chunk_table()
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        geom = result.column("geometry")
+        assert getattr(geom.type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == 0
+        assert geom.num_chunks == 1
+        assert result.column_names == ["id", "geometry"]
+
+    def test_zero_chunk_column_keeps_crs(self):
+        """The CRS branch also has to survive the zero-chunk case."""
+        table = self._zero_chunk_table()
+
+        result = apply_geoarrow_extension_type(table, "geometry", crs="EPSG:4326")
+
+        geom_type = result.column("geometry").type
+        assert getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+        assert geom_type.crs is not None
+        assert result.num_rows == 0
+
+    def test_zero_chunk_binary_column_converts(self):
+        """32-bit ``binary`` WKB (a re-read stream) hits the same path."""
+        table = self._zero_chunk_table(geom_type=pa.binary())
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        assert getattr(result.column("geometry").type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == 0
+
     def test_rebatches_when_chunk_exceeds_limit(self, monkeypatch):
         """A chunk above the byte budget is split before conversion and survives.
 
