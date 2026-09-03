@@ -356,6 +356,43 @@ def strip_derived_stats(metadata: dict | None) -> dict | None:
     return _rewrite_geo_metadata(metadata, _drop_derived_stats)
 
 
+def backfill_derived_stats(
+    metadata: dict | None,
+    table: pa.Table,
+    verbose: bool = False,
+) -> dict | None:
+    """Return a copy of KV ``metadata`` with missing derived geo stats computed.
+
+    The counterpart to :func:`strip_derived_stats`: the strip invalidates stats a
+    filter or transform made stale, and the write path is then responsible for
+    recomputing them from the rows actually written. Every column entry in the
+    ``geo`` metadata that names a column of ``table`` and lacks ``geometry_types``
+    or ``bbox`` gets it computed from that column's data.
+
+    ``geometry_types`` is REQUIRED by GeoParquet 1.1, and DuckDB refuses to open a
+    Parquet file whose ``geo`` metadata omits it, so a stream written without it
+    is unreadable by the next stage of a pipe (issue #722). ``bbox`` is optional
+    and stays absent when the data cannot supply one (an empty result).
+
+    Values already present are left alone — this fills gaps, it does not audit.
+    The input is never mutated; unparsable ``geo`` values pass through untouched.
+    """
+
+    def _fill(geo_dict: dict) -> dict:
+        for name, col_meta in (geo_dict.get("columns") or {}).items():
+            if not isinstance(col_meta, dict) or name not in table.column_names:
+                continue
+            if "geometry_types" not in col_meta:
+                col_meta["geometry_types"] = _compute_geometry_types(table, name, verbose)
+            if "bbox" not in col_meta:
+                bbox = _compute_bbox_from_data(table, name, verbose)
+                if bbox:
+                    col_meta["bbox"] = bbox
+        return geo_dict
+
+    return _rewrite_geo_metadata(metadata, _fill)
+
+
 def _covering_column(covering_entry) -> str | None:
     """Return the data column a single ``covering`` entry points at, if any."""
     if not isinstance(covering_entry, dict):
