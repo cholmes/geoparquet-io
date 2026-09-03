@@ -856,7 +856,7 @@ schemes:
 | `gpio partition string` | `ops.partition_by_string(table, output_dir, column, chars=...)` |
 | `gpio partition admin` | `ops.partition_by_admin(table, output_dir, dataset=..., levels=...)` |
 
-<!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+<!-- doctest: skip="the 766-row sample is too small to partition meaningfully, has no 'region' column for partition_by_string, and partition_by_admin would download a boundaries dataset" -->
 ```python
 import pyarrow.parquet as pq
 from geoparquet_io.api import ops

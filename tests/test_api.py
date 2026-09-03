@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from geoparquet_io.api import Table, convert, ops, pipe, read
-from tests.conftest import safe_unlink
+from tests.conftest import safe_unlink, skip_if_geography_available
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_PARQUET = TEST_DATA_DIR / "places_test.parquet"
@@ -1872,6 +1872,27 @@ class TestOpsPartition:
         assert kwargs["auto"] is True
         assert kwargs["target_rows"] == 5000
         assert kwargs["max_partitions"] == 50
+
+    def test_partition_by_s2_fails_like_the_table_method(self, arrow_table, tmp_path):
+        """S2's unavailability (#737) must read the same through `ops` and `Table`.
+
+        The forwarding test above patches core away, so it says nothing about
+        what a real caller sees. This one runs the whole path unpatched: an
+        ``ops`` twin that swallowed the error, or re-raised it as something
+        else, would leave a caller unable to tell why S2 failed -- and would do
+        it differently from the method it is supposed to mirror.
+        """
+        skip_if_geography_available()
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+
+        with pytest.raises(ExtensionUnavailableError) as via_ops:
+            ops.partition_by_s2(arrow_table, tmp_path / "ops", level=5)
+        with pytest.raises(ExtensionUnavailableError) as via_table:
+            Table(arrow_table).partition_by_s2(tmp_path / "table", level=5)
+
+        assert via_ops.value.name == "geography"
+        assert "geography" in str(via_ops.value)
+        assert str(via_ops.value) == str(via_table.value)
 
     def test_partition_by_admin_forwards_to_core(self, arrow_table, tmp_path):
         """Admin partitioning downloads a boundaries dataset; check the wiring only."""
