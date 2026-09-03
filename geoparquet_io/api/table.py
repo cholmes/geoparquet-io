@@ -47,6 +47,47 @@ def _safe_unlink(path: Path, attempts: int = 3) -> None:
             time.sleep(0.1 * (attempt + 1))
 
 
+def _require_auto_or_resolution(
+    auto: bool,
+    values: dict[str, int | None],
+    *,
+    conflict: str,
+    missing: str,
+) -> None:
+    """
+    Mirror the core partition gate before any I/O is spent on the call.
+
+    The auto-capable partition methods hand an in-memory table to core through a
+    temporary parquet file. Core raises for a call that names neither a
+    resolution nor ``auto`` -- but only after the whole table has been
+    serialized. Checking here makes an invalid call cost nothing; core keeps its
+    own gate as the backstop for every other caller.
+
+    Args:
+        auto: Whether the caller asked for auto-sizing
+        values: The resolution-ish parameters by their public name, in the order
+            core reports them
+        conflict: Reason for the error when ``auto`` is combined with an
+            explicit value (worded as core words it)
+        missing: Reason for the error when neither was given
+
+    Raises:
+        InvalidParameterError: If ``auto`` conflicts with an explicit value, or
+            neither was given
+    """
+    from geoparquet_io.core.exceptions import InvalidParameterError
+
+    given = [name for name, value in values.items() if value is not None]
+
+    if auto:
+        if given:
+            raise InvalidParameterError("auto", conflict)
+        return
+
+    if len(given) != len(values):
+        raise InvalidParameterError(next(iter(values)), missing)
+
+
 def _run_partition_with_temp_file(
     table: pa.Table,
     geometry_column: str | None,
@@ -1811,8 +1852,11 @@ class Table:
         self,
         output_dir: str | Path,
         *,
-        resolution: int = 13,
-        partition_resolution: int = 6,
+        resolution: int | None = None,
+        partition_resolution: int | None = None,
+        auto: bool = False,
+        target_rows: int = 100000,
+        max_partitions: int = 10000,
         compression: str = "ZSTD",
         hive: bool = False,
         keep_quadkey_column: bool | None = None,
@@ -1821,10 +1865,22 @@ class Table:
         """
         Partition the table into a directory of files split by quadkey.
 
+        Like ``gpio partition quadkey``, this refuses to guess: pass both
+        ``resolution`` and ``partition_resolution``, or pass ``auto=True`` to
+        size them from the data.
+
         Args:
             output_dir: Output directory path
-            resolution: Quadkey resolution for sorting (0-23, default: 13)
-            partition_resolution: Resolution for partition boundaries (default: 6)
+            resolution: Quadkey resolution for sorting (0-23). Required unless
+                ``auto=True``. Mirrors ``--resolution``.
+            partition_resolution: Resolution for partition boundaries (0-23).
+                Required unless ``auto=True``. Mirrors ``--partition-resolution``.
+            auto: Calculate both resolutions from the data (default: False).
+                Mirrors ``--auto``; mutually exclusive with the two above.
+            target_rows: Target rows per partition when ``auto=True``
+                (default: 100000). Mirrors ``--target-rows``.
+            max_partitions: Maximum partitions when ``auto=True``
+                (default: 10000). Mirrors ``--max-partitions``.
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             keep_quadkey_column: Keep the generated ``quadkey`` column in the output
@@ -1838,10 +1894,20 @@ class Table:
 
         Example:
             >>> table = gpio.read('data.parquet')
-            >>> stats = table.partition_by_quadkey('output/', resolution=12)
+            >>> stats = table.partition_by_quadkey(
+            ...     'output/', resolution=12, partition_resolution=6
+            ... )
             >>> print(f"Created {stats['file_count']} files")
+            >>> auto = table.partition_by_quadkey('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_quadkey import partition_by_quadkey
+
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution, "partition_resolution": partition_resolution},
+            conflict="cannot specify --resolution or --partition-resolution with --auto",
+            missing="must specify either --auto or both --resolution and --partition-resolution",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1852,6 +1918,9 @@ class Table:
             core_kwargs={
                 "resolution": resolution,
                 "partition_resolution": partition_resolution,
+                "auto": auto,
+                "target_rows": target_rows,
+                "max_partitions": max_partitions,
                 "hive": hive,
                 "keep_quadkey_column": keep_quadkey_column,
                 "overwrite": overwrite,
@@ -1864,7 +1933,10 @@ class Table:
         self,
         output_dir: str | Path,
         *,
-        resolution: int = 9,
+        resolution: int | None = None,
+        auto: bool = False,
+        target_rows: int = 100000,
+        max_partitions: int = 10000,
         compression: str = "ZSTD",
         hive: bool = False,
         keep_h3_column: bool | None = None,
@@ -1873,9 +1945,19 @@ class Table:
         """
         Partition the table into a directory of files split by H3 cell.
 
+        Like ``gpio partition h3``, this refuses to guess: pass a
+        ``resolution``, or pass ``auto=True`` to size one from the data.
+
         Args:
             output_dir: Output directory path
-            resolution: H3 resolution level 0-15 (default: 9)
+            resolution: H3 resolution level 0-15. Required unless ``auto=True``.
+                Mirrors ``--resolution``.
+            auto: Calculate the resolution from the data (default: False).
+                Mirrors ``--auto``; mutually exclusive with ``resolution``.
+            target_rows: Target rows per partition when ``auto=True``
+                (default: 100000). Mirrors ``--target-rows``.
+            max_partitions: Maximum partitions when ``auto=True``
+                (default: 10000). Mirrors ``--max-partitions``.
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             keep_h3_column: Keep the generated ``h3_cell`` column in the output
@@ -1891,8 +1973,16 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> stats = table.partition_by_h3('output/', resolution=6)
             >>> print(f"Created {stats['file_count']} files")
+            >>> auto = table.partition_by_h3('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_h3 import partition_by_h3
+
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution},
+            conflict="cannot specify both --auto and --resolution",
+            missing="must specify either --resolution or --auto",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1902,6 +1992,9 @@ class Table:
             temp_prefix="gpio_part_h3",
             core_kwargs={
                 "resolution": resolution,
+                "auto": auto,
+                "target_rows": target_rows,
+                "max_partitions": max_partitions,
                 "hive": hive,
                 "keep_h3_column": keep_h3_column,
                 "overwrite": overwrite,
@@ -1914,7 +2007,10 @@ class Table:
         self,
         output_dir: str | Path,
         *,
-        level: int = 13,
+        level: int | None = None,
+        auto: bool = False,
+        target_rows: int = 100000,
+        max_partitions: int = 10000,
         compression: str = "ZSTD",
         hive: bool = False,
         keep_s2_column: bool | None = None,
@@ -1926,9 +2022,19 @@ class Table:
         Uses Google's S2 spherical geometry library to partition data
         by cell boundaries at the specified level.
 
+        Like ``gpio partition s2``, this refuses to guess: pass a ``level``,
+        or pass ``auto=True`` to size one from the data.
+
         Args:
             output_dir: Output directory path
-            level: S2 level 0-30 (default: 13, ~1.2 km² cells)
+            level: S2 level 0-30 (13 is ~1.2 km² cells). Required unless
+                ``auto=True``. Mirrors ``--level``.
+            auto: Calculate the level from the data (default: False).
+                Mirrors ``--auto``; mutually exclusive with ``level``.
+            target_rows: Target rows per partition when ``auto=True``
+                (default: 100000). Mirrors ``--target-rows``.
+            max_partitions: Maximum partitions when ``auto=True``
+                (default: 10000). Mirrors ``--max-partitions``.
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             keep_s2_column: Keep the generated ``s2_cell`` column in the output
@@ -1944,8 +2050,16 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> stats = table.partition_by_s2('output/', level=10)
             >>> print(f"Created {stats['file_count']} files")
+            >>> auto = table.partition_by_s2('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_s2 import partition_by_s2
+
+        _require_auto_or_resolution(
+            auto,
+            {"level": level},
+            conflict="cannot specify both --auto and --level",
+            missing="must specify either --level or --auto",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -1955,6 +2069,9 @@ class Table:
             temp_prefix="gpio_part_s2",
             core_kwargs={
                 "level": level,
+                "auto": auto,
+                "target_rows": target_rows,
+                "max_partitions": max_partitions,
                 "hive": hive,
                 "keep_s2_column": keep_s2_column,
                 "overwrite": overwrite,
@@ -1967,7 +2084,10 @@ class Table:
         self,
         output_dir: str | Path,
         *,
-        resolution: int = 15,
+        resolution: int | None = None,
+        auto: bool = False,
+        target_rows: int = 100000,
+        max_partitions: int = 10000,
         compression: str = "ZSTD",
         hive: bool = False,
         keep_a5_column: bool | None = None,
@@ -1979,9 +2099,19 @@ class Table:
         A5 is a hierarchical grid system similar to H3 but with different
         properties. Uses fixed precision levels from 0-30.
 
+        Like ``gpio partition a5``, this refuses to guess: pass a
+        ``resolution``, or pass ``auto=True`` to size one from the data.
+
         Args:
             output_dir: Output directory path
-            resolution: A5 resolution level 0-30 (default: 15)
+            resolution: A5 resolution level 0-30. Required unless ``auto=True``.
+                Mirrors ``--resolution``.
+            auto: Calculate the resolution from the data (default: False).
+                Mirrors ``--auto``; mutually exclusive with ``resolution``.
+            target_rows: Target rows per partition when ``auto=True``
+                (default: 100000). Mirrors ``--target-rows``.
+            max_partitions: Maximum partitions when ``auto=True``
+                (default: 10000). Mirrors ``--max-partitions``.
             compression: Compression codec (default: ZSTD)
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             keep_a5_column: Keep the generated ``a5_cell`` column in the output
@@ -1997,8 +2127,16 @@ class Table:
             >>> table = gpio.read('data.parquet')
             >>> stats = table.partition_by_a5('output/', resolution=12)
             >>> print(f"Created {stats['file_count']} files")
+            >>> auto = table.partition_by_a5('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_a5 import partition_by_a5
+
+        _require_auto_or_resolution(
+            auto,
+            {"resolution": resolution},
+            conflict="cannot specify both --auto and --resolution",
+            missing="must specify either --resolution or --auto",
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -2008,6 +2146,9 @@ class Table:
             temp_prefix="gpio_part_a5",
             core_kwargs={
                 "resolution": resolution,
+                "auto": auto,
+                "target_rows": target_rows,
+                "max_partitions": max_partitions,
                 "hive": hive,
                 "keep_a5_column": keep_a5_column,
                 "overwrite": overwrite,

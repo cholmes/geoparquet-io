@@ -1,4 +1,5 @@
 from geoparquet_io.api import (
+    InvalidParameterError,
     Table,
     convert,
     extract_arcgis,
@@ -29,4 +30,5 @@ __all__ = [
     "generate_stac",
     "validate_stac",
     "GeoParquetError",
+    "InvalidParameterError",
 ]

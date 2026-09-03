@@ -673,12 +673,15 @@ class TestPartitionKeepColumn:
         return set(pq.ParquetFile(files[0]).schema_arrow.names)
 
     def test_non_hive_drops_the_quadkey_column_by_default(self, sample_table, output_dir):
-        sample_table.partition_by_quadkey(output_dir, partition_resolution=3, overwrite=True)
+        sample_table.partition_by_quadkey(
+            output_dir, resolution=13, partition_resolution=3, overwrite=True
+        )
         assert "quadkey" not in self._column_names(output_dir)
 
     def test_keep_quadkey_column_restores_it_without_hive(self, sample_table, output_dir):
         sample_table.partition_by_quadkey(
             output_dir,
+            resolution=13,
             partition_resolution=3,
             overwrite=True,
             keep_quadkey_column=True,
@@ -689,7 +692,7 @@ class TestPartitionKeepColumn:
 
     def test_hive_keeps_the_quadkey_column(self, sample_table, output_dir):
         sample_table.partition_by_quadkey(
-            output_dir, partition_resolution=3, overwrite=True, hive=True
+            output_dir, resolution=13, partition_resolution=3, overwrite=True, hive=True
         )
         assert "quadkey" in self._column_names(output_dir)
 
@@ -725,6 +728,233 @@ class TestPartitionCompressionLevel:
         assert list(Path(output_dir).rglob("*.parquet"))
 
 
+class TestPartitionAutoResolution:
+    """``auto=True`` sizes the resolution from the data, exactly as ``--auto`` does.
+
+    Before #762 the API applied a hardcoded resolution (H3 9, quadkey 13/6, S2 13,
+    A5 15) where the CLI refuses to guess at all, so the same operation through the
+    two front doors produced different partitions from the same bytes. The API now
+    mirrors the CLI: name a resolution, or ask for ``auto=True``.
+    """
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @staticmethod
+    def _partition_names(output_dir):
+        files = sorted(Path(output_dir).rglob("*.parquet"))
+        assert files, f"no parquet files written to {output_dir}"
+        return sorted(f.name for f in files)
+
+    @staticmethod
+    def _h3_resolution(cell_hex):
+        """H3 stores the resolution in bits 52-55 of its 64-bit index."""
+        return (int(cell_hex, 16) >> 52) & 0xF
+
+    @staticmethod
+    def _run_cli(args):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        result = CliRunner().invoke(cli, [str(a) for a in args])
+        assert result.exit_code == 0, result.output
+        return result
+
+    # -- auto=True reproduces what `--auto` writes -------------------------
+
+    def test_h3_auto_matches_the_cli(self, sample_table, tmp_path):
+        self._run_cli(["partition", "h3", PLACES_PARQUET, tmp_path / "cli", "--auto"])
+        stats = sample_table.partition_by_h3(tmp_path / "api", auto=True)
+
+        assert stats["file_count"] > 0
+        assert self._partition_names(tmp_path / "api") == self._partition_names(tmp_path / "cli")
+
+    def test_h3_auto_uses_the_calculated_resolution_not_the_old_default(
+        self, sample_table, tmp_path
+    ):
+        from geoparquet_io.core.partition.auto_resolution import calculate_auto_resolution
+
+        expected = calculate_auto_resolution(
+            input_parquet=str(PLACES_PARQUET),
+            spatial_index_type="h3",
+            target_rows_per_partition=100000,
+            max_partitions=10000,
+        )
+
+        sample_table.partition_by_h3(tmp_path / "api", auto=True)
+        written = {
+            self._h3_resolution(Path(name).stem) for name in self._partition_names(tmp_path / "api")
+        }
+
+        assert expected != 9, (
+            "fixture precondition: the calculated resolution must differ from the old "
+            "hardcoded 9, or this test cannot tell the two apart"
+        )
+        assert written == {expected}
+
+    def test_quadkey_auto_matches_the_cli(self, sample_table, tmp_path):
+        """A target small enough to split the 766-row sample into several partitions.
+
+        At the default target_rows the sample collapses to a single resolution-0
+        partition, which two different implementations would agree on by accident.
+        """
+        self._run_cli(
+            [
+                "partition",
+                "quadkey",
+                PLACES_PARQUET,
+                tmp_path / "cli",
+                "--auto",
+                "--target-rows",
+                "100",
+            ]
+        )
+        stats = sample_table.partition_by_quadkey(tmp_path / "api", auto=True, target_rows=100)
+
+        assert stats["file_count"] > 1, "target_rows=100 should split the 766-row sample"
+        assert self._partition_names(tmp_path / "api") == self._partition_names(tmp_path / "cli")
+
+    def test_a5_auto_matches_the_cli(self, sample_table, tmp_path):
+        self._run_cli(["partition", "a5", PLACES_PARQUET, tmp_path / "cli", "--auto"])
+        stats = sample_table.partition_by_a5(tmp_path / "api", auto=True)
+
+        assert stats["file_count"] > 0
+        assert self._partition_names(tmp_path / "api") == self._partition_names(tmp_path / "cli")
+
+    def test_target_rows_is_forwarded(self, sample_table, tmp_path):
+        """A smaller target must buy more partitions, through the API too."""
+        default_target = sample_table.partition_by_h3(tmp_path / "default", auto=True)
+        small_target = sample_table.partition_by_h3(tmp_path / "small", auto=True, target_rows=100)
+
+        assert small_target["file_count"] > default_target["file_count"]
+
+    def test_s2_forwards_auto_to_core(self, sample_table, tmp_path):
+        """`gpio partition s2` cannot run without the 'geography' extension (#737).
+
+        The wiring is still checked: patch core and assert the arguments arrive.
+        """
+        from geoparquet_io.core.partition import by_s2 as core_by_s2
+
+        with patch.object(core_by_s2, "partition_by_s2") as fake:
+            sample_table.partition_by_s2(
+                tmp_path / "s2", auto=True, target_rows=5000, max_partitions=50
+            )
+
+        kwargs = fake.call_args.kwargs
+        assert kwargs["level"] is None
+        assert kwargs["auto"] is True
+        assert kwargs["target_rows"] == 5000
+        assert kwargs["max_partitions"] == 50
+
+    # -- with neither a resolution nor auto, refuse exactly as the CLI does --
+
+    @pytest.mark.parametrize(
+        "method",
+        ["partition_by_h3", "partition_by_a5", "partition_by_s2", "partition_by_quadkey"],
+    )
+    def test_refuses_to_guess_a_resolution(self, sample_table, tmp_path, method):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            getattr(sample_table, method)(tmp_path / method)
+
+    def test_quadkey_refuses_a_lone_partition_resolution(self, sample_table, tmp_path):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            sample_table.partition_by_quadkey(tmp_path / "out", partition_resolution=3)
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [
+            ("partition_by_h3", {"resolution": 5}),
+            ("partition_by_a5", {"resolution": 5}),
+            ("partition_by_s2", {"level": 5}),
+            ("partition_by_quadkey", {"resolution": 5, "partition_resolution": 3}),
+        ],
+    )
+    def test_auto_and_an_explicit_resolution_are_mutually_exclusive(
+        self, sample_table, tmp_path, method, kwargs
+    ):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            getattr(sample_table, method)(tmp_path / method, auto=True, **kwargs)
+
+    # -- and it refuses before it has spent any I/O on the table --------------
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [
+            ("partition_by_h3", {}),
+            ("partition_by_a5", {}),
+            ("partition_by_s2", {}),
+            ("partition_by_quadkey", {}),
+            ("partition_by_quadkey", {"partition_resolution": 3}),
+            ("partition_by_h3", {"auto": True, "resolution": 5}),
+            ("partition_by_a5", {"auto": True, "resolution": 5}),
+            ("partition_by_s2", {"auto": True, "level": 5}),
+            ("partition_by_quadkey", {"auto": True, "resolution": 5, "partition_resolution": 3}),
+        ],
+    )
+    def test_an_invalid_call_never_serializes_the_table(
+        self, sample_table, tmp_path, method, kwargs
+    ):
+        """The gate belongs in front of the temp-file write, not behind it.
+
+        Every auto method routes through a temp parquet; letting core raise means
+        paying a full serialization of the table for a call that was never going
+        to run.
+        """
+        from geoparquet_io.api import table as table_module
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with patch.object(table_module, "write_geoparquet_table") as write:
+            with pytest.raises(InvalidParameterError, match="auto"):
+                getattr(sample_table, method)(tmp_path / "out", **kwargs)
+
+        write.assert_not_called()
+
+
+class TestPublicExceptionExports:
+    """The errors the docs tell users to catch must be importable from the package.
+
+    ``docs/api/python-api.md`` tells callers a partition method with neither a
+    resolution nor ``auto`` raises ``InvalidParameterError``; that is only
+    actionable if the name is reachable without reaching into ``core``.
+    """
+
+    def test_invalid_parameter_error_is_importable_from_the_package(self):
+        import geoparquet_io
+        from geoparquet_io import InvalidParameterError
+        from geoparquet_io.core.exceptions import (
+            InvalidParameterError as CoreInvalidParameterError,
+        )
+
+        assert InvalidParameterError is CoreInvalidParameterError
+        assert "InvalidParameterError" in geoparquet_io.__all__
+
+    def test_invalid_parameter_error_is_importable_from_the_api_package(self):
+        from geoparquet_io import api
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        assert api.InvalidParameterError is InvalidParameterError
+        assert "InvalidParameterError" in api.__all__
+
+    def test_the_documented_error_is_what_a_partition_call_raises(self, tmp_path):
+        from geoparquet_io import InvalidParameterError
+
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+
+        with pytest.raises(InvalidParameterError):
+            read(PLACES_PARQUET).partition_by_h3(tmp_path / "out")
+
+
 class TestReadPartition:
     """Tests for the read_partition() function."""
 
@@ -743,7 +973,7 @@ class TestReadPartition:
 
         # Use the full table (766 rows) which is above the minimum threshold
         sample_table.partition_by_quadkey(
-            tmp_dir, overwrite=True, partition_resolution=3, hive=request.param
+            tmp_dir, overwrite=True, resolution=13, partition_resolution=3, hive=request.param
         )
 
         yield tmp_dir
