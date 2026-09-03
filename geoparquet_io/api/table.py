@@ -1807,6 +1807,38 @@ class Table:
         # reprojected table's CRS is target_crs by construction.
         return self._wrap(result, self._geometry_column, crs=target_crs)
 
+    def normalize_schema(
+        self,
+        lowercase: bool = True,
+        descriptions: dict[str, str] | None = None,
+    ) -> Table:
+        """
+        Normalize the schema for the tri-access layout.
+
+        Lowercases column names, reorders columns (attributes, then geometry, then
+        bbox covering columns last), assigns a contiguous ``PARQUET:field_id`` to
+        each column, and attaches optional per-column descriptions. Geometry
+        encoding/CRS are unchanged.
+
+        Args:
+            lowercase: Lowercase all column names (default: True)
+            descriptions: Optional ``{column_name: description}`` (keyed by final name)
+
+        Returns:
+            New Table with the normalized schema
+        """
+        from geoparquet_io.core.normalize_schema import normalize_schema_table
+
+        result = normalize_schema_table(
+            self._table,
+            lowercase=lowercase,
+            descriptions=descriptions,
+            geometry_column=self._geometry_column,
+        )
+        # Geometry column may have been lowercased; let Table re-detect from the
+        # updated geo metadata rather than carrying the stale (original-case) name.
+        return Table(result)
+
     def partition_by_quadkey(
         self,
         output_dir: str | Path,

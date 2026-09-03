@@ -68,6 +68,7 @@ from geoparquet_io.core.inspect import (
     inspect_summary as _inspect_summary_core,
 )
 from geoparquet_io.core.logging_config import configure_verbose, setup_cli_logging
+from geoparquet_io.core.normalize_schema import normalize_schema as normalize_schema_impl
 from geoparquet_io.core.partition.admin_hierarchical import (
     partition_by_admin_hierarchical as partition_admin_hierarchical_impl,
 )
@@ -6530,6 +6531,65 @@ def check_optimization_cmd(
             runner.record_result(file_path, result)
 
         runner.print_summary()
+
+
+@cli.command(name="normalize-schema")
+@handle_geoparquet_errors
+@click.argument("input_parquet")
+@click.argument("output_parquet", required=False, default=None)
+@click.option(
+    "--no-lowercase",
+    is_flag=True,
+    help="Keep original column name casing (default: lowercase all names).",
+)
+@click.option(
+    "--descriptions",
+    "descriptions_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="JSON file mapping column name -> description (keyed by final, lowercased name).",
+)
+@click.option(
+    "--compression",
+    default="ZSTD",
+    show_default=True,
+    help="Output compression codec (ZSTD, SNAPPY, GZIP, BROTLI, LZ4, UNCOMPRESSED).",
+)
+@overwrite_option
+@verbose_option
+def normalize_schema(
+    input_parquet, output_parquet, no_lowercase, descriptions_path, compression, overwrite, verbose
+):
+    """Normalize a GeoParquet schema for tri-access layout.
+
+    Lowercases column names, reorders columns (attributes, then geometry, then
+    bbox covering columns last), assigns a contiguous PARQUET:field_id to every
+    column, and attaches optional per-column descriptions. Geometry encoding and
+    CRS are left untouched.
+
+    If OUTPUT_PARQUET is not provided, creates <input>_normalized.parquet.
+
+    \b
+    Examples:
+      gpio normalize-schema input.parquet output.parquet
+      gpio normalize-schema input.parquet --descriptions cols.json
+      gpio normalize-schema input.parquet output.parquet --no-lowercase
+    """
+    descriptions = None
+    if descriptions_path:
+        import json
+
+        with open(descriptions_path) as fh:
+            descriptions = json.load(fh)
+    normalize_schema_impl(
+        input_parquet,
+        output_parquet,
+        lowercase=not no_lowercase,
+        descriptions=descriptions,
+        compression=compression,
+        overwrite=overwrite,
+        verbose=verbose,
+    )
 
 
 # Skills command (for LLM integration)
