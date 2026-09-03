@@ -325,10 +325,10 @@ class TestFormatCrsDisplay:
 class TestGetCrsDisplayName:
     """Test human-readable CRS name generation."""
 
-    def test_none_shows_default(self):
-        """None CRS shows default name."""
+    def test_none_shows_unknown_not_the_default(self):
+        """``None`` is an explicit ``crs: null``: the CRS is unknown."""
         result = get_crs_display_name(None)
-        assert "CRS84" in result or "None" in result
+        assert result == "null (CRS unknown)"
 
     def test_string_returned_as_is(self):
         """String CRS is returned as-is."""

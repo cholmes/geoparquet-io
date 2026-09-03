@@ -55,7 +55,6 @@ class TestGeojsonCrsDefault:
         """GeoJSON with no detected CRS should return None (WGS84 default), not raise."""
         result = _determine_effective_crs(
             input_file="gs://bucket/data.geojson",
-            input_url="gs://bucket/data.geojson",
             crs="EPSG:4326",
             is_csv=False,
             is_parquet=False,
@@ -72,7 +71,6 @@ class TestGeojsonCrsDefault:
         with pytest.raises(GeoParquetError, match="(?i)no crs found"):
             _determine_effective_crs(
                 input_file="gs://bucket/data.gpkg",
-                input_url="gs://bucket/data.gpkg",
                 crs="EPSG:4326",
                 is_csv=False,
                 is_parquet=False,
@@ -86,7 +84,6 @@ class TestGeojsonCrsDefault:
         with patch("geoparquet_io.core.convert.debug") as mock_debug:
             _determine_effective_crs(
                 input_file="data.geojson",
-                input_url="data.geojson",
                 crs="EPSG:4326",
                 is_csv=False,
                 is_parquet=False,

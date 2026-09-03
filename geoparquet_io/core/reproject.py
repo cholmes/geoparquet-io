@@ -41,7 +41,7 @@ from geoparquet_io.core.remote import (
     validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import write_output
-from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
+from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -234,17 +234,18 @@ def reproject_table(
         con.close()
 
 
-def _detect_source_crs(input_url: str, verbose: bool) -> str:
+def _detect_source_crs(input_path: str, verbose: bool) -> str:
     """Detect source CRS from GeoParquet metadata.
 
     Args:
-        input_url: Safe URL to input file
+        input_path: RAW (unescaped) path/URL to the input file —
+            ``extract_crs_from_parquet`` escapes its own argument (#718)
         verbose: Whether to print verbose output
 
     Returns:
         CRS string like "EPSG:4326" or PROJJSON string for ST_Transform
     """
-    crs_info = extract_crs_from_parquet(input_url, verbose=verbose)
+    crs_info = extract_crs_from_parquet(input_path, verbose=verbose)
 
     resolved = _resolve_crs_to_string(crs_info)
     if resolved:
@@ -256,17 +257,18 @@ def _detect_source_crs(input_url: str, verbose: bool) -> str:
     return "EPSG:4326"
 
 
-def _get_bbox_column_name(input_url: str, verbose: bool) -> str | None:
+def _get_bbox_column_name(input_path: str, verbose: bool) -> str | None:
     """Get bbox column name if it exists.
 
     Args:
-        input_url: Safe URL to input file
+        input_path: RAW (unescaped) path/URL to the input file —
+            ``check_bbox_structure`` escapes its own argument (#718)
         verbose: Whether to print verbose output
 
     Returns:
         Bbox column name or None
     """
-    bbox_info = check_bbox_structure(input_url, verbose=verbose)
+    bbox_info = check_bbox_structure(input_path, verbose=verbose)
     if bbox_info.get("has_bbox_column"):
         return bbox_info.get("bbox_column_name")
     return None
@@ -438,7 +440,7 @@ def reproject_impl(
         log(f"Geometry column: {geom_col}")
 
         # Detect source CRS from metadata
-        detected_crs = _detect_source_crs(input_url, verbose)
+        detected_crs = _detect_source_crs(read_source, verbose)
 
         # Use override if provided, otherwise use detected
         if source_crs is not None:
@@ -456,7 +458,7 @@ def reproject_impl(
         log(f"Features: {count:,}")
 
         # Check for existing bbox column to exclude (will be regenerated)
-        bbox_col = _get_bbox_column_name(input_url, verbose)
+        bbox_col = _get_bbox_column_name(read_source, verbose)
         exclude_cols = [geom_col]
         if bbox_col:
             exclude_cols.append(bbox_col)
@@ -644,14 +646,11 @@ def _reproject_streaming(
     temp_sanitized = None
 
     try:
-        # If reading from stdin, write to temp file first
+        # If reading from stdin, write to temp file first. The shared bridge
+        # reconciles the stream's geo metadata with its schema on the way, so
+        # the temp file is one DuckDB will actually open (#722).
         if is_stdin(input_path):
-            if verbose:
-                debug("Reading Arrow IPC stream from stdin...")
-            table = read_arrow_stream()
-            temp_fd, temp_input_file = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-            pq.write_table(table, temp_input_file)
+            temp_input_file = read_stdin_to_temp_file(verbose)
             working_file = temp_input_file
         else:
             working_file = input_path
@@ -673,11 +672,11 @@ def _reproject_streaming(
             geom_col = find_primary_geometry_column(working_file, verbose=False)
 
             # Detect source CRS
-            detected_crs = _detect_source_crs(working_url, verbose=False)
+            detected_crs = _detect_source_crs(working_file, verbose=False)
             effective_source_crs = source_crs if source_crs else detected_crs
 
             # Check for existing bbox column to exclude (will be regenerated)
-            bbox_col = _get_bbox_column_name(working_url, verbose=False)
+            bbox_col = _get_bbox_column_name(working_file, verbose=False)
             exclude_cols = [geom_col]
             if bbox_col:
                 exclude_cols.append(bbox_col)

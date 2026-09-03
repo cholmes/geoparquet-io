@@ -91,9 +91,8 @@ gpio extract --limit 10000 large_file.parquet | \
 
 Filter by bounding box then partition:
 
-<!-- doctest: skip="gpio partition at the end of a pipe crashes: Geoparquet column geometry does not have geometry types" -->
 ```bash
-gpio extract --bbox "-0.5,9.8,0.5,11.0" input.parquet | \
+gpio extract --bbox "-4,4,4,12" input.parquet | \
   gpio add quadkey - | \
   gpio partition string --column quadkey --chars 4 - output_dir/
 ```
@@ -132,7 +131,7 @@ gpio convert reproject --dst-crs EPSG:4326 input.parquet | \
 
 Combine extract, reproject, add indices, sort, and partition:
 
-<!-- doctest: skip="gpio partition at the end of a pipe crashes: Geoparquet column geometry does not have geometry types" -->
+<!-- doctest: skip="H3 resolution 4 splits the harness's 766-point sample into ~2 rows per cell, which partition h3 refuses as too small; the pipe itself works" -->
 ```bash
 gpio extract --bbox "-0.5,9.8,0.5,11.0" input.parquet | \
   gpio add bbox - | \

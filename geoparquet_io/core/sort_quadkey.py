@@ -7,7 +7,6 @@ import tempfile
 import uuid
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
@@ -17,13 +16,14 @@ from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identif
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
+from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
 from geoparquet_io.core.remote import (
     needs_httpfs,
     setup_aws_profile_if_needed,
     validate_profile_for_urls,
 )
 from geoparquet_io.core.stream_io import write_output
-from geoparquet_io.core.streaming import is_stdin, read_arrow_stream, should_stream_output
+from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
 
 def sort_by_quadkey_table(
@@ -122,12 +122,15 @@ def sort_by_quadkey(
         compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
         compression_level: Compression level (varies by format)
         row_group_size_mb: Target row group size in MB
-        row_group_rows: Exact number of rows per row group
+        row_group_rows: Exact number of rows per row group. When neither this
+            nor ``row_group_size_mb`` is given, the sort default
+            (``DEFAULT_SORT_ROW_GROUP_ROWS``) applies.
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
+    row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -306,14 +309,11 @@ def _sort_by_quadkey_streaming(
     temp_input_file = None
     temp_quadkey_file = None
     try:
-        # If reading from stdin, write to temp file first
+        # If reading from stdin, write to temp file first. The shared bridge
+        # reconciles the stream's geo metadata with its schema on the way, so
+        # the temp file is one DuckDB will actually open (#722).
         if is_stdin(input_path):
-            if verbose:
-                debug("Reading Arrow IPC stream from stdin...")
-            table = read_arrow_stream()
-            temp_fd, temp_input_file = tempfile.mkstemp(suffix=".parquet")
-            os.close(temp_fd)
-            pq.write_table(table, temp_input_file)
+            temp_input_file = read_stdin_to_temp_file(verbose)
             working_file = temp_input_file
         else:
             working_file = input_path

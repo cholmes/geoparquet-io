@@ -47,6 +47,10 @@ from geoparquet_io.core.geo_metadata import (
     prune_geo_metadata_to_columns,
     strip_derived_stats,
 )
+from geoparquet_io.core.geoarrow_encoding import (
+    is_geoarrow_extension_field,
+    is_wkb_extension_field,
+)
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     _detect_geometry_from_query,
@@ -807,6 +811,38 @@ def _compute_unified_schema(schemas: list):
     return pa.schema(unified_fields)
 
 
+def _parse_time_strings(col, target_type):
+    """Parse HH:MM:SS[.fff] strings into a time32/time64 array.
+
+    PyArrow has no string → time cast, but GDAL delivers ArcGIS TimeOnly
+    values as strings (ESRIJSON attributes, and all-null GeoJSON pages are
+    inferred as string), so the conversion must be explicit. Whole-second
+    values take the vectorized strptime path; fractional seconds fall back
+    to Python's ISO parser, which strptime cannot express.
+
+    Raises ValueError on a value that is not a time of day.
+    """
+    import datetime
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    parsed = pc.strptime(col, format="%H:%M:%S", unit="ms", error_is_null=True)
+    unmatched = pc.and_(pc.is_valid(col), pc.is_null(parsed))
+    if pc.any(unmatched).as_py():
+        values = []
+        for value in col.to_pylist():
+            if value is None:
+                values.append(None)
+                continue
+            try:
+                values.append(datetime.time.fromisoformat(value))
+            except ValueError as e:
+                raise ValueError(f"{value!r} is not a time of day: {e}") from e
+        return pa.array(values, type=target_type)
+    return parsed.cast(target_type)
+
+
 def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None):
     """
     Cast a table's columns to match target schema types.
@@ -857,9 +893,16 @@ def _cast_table_to_schema(table, target_schema, *, page_info: str | None = None)
                 # Cast to target type with error context. pa.cast() raises siblings
                 # ArrowInvalid (bad value) and ArrowNotImplementedError (unsupported
                 # conversion); catch both so neither escapes uncontextualized.
+                # ValueError also covers the explicit time-string parse, which
+                # PyArrow cannot do as a cast.
                 try:
-                    col = col.cast(field.type, safe=True)
-                except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as e:
+                    if pa.types.is_time(field.type) and (
+                        pa.types.is_string(col.type) or pa.types.is_large_string(col.type)
+                    ):
+                        col = _parse_time_strings(col, field.type)
+                    else:
+                        col = col.cast(field.type, safe=True)
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError, ValueError) as e:
                     context = f" ({page_info})" if page_info else ""
                     raise ValueError(
                         f"Failed to cast column '{field.name}' from {col.type} to "
@@ -941,14 +984,12 @@ def _detect_version_from_table(table, verbose: bool = False) -> str | None:
     """
     import json
 
-    from geoparquet_io.core.streaming import is_geoarrow_type
-
-    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only)
-    has_native_geo = False
-    for field in table.schema:
-        if is_geoarrow_type(field.type):
-            has_native_geo = True
-            break
+    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only).
+    # `is_geoarrow_extension_field` reads the field, not just the type, so a
+    # metadata-declared geoarrow column is detected too -- without that, the
+    # same table resolved to "parquet-geo-only" or to the 1.1 default purely
+    # according to whether geoarrow.pyarrow had been imported (#792).
+    has_native_geo = any(is_geoarrow_extension_field(field) for field in table.schema)
 
     # Check schema metadata for geo version
     metadata = table.schema.metadata
@@ -1076,13 +1117,6 @@ def _get_geometry_type_name(code: int) -> str:
     return base_name + suffix
 
 
-def _is_geoarrow_extension_type(arrow_type) -> bool:
-    """Check if an Arrow type is a geoarrow extension type."""
-    if hasattr(arrow_type, "extension_name"):
-        return arrow_type.extension_name.startswith("geoarrow")
-    return False
-
-
 def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     """
     Convert geoarrow extension type back to plain binary WKB.
@@ -1093,11 +1127,20 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     import pyarrow as pa
 
     geom_col = table.column(geometry_column)
-    geom_type = geom_col.type
 
-    # Check if it's a geoarrow extension type
-    if not _is_geoarrow_extension_type(geom_type):
-        return table  # Already plain binary
+    # Check if it's a WKB extension type, in EITHER carrier shape: the resolved
+    # Arrow type, or a plain binary type whose field metadata declares
+    # `ARROW:extension:name`. Reading only the type left the metadata-declared
+    # shape in place, so the same column got a different carrier depending on
+    # whether the process had imported geoarrow.pyarrow (#792).
+    #
+    # WKB names only, not any geoarrow.* name: this rewrites the column to plain
+    # `binary`, which is a lossless re-carrier for WKB bytes and destructive for
+    # anything else -- `geoarrow.point` over `struct<x, y>` cannot be cast at all,
+    # and `geoarrow.wkt` over `string` casts into a binary column still declared
+    # `encoding: WKT`. A native carrier is simply not this function's business.
+    if not is_wkb_extension_field(table.schema.field(geometry_column)):
+        return table  # Already plain binary, or a non-WKB carrier to leave alone
 
     if verbose:
         debug("v1.x: stripping geoarrow extension type to plain binary WKB")
@@ -1115,6 +1158,10 @@ def _strip_geoarrow_to_plain_wkb(table, geometry_column: str, verbose: bool):
     try:
         plain_col = _to_plain_wkb_array(geom_col)
         col_index = table.schema.get_field_index(geometry_column)
+        # Passing the bare name rebuilds the field from scratch, which is what
+        # drops a stale `ARROW:extension:name` on the metadata-declared shape --
+        # left behind, DuckDB reads it back off `register()` and the COPY writes
+        # a native Parquet GEOMETRY type into a 1.x file (#706, #727).
         return table.set_column(col_index, geometry_column, plain_col)
 
     except (TypeError, ValueError, AttributeError, pa.ArrowInvalid) as e:
@@ -1209,9 +1256,13 @@ def _process_geometry_column_for_version(
             col_index = table.schema.get_field_index(geometry_column)
             table = table.set_column(col_index, geometry_column, wkb_arr)
         else:
-            # For v1.x: ensure plain binary WKB (strip geoarrow if present)
-            # CRS goes only in metadata, not in schema
-            if _is_geoarrow_extension_type(geom_col.type):
+            # For v1.x: ensure plain binary WKB (strip a WKB extension carrier if
+            # present). CRS goes only in metadata, not in schema.
+            # A non-WKB geoarrow carrier is left alone: casting it here is either
+            # impossible (`geoarrow.point` over `struct<x, y>`) or silently wrong
+            # (`geoarrow.wkt` over `string`), so the broad geoarrow predicate is
+            # the wrong gate for a rewrite (#792).
+            if is_wkb_extension_field(table.schema.field(geometry_column)):
                 table = _strip_geoarrow_to_plain_wkb(table, geometry_column, verbose)
             elif verbose:
                 debug("v1.x: geometry is already plain binary WKB (CRS in metadata only)")
@@ -1450,7 +1501,7 @@ def _strip_geo_metadata_key(table, verbose: bool = False):
     return table.replace_schema_metadata(new_metadata)
 
 
-def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
+def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False, native_columns=None):
     """Give every 1.x geometry column the canonical plain-``binary`` carrier.
 
     ``_process_geometry_column_for_version`` handles the case where PyArrow
@@ -1462,7 +1513,18 @@ def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
     what the process had imported (#688's shape, on a secondary column — #706).
 
     Reuses the streaming strategy's ``canonicalize_wkb_fields`` so both paths
-    agree on what "canonical" means.
+    agree on what "canonical" means -- including its ``_WKB_EXTENSION_NAMES``
+    guard, which is what keeps a native nested carrier (``geoarrow.point`` over
+    ``struct<x, y>``) out of a binary cast that PyArrow cannot perform.
+
+    Args:
+        table: PyArrow Table to rewrite.
+        geometry_columns: Names of the declared geometry columns.
+        verbose: Whether to log a skipped column.
+        native_columns: Columns to leave exactly as they are, because the target
+            version writes them as a native geo type or because the caller
+            converts them itself. Passed straight through to
+            ``canonicalize_wkb_fields``.
     """
     import pyarrow as pa
 
@@ -1471,7 +1533,9 @@ def _canonicalize_wkb_columns(table, geometry_columns, verbose: bool = False):
         canonicalize_wkb_fields,
     )
 
-    target = canonicalize_wkb_fields(table.schema, set(geometry_columns), native_columns=set())
+    target = canonicalize_wkb_fields(
+        table.schema, set(geometry_columns), native_columns=set(native_columns or ())
+    )
     # check_metadata=True matters: the leak this exists to stop is a stale
     # ARROW:extension:name on a field whose *type* is already plain binary, and
     # the default comparison ignores metadata entirely.
@@ -2438,21 +2502,25 @@ def _prune_metadata_to_output_columns(
     original_metadata: dict | None,
     geometry_column: str | None,
     verbose: bool,
-) -> dict | None:
+) -> tuple[dict | None, list[str] | None]:
     """Drop geo metadata that references columns the output query does not emit.
 
     Best-effort: a schema probe that fails leaves the metadata untouched rather
     than aborting the write.
+
+    Returns the pruned metadata and the output's column names, so a later step
+    that only needs to know which columns exist does not probe the query again.
+    ``None`` column names mean the probe failed, not that there are no columns.
     """
     if not original_metadata:
-        return original_metadata
+        return original_metadata, None
 
     try:
         output_columns = _get_query_columns(con, query)
     except (duckdb.Error, RuntimeError, ValueError, AttributeError) as e:
         if verbose:
             debug(f"Could not read output schema to prune geo metadata: {e}")
-        return original_metadata
+        return original_metadata, None
 
     pruned = prune_geo_metadata_to_columns(original_metadata, output_columns)
     had_geo = "geo" in original_metadata or b"geo" in original_metadata
@@ -2461,7 +2529,7 @@ def _prune_metadata_to_output_columns(
             "Output has no geometry column - writing plain Parquet without geo metadata "
             f"(columns: {', '.join(output_columns)})"
         )
-    return pruned
+    return pruned, output_columns
 
 
 def extract_preserved_kv_metadata(metadata: dict | None) -> dict[str, str]:
@@ -2535,33 +2603,81 @@ def read_preserved_kv_metadata(parquet_file: str, verbose: bool = False) -> dict
 # than DuckDB would have generated.
 _REQUIRED_CARRIED_GEO_FIELDS = ("encoding", "geometry_types")
 
+# Column keys DuckDB's own `GEOPARQUET_VERSION 'V2'` block already writes. A
+# carried block is only worth substituting when it says something more than
+# these; otherwise DuckDB's freshly generated block is the better one, because
+# it describes the data actually written rather than the input.
+_DUCKDB_GENERATED_COLUMN_FIELDS = frozenset({"encoding", "geometry_types", "bbox"})
 
-def _covering_to_carry_on_fast_path(
+
+def _carries_more_than_duckdb_generates(geo_dict: dict) -> bool:
+    """Whether any column in ``geo_dict`` holds a key DuckDB would not write itself."""
+    return any(
+        isinstance(col_meta, dict) and not set(col_meta) <= _DUCKDB_GENERATED_COLUMN_FIELDS
+        for col_meta in (geo_dict.get("columns") or {}).values()
+    )
+
+
+def _geo_block_to_carry_on_fast_path(
     original_metadata: dict | None,
     geometry_column: str | None,
     effective_version: str,
+    con=None,
+    query: str | None = None,
+    verbose: bool = False,
+    input_crs=None,
+    input_file: str | None = None,
+    output_columns: list[str] | None = None,
 ) -> dict | None:
-    """The `geo` block the 2.0 fast path must write to keep a declared covering.
+    """The `geo` block the 2.0 fast path must write instead of DuckDB's generated one.
 
-    DuckDB regenerates the `geo` key on the fast path and its generated block
-    has no `covering`, so a covering the input declared is silently dropped
-    (#738). Returning the carried block here lets `_plain_copy_to` write it
-    verbatim, keeping the fast path's write configuration intact — forcing the
-    rewrite instead would clamp threads and memory, drop `--compression-level`,
-    and can add a full stats rescan.
+    DuckDB regenerates the `geo` key on the fast path, and its generated block
+    carries only `version`, `primary_column`, `encoding`, `geometry_types` and
+    `bbox`. Everything else the input declared — a `covering` (#738), `epoch`,
+    `orientation` (#772) — is silently dropped. Returning the carried block here
+    lets `_plain_copy_to` write it verbatim, keeping the fast path's write
+    configuration intact: forcing the rewrite instead would clamp threads and
+    memory, drop `--compression-level`, and can add a full stats rescan.
 
-    Returns None when nothing needs carrying, when the version is not 2.0 (1.x
-    already rewrites), or when the carried block is too thin to stand in for
-    DuckDB's — the caller then keeps its existing behaviour.
+    The carried block goes through `apply_output_crs`, the single source of truth
+    for the null-vs-default CRS rule, so the fast path cannot write a `crs: null`
+    or an explicit CRS84 that the rewrite path would have stripped.
 
-    A covering is only ever taken from the input's own metadata: it asserts a
-    relationship between a bbox column and the geometry that gpio cannot verify
-    from a column name, and a covering pointing at unrelated values makes
-    readers prune away rows that genuinely match.
+    With `con` and `query`, a conventional `bbox` column the output still carries
+    is also declared as a covering, exactly as the rewrite path does. That is the
+    only covering gpio invents: `covering` asserts a relationship between a bbox
+    column and the geometry that cannot be verified from a column name, so
+    `declare_carried_bbox_column` recognises the single universal convention and
+    checks the struct's fields before declaring anything. It runs *before* the
+    "says more than DuckDB would" gate below, because for a plain 2.0 input with
+    an undeclared bbox column the derived covering is the whole difference
+    between the two paths (`tests/test_covering_v2.py::
+    test_a_conventional_bbox_column_is_declared_at_v2`). `output_columns` lets it
+    skip its schema probe when the output has no bbox column to declare at all.
+
+    Returns None when the version is not 2.0 (1.x already rewrites), when the
+    input resolves to more than one file (see below), when the carried block is
+    too thin to stand in for DuckDB's (a caller invalidated the derived stats and
+    only the rewrite path can recompute them), or when it says nothing DuckDB
+    would not write itself — the caller then keeps its existing behaviour.
     """
-    from geoparquet_io.core.geo_metadata import _decode_geo_value
+    from geoparquet_io.core.crs_utils import apply_output_crs
+    from geoparquet_io.core.geo_metadata import _decode_geo_value, declare_carried_bbox_column
 
     if effective_version != "2.0" or not geometry_column or not original_metadata:
+        return None
+
+    # A glob/directory input merges several files, but `original_metadata` was
+    # read from the FIRST file's footer only. Carrying its bbox/geometry_types
+    # as the merged output's stats UNDER-covers the result, which makes
+    # conformant readers skip data; only the rewrite path can recompute them
+    # over everything written. Same test `extract` uses for the same reason.
+    if input_file and is_partition_path(input_file):
+        if verbose:
+            debug(
+                "Not carrying the input's geo block: a multi-file input's merged "
+                "stats cannot come from the first file's footer"
+            )
         return None
 
     for geo_key in ("geo", b"geo"):
@@ -2571,12 +2687,26 @@ def _covering_to_carry_on_fast_path(
         if not geo_dict:
             return None
         col_meta = (geo_dict.get("columns") or {}).get(geometry_column)
-        if not isinstance(col_meta, dict) or not col_meta.get("covering"):
+        if not isinstance(col_meta, dict):
             return None
         if any(field not in col_meta for field in _REQUIRED_CARRIED_GEO_FIELDS):
             return None
         carried = copy.deepcopy(geo_dict)
         carried["version"] = "2.0.0"
+        # Before the gate: a block whose only extra key was a default or null
+        # `crs` says nothing DuckDB would not write once that key is stripped.
+        apply_output_crs(carried["columns"][geometry_column], input_crs)
+        if con is not None and query is not None:
+            declare_carried_bbox_column(
+                con,
+                query,
+                carried["columns"][geometry_column],
+                verbose,
+                effective_version,
+                output_columns=output_columns,
+            )
+        if not _carries_more_than_duckdb_generates(carried):
+            return None
         return carried
     return None
 
@@ -2681,7 +2811,7 @@ def write_parquet_with_metadata(
     # column a ``covering`` points at, a secondary geometry column, or the
     # geometry column itself. Carrying those references produces metadata that
     # names schema roots the output does not have.
-    original_metadata = _prune_metadata_to_output_columns(
+    original_metadata, output_columns = _prune_metadata_to_output_columns(
         con, query, original_metadata, geometry_column, verbose
     )
 
@@ -2716,18 +2846,13 @@ def write_parquet_with_metadata(
     # column to recompute bbox and geometry types -- for a key that has nothing
     # to do with the geo block.
     #
-    # Note what the fast path costs, because dropping the rewrite is not free.
-    # It does not carry the input's `geo` block forward: it regenerates one from
-    # DuckDB's own V2 output, plus whatever `_covering_to_carry_on_fast_path`
-    # rescues (a covering the input explicitly DECLARED). So `epoch`,
-    # `orientation`, and a covering gpio would have auto-declared from a bbox
-    # column are all absent from the output, where the rewrite path preserved
-    # them via `_declare_carried_bbox_column` and
-    # `build_geo_metadata(original_metadata=...)`. That is pre-existing fast-path
-    # behaviour, not a new loss class -- the same file without a sidecar key
-    # already took this path and already lost those keys. Not forcing a rewrite
-    # here simply makes sidecar-carrying inputs behave like every other input.
-    # Closing the gap for both is tracked in #772.
+    # The fast path is no longer thinner than the rewrite: DuckDB regenerates
+    # the `geo` key, but `_geo_block_to_carry_on_fast_path` substitutes the
+    # input's own block -- `epoch`, `orientation`, a declared `covering`, plus
+    # one auto-declared for a conventional bbox column the output carries -- so
+    # for the same input, and absent `custom_metadata`, both paths write the
+    # same block (#772). `custom_metadata` is the exception: only the rewrite
+    # path merges it, and a `covering` in it already forces that path above.
     if extra_kv_metadata and verbose:
         debug(f"Carrying extra KV metadata: {list(extra_kv_metadata.keys())}")
 
@@ -2759,8 +2884,16 @@ def write_parquet_with_metadata(
                 geoparquet_version=effective_version,
                 input_crs=input_crs,
                 geometry_column=geometry_column,
-                carry_geo_metadata=_covering_to_carry_on_fast_path(
-                    original_metadata, geometry_column, effective_version
+                carry_geo_metadata=_geo_block_to_carry_on_fast_path(
+                    original_metadata,
+                    geometry_column,
+                    effective_version,
+                    con=con,
+                    query=query,
+                    verbose=verbose,
+                    input_crs=input_crs,
+                    input_file=input_file,
+                    output_columns=output_columns,
                 ),
                 extra_kv_metadata=extra_kv_metadata,
             )

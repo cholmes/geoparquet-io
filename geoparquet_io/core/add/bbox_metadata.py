@@ -282,10 +282,13 @@ def add_bbox_metadata(
             "Download the file locally, modify it, then upload."
         )
 
+    # ``safe_url`` is only for SQL interpolation below. The metadata helpers take
+    # a RAW path -- each escapes its own argument, and pre-escaping here sent
+    # ``bm''s.parquet`` on to pyarrow (issue #718).
     safe_url = safe_file_url(parquet_file, verbose)
 
     # Check current bbox structure
-    bbox_info = check_bbox_structure(safe_url, verbose)
+    bbox_info = check_bbox_structure(parquet_file, verbose)
 
     if bbox_info["has_bbox_metadata"]:
         success(
@@ -303,7 +306,7 @@ def add_bbox_metadata(
         )
 
     # Get existing metadata
-    metadata, _ = get_parquet_metadata(safe_url)
+    metadata, _ = get_parquet_metadata(parquet_file)
     geo_meta = parse_geo_metadata(metadata, False)
 
     geo_meta = require_geo_metadata_for_covering(geo_meta, parquet_file)
@@ -322,7 +325,7 @@ def add_bbox_metadata(
         )
 
     # Find primary geometry column
-    primary_col = find_primary_geometry_column(safe_url, verbose)
+    primary_col = find_primary_geometry_column(parquet_file, verbose)
 
     # Update or create the columns section. A `columns` value that is not an
     # object is as unusable as a missing one, so replace it rather than indexing

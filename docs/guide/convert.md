@@ -18,11 +18,14 @@ The `convert` command transforms between GeoParquet and other vector formats wit
     Automatically applies:
 
     - ZSTD compression (level 15)
-    - 100,000 row groups
     - Bbox column with proper metadata
     - Hilbert spatial ordering
     - GeoParquet metadata (version auto-detected — see
       [GeoParquet Version](#geoparquet-version); 1.1 for non-GeoParquet inputs)
+
+    Row groups are left to the Parquet writer's own default (122,880 rows for
+    DuckDB-backed writes). `convert` does not apply the 50,000-row default
+    `gpio sort` uses — pass `--row-group-size` if you want it.
 
 === "Python"
 
@@ -317,6 +320,24 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
     that genuinely match. Declare such a column deliberately with
     [`gpio add bbox-metadata`](add.md); `gpio check bbox` will point this out.
 
+!!! note "When the input's CRS is not valid PROJJSON"
+    GeoParquet requires a column's `crs` to be a PROJJSON object, which means it
+    must carry a `type` member such as `"GeographicCRS"` or `"ProjectedCRS"`.
+    `gpio convert` writes the input's CRS into the output, so it checks that CRS
+    before writing rather than passing a defect on:
+
+    - a CRS missing only `type`, but carrying an `id` such as
+      `{"authority": "EPSG", "code": 3857}`, is **repaired** — the identifier
+      names the CRS unambiguously, so gpio rebuilds the full PROJJSON from it
+      and says so
+    - anything else — no usable identifier, an identifier no CRS database
+      knows, or a `type` that is not a PROJJSON CRS type — **fails the
+      conversion** with an error naming the file and the CRS
+
+    The result is either a valid file or a clear error, never a file that
+    `gpio check spec` would reject. Fix such a CRS in the source data, or
+    re-export it from a tool that writes valid PROJJSON.
+
 ### Custom Geometry Column Names
 
 GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:
@@ -550,6 +571,12 @@ Auto-detection applies to both `gpio convert` and `gpio convert reproject`. An
 explicit `--geoparquet-version` always wins. The Python API resolves the
 version the same way, so `gpio.read('native.parquet').write('out.parquet')`
 writes true 2.0 native output just like the CLI.
+
+The "bare native geo types" rule holds for an in-memory Arrow table too: a table
+with no `geo` metadata whose geometry field declares a GeoArrow extension type —
+whether PyArrow resolved that type or it arrives as an `ARROW:extension:name`
+field-metadata key — is the same shape as a native-geo file, and auto mode
+writes it as 2.0. A `geo` block that declares a version still wins over both.
 
 === "CLI"
 

@@ -28,6 +28,7 @@ from geoparquet_io.core.duckdb_utils import (
     _get_query_column_type,
     quote_identifier,
 )
+from geoparquet_io.core.geoarrow_encoding import is_geoarrow_extension_field
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
@@ -356,6 +357,43 @@ def strip_derived_stats(metadata: dict | None) -> dict | None:
     return _rewrite_geo_metadata(metadata, _drop_derived_stats)
 
 
+def backfill_derived_stats(
+    metadata: dict | None,
+    table: pa.Table,
+    verbose: bool = False,
+) -> dict | None:
+    """Return a copy of KV ``metadata`` with missing derived geo stats computed.
+
+    The counterpart to :func:`strip_derived_stats`: the strip invalidates stats a
+    filter or transform made stale, and the write path is then responsible for
+    recomputing them from the rows actually written. Every column entry in the
+    ``geo`` metadata that names a column of ``table`` and lacks ``geometry_types``
+    or ``bbox`` gets it computed from that column's data.
+
+    ``geometry_types`` is REQUIRED by GeoParquet 1.1, and DuckDB refuses to open a
+    Parquet file whose ``geo`` metadata omits it, so a stream written without it
+    is unreadable by the next stage of a pipe (issue #722). ``bbox`` is optional
+    and stays absent when the data cannot supply one (an empty result).
+
+    Values already present are left alone — this fills gaps, it does not audit.
+    The input is never mutated; unparsable ``geo`` values pass through untouched.
+    """
+
+    def _fill(geo_dict: dict) -> dict:
+        for name, col_meta in (geo_dict.get("columns") or {}).items():
+            if not isinstance(col_meta, dict) or name not in table.column_names:
+                continue
+            if "geometry_types" not in col_meta:
+                col_meta["geometry_types"] = _compute_geometry_types(table, name, verbose)
+            if "bbox" not in col_meta:
+                bbox = _compute_bbox_from_data(table, name, verbose)
+                if bbox:
+                    col_meta["bbox"] = bbox
+        return geo_dict
+
+    return _rewrite_geo_metadata(metadata, _fill)
+
+
 def _covering_column(covering_entry) -> str | None:
     """Return the data column a single ``covering`` entry points at, if any."""
     if not isinstance(covering_entry, dict):
@@ -382,11 +420,14 @@ def _prune_coverings(col_meta, columns: set[str]) -> None:
         del col_meta["covering"]
 
 
-def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str]):
+def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str], repoint_primary: bool = False):
     """Drop column entries and coverings that reference absent columns.
 
-    Returns :data:`_DROP_GEO` when the primary geometry column itself is gone,
-    meaning the file must not advertise ``geo`` metadata at all.
+    Returns :data:`_DROP_GEO` when no declared geometry column survives, meaning
+    the file must not advertise ``geo`` metadata at all. When the primary column
+    itself is gone but another declared geometry column remains,
+    ``repoint_primary`` decides between naming that survivor as the new primary
+    and dropping the whole block.
     """
     col_entries = geo_dict.get("columns")
     if not isinstance(col_entries, dict):
@@ -397,14 +438,18 @@ def _prune_geo_dict_to_columns(geo_dict: dict, columns: set[str]):
 
     primary = geo_dict.get("primary_column")
     if primary is not None and primary not in col_entries:
-        return _DROP_GEO
+        if not (repoint_primary and col_entries):
+            return _DROP_GEO
+        geo_dict["primary_column"] = next(iter(col_entries))
 
     for col_meta in col_entries.values():
         _prune_coverings(col_meta, columns)
     return geo_dict
 
 
-def prune_geo_metadata_to_columns(metadata: dict | None, columns: list[str]) -> dict | None:
+def prune_geo_metadata_to_columns(
+    metadata: dict | None, columns: list[str], repoint_primary: bool = False
+) -> dict | None:
     """Return a copy of KV ``metadata`` with references to absent columns removed.
 
     A column projection (``gpio extract --exclude-cols``) can remove the bbox
@@ -413,9 +458,18 @@ def prune_geo_metadata_to_columns(metadata: dict | None, columns: list[str]) -> 
     and ``gpio check spec`` both reject. Entries for columns missing from
     ``columns`` are dropped; if the primary geometry column is among them the
     whole ``geo`` key is dropped, since the output is no longer GeoParquet.
+
+    ``repoint_primary`` keeps the block alive in the one case where the output
+    is still GeoParquet: the primary column was dropped but another *declared*
+    geometry column survives, which then becomes the primary. Callers that
+    rebuild the geo metadata from the output schema anyway (the DuckDB write
+    path) leave it off; callers that carry the input's block forward verbatim
+    (``extract_table``, on Arrow tables) turn it on.
     """
     present = set(columns)
-    return _rewrite_geo_metadata(metadata, lambda geo: _prune_geo_dict_to_columns(geo, present))
+    return _rewrite_geo_metadata(
+        metadata, lambda geo: _prune_geo_dict_to_columns(geo, present, repoint_primary)
+    )
 
 
 def create_geo_metadata(
@@ -702,15 +756,10 @@ def _detect_version_from_table(table: pa.Table, verbose: bool = False) -> str | 
     Returns:
         Version string (e.g., "1.1", "2.0", "parquet-geo-only") or None
     """
-    # Lazy import to avoid circular dependency
-    from geoparquet_io.core.streaming import is_geoarrow_type
-
-    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only)
-    has_native_geo = False
-    for field in table.schema:
-        if is_geoarrow_type(field.type):
-            has_native_geo = True
-            break
+    # Check for native geoarrow extension types (indicates v2.0 or parquet-geo-only).
+    # Reads the field, not just the type, so the metadata-declared carrier shape
+    # is detected too and this agrees with its twin in common.py (#792).
+    has_native_geo = any(is_geoarrow_extension_field(field) for field in table.schema)
 
     # Check schema metadata for geo version
     metadata = table.schema.metadata
@@ -777,6 +826,69 @@ def build_bbox_covering(column: str) -> dict:
     checked, and readers prune on it (#738).
     """
     return {axis: [column, axis] for axis in ("xmin", "ymin", "xmax", "ymax")}
+
+
+#: The only column name a writer will treat as self-evidently the geometry's
+#: bounding box. `covering` asserts that a column's values bound the geometry,
+#: and a name is weak evidence -- but `bbox`, as a struct of xmin/ymin/xmax/ymax,
+#: is the universal GeoParquet convention and is what every 1.0-era writer
+#: emitted before `covering` existed. Broader matching (`bounds`, `extent`,
+#: `*_bbox`) let an unrelated `tile_bounds` column become the declared covering,
+#: so readers pruned away rows that genuinely matched; those names now require
+#: explicit provenance (#738).
+SELF_EVIDENT_BBOX_COLUMN = "bbox"
+
+
+def declare_carried_bbox_column(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    col_meta: dict,
+    verbose: bool,
+    geoparquet_version: str,
+    output_columns: list[str] | None = None,
+) -> bool:
+    """Declare a conventional ``bbox`` column the output carries but nothing declared.
+
+    This is the 1.0 -> 1.1 upgrade path: a 1.0 file cannot declare a covering,
+    so its bbox column arrives undeclared and would otherwise stay that way
+    forever. Callers that *computed* a bbox column, or read a covering from the
+    input, supply it through ``custom_metadata`` instead and never reach the
+    branch below.
+
+    Shared by both write paths — the metadata rewrite and the 2.0 no-rewrite
+    fast path — so that the same input gets the same covering either way (#772).
+    Mutates ``col_meta`` in place; returns whether a covering was added.
+
+    ``output_columns``, when the caller already knows the output's column names,
+    settles the common "no bbox column at all" case without paying for the
+    schema probe below.
+    """
+    import pyarrow as pa
+
+    if not covering_supported(geoparquet_version):
+        if verbose:
+            debug(f"Skipping 1.1-only covering metadata for version {geoparquet_version}")
+        return False
+    # Never override a covering that arrived with provenance.
+    if isinstance(col_meta.get("covering"), dict) and "bbox" in col_meta["covering"]:
+        return False
+
+    name = SELF_EVIDENT_BBOX_COLUMN
+    if output_columns is not None and name not in output_columns:
+        return False
+    schema = con.execute(f"SELECT * FROM ({query}) LIMIT 0").arrow().schema
+    if name not in schema.names:
+        return False
+    field = schema.field(name)
+    if not pa.types.is_struct(field.type):
+        return False
+    if not _BBOX_STRUCT_FIELDS.issubset({f.name for f in field.type}):
+        return False
+
+    col_meta.setdefault("covering", {})["bbox"] = build_bbox_covering(name)
+    if verbose:
+        debug(f"Declared the carried conventional bbox column '{name}'")
+    return True
 
 
 def _is_bbox_column_name(name: str) -> bool:
@@ -864,21 +976,6 @@ def _get_geometry_type_name(code: int) -> str:
 
     suffix = _DIMENSION_SUFFIXES.get(dimension, "")
     return base_name + suffix
-
-
-def _is_geoarrow_extension_type(arrow_type) -> bool:
-    """
-    Check if an Arrow type is a geoarrow extension type.
-
-    Args:
-        arrow_type: PyArrow type to check
-
-    Returns:
-        True if the type is a geoarrow extension type
-    """
-    if hasattr(arrow_type, "extension_name"):
-        return arrow_type.extension_name.startswith("geoarrow")
-    return False
 
 
 # =============================================================================

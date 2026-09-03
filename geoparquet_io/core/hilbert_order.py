@@ -24,6 +24,10 @@ from geoparquet_io.core.geometry_detection import (
     find_primary_geometry_column,
 )
 from geoparquet_io.core.logging_config import debug, info, success, warn
+from geoparquet_io.core.parquet_writer import (
+    DEFAULT_SORT_ROW_GROUP_ROWS,
+    resolve_sort_row_group_rows,
+)
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import (
     get_remote_error_hint,
@@ -270,11 +274,14 @@ def hilbert_order(
         compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
         compression_level: Compression level (varies by format)
         row_group_size_mb: Target row group size in MB
-        row_group_rows: Exact number of rows per row group
+        row_group_rows: Exact number of rows per row group. When neither this
+            nor ``row_group_size_mb`` is given, the sort default
+            (``DEFAULT_SORT_ROW_GROUP_ROWS``) applies.
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for streaming writes (e.g., '2GB', '512MB')
     """
+    row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
     effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose, profile)
     if effective_version == "1.1":
         warn(
@@ -284,13 +291,13 @@ def hilbert_order(
 
     if (
         row_group_rows
-        and row_group_rows > 50000
+        and row_group_rows > DEFAULT_SORT_ROW_GROUP_ROWS
         and effective_version in ("2.0", "parquet-geo-only")
     ):
         info(
             "For optimal spatial filter pushdown with Hilbert sorting, consider using "
-            "--row-group-size between 10,000 and 50,000. Smaller row groups create tighter "
-            "bounding boxes that enable more row group skipping."
+            f"--row-group-size between 10,000 and {DEFAULT_SORT_ROW_GROUP_ROWS:,}. Smaller row "
+            "groups create tighter bounding boxes that enable more row group skipping."
         )
 
     # Check for streaming mode (stdin input or stdout output)

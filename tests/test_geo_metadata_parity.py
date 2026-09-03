@@ -23,24 +23,21 @@ Readers 1, 2 and 5 take an Arrow schema metadata dict; readers 3 and 4 take a
 path. ``READERS`` adapts both families to one ``(path, schema_metadata)``
 signature so a single parametrized test can compare all five.
 
-Two things are deliberately *not* asserted equal:
+One thing is deliberately *not* asserted equal: the edge-case matrix
+(``test_edge_case_reader_divergence``). The readers legitimately disagree there
+today; each verdict is pinned individually.
 
-- The edge-case matrix (``test_edge_case_reader_divergence``). The readers
-  legitimately disagree there today; each verdict is pinned individually.
-- The CRS-equality trio (``_crs_equals`` / ``_is_crs84_equivalent`` /
-  ``_crs_are_equivalent``). Cells where the three disagree are flagged in
-  ``CRS_DECISIONS`` as input to the consolidation decision list.
-
-Divergence versus *spec violation*. A cell where the helpers merely disagree
-with each other is pinned green — the consolidation gets to pick a winner. A
-cell where the current answer contradicts the GeoParquet specification is NOT
-pinned green: it is an ``xfail(strict=True)`` asserting the spec-correct
-verdict, with the governing rule quoted in the reason and the follow-up issue
-referenced. There are three such cells today, all tracked by #699 ("CRS helpers
-can't distinguish absent ``crs`` from explicit ``crs: null``, and resolve the
-ambiguity in opposite directions"). ``strict=True`` is load-bearing: when #699
-is fixed these turn into XPASS and fail the run, which is the signal to delete
-the marks rather than let a fix land unnoticed.
+The CRS-equality trio (``_crs_equals`` / ``_is_crs84_equivalent`` /
+``_crs_are_equivalent``) used to be the other exception. #699 fixed it: the
+helpers now take :data:`~geoparquet_io.core.crs_utils.CRS_ABSENT` for an omitted
+``crs`` key (the OGC:CRS84 default) and ``None`` for an explicit ``"crs": null``
+(unknown CRS), and both binaries treat OGC:CRS84 and EPSG:4326 as the same CRS
+because GeoParquet fixes the stored coordinate order to (x, y). The three cells
+that this suite carried as ``xfail(strict=True)`` spec violations are now plain
+assertions, the two binary matrices are identical, and ``CRS_DECISIONS`` /
+``UNARY_DECISIONS`` are empty. They are kept as (empty) inventories because the
+guards that check them recompute the disagreement set by *calling* the helpers,
+so any fresh divergence fails loudly instead of accumulating silently.
 """
 
 import json
@@ -56,6 +53,7 @@ from geoparquet_io.core.add.quadkey import (
     _parse_geo_metadata_from_schema as read_quadkey,
 )
 from geoparquet_io.core.common import get_parquet_metadata
+from geoparquet_io.core.crs_utils import CRS_ABSENT, crs_from_column_meta
 from geoparquet_io.core.crs_utils import (
     parse_geo_metadata_from_schema as read_crs_utils,
 )
@@ -551,10 +549,11 @@ EPSG5070_PROJJSON = {
 # The five matrix inputs, expressed as the geo *column* metadata a caller holds.
 # "absent" and "null" are distinct in the file — per the spec an absent ``crs``
 # means the OGC:CRS84 default while an explicit ``null`` means an unknown /
-# engineering CRS — but both reduce to ``None`` at the helper boundary, because
-# every call site extracts the value with ``col_meta.get("crs")``.
-# ``test_absent_and_explicit_null_collapse_at_helper_boundary`` pins that
-# collapse: it is a genuine information loss the consolidation must decide on.
+# engineering CRS. They used to collapse into the same ``None`` at the helper
+# boundary because every call site extracted the value with
+# ``col_meta.get("crs")``; since #699 the extraction goes through
+# ``crs_from_column_meta``, which yields ``CRS_ABSENT`` for the first shape.
+# ``test_absent_and_explicit_null_survive_the_helper_boundary`` pins that.
 CRS_COLUMN_META = {
     "absent": {},
     "null": {"crs": None},
@@ -566,88 +565,41 @@ CRS_NAMES = ["absent", "null", "crs84", "epsg4326", "epsg5070"]
 
 
 def crs_value(name: str):
-    """Extract a CRS the way every call site does: ``col_meta.get("crs")``."""
-    return CRS_COLUMN_META[name].get("crs")
+    """Extract a CRS the way every call site does: ``crs_from_column_meta``.
+
+    Before #699 this was ``col_meta.get("crs")``, which returned ``None`` for
+    both the "absent" and "null" shapes and made every ("absent", x) cell below
+    a byte-identical duplicate of the ("null", x) cell — while the spec demands
+    opposite answers of them. ``crs_from_column_meta`` yields ``CRS_ABSENT`` for
+    the omitted key, so the two rows are now genuinely different calls.
+    """
+    return crs_from_column_meta(CRS_COLUMN_META[name])
 
 
-# IMPORTANT — "absent" and "null" are the SAME CALL in both binary matrices and
-# in the unary vector. ``crs_value`` returns None for each, and the helpers take
-# CRS *values*, not column-metadata dicts, so no helper can tell them apart.
-# Every ("absent", x) cell below is therefore byte-identical to the ("null", x)
-# cell that follows it; they are kept as two rows because the *spec* gives them
-# different required answers, and holding both rows is what makes the conflict
-# visible. Where the two rows demand opposite verdicts (see the xfail cells) the
-# helper signature cannot satisfy both — that is precisely the defect #699
-# tracks, and fixing it means giving the helpers a way to distinguish the two.
-#
 # Generated by running each helper over the matrix once and hardcoding the
-# result (2026-08-22, pyproj as pinned in uv.lock), EXCEPT for the cells listed
-# in SPEC_XFAIL_* below, which hold the spec-correct answer that production does
-# not yet give. To regenerate after an intentional change, print
+# result (regenerated 2026-09-02 for #699; pyproj as pinned in uv.lock). To
+# regenerate after an intentional change, print
 # `{a: {b: fn(crs_value(a), crs_value(b))}}` for each helper and paste the
-# result back here — do not relax an assertion to make a surprise pass, and do
-# not overwrite an xfail cell with the observed value.
-
-# Cells asserting the spec-correct verdict that production currently gets wrong.
-# Each is run as xfail(strict=True) so that fixing #699 reports XPASS and fails.
-SPEC_XFAIL_IS_CRS84 = {
-    "null": (
-        "#699 — spec rule: an omitted `crs` defaults to OGC:CRS84, while a `crs` "
-        "explicitly present as null means the CRS is unknown/undefined. So an "
-        "explicit null is NOT CRS84, and _is_crs84_equivalent(None) returning True "
-        "for it is wrong. It returns True only because the value-level signature "
-        "already collapsed absent and null into the same None. gpio already shipped "
-        "this distinction elsewhere (root CHANGELOG, `Distinguish an explicit "
-        "crs: null (CRS *unknown*) from an omitted crs key`, #471, and "
-        "`gpio convert reproject --assume-crs84`), so this is a violation, not an "
-        "open design question."
-    ),
-}
-
-SPEC_XFAIL_CRS_EQUALS = {
-    ("absent", "crs84"): (
-        "#699 — spec rule: an omitted `crs` defaults to OGC:CRS84, so an absent CRS "
-        "and an explicit OGC:CRS84 are the same CRS and must compare equal. "
-        "_crs_equals never resolves the default: `crs1 is None or crs2 is None` "
-        "returns False before any comparison happens."
-    ),
-    ("crs84", "epsg4326"): (
-        "#699 — spec rule: GeoParquet fixes the stored coordinate order to (x, y) "
-        "regardless of the CRS's own axis definition, so OGC:CRS84 and EPSG:4326 "
-        "describe the same coordinates and must compare equal. _crs_equals "
-        "documents exactly that intent (it passes `ignore_axis_order=True`, and its "
-        "own comment reads 'Axis order is ignored because GeoParquet fixes "
-        "coordinate order to (x, y)') but the `id1 and id2 -> id1 == id2` fast path "
-        "returns first and defeats it for the single most common equivalent pair. "
-        "inspect_utils._crs_are_equivalent has the identical fast-path defect."
-    ),
-}
+# result back here — do not relax an assertion to make a surprise pass.
+#
+# The spec rules these encode:
+#   - absent  => the OGC:CRS84 default (a known CRS)
+#   - null    => the CRS is unknown; equal only to another unknown
+#   - OGC:CRS84 == EPSG:4326, because GeoParquet fixes coordinate order to (x, y)
 
 IS_CRS84_EQUIVALENT = {
     "absent": True,
-    "null": False,  # SPEC value, xfail: production returns True
+    "null": False,
     "crs84": True,
     "epsg4326": True,
     "epsg5070": False,
 }
 
-# NOTE on the mirror cells. ("crs84", "absent") and ("epsg4326", "crs84") are the
-# same two bugs seen from the other side; _crs_equals is symmetric, so they are
-# equally wrong. They stay pinned at the observed False so that #699 gets exactly
-# one xfail per distinct violation rather than one per ordered pair. When #699
-# lands, the two xfails XPASS *and* these two mirrors fail — both signals point
-# at the same edit.
 CRS_EQUALS = {
-    "absent": {"absent": True, "null": True, "crs84": True, "epsg4326": False, "epsg5070": False},
-    "null": {"absent": True, "null": True, "crs84": False, "epsg4326": False, "epsg5070": False},
-    "crs84": {"absent": False, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
-    "epsg4326": {
-        "absent": False,
-        "null": False,
-        "crs84": False,
-        "epsg4326": True,
-        "epsg5070": False,
-    },
+    "absent": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
+    "null": {"absent": False, "null": True, "crs84": False, "epsg4326": False, "epsg5070": False},
+    "crs84": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
+    "epsg4326": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
     "epsg5070": {
         "absent": False,
         "null": False,
@@ -657,23 +609,13 @@ CRS_EQUALS = {
     },
 }
 
+# Identical to CRS_EQUALS since #699 — held as its own literal, not an alias, so
+# that a future divergence in either helper shows up as a concrete cell diff.
 CRS_ARE_EQUIVALENT = {
-    "absent": {
-        "absent": False,
-        "null": False,
-        "crs84": False,
-        "epsg4326": False,
-        "epsg5070": False,
-    },
-    "null": {"absent": False, "null": False, "crs84": False, "epsg4326": False, "epsg5070": False},
-    "crs84": {"absent": False, "null": False, "crs84": True, "epsg4326": False, "epsg5070": False},
-    "epsg4326": {
-        "absent": False,
-        "null": False,
-        "crs84": False,
-        "epsg4326": True,
-        "epsg5070": False,
-    },
+    "absent": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
+    "null": {"absent": False, "null": True, "crs84": False, "epsg4326": False, "epsg5070": False},
+    "crs84": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
+    "epsg4326": {"absent": True, "null": False, "crs84": True, "epsg4326": True, "epsg5070": False},
     "epsg5070": {
         "absent": False,
         "null": False,
@@ -683,128 +625,40 @@ CRS_ARE_EQUIVALENT = {
     },
 }
 
-# Cells where the two binary helpers disagree — the consolidation decision list.
-# Each entry is (crs_a, crs_b, why it matters). Kept as data so
-# ``test_crs_helper_disagreement_inventory_is_exact`` fails if the set of
-# disagreements changes in either direction: a newly-agreeing cell means someone
-# fixed one silently, a new disagreement means a fresh inconsistency. That guard
-# recomputes the observed set by CALLING both helpers — it must never derive it
-# from the pinned matrices above, or it degrades into a tautology over constants.
-CRS_DECISIONS = {
-    ("absent", "absent"): (
-        "_crs_equals says two missing CRSs are equal (None == None); "
-        "_crs_are_equivalent says False because neither side yields an "
-        "authority:code and neither is a dict. DECIDE: is 'both default' a match?"
-    ),
-    ("absent", "null"): (
-        "Same collapse as above, and the spec-level distinction (absent => CRS84 "
-        "default, null => unknown CRS) is already lost before the helper is called."
-    ),
-    ("null", "absent"): (
-        "Symmetric counterpart of ('absent', 'null'); both helpers are symmetric "
-        "here, so the decision is the same one."
-    ),
-    ("null", "null"): (
-        "_crs_equals says two explicitly-unknown CRSs are equal; "
-        "_crs_are_equivalent says False. DECIDE: should 'unknown == unknown' hold? "
-        "Arguably not — two unknown CRSs are not known to be the same CRS."
-    ),
-}
+# Cells where the two binary helpers disagree — empty since #699 unified them.
+# Kept as data so ``test_crs_helper_disagreement_inventory_is_exact`` fails if
+# the set changes in either direction: a new disagreement means a fresh
+# inconsistency has crept in. That guard recomputes the observed set by CALLING
+# both helpers — it must never derive it from the pinned matrices above, or it
+# degrades into a tautology over constants.
+CRS_DECISIONS: dict[tuple[str, str], str] = {}
 
-# The trio's LARGEST split is not between the two binary helpers — it is between
-# the unary helper and both binaries. ``_is_crs84_equivalent(x)`` asks "is x the
-# CRS84 default?" while ``_crs_equals(x, crs84)`` / ``_crs_are_equivalent(x, crs84)``
-# ask "is x equal to the CRS84 value?" Those should be the same question, and for
-# three of five inputs they give opposite answers (unary True, both binaries
-# False). ``test_unary_vs_binary_disagreement_inventory_is_exact`` recomputes this
-# set by CALLING the helpers, so this dict is documentation of the observed split,
-# never the source the guard checks itself against.
-UNARY_DECISIONS = {
-    "absent": (
-        "_is_crs84_equivalent(None) is True (absent CRS defaults to OGC:CRS84 per "
-        "spec), but comparing the same absent value against the CRS84 PROJJSON is "
-        "False in BOTH binaries. DECIDE: should the binaries resolve the default "
-        "before comparing, so absent == CRS84?"
-    ),
-    "null": (
-        "_is_crs84_equivalent(None) is True, but an explicit null means UNKNOWN CRS, "
-        "not CRS84 — the unary is arguably wrong here and only reaches True because "
-        "the null/absent collapse (see below) already erased the distinction. "
-        "DECIDE: this looks like a latent bug, not merely an inconsistency."
-    ),
-    "epsg4326": (
-        "_is_crs84_equivalent(EPSG:4326) is True — GeoParquet fixes axis order to "
-        "(x, y), so EPSG:4326 metadata describes the same coordinates as OGC:CRS84. "
-        "Both binaries say EPSG:4326 != OGC:CRS84 because they trust differing "
-        "authority:code ids. DECIDE: should the binaries adopt the unary's "
-        "axis-order-agnostic CRS84/4326 equivalence?"
-    ),
-}
+# The trio's largest split used to be between the unary helper and both
+# binaries: ``_is_crs84_equivalent(x)`` asks "is x the CRS84 default?" while
+# ``_crs_equals(x, crs84)`` / ``_crs_are_equivalent(x, crs84)`` ask "is x equal
+# to the CRS84 value?" Those are the same question, and #699 made them answer
+# alike for all five inputs. ``test_unary_vs_binary_disagreement_inventory_is_exact``
+# recomputes the split by CALLING the helpers, so this dict is never the source
+# the guard checks itself against.
+UNARY_DECISIONS: dict[str, str] = {}
 
-# The two binary helpers also disagree on what pyproj equality MEANS when they
-# fall back to semantic comparison:
-#
-#   validate._crs_equals (~:2735):
-#       PyprojCRS.from_json_dict(crs1).equals(..., ignore_axis_order=True)
-#   inspect_utils._crs_are_equivalent (~:155):
-#       CRS.from_json_dict(crs1).equals(CRS.from_json_dict(crs2))   # default: axis order MATTERS
-#
-# The 5x5 matrix cannot reach this: every value in it carries a complete ``id``,
-# so both helpers short-circuit on the fast path and pyproj is never called at
-# all. ``test_id_less_projjson_axis_order_split_is_exact`` covers it with id-less
-# PROJJSON, pinning only that the two helpers DISAGREE rather than either
-# absolute verdict, so it does not churn with the pyproj/PROJ version.
+# Both binaries fall back to pyproj when a PROJJSON pair carries no ``id``, and
+# both now pass ``ignore_axis_order=True`` there, for the same spec reason the
+# fast path recognizes OGC:CRS84 == EPSG:4326. The 5x5 matrix cannot reach that
+# path — every value in it carries a complete ``id`` — so
+# ``test_id_less_projjson_axis_order_agrees`` covers it with id-less PROJJSON.
 
 
 def _param_id_pair(name_a: str, name_b: str) -> str:
     return f"{name_a}-{name_b}"
 
 
-# Unmarked product, for the helper whose cells are all pinned as observed.
 CRS_PAIRS = [
     pytest.param(name_a, name_b, id=_param_id_pair(name_a, name_b))
     for name_a, name_b in product(CRS_NAMES, repeat=2)
 ]
 
-# Same product, with the two _crs_equals spec violations marked xfail.
-CRS_EQUALS_PAIRS = [
-    pytest.param(
-        name_a,
-        name_b,
-        id=_param_id_pair(name_a, name_b),
-        marks=(
-            [
-                pytest.mark.xfail(
-                    strict=True,
-                    raises=AssertionError,
-                    reason=SPEC_XFAIL_CRS_EQUALS[(name_a, name_b)],
-                )
-            ]
-            if (name_a, name_b) in SPEC_XFAIL_CRS_EQUALS
-            else []
-        ),
-    )
-    for name_a, name_b in product(CRS_NAMES, repeat=2)
-]
-
-CRS_UNARY_PARAMS = [
-    pytest.param(
-        name,
-        id=name,
-        marks=(
-            [
-                pytest.mark.xfail(
-                    strict=True,
-                    raises=AssertionError,
-                    reason=SPEC_XFAIL_IS_CRS84[name],
-                )
-            ]
-            if name in SPEC_XFAIL_IS_CRS84
-            else []
-        ),
-    )
-    for name in CRS_NAMES
-]
+CRS_UNARY_PARAMS = [pytest.param(name, id=name) for name in CRS_NAMES]
 
 
 @pytest.mark.parametrize("name", CRS_UNARY_PARAMS)
@@ -812,21 +666,16 @@ def test_is_crs84_equivalent_matrix(name):
     """Pin ``validate._is_crs84_equivalent`` (unary) over the five CRS values.
 
     Note this helper takes ONE argument, so it contributes a 5-cell vector to the
-    matrix rather than a 5x5 grid. The "absent" and "null" cells make the very
-    same call, ``_is_crs84_equivalent(None)``, and demand opposite answers — the
-    "null" cell is the xfail, and its existence next to a passing "absent" cell
-    is the clearest statement of what #699 has to change.
+    matrix rather than a 5x5 grid. The "absent" and "null" cells are the pair
+    #699 was about: absent is the OGC:CRS84 default (True), while an explicit
+    null means the CRS is unknown (False).
     """
     assert _is_crs84_equivalent(crs_value(name)) is IS_CRS84_EQUIVALENT[name]
 
 
-@pytest.mark.parametrize(("name_a", "name_b"), CRS_EQUALS_PAIRS)
+@pytest.mark.parametrize(("name_a", "name_b"), CRS_PAIRS)
 def test_crs_equals_matrix(name_a, name_b):
-    """Pin ``validate._crs_equals`` over the full 5x5 matrix.
-
-    Rows "absent" and "null" issue identical calls (both reduce to None); they
-    are held separately because the spec requires different answers of them.
-    """
+    """Pin ``validate._crs_equals`` over the full 5x5 matrix."""
     assert _crs_equals(crs_value(name_a), crs_value(name_b)) is CRS_EQUALS[name_a][name_b]
 
 
@@ -834,15 +683,8 @@ def test_crs_equals_matrix(name_a, name_b):
 def test_crs_are_equivalent_matrix(name_a, name_b):
     """Pin ``inspect_utils._crs_are_equivalent`` over the full 5x5 matrix.
 
-    Where this disagrees with ``_crs_equals`` the cell is listed in
-    ``CRS_DECISIONS``; that disagreement is expected today, not a bug being
-    pinned as correct.
-
-    No xfail marks here even though this helper shares both #699 defects
-    (absent != CRS84, CRS84 != EPSG:4326): the xfails live on the ``_crs_equals``
-    matrix so #699 carries one xfail per distinct violation rather than one per
-    helper. Fixing #699 turns those into XPASS and makes the mirror cells here
-    fail — the same edit resolves both signals.
+    Identical to ``CRS_EQUALS`` since #699; any cell where the two helpers drift
+    apart also shows up in ``test_crs_helper_disagreement_inventory_is_exact``.
     """
     assert (
         _crs_are_equivalent(crs_value(name_a), crs_value(name_b))
@@ -853,14 +695,15 @@ def test_crs_are_equivalent_matrix(name_a, name_b):
 def test_crs_helper_disagreement_inventory_is_exact():
     """The set of cells where the two binary helpers disagree must not drift.
 
-    ``observed`` is built by CALLING both helpers, never by reading the pinned
-    matrices. Deriving it from the literals would make this a tautology over
-    constants that stays green through any production change — the exact
-    failure mode it exists to catch.
+    Empty since #699 unified them, so this now asserts the two helpers agree on
+    all 25 cells. ``observed`` is built by CALLING both helpers, never by
+    reading the pinned matrices. Deriving it from the literals would make this a
+    tautology over constants that stays green through any production change —
+    the exact failure mode it exists to catch.
 
     Scope: this covers the id fast path only, because every value in the matrix
-    carries a complete ``id``. The pyproj-fallback half of the split is pinned
-    by ``test_id_less_projjson_axis_order_split_is_exact``.
+    carries a complete ``id``. The pyproj-fallback half is covered by
+    ``test_id_less_projjson_axis_order_agrees``.
     """
     observed = {
         (a, b)
@@ -876,12 +719,12 @@ def test_crs_helper_disagreement_inventory_is_exact():
 
 
 def test_unary_vs_binary_disagreement_inventory_is_exact():
-    """ "Is x CRS84?" and "does x equal CRS84?" must not silently start agreeing.
+    """ "Is x CRS84?" and "does x equal CRS84?" must give the same answer.
 
-    Guards the unary-vs-binary split the same way the binary-vs-binary guard
-    does, and with the same rule: ``observed`` comes from CALLING the three
-    helpers, so consolidating the trio forces an explicit update to
-    UNARY_DECISIONS instead of passing silently over stale literals.
+    Empty since #699, so this asserts the unary helper and both binaries agree
+    for every input. ``observed`` comes from CALLING the three helpers, so a
+    regression forces an explicit update to UNARY_DECISIONS instead of passing
+    silently over stale literals.
     """
     crs84 = crs_value("crs84")
     observed = {
@@ -897,64 +740,66 @@ def test_unary_vs_binary_disagreement_inventory_is_exact():
     )
 
 
-def test_absent_and_explicit_null_collapse_at_helper_boundary():
-    """An absent ``crs`` and an explicit ``"crs": null`` are indistinguishable here.
+def test_absent_and_explicit_null_survive_the_helper_boundary():
+    """An absent ``crs`` and an explicit ``"crs": null`` must stay distinguishable.
 
     The spec gives them different meanings (absent => OGC:CRS84 default;
-    null => unknown/engineering CRS). ``validate._check_crs_valid`` DOES preserve
-    the distinction, and it does so by testing membership *before* extracting::
+    null => unknown/engineering CRS). ``validate._check_crs_valid`` always
+    preserved the distinction, by testing membership *before* extracting::
 
-        if "crs" not in col_meta:      # validate.py:307 -> defaults to OGC:CRS84
+        if "crs" not in col_meta:      # -> defaults to OGC:CRS84
             ...
-        crs = col_meta.get("crs")      # validate.py:315 -> None for BOTH shapes
+        crs = col_meta.get("crs")      # -> None for BOTH shapes
 
-    Every CRS *equality* call site uses only the second idiom, so the distinction
-    is already gone by the time the trio is called.
+    Every CRS *equality* call site used only the second idiom, so the
+    distinction was gone by the time the trio was called — the #699 defect.
+    ``crs_from_column_meta`` is the fixed extraction: it yields ``CRS_ABSENT``
+    for the omitted key and ``None`` only for the explicit null.
 
-    The two halves below carry different weight. The ``_check_crs_valid``
-    PASSED-vs-WARNING half is the real pin: it exercises production code and
-    fails if an explicit null ever collapses into the absent branch. The
-    ``.get("crs") is None`` half documents the collapse at the extraction idiom
-    itself — it is a property of ``dict.get`` on these two shapes, so it stays
-    green under any production change and is here to make the mechanism explicit
-    at the point of use, not to detect a regression.
+    The ``_check_crs_valid`` PASSED-vs-WARNING half is unchanged and still the
+    pin on production behavior; the extraction half now asserts the two shapes
+    come out different rather than identical.
     """
     absent_col = CRS_COLUMN_META["absent"]
     null_col = CRS_COLUMN_META["null"]
 
-    # Production path that DOES distinguish them: different check outcomes.
+    # Production path that has always distinguished them: different outcomes.
     assert _check_crs_valid(absent_col, "geometry").status is CheckStatus.PASSED
     assert _check_crs_valid(null_col, "geometry").status is CheckStatus.WARNING
 
-    # The extraction the equality helpers actually receive: identical for both.
     assert "crs" not in absent_col and "crs" in null_col, (
-        "fixture shapes must differ, otherwise the collapse below is trivially true"
+        "fixture shapes must differ, otherwise the assertions below are trivial"
     )
+
+    # The old idiom still collapses them — which is why call sites must not use it.
     assert absent_col.get("crs") is None
     assert null_col.get("crs") is None
 
+    # The extraction the equality helpers now receive: distinct for the two shapes.
+    assert crs_from_column_meta(absent_col) is CRS_ABSENT
+    assert crs_from_column_meta(null_col) is None
 
-def test_id_less_projjson_axis_order_split_is_exact():
-    """The binaries' pyproj fallbacks disagree about axis order. Pin the split.
 
-    This is the only material behavioral difference between the two binary
-    helpers that the 5x5 matrix cannot reach: every matrix value carries a
-    complete ``id``, so both helpers return from their fast path and pyproj is
-    never called. Strip the ``id`` and the fallbacks run, revealing::
+def test_id_less_projjson_axis_order_agrees():
+    """The binaries' pyproj fallbacks must both ignore axis order.
 
-        validate._crs_equals             -> .equals(..., ignore_axis_order=True)
+    This is the one behavioral difference between the two binary helpers that
+    the 5x5 matrix cannot reach: every matrix value carries a complete ``id``,
+    so both helpers return from their fast path and pyproj is never called.
+    Strip the ``id`` and the fallbacks run. They used to split::
+
+        validate._crs_equals              -> .equals(..., ignore_axis_order=True)
         inspect_utils._crs_are_equivalent -> .equals(...)   # axis order MATTERS
 
-    What is pinned is only that the two helpers DISAGREE on this pair, not
-    either absolute verdict: the absolute answers come out of PROJ and would
-    make this test churn with the pyproj/PROJ version, whereas the disagreement
-    is a property of the two call sites. When the consolidation picks one
-    fallback contract, this test fails and should be deleted.
+    #699 gave both ``ignore_axis_order=True``, for the same spec reason the id
+    fast path treats OGC:CRS84 and EPSG:4326 as one CRS: GeoParquet fixes the
+    stored coordinate order to (x, y), so a lon/lat and a lat/lon declaration of
+    WGS 84 describe the same coordinates.
 
     The PROJJSON is generated by pyproj rather than hand-written because a
     hand-trimmed datum ensemble is not parseable ("ensemble should have at least
     2 datums"), which would send BOTH helpers down their ``except -> False``
-    path and hide the split behind spurious agreement.
+    path and produce spurious agreement.
     """
     from pyproj import CRS as PyprojCRS
 
@@ -963,18 +808,15 @@ def test_id_less_projjson_axis_order_split_is_exact():
     for projjson in (lon_lat, lat_lon):
         projjson.pop("id", None)
 
-    # Preconditions, or the assertion below could pass through the fast path.
+    # Preconditions, or the assertions below could pass through the fast path.
     assert "id" not in lon_lat and "id" not in lat_lon
     assert [axis["abbreviation"] for axis in lon_lat["coordinate_system"]["axis"]] == ["Lon", "Lat"]
     assert [axis["abbreviation"] for axis in lat_lon["coordinate_system"]["axis"]] == ["Lat", "Lon"]
     # Both must be pyproj-parseable, else both helpers fail closed and "agree".
     assert PyprojCRS.from_json_dict(lon_lat) and PyprojCRS.from_json_dict(lat_lon)
 
-    assert _crs_equals(lon_lat, lat_lon) is not _crs_are_equivalent(lon_lat, lat_lon), (
-        "the two binary helpers now agree on an id-less lon/lat vs lat/lon pair. "
-        "Either the fallback contracts were unified (delete this test and record "
-        "the winner) or a pyproj change made .equals() axis-order-agnostic."
-    )
+    assert _crs_equals(lon_lat, lat_lon) is True
+    assert _crs_are_equivalent(lon_lat, lat_lon) is True
 
 
 # =============================================================================

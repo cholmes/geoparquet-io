@@ -17,6 +17,8 @@ Example:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pyarrow as pa
 
 from geoparquet_io.core.add.a5 import add_a5_table
@@ -33,6 +35,9 @@ from geoparquet_io.core.sort_by_column import sort_by_column_table
 from geoparquet_io.core.sort_quadkey import sort_by_quadkey_table
 from geoparquet_io.core.str_order import DEFAULT_STR_TILE_SIZE, str_order_table
 from geoparquet_io.core.wfs import DEFAULT_WFS_PAGE_SIZE
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def add_bbox(
@@ -232,7 +237,7 @@ def sort_str(
         tile_size: Roughly the rows you intend to put in a row group. STR uses
             it only to choose the number of X strips, as
             ``ceil(sqrt(num_rows / tile_size))``, so it is a coarse control
-            rather than an exact tile capacity (default: 100,000)
+            rather than an exact tile capacity (default: 50,000)
 
     Returns:
         New table with rows reordered into spatially compact tiles
@@ -257,6 +262,10 @@ def extract(
     """
     Extract columns and rows with optional filtering.
 
+    Column names are validated against the schema: an unknown name raises rather
+    than being silently ignored, and a name may not appear in both ``columns``
+    and ``exclude_columns`` (geometry and bbox excepted).
+
     Args:
         table: Input PyArrow Table
         columns: Columns to include (None = all)
@@ -268,7 +277,14 @@ def extract(
         repair_geometry: Repair invalid geometry with ST_MakeValid (default: True)
 
     Returns:
-        Filtered table
+        Filtered table. Excluding every geometry column yields an attribute
+        table whose ``geo`` metadata is dropped, since it is no longer
+        GeoParquet.
+
+    Raises:
+        InvalidParameterError: If a requested column does not exist, if a column
+            is in both lists, or if ``bbox`` is used on a table with no geometry
+            column.
     """
     return extract_table(
         table,
@@ -708,6 +724,454 @@ def reproject(
         source_crs=source_crs,
         geometry_column=geometry_column,
         assume_crs84=assume_crs84,
+    )
+
+
+# --------------------------------------------------------------------------
+# Partitioning
+#
+# Partitioning writes a *directory* rather than returning a table, so these
+# functions break the `table in -> table out` shape the rest of this module
+# has: they take the table plus an output directory and return the same stats
+# dict the `Table` methods do. They exist so a caller holding a plain
+# `pa.Table` has the same front door for partitioning that `add`, `sort`,
+# `convert`, `extract` and `process` already give them (#799).
+# --------------------------------------------------------------------------
+
+
+def _partition(
+    table: pa.Table,
+    output_dir: str | Path,
+    method: str,
+    geometry_column: str | None,
+    **kwargs,
+) -> dict:
+    """Delegate to the matching ``Table.partition_by_*`` method.
+
+    The partition core functions read a file, and `Table` already owns the
+    temp-file machinery that bridges an in-memory table to them
+    (`_run_partition_with_temp_file`). Delegating keeps both front doors on one
+    code path instead of a second copy that can drift out of step.
+
+    Imported inside the function: `geoparquet_io.api.__init__` imports `ops`
+    before `table`, so a module-level import here would be circular.
+    """
+    from geoparquet_io.api.table import Table
+
+    wrapper = Table(table, geometry_column=geometry_column)
+    return getattr(wrapper, method)(output_dir, **kwargs)
+
+
+def partition_by_h3(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    compression: str = "ZSTD",
+    hive: bool = False,
+    keep_h3_column: bool | None = None,
+    overwrite: bool = False,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by H3 cell.
+
+    Function form of `Table.partition_by_h3`, mirroring `gpio partition h3`.
+    Like both of them it refuses to guess: pass a ``resolution``, or pass
+    ``auto=True`` to size one from the data.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        resolution: H3 resolution level 0-15. Required unless ``auto=True``
+        auto: Calculate the resolution from the data (default: False);
+            mutually exclusive with ``resolution``
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        compression: Compression codec (default: ZSTD)
+        hive: Use Hive-style ``h3_cell=value/`` directories (default: False)
+        keep_h3_column: Keep the generated ``h3_cell`` column. None (default)
+            follows ``hive``
+        overwrite: Overwrite an existing output directory
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        dict with output_dir, file_count and hive
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_h3(table, 'output/', resolution=6)
+        >>> stats = ops.partition_by_h3(table, 'output/', auto=True)
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_h3",
+        geometry_column,
+        resolution=resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        compression=compression,
+        hive=hive,
+        keep_h3_column=keep_h3_column,
+        overwrite=overwrite,
+    )
+
+
+def partition_by_a5(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    compression: str = "ZSTD",
+    hive: bool = False,
+    keep_a5_column: bool | None = None,
+    overwrite: bool = False,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by A5 cell.
+
+    Function form of `Table.partition_by_a5`, mirroring `gpio partition a5`.
+    Pass a ``resolution``, or ``auto=True`` to size one from the data.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        resolution: A5 resolution level 0-30. Required unless ``auto=True``
+        auto: Calculate the resolution from the data (default: False);
+            mutually exclusive with ``resolution``
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        compression: Compression codec (default: ZSTD)
+        hive: Use Hive-style ``a5_cell=value/`` directories (default: False)
+        keep_a5_column: Keep the generated ``a5_cell`` column. None (default)
+            follows ``hive``
+        overwrite: Overwrite an existing output directory
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        dict with output_dir, file_count and hive
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_a5(table, 'output/', resolution=12)
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_a5",
+        geometry_column,
+        resolution=resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        compression=compression,
+        hive=hive,
+        keep_a5_column=keep_a5_column,
+        overwrite=overwrite,
+    )
+
+
+def partition_by_s2(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    level: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    compression: str = "ZSTD",
+    hive: bool = False,
+    keep_s2_column: bool | None = None,
+    overwrite: bool = False,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by S2 cell.
+
+    Function form of `Table.partition_by_s2`, mirroring `gpio partition s2`.
+    Pass a ``level``, or ``auto=True`` to size one from the data.
+
+    **Unavailable in this release**: S2 needs the ``geography`` DuckDB community
+    extension, which is not published for the DuckDB version gpio requires
+    (#737). The call raises with an explanation. Use `partition_by_a5` instead.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        level: S2 level 0-30 (13 is ~1.2 km² cells). Required unless ``auto=True``
+        auto: Calculate the level from the data (default: False); mutually
+            exclusive with ``level``
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        compression: Compression codec (default: ZSTD)
+        hive: Use Hive-style ``s2_cell=value/`` directories (default: False)
+        keep_s2_column: Keep the generated ``s2_cell`` column. None (default)
+            follows ``hive``
+        overwrite: Overwrite an existing output directory
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        dict with output_dir, file_count and hive
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_s2(table, 'output/', level=10)
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_s2",
+        geometry_column,
+        level=level,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        compression=compression,
+        hive=hive,
+        keep_s2_column=keep_s2_column,
+        overwrite=overwrite,
+    )
+
+
+def partition_by_quadkey(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    resolution: int | None = None,
+    partition_resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    compression: str = "ZSTD",
+    hive: bool = False,
+    keep_quadkey_column: bool | None = None,
+    overwrite: bool = False,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by quadkey.
+
+    Function form of `Table.partition_by_quadkey`, mirroring
+    `gpio partition quadkey`. Pass both ``resolution`` and
+    ``partition_resolution``, or ``auto=True`` to size them from the data.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        resolution: Quadkey resolution for sorting (0-23). Required unless
+            ``auto=True``
+        partition_resolution: Resolution for partition boundaries (0-23).
+            Required unless ``auto=True``
+        auto: Calculate both resolutions from the data (default: False);
+            mutually exclusive with the two above
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        compression: Compression codec (default: ZSTD)
+        hive: Use Hive-style ``quadkey=value/`` directories (default: False)
+        keep_quadkey_column: Keep the generated ``quadkey`` column. None
+            (default) follows ``hive``
+        overwrite: Overwrite an existing output directory
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        dict with output_dir, file_count and hive
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_quadkey(
+        ...     table, 'output/', resolution=13, partition_resolution=6
+        ... )
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_quadkey",
+        geometry_column,
+        resolution=resolution,
+        partition_resolution=partition_resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        compression=compression,
+        hive=hive,
+        keep_quadkey_column=keep_quadkey_column,
+        overwrite=overwrite,
+    )
+
+
+def partition_by_kdtree(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    iterations: int = 9,
+    hive: bool = False,
+    keep_kdtree_column: bool | None = None,
+    overwrite: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by KD-tree cell.
+
+    Function form of `Table.partition_by_kdtree`, mirroring
+    `gpio partition kdtree`. Recursively splits the data spatially, producing
+    ``2 ** iterations`` balanced partitions.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        iterations: Number of KD-tree splits (default: 9)
+        hive: Use Hive-style ``kdtree_cell=value/`` directories (default: False)
+        keep_kdtree_column: Keep the generated ``kdtree_cell`` column. None
+            (default) follows ``hive``
+        overwrite: Overwrite an existing output directory
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None lets the codec pick its own
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        The core run's result, which for KD-tree is ``{'status': 'completed'}``.
+        Unlike the cell-index partitioners this one does not count the files it
+        wrote, so there is no ``file_count`` here -- read ``output_dir``.
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_kdtree(table, 'output/', iterations=6)
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_kdtree",
+        geometry_column,
+        iterations=iterations,
+        hive=hive,
+        keep_kdtree_column=keep_kdtree_column,
+        overwrite=overwrite,
+        compression=compression,
+        compression_level=compression_level,
+    )
+
+
+def partition_by_string(
+    table: pa.Table,
+    output_dir: str | Path,
+    column: str,
+    *,
+    chars: int | None = None,
+    hive: bool = False,
+    overwrite: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by a string column.
+
+    Function form of `Table.partition_by_string`, mirroring
+    `gpio partition string`.
+
+    Args:
+        table: Input PyArrow Table
+        output_dir: Output directory path
+        column: Column name to partition by
+        chars: Use the first N characters as the partition key (None: the whole value)
+        hive: Use Hive-style ``column=value/`` directories (default: False)
+        overwrite: Overwrite an existing output directory
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None lets the codec pick its own
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        The core run's result, which for a string partition is
+        ``{'status': 'completed'}``. Unlike the cell-index partitioners this one
+        does not count the files it wrote, so there is no ``file_count`` here --
+        read ``output_dir``.
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_string(table, 'output/', 'country_code', hive=True)
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_string",
+        geometry_column,
+        column=column,
+        chars=chars,
+        hive=hive,
+        overwrite=overwrite,
+        compression=compression,
+        compression_level=compression_level,
+    )
+
+
+def partition_by_admin(
+    table: pa.Table,
+    output_dir: str | Path,
+    *,
+    dataset: str = "gaul",
+    levels: list[str] | None = None,
+    hive: bool = False,
+    overwrite: bool = False,
+    vecorel: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    geometry_column: str | None = None,
+) -> dict:
+    """
+    Partition a table into a directory of files split by administrative boundaries.
+
+    Function form of `Table.partition_by_admin`, mirroring
+    `gpio partition admin`. Spatially joins against an administrative
+    boundaries dataset, so it downloads that dataset on first use.
+
+    Args:
+        table: Input PyArrow Table with a geometry column
+        output_dir: Output directory path
+        dataset: Boundaries dataset ("gaul", "overture", or a custom URL)
+        levels: Admin levels to partition by (e.g. ["country", "department"]
+            for GAUL, ["country", "region"] for Overture). Defaults to ["country"]
+        hive: Use Hive-style ``level=value/`` directories (default: False)
+        overwrite: Overwrite an existing output directory
+        vecorel: Emit Vecorel-compliant admin columns; forces the Overture
+            dataset with country,region levels (default: False)
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None lets the codec pick its own
+        geometry_column: Geometry column name (auto-detected if None)
+
+    Returns:
+        The core run's result. The admin partitioner returns the number of
+        partitions it created, so a run that wrote at least one partition
+        returns that ``int``; a run that created none returns
+        ``{'status': 'completed'}``. There is no ``file_count`` here -- read
+        ``output_dir``.
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> stats = ops.partition_by_admin(table, 'output/', levels=['country'])
+    """
+    return _partition(
+        table,
+        output_dir,
+        "partition_by_admin",
+        geometry_column,
+        dataset=dataset,
+        levels=levels,
+        hive=hive,
+        overwrite=overwrite,
+        vecorel=vecorel,
+        compression=compression,
+        compression_level=compression_level,
     )
 
 
@@ -1437,13 +1901,10 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
         get_per_row_group_native_geo_stats,
         has_bbox_column,
     )
-    from geoparquet_io.core.file_utils import safe_file_url
     from geoparquet_io.core.metadata_utils import (
         _get_num_rows_per_row_group,
         _merge_row_counts,
     )
-
-    safe_url = safe_file_url(parquet_file, verbose=False)
 
     # Try native geo stats first (GeoParquet 2.0 / parquet-geo-only)
     rg_stats = get_per_row_group_native_geo_stats(parquet_file)
@@ -1458,7 +1919,7 @@ def get_row_group_geo_stats(parquet_file: str) -> list[dict]:
         return []
 
     file_meta = get_file_metadata(parquet_file)
-    num_rows_per_rg = _get_num_rows_per_row_group(safe_url, file_meta)
+    num_rows_per_rg = _get_num_rows_per_row_group(parquet_file, file_meta)
 
     return _merge_row_counts(rg_stats, num_rows_per_rg)
 

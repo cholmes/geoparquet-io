@@ -752,6 +752,58 @@ class TestApplyGeoArrowExtensionType:
         table = pa.table({"id": [1, 2]})
         assert apply_geoarrow_extension_type(table, "geometry") is table
 
+    def _zero_chunk_table(self, geom_type=pa.large_binary()):
+        """A zero-row table whose geometry column holds zero chunks.
+
+        This is exactly what ``con.execute(...).arrow().read_all()`` returns for
+        a DuckDB result with no rows -- not one empty chunk, but none at all.
+        """
+        table = pa.table(
+            {
+                "id": pa.chunked_array([], type=pa.int64()),
+                "geometry": pa.chunked_array([], type=geom_type),
+            }
+        )
+        assert table.column("geometry").num_chunks == 0
+        return table
+
+    def test_zero_chunk_column_converts_without_aborting(self):
+        """A zero-row (zero-chunk) geometry column yields a typed empty column.
+
+        Regression guard for #804: geoarrow rebuilt a ChunkedArray from an empty
+        chunk list with no type, which aborted the interpreter (SIGABRT) instead
+        of raising. Streaming an empty spatial filter must be ordinary.
+        """
+        table = self._zero_chunk_table()
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        geom = result.column("geometry")
+        assert getattr(geom.type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == 0
+        assert geom.num_chunks == 1
+        assert result.column_names == ["id", "geometry"]
+
+    def test_zero_chunk_column_keeps_crs(self):
+        """The CRS branch also has to survive the zero-chunk case."""
+        table = self._zero_chunk_table()
+
+        result = apply_geoarrow_extension_type(table, "geometry", crs="EPSG:4326")
+
+        geom_type = result.column("geometry").type
+        assert getattr(geom_type, "extension_name", "") == "geoarrow.wkb"
+        assert geom_type.crs is not None
+        assert result.num_rows == 0
+
+    def test_zero_chunk_binary_column_converts(self):
+        """32-bit ``binary`` WKB (a re-read stream) hits the same path."""
+        table = self._zero_chunk_table(geom_type=pa.binary())
+
+        result = apply_geoarrow_extension_type(table, "geometry")
+
+        assert getattr(result.column("geometry").type, "extension_name", "") == "geoarrow.wkb"
+        assert result.num_rows == 0
+
     def test_rebatches_when_chunk_exceeds_limit(self, monkeypatch):
         """A chunk above the byte budget is split before conversion and survives.
 
@@ -822,3 +874,84 @@ class TestApplyGeoArrowExtensionType:
         geom = result.column("geometry")
         assert getattr(geom.type, "extension_name", "") == "geoarrow.wkb"
         assert result.num_rows == n
+
+
+class TestReadStdinToTempFile:
+    """The stdin -> temp Parquet bridge used by the partition commands (#722).
+
+    DuckDB refuses to read a Parquet file whose ``geo`` metadata declares a
+    geometry column without ``geometry_types`` (required by GeoParquet 1.1).
+    gpio's own producers now carry it, but a stream can come from anywhere, so
+    the bridge fills the gap in the temp file it owns rather than writing a file
+    nothing downstream can open.
+    """
+
+    def _point_table(self, geo: dict) -> pa.Table:
+        wkb_point = bytes.fromhex("0101000000000000000000f03f000000000000f03f")  # POINT (1 1)
+        table = pa.table({"id": [1], "geometry": [wkb_point]})
+        return table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+
+    def _run(self, monkeypatch, table):
+        from geoparquet_io.core import streaming as streaming_mod
+
+        monkeypatch.setattr(streaming_mod, "read_arrow_stream", lambda: table)
+        return streaming_mod.read_stdin_to_temp_file()
+
+    def test_missing_geometry_types_is_filled_in(self, monkeypatch):
+        import os
+
+        import duckdb
+        import pyarrow.parquet as pq
+
+        table = self._point_table(
+            {
+                "version": "1.1.0",
+                "primary_column": "geometry",
+                "columns": {"geometry": {"encoding": "WKB"}},
+            }
+        )
+        path = self._run(monkeypatch, table)
+        try:
+            geo = json.loads(pq.read_schema(path).metadata[b"geo"].decode("utf-8"))
+            assert geo["columns"]["geometry"]["geometry_types"] == ["Point"]
+            # The whole point: DuckDB can now open the file.
+            con = duckdb.connect()
+            try:
+                assert con.execute(f"SELECT COUNT(*) FROM '{path}'").fetchone()[0] == 1
+            finally:
+                con.close()
+        finally:
+            os.remove(path)
+
+    def test_declared_geometry_types_are_preserved(self, monkeypatch):
+        import os
+
+        import pyarrow.parquet as pq
+
+        table = self._point_table(
+            {
+                "version": "1.1.0",
+                "primary_column": "geometry",
+                "columns": {
+                    "geometry": {"encoding": "WKB", "geometry_types": ["Point", "MultiPoint"]}
+                },
+            }
+        )
+        path = self._run(monkeypatch, table)
+        try:
+            geo = json.loads(pq.read_schema(path).metadata[b"geo"].decode("utf-8"))
+            assert geo["columns"]["geometry"]["geometry_types"] == ["Point", "MultiPoint"]
+        finally:
+            os.remove(path)
+
+    def test_table_without_geo_metadata_is_unchanged(self, monkeypatch):
+        import os
+
+        import pyarrow.parquet as pq
+
+        table = pa.table({"id": [1, 2]})
+        path = self._run(monkeypatch, table)
+        try:
+            assert pq.read_table(path).num_rows == 2
+        finally:
+            os.remove(path)

@@ -32,7 +32,10 @@ from geoparquet_io.core.hilbert_order import (
     _resolve_output_version,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, info, success, warn
-from geoparquet_io.core.parquet_writer import ParquetWriteSettings
+from geoparquet_io.core.parquet_writer import (
+    DEFAULT_SORT_ROW_GROUP_ROWS,
+    resolve_sort_row_group_rows,
+)
 from geoparquet_io.core.partition.reader import require_single_file
 from geoparquet_io.core.remote import (
     get_remote_error_hint,
@@ -49,7 +52,11 @@ from geoparquet_io.core.streaming import (
     should_stream_output,
 )
 
-DEFAULT_STR_TILE_SIZE = ParquetWriteSettings.DEFAULT_ROW_GROUP_ROWS
+# STR's strip count is derived from the same number the writer sizes row groups
+# with, so its fallback tracks the sort default rather than the general write
+# default: a bare `gpio sort str` and `gpio sort str --row-group-size-mb ...`
+# then build the same ordering (#775).
+DEFAULT_STR_TILE_SIZE = DEFAULT_SORT_ROW_GROUP_ROWS
 
 
 def _validate_tile_size(tile_size: int) -> None:
@@ -250,6 +257,7 @@ def str_order(
     # --row-group-size rather than the internal tile_size it is derived into.
     if row_group_rows is not None and row_group_rows < 1:
         raise InvalidParameterError("--row-group-size", "must be at least 1")
+    row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
     tile_size = DEFAULT_STR_TILE_SIZE if row_group_rows is None else row_group_rows
     _validate_tile_size(tile_size)
     effective_version = _resolve_output_version(input_parquet, geoparquet_version, verbose, profile)

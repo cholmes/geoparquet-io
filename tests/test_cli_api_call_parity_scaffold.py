@@ -215,6 +215,16 @@ def _table(module: Any, attr: str, reference: Callable, call: Callable[[Ctx], An
     )
 
 
+# An `ops` front end that reaches core through `Table`.
+#
+# `ops.partition_by_*` delegates to the matching `Table` method rather than keeping a
+# second copy of the temp-file plumbing, and `Table` imports its core function inside
+# the method body -- so this one is patched on the *core* module, like a `Table` front
+# end, not on `ops`. That makes it constructed exactly like `_table`; the alias keeps
+# the call sites at the case list reading as "ops, via Table" without a duplicate body.
+_ops_via_table = _table
+
+
 def _install_write_strategy(_frontend, recorder: _Recorder):
     """Patch the strategy factory so Table.write's core write call is recorded.
 
@@ -498,18 +508,33 @@ CASES: list[ParityCase] = [
         cli=_cli(
             "partition_by_h3_impl",
             core_part_h3.partition_by_h3,
-            lambda c: ["partition", "h3", c.input_file, c.output_dir],
+            lambda c: ["partition", "h3", c.input_file, c.output_dir, "--resolution", "6"],
         ),
-        # No `ops.partition_by_*`; Table is the only API front end for partitioning.
+        ops=_ops_via_table(
+            core_part_h3,
+            "partition_by_h3",
+            core_part_h3.partition_by_h3,
+            lambda c: ops.partition_by_h3(c.table, c.output_dir, resolution=6),
+        ),
         table=_table(
             core_part_h3,
             "partition_by_h3",
             core_part_h3.partition_by_h3,
-            lambda c: c.gpio_table.partition_by_h3(c.output_dir),
+            lambda c: c.gpio_table.partition_by_h3(c.output_dir, resolution=6),
+        ),
+        notes=(
+            "A resolution is supplied on all three sides because no front end accepts a "
+            "call without one: the CLI errors from core, and the API now errors in front "
+            "of the temp-file write. `ops.partition_by_h3` inherits that gate by "
+            "delegating to `Table.partition_by_h3`, so it has to be called with a "
+            "resolution too. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("h3_column_name", "h3_column_name"),
             "resolution": ("resolution", "resolution"),
+            "auto": ("auto", "auto"),
+            "target_rows": ("target_rows", "target_rows"),
+            "max_partitions": ("max_partitions", "max_partitions"),
             "hive": ("hive", "hive"),
             "keep_column": ("keep_h3_column", "keep_h3_column"),
             "overwrite": ("overwrite", "overwrite"),
@@ -521,18 +546,47 @@ CASES: list[ParityCase] = [
         cli=_cli(
             "partition_by_quadkey_impl",
             core_part_quadkey.partition_by_quadkey,
-            lambda c: ["partition", "quadkey", c.input_file, c.output_dir],
+            lambda c: [
+                "partition",
+                "quadkey",
+                c.input_file,
+                c.output_dir,
+                "--resolution",
+                "13",
+                "--partition-resolution",
+                "6",
+            ],
+        ),
+        ops=_ops_via_table(
+            core_part_quadkey,
+            "partition_by_quadkey",
+            core_part_quadkey.partition_by_quadkey,
+            lambda c: ops.partition_by_quadkey(
+                c.table, c.output_dir, resolution=13, partition_resolution=6
+            ),
         ),
         table=_table(
             core_part_quadkey,
             "partition_by_quadkey",
             core_part_quadkey.partition_by_quadkey,
-            lambda c: c.gpio_table.partition_by_quadkey(c.output_dir),
+            lambda c: c.gpio_table.partition_by_quadkey(
+                c.output_dir, resolution=13, partition_resolution=6
+            ),
+        ),
+        notes=(
+            "Both resolutions are supplied on all three sides because no front end accepts "
+            "a call without them: the CLI errors from core, and the API now errors in front "
+            "of the temp-file write. `ops.partition_by_quadkey` inherits that gate by "
+            "delegating to `Table.partition_by_quadkey`, so it has to be called with both "
+            "resolutions too. Every other knob is still left at its default.",
         ),
         normalize={
             "column_name": ("quadkey_column_name", "quadkey_column_name"),
             "resolution": ("resolution", "resolution"),
             "partition_resolution": ("partition_resolution", "partition_resolution"),
+            "auto": ("auto", "auto"),
+            "target_rows": ("target_rows", "target_rows"),
+            "max_partitions": ("max_partitions", "max_partitions"),
             "hive": ("hive", "hive"),
             "keep_column": ("keep_quadkey_column", "keep_quadkey_column"),
             "overwrite": ("overwrite", "overwrite"),
@@ -547,12 +601,6 @@ CASES_BY_ID = {case.id: case for case in CASES}
 # --------------------------------------------------------------------------
 # Known gaps -- findings, not pinned behaviour. Every entry needs a reason.
 # --------------------------------------------------------------------------
-
-_AUTO_FROM_FILE = (
-    "The CLI leaves this unset so core can size it from the file on disk; the API is handed an "
-    "in-memory table and uses a fixed documented default. Same gap the #661 allowlist records "
-    "for the declared defaults -- the facade has to pick one behaviour."
-)
 
 # Keys are (case id, front end, canonical name, repr(CLI value), repr(API value)),
 # following `collect_divergences()` in tests/test_cli_api_default_parity.py. The two
@@ -587,20 +635,22 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "ops",
         "tile_size",
         "None",
-        "100000",
+        "50000",
     ): (
-        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
-        "in-memory API spells the same effective default explicitly as tile_size=100000."
+        "The file core resolves row_group_rows=None to the sort default of 50,000 rows "
+        "(DEFAULT_SORT_ROW_GROUP_ROWS); the in-memory API spells that same effective default "
+        "explicitly as tile_size=50000."
     ),
     (
         "sort str",
         "table",
         "tile_size",
         "None",
-        "100000",
+        "50000",
     ): (
-        "The file core resolves row_group_rows=None to the writer's 100,000-row default; the "
-        "fluent API spells the same effective default explicitly as tile_size=100000."
+        "The file core resolves row_group_rows=None to the sort default of 50,000 rows "
+        "(DEFAULT_SORT_ROW_GROUP_ROWS); the fluent API spells that same effective default "
+        "explicitly as tile_size=50000."
     ),
     (
         "add kdtree",
@@ -623,9 +673,6 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "Same as ('add kdtree', 'ops', 'iterations'): Table.add_kdtree also pins iterations=9 "
         "while the CLI defaults to auto-sizing from the row count."
     ),
-    ("partition h3", "table", "resolution", "None", "9"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "resolution", "None", "13"): _AUTO_FROM_FILE,
-    ("partition quadkey", "table", "partition_resolution", "None", "6"): _AUTO_FROM_FILE,
 }
 
 
