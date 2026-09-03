@@ -1167,7 +1167,8 @@ def _stream_features_to_parquet(
                 # Cast failure (e.g. a value that overflows a declared narrower type)
                 raise GeoParquetError(
                     f"Failed to cast batch {page_count} to target schema. "
-                    f"This may indicate unexpected types from the service. {e}"
+                    f"The page's values could not be reconciled with the "
+                    f"layer's declared field types. {e}"
                 ) from e
 
             # Initialize writer on first page using the reconciled page's schema.
