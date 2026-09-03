@@ -1188,3 +1188,106 @@ class TestAddBboxMetadataPreservesFileProperties:
             assert "Remote URLs are not supported" in str(exc_info.value), (
                 f"Expected clear error for {url}, got: {exc_info.value}"
             )
+
+
+class TestPassthroughVersion:
+    """Unit tests for `_passthrough_version`'s branches (#798 diff-cover gap).
+
+    A pass-through copy must declare the version the *input* already had, not
+    whatever the streaming writer would default to -- see `_passthrough_version`
+    in geoparquet_io/core/add/bbox.py for the reasoning.
+    """
+
+    def test_explicit_geoparquet_version_wins(self):
+        """An explicitly requested version is returned outright, metadata unread."""
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        assert _passthrough_version(None, "1.1") == "1.1"
+
+    def test_no_metadata_returns_none(self):
+        """No file metadata at all: nothing to derive a version from."""
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        assert _passthrough_version(None, None) is None
+
+    def test_metadata_without_geo_key_returns_none(self):
+        """Metadata present but missing the 'geo' key: still nothing to derive from."""
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        assert _passthrough_version({b"other": b"value"}, None) is None
+
+    def test_unparseable_geo_json_returns_none(self):
+        """Malformed JSON under 'geo' must not raise -- just fall back to None."""
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        assert _passthrough_version({b"geo": b"{not valid json"}, None) is None
+
+    def test_geo_metadata_not_a_dict_returns_none(self):
+        """'geo' that parses to something other than an object is not usable."""
+        import json
+
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        metadata = {b"geo": json.dumps(["unexpected", "list"]).encode("utf-8")}
+        assert _passthrough_version(metadata, None) is None
+
+    def test_non_string_version_returns_none(self):
+        """A 'version' field that is not a string cannot be parsed further."""
+        import json
+
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        metadata = {b"geo": json.dumps({"version": 11}).encode("utf-8")}
+        assert _passthrough_version(metadata, None) is None
+
+    def test_version_without_minor_component_returns_none(self):
+        """A version string with no '<major>.<minor>' shape can't be truncated to one."""
+        import json
+
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        metadata = {b"geo": json.dumps({"version": "1"}).encode("utf-8")}
+        assert _passthrough_version(metadata, None) is None
+
+    def test_valid_version_is_truncated_to_major_minor(self):
+        """A well-formed patch version is truncated to its major.minor form."""
+        import json
+
+        from geoparquet_io.core.add.bbox import _passthrough_version
+
+        metadata = {b"geo": json.dumps({"version": "1.1.0"}).encode("utf-8")}
+        assert _passthrough_version(metadata, None) == "1.1"
+
+
+class TestStreamingGeometryColumnFallback:
+    """`_make_streaming_bbox_query` falls back to 'geometry' when no standard
+    geometry column name is present in the source's schema (#798 diff-cover gap).
+    """
+
+    def test_falls_back_to_geometry_when_no_standard_name_present(self):
+        import duckdb
+
+        from geoparquet_io.core.add.bbox import _make_streaming_bbox_query
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE t AS SELECT 1 AS id, 'x' AS label")
+
+        query, passed_through = _make_streaming_bbox_query("t", con, "bbox", force=False)
+
+        assert passed_through is False
+        assert '"geometry"' in query
+
+
+class TestPreviewCopyWithoutOutputPath:
+    """`gpio add bbox --dry-run` with no OUTPUT_FILE must report only, and must
+    not try to describe a copy that has no destination (#798 diff-cover gap).
+    """
+
+    def test_dry_run_without_output_reports_only(self, places_with_covering_file):
+        """Covers the 'nothing to preview' branch when output_parquet is None."""
+        runner = CliRunner()
+        result = runner.invoke(add, ["bbox", places_with_covering_file, "--dry-run"])
+        assert result.exit_code == 0, result.output
+
+        assert "already has bbox column" in result.output
+        assert "Would copy" not in result.output

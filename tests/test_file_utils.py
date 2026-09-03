@@ -353,6 +353,92 @@ class TestHandleOutputOverwrite:
 
 
 # =============================================================================
+# Tests for copy_file()
+# =============================================================================
+
+
+class TestCopyFile:
+    """Test byte-for-byte copying, local and remote (#798 diff-cover gap)."""
+
+    def test_local_copy_verbose_logs_debug_message(self, tmp_path, caplog):
+        """verbose=True logs the 'Copying ... to ...' debug line before copying."""
+        import logging
+
+        from geoparquet_io.core.file_utils import copy_file
+
+        source = tmp_path / "source.parquet"
+        dest = tmp_path / "dest.parquet"
+        source.write_bytes(b"geoparquet-bytes")
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            copy_file(str(source), str(dest), verbose=True)
+
+        assert dest.read_bytes() == b"geoparquet-bytes"
+        assert f"Copying {source} to {dest}" in caplog.text
+
+    def test_remote_copy_uses_fsspec_without_network(self, monkeypatch):
+        """Either side being a remote URL routes through fsspec.open, not shutil.
+
+        fsspec.open is monkeypatched so no real network call is made -- only the
+        branch selection and the copyfileobj plumbing are under test here.
+        """
+        import io
+        from unittest import mock
+
+        import fsspec
+
+        from geoparquet_io.core.file_utils import copy_file
+
+        content = b"remote-geoparquet-bytes"
+        src_buffer = io.BytesIO(content)
+        dest_buffer = io.BytesIO()
+        opened_paths = []
+
+        def fake_open(path, mode):
+            opened_paths.append((path, mode))
+            handle = mock.MagicMock()
+            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
+            handle.__exit__.return_value = False
+            return handle
+
+        monkeypatch.setattr(fsspec, "open", fake_open)
+
+        copy_file("s3://bucket/source.parquet", "s3://bucket/dest.parquet")
+
+        assert dest_buffer.getvalue() == content
+        assert opened_paths == [
+            ("s3://bucket/source.parquet", "rb"),
+            ("s3://bucket/dest.parquet", "wb"),
+        ]
+
+    def test_remote_source_local_dest_still_uses_fsspec(self, monkeypatch):
+        """Only one side needs to be remote to take the fsspec branch."""
+        import io
+        from unittest import mock
+
+        import fsspec
+
+        from geoparquet_io.core.file_utils import copy_file
+
+        content = b"mixed-source-bytes"
+        src_buffer = io.BytesIO(content)
+        dest_buffer = io.BytesIO()
+
+        def fake_open(path, mode):
+            handle = mock.MagicMock()
+            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
+            handle.__exit__.return_value = False
+            return handle
+
+        monkeypatch.setattr(fsspec, "open", fake_open)
+
+        # Only the source is remote; the dest is a plain local-looking path.
+        copy_file("https://example.com/source.parquet", "local_dest.parquet")
+
+        assert dest_buffer.getvalue() == content
+
+
+# =============================================================================
 # Tests for safe_file_url()
 # =============================================================================
 
