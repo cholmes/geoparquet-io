@@ -1699,6 +1699,140 @@ class TestStreamingConversion:
         assert temp_files_before == temp_files_after
         assert result.num_rows == 3
 
+    def test_normalize_table_polygon_winding_rewinds_whole_column(self):
+        """`_normalize_table_polygon_winding` fixes every row's ring winding,
+        and leaves non-polygon geometry (and missing columns) untouched."""
+        # Build a CW-wound (already normalized-away-from-ArcGIS) shell by
+        # constructing raw WKB directly, bypassing the per-page normalizer.
+        import struct
+
+        from geoparquet_io.core.arcgis import (
+            _geojson_page_to_table,
+            _normalize_table_polygon_winding,
+        )
+
+        cw_square = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]  # CW, area < 0
+        wkb = bytearray()
+        wkb += struct.pack("<B", 1)
+        wkb += struct.pack("<I", 3)  # Polygon
+        wkb += struct.pack("<I", 1)  # 1 ring
+        wkb += struct.pack("<I", len(cw_square))
+        for x, y in cw_square:
+            wkb += struct.pack("<dd", x, y)
+
+        table = pa.table({"geometry": [bytes(wkb)], "name": ["a"]})
+        fixed = _normalize_table_polygon_winding(table, "geometry")
+
+        rings = _wkb_polygon_rings(fixed.column("geometry")[0].as_py())
+        assert len(rings) == 1
+        assert _signed_ring_area(rings[0]) > 0, "shell must be forced counterclockwise"
+
+        # Passes through unchanged when the geometry column is absent.
+        no_geom_table = pa.table({"name": ["a"]})
+        assert _normalize_table_polygon_winding(no_geom_table, "geometry") is no_geom_table
+
+        # Sanity: still works when fed a table built the normal way.
+        real_table = _geojson_page_to_table(
+            [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]]],
+                    },
+                    "properties": {},
+                }
+            ]
+        )
+        result = _normalize_table_polygon_winding(real_table, "geometry")
+        assert result.num_rows == 1
+
+    @patch("geoparquet_io.core.arcgis._stream_features_to_parquet")
+    @patch("geoparquet_io.core.arcgis.get_layer_info")
+    @patch("geoparquet_io.core.arcgis.validate_arcgis_url")
+    def test_arcgis_to_table_reorients_after_repair(
+        self, mock_validate, mock_layer_info, mock_stream
+    ):
+        """Regression test for PR #821 review: `ST_MakeValid` (run by the
+        default `repair_geometry=True`) re-winds rings, so an invalid,
+        ArcGIS-wound polygon must be re-normalized *after* repair, not just
+        during the per-page conversion. Also asserts the `orientation` key is
+        now declared in the output's `geo` metadata.
+        """
+        import struct
+
+        from geoparquet_io.core.arcgis import (
+            ArcGISLayerInfo,
+            _geojson_page_to_table,
+            arcgis_to_table,
+        )
+
+        mock_validate.return_value = ("https://example.com/FeatureServer/0", 0)
+        mock_layer_info.return_value = ArcGISLayerInfo(
+            name="Test",
+            geometry_type="esriGeometryPolygon",
+            spatial_reference={"wkid": 4326},
+            fields=[],
+            max_record_count=1000,
+            total_count=1,
+        )
+
+        # A self-intersecting "bowtie" polygon: invalid, so ST_MakeValid splits
+        # it into a MultiPolygon of two triangles. Build it the same way the
+        # real page pipeline would (per-page normalization applied first).
+        bowtie_feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0, 0], [10, 10], [10, 0], [0, 10], [0, 0]]],
+            },
+            "properties": {},
+        }
+        page_table = _geojson_page_to_table([bowtie_feature])
+        wkb = page_table.column("geometry")[0].as_py()
+
+        def mock_stream_impl(service_url, layer_info, output_path, **kwargs):
+            table = pa.table({"geometry": [wkb]})
+            pq.write_table(table, output_path)
+            return 1, None
+
+        mock_stream.side_effect = mock_stream_impl
+
+        result = arcgis_to_table("https://example.com/FeatureServer/0")
+
+        assert result.num_rows == 1
+        result_wkb = result.column("geometry")[0].as_py()
+        endian = "<" if result_wkb[0] == 1 else ">"
+        (geom_type,) = struct.unpack_from(endian + "I", result_wkb, 1)
+        assert geom_type % 1000 == 6, "invalid polygon must be repaired into a MultiPolygon"
+
+        # Every shell produced by the repair must have been re-normalized to
+        # counterclockwise, not left clockwise by ST_MakeValid.
+        (num_polys,) = struct.unpack_from(endian + "I", result_wkb, 5)
+        assert num_polys >= 1
+        pos = 9
+        for _ in range(num_polys):
+            sub_endian = "<" if result_wkb[pos] == 1 else ">"
+            (num_rings,) = struct.unpack_from(sub_endian + "I", result_wkb, pos + 5)
+            ring_pos = pos + 9
+            for ring_index in range(num_rings):
+                (num_points,) = struct.unpack_from(sub_endian + "I", result_wkb, ring_pos)
+                ring_pos += 4
+                points = []
+                for _pt in range(num_points):
+                    x, y = struct.unpack_from(sub_endian + "dd", result_wkb, ring_pos)
+                    ring_pos += 16
+                    points.append((x, y))
+                area = _signed_ring_area(points)
+                if ring_index == 0:
+                    assert area > 0, "exterior ring must be counterclockwise after repair"
+                else:
+                    assert area < 0, "hole ring must be clockwise after repair"
+            pos = ring_pos
+
+        geo_metadata = json.loads(result.schema.metadata[b"geo"])
+        assert geo_metadata["columns"]["geometry"]["orientation"] == "counterclockwise"
+
 
 class TestStreamOutputCrs:
     @patch("geoparquet_io.core.arcgis.fetch_all_features")

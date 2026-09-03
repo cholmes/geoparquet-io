@@ -1069,6 +1069,26 @@ def _normalize_polygon_winding(wkb: bytes | None) -> bytes | None:
     return wkb
 
 
+def _normalize_table_polygon_winding(table: pa.Table, geometry_column: str) -> pa.Table:
+    """Force RFC 7946 / GeoParquet default polygon ring winding onto a whole table.
+
+    This must run *after* any geometry repair (e.g. `ST_MakeValid` via
+    `repair_arrow_table_geometry`), since `ST_MakeValid` can re-wind rings
+    clockwise and undo the per-page normalization done in
+    `_json_doc_to_table` — see `_normalize_polygon_winding` for the ArcGIS
+    winding convention being corrected. Non-polygon geometries and rows with
+    no geometry pass through unchanged. Preserves schema metadata.
+    """
+    if geometry_column not in table.column_names:
+        return table
+    geometry_index = table.schema.get_field_index(geometry_column)
+    fixed_geometry = pa.array(
+        [_normalize_polygon_winding(v.as_py()) for v in table.column(geometry_index)],
+        type=pa.binary(),
+    )
+    return table.set_column(geometry_index, geometry_column, fixed_geometry)
+
+
 def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Table:
     """Write a JSON document to a temp file and convert it via DuckDB ST_Read.
 
@@ -1484,19 +1504,23 @@ def arcgis_to_table(
                     f"(coordinates were not reprojected)."
                 )
             crs = _extract_crs_from_spatial_reference(detected_sr or {"wkid": output_wkid})
+        is_polygon_layer = layer_info.geometry_type == "esriGeometryPolygon"
         if crs:
+            geometry_column_metadata = {
+                "encoding": "WKB",
+                "crs": crs,
+                "geometry_types": [ARCGIS_GEOM_TYPES.get(layer_info.geometry_type, "Geometry")],
+            }
+            # Declare the winding direction the normalization below guarantees.
+            # Per the GeoParquet spec, absence of this key is not an assertion,
+            # so consumers can't rely on the ring-winding fix without it (only
+            # meaningful for Polygon/MultiPolygon geometries).
+            if is_polygon_layer:
+                geometry_column_metadata["orientation"] = "counterclockwise"
             geo_metadata = {
                 "version": "1.1.0",
                 "primary_column": "geometry",
-                "columns": {
-                    "geometry": {
-                        "encoding": "WKB",
-                        "crs": crs,
-                        "geometry_types": [
-                            ARCGIS_GEOM_TYPES.get(layer_info.geometry_type, "Geometry")
-                        ],
-                    }
-                },
+                "columns": {"geometry": geometry_column_metadata},
             }
 
             # Update table schema with geo metadata
@@ -1507,6 +1531,12 @@ def arcgis_to_table(
         # Repair invalid geometry (issue #506). Helper preserves schema metadata.
         if table.num_rows > 0:
             table, _ = repair_arrow_table_geometry(table, "geometry", repair=repair_geometry)
+            # ST_MakeValid (run above) can re-wind rings clockwise, undoing the
+            # per-page normalization done in _json_doc_to_table. Re-normalize the
+            # whole assembled table so the orientation declared above (and RFC
+            # 7946 / GeoParquet's default winding) holds after repair too.
+            if is_polygon_layer:
+                table = _normalize_table_polygon_winding(table, "geometry")
 
         success(f"Converted {table.num_rows} features")
         return table
