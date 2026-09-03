@@ -166,48 +166,35 @@ def _wrap_query_with_crs(
 
 
 def _plain_wkb_for_secondary_columns(table, geometry_column: str, verbose: bool):
-    """Strip geoarrow extension typing from every NON-primary geometry column.
+    """Give every NON-primary geometry column the canonical plain-WKB carrier.
 
     Named from the table's own carried ``geo`` key, which is the only place a
-    table entry point learns about secondaries. The primary is left alone: the
-    caller converts it explicitly.
+    table entry point learns about secondaries. The primary is left alone (it is
+    passed as ``native_columns``): the caller converts it explicitly, and casting
+    it here would both copy the whole geometry column and undo the
+    field-metadata detection the query wrapper depends on (#727).
+
+    Both carrier shapes reach here -- a resolved ``geoarrow.wkb`` extension type,
+    and plain ``large_binary`` carrying only an ``ARROW:extension:name`` field
+    metadata key, which PyArrow leaves unresolved but DuckDB still registers as
+    GEOMETRY, making the COPY write a native Parquet GEOMETRY type that is
+    illegal below GeoParquet 2.0 (#706, #727). ``_canonicalize_wkb_columns``
+    handles both, and its ``_WKB_EXTENSION_NAMES`` guard leaves a *native* nested
+    carrier (``geoarrow.point`` over ``struct<x, y>``) alone rather than forcing
+    it through a binary cast PyArrow cannot perform.
     """
     from geoparquet_io.core.common import (
+        _canonicalize_wkb_columns,
         _parse_geo_metadata_quietly,
-        _strip_geoarrow_to_plain_wkb,
     )
 
     carried_geo = _parse_geo_metadata_quietly(table.schema.metadata)
     secondaries = resolve_geometry_columns(geometry_column, None, carried_geo) - {geometry_column}
-    for column in sorted(secondaries):
-        if column in table.column_names:
-            table = _strip_geoarrow_to_plain_wkb(table, column, verbose)
-            table = _drop_metadata_declared_geoarrow(table, column)
-    return table
-
-
-def _drop_metadata_declared_geoarrow(table, column: str):
-    """Rewrite a column that declares geoarrow in its FIELD METADATA to plain WKB.
-
-    ``_strip_geoarrow_to_plain_wkb`` keys off the resolved Arrow extension type
-    alone, so it leaves this shape untouched -- but DuckDB reads the marker off
-    the field metadata and registers the column as GEOMETRY anyway, and the COPY
-    then writes it as a native Parquet GEOMETRY logical type. That is the #706
-    bug reappearing through the other carrier shape, and it is illegal below
-    GeoParquet 2.0 (#727).
-    """
-    import pyarrow as pa
-
-    from geoparquet_io.core.write_strategies.arrow_streaming import _to_plain_wkb_array
-
-    index = table.schema.get_field_index(column)
-    field = table.schema.field(index)
-    if getattr(field.type, "extension_name", None) is not None:
-        return table  # resolved extension type: already handled by the strip above
-    if arrow_extension_name(field) is None:
+    if not secondaries:
         return table
-    plain_field = pa.field(column, pa.binary(), nullable=field.nullable)
-    return table.set_column(index, plain_field, _to_plain_wkb_array(table.column(index)))
+    return _canonicalize_wkb_columns(
+        table, sorted(secondaries), verbose, native_columns={geometry_column}
+    )
 
 
 def _build_copy_options(
