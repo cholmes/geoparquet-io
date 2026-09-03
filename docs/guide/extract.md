@@ -35,16 +35,14 @@ Select only the columns you need. The geometry column and bbox column (if presen
 
 === "CLI"
 
-    <!-- doctest: skip="names columns the sample data does not have (id)" -->
     ```bash
-    # Extract only id and name columns (plus geometry and bbox)
-    gpio extract places.parquet subset.parquet --include-cols id,name
+    # Extract only the id and name columns (plus geometry and bbox)
+    gpio extract places.parquet subset.parquet --include-cols fsq_place_id,name
     ```
 
-    <!-- doctest: skip="names columns the sample data does not have (address, building_type, height)" -->
     ```bash
     # Extract multiple attribute columns
-    gpio extract buildings.parquet subset.parquet --include-cols height,building_type,address
+    gpio extract places.parquet subset.parquet --include-cols name,address,placemaker_url
     ```
 
 === "Python"
@@ -52,12 +50,17 @@ Select only the columns you need. The geometry column and bbox column (if presen
     ```python
     import geoparquet_io as gpio
 
-    # Extract only id and name columns (plus geometry and bbox)
-    gpio.read('places.parquet').extract(columns=['id', 'name']).write('subset.parquet')
+    # Extract only the id and name columns (plus geometry and bbox)
+    gpio.read('places.parquet').extract(columns=['fsq_place_id', 'name']).write('subset.parquet')
 
     # Extract multiple attribute columns
-    gpio.read('buildings.parquet').extract(columns=['height', 'building_type', 'address']).write('subset.parquet')
+    gpio.read('places.parquet').extract(
+        columns=['name', 'address', 'placemaker_url']
+    ).write('attributes.parquet')
     ```
+
+Unknown column names are rejected up front: `extract()` names the missing column
+rather than dropping it silently.
 
 ### Excluding Columns
 
@@ -65,13 +68,12 @@ Remove unwanted columns from the output:
 
 === "CLI"
 
-    <!-- doctest: skip="names columns the sample data does not have (metadata_json, raw_data)" -->
     ```bash
-    # Exclude large or unnecessary columns
-    gpio extract data.parquet output.parquet --exclude-cols raw_data,metadata_json
+    # Exclude a large or unnecessary column
+    gpio extract data.parquet output.parquet --exclude-cols placemaker_url
 
     # Exclude multiple columns
-    gpio extract data.parquet output.parquet --exclude-cols temp_id,internal_notes,debug_info
+    gpio extract data.parquet output2.parquet --exclude-cols placemaker_url,address
     ```
 
 === "Python"
@@ -79,11 +81,13 @@ Remove unwanted columns from the output:
     ```python
     import geoparquet_io as gpio
 
-    # Exclude large or unnecessary columns
-    gpio.read('data.parquet').extract(exclude_columns=['raw_data', 'metadata_json']).write('output.parquet')
+    # Exclude a large or unnecessary column
+    gpio.read('data.parquet').extract(exclude_columns=['placemaker_url']).write('output.parquet')
 
     # Exclude multiple columns
-    gpio.read('data.parquet').extract(exclude_columns=['temp_id', 'internal_notes', 'debug_info']).write('output.parquet')
+    gpio.read('data.parquet').extract(
+        exclude_columns=['placemaker_url', 'address']
+    ).write('output2.parquet')
     ```
 
 ### Combining Include and Exclude
@@ -93,10 +97,12 @@ You can combine both to control exactly which columns appear, including removing
 === "CLI"
 
     ```bash
-    # Include specific columns but exclude geometry (for non-spatial export)
+    # Include specific columns but exclude geometry (for non-spatial export).
+    # Exclude bbox too: it is a covering of the geometry that was just dropped,
+    # and is otherwise added back automatically.
     gpio extract data.parquet output.parquet \
       --include-cols fsq_place_id,name,address \
-      --exclude-cols geometry
+      --exclude-cols geometry,bbox
 
     # Include columns but exclude bbox to save space
     gpio extract data.parquet output2.parquet \
@@ -109,10 +115,12 @@ You can combine both to control exactly which columns appear, including removing
     ```python
     import geoparquet_io as gpio
 
-    # Include specific columns but exclude geometry (for non-spatial export)
+    # Include specific columns but exclude geometry (for non-spatial export).
+    # Exclude bbox too: it is a covering of the geometry that was just dropped,
+    # and is otherwise added back automatically.
     gpio.read('data.parquet').extract(
         columns=['fsq_place_id', 'name', 'address'],
-        exclude_columns=['geometry']
+        exclude_columns=['geometry', 'bbox']
     ).write('output.parquet')
 
     # Include columns but exclude bbox to save space

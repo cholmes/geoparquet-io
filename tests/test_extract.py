@@ -15,7 +15,7 @@ import duckdb
 import pyarrow as pa
 import pytest
 
-from geoparquet_io.core.exceptions import GeoParquetError
+from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.extract import (
     build_column_selection,
     build_extract_query,
@@ -1045,24 +1045,89 @@ class TestExtractTable:
     """Tests for extract_table Python API function."""
 
     def test_invalid_geometry_column_raises_error(self):
-        """Test that specifying a non-existent geometry column raises ValueError."""
+        """Specifying a non-existent geometry column is an invalid parameter."""
         table = pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"], "geometry": [b"", b"", b""]})
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(InvalidParameterError) as exc_info:
             extract_table(table, geometry_column="nonexistent")
 
         assert "geometry_column 'nonexistent' not found" in str(exc_info.value)
         assert "id" in str(exc_info.value)
         assert "name" in str(exc_info.value)
 
-    def test_default_geometry_column_not_found_raises_error(self):
-        """Test that missing default 'geometry' column raises ValueError."""
+    def test_table_without_geometry_extracts_without_geometry(self):
+        """A table with no geometry column is a legitimate input, not an error.
+
+        extract() on an attribute table (one produced by an earlier
+        ``exclude_columns=['geometry']``, say) used to default geom_col to
+        'geometry' and fail hard on any further call, even a limit-only one.
+        """
         table = pa.table({"id": [1, 2, 3], "data": ["x", "y", "z"]})
 
-        with pytest.raises(ValueError) as exc_info:
-            extract_table(table)
+        result = extract_table(table, limit=2)
 
-        assert "geometry_column 'geometry' not found" in str(exc_info.value)
+        assert result.num_rows == 2
+        assert result.column_names == ["id", "data"]
+
+    def test_table_without_geometry_still_selects_columns(self):
+        """Column projection works on a table that has no geometry column."""
+        table = pa.table({"id": [1, 2, 3], "data": ["x", "y", "z"], "extra": [1, 2, 3]})
+
+        result = extract_table(table, columns=["id", "data"])
+
+        assert result.column_names == ["id", "data"]
+
+    def test_bbox_without_geometry_column_raises(self):
+        """A spatial filter needs geometry: say so by name instead of silently ignoring it."""
+        table = pa.table({"id": [1, 2, 3], "data": ["x", "y", "z"]})
+
+        with pytest.raises(InvalidParameterError) as exc_info:
+            extract_table(table, bbox=(0.0, 0.0, 1.0, 1.0))
+
+        assert "bbox" in str(exc_info.value)
+
+    def test_explicit_geometry_column_missing_still_raises(self):
+        """An explicitly named geometry column that is absent is still an error."""
+        table = pa.table({"id": [1, 2, 3], "data": ["x", "y", "z"]})
+
+        with pytest.raises(GeoParquetError) as exc_info:
+            extract_table(table, geometry_column="geom")
+
+        assert "geom" in str(exc_info.value)
+
+    def test_column_in_both_include_and_exclude_raises(self):
+        """columns= and exclude_columns= naming the same column is a contradiction (#731).
+
+        The CLI rejects it via ``_validate_column_overlap``; the API used to
+        silently ignore the exclusion and keep the column.
+        """
+        table = pa.table({"id": [1, 2], "name": ["a", "b"], "geometry": [b"", b""]})
+
+        with pytest.raises(InvalidParameterError) as exc_info:
+            extract_table(table, columns=["id", "name"], exclude_columns=["name"])
+
+        message = str(exc_info.value)
+        assert "name" in message
+        assert "columns/exclude_columns" in message
+
+    def test_geometry_may_be_in_both_include_and_exclude(self):
+        """geometry and bbox are the exception the CLI already carves out.
+
+        Only *ordinary* columns are a contradiction; naming geometry in both
+        lists is how a caller says "these attributes, and decide geometry
+        separately", so it must not raise.
+        """
+        table = pa.table(
+            {
+                "id": [1, 2],
+                "name": ["a", "b"],
+                "geometry": [_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)],
+            }
+        )
+
+        result = extract_table(table, columns=["id", "geometry"], exclude_columns=["geometry"])
+
+        assert "id" in result.column_names
 
     def test_unknown_columns_raise_naming_the_missing_ones(self):
         """extract_table validates columns= against the schema, like --include-cols.
@@ -1109,3 +1174,127 @@ class TestExtractTable:
 
         assert "id" in result.column_names
         assert "name" in result.column_names
+
+
+def _wkb_point(x: float, y: float) -> bytes:
+    """Minimal little-endian WKB POINT, so DuckDB can read the column as geometry."""
+    import struct
+
+    return b"\x01\x01\x00\x00\x00" + struct.pack("<dd", x, y)
+
+
+def _table_with_geo(columns: dict, geo: dict) -> pa.Table:
+    """Build an Arrow table carrying ``geo`` file-level metadata."""
+    table = pa.table(columns)
+    return table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+
+
+def _geo_of(table: pa.Table) -> dict | None:
+    """Decode the ``geo`` metadata of a result table, or None when absent."""
+    metadata = table.schema.metadata or {}
+    if b"geo" not in metadata:
+        return None
+    return json.loads(metadata[b"geo"].decode("utf-8"))
+
+
+class TestExtractTableGeoMetadata:
+    """The carried geo metadata must describe the columns the result actually has."""
+
+    def test_dropping_primary_geometry_drops_geo_metadata(self):
+        """An attribute table is plain Parquet: it must not advertise geo metadata."""
+        table = _table_with_geo(
+            {"id": [1, 2], "geometry": [_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)]},
+            {
+                "version": "1.1.0",
+                "primary_column": "geometry",
+                "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+            },
+        )
+
+        result = extract_table(table, exclude_columns=["geometry"])
+
+        assert result.column_names == ["id"]
+        assert _geo_of(result) is None
+
+    def test_dropping_bbox_column_drops_its_covering(self):
+        """A covering pointing at a dropped column leaves geo metadata readers reject."""
+        bbox_type = pa.struct(
+            [("xmin", pa.float64()), ("ymin", pa.float64()), ("xmax", pa.float64())]
+        )
+        table = _table_with_geo(
+            {
+                "id": pa.array([1, 2]),
+                "geometry": pa.array([_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)]),
+                "bbox": pa.array(
+                    [
+                        {"xmin": 0.0, "ymin": 0.0, "xmax": 0.0},
+                        {"xmin": 1.0, "ymin": 1.0, "xmax": 1.0},
+                    ],
+                    type=bbox_type,
+                ),
+            },
+            {
+                "version": "1.1.0",
+                "primary_column": "geometry",
+                "columns": {
+                    "geometry": {
+                        "encoding": "WKB",
+                        "covering": {
+                            "bbox": {
+                                "xmin": ["bbox", "xmin"],
+                                "ymin": ["bbox", "ymin"],
+                                "xmax": ["bbox", "xmax"],
+                            }
+                        },
+                    }
+                },
+            },
+        )
+
+        result = extract_table(table, exclude_columns=["bbox"])
+
+        assert "bbox" not in result.column_names
+        geo = _geo_of(result)
+        assert geo is not None
+        assert "covering" not in geo["columns"]["geometry"]
+
+    def test_dropping_primary_repoints_at_a_surviving_geometry_column(self):
+        """A secondary geometry column that survives becomes the primary."""
+        table = _table_with_geo(
+            {
+                "id": [1, 2],
+                "geom_a": [_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)],
+                "geom_b": [_wkb_point(2.0, 2.0), _wkb_point(3.0, 3.0)],
+            },
+            {
+                "version": "1.1.0",
+                "primary_column": "geom_a",
+                "columns": {
+                    "geom_a": {"encoding": "WKB"},
+                    "geom_b": {"encoding": "WKB"},
+                },
+            },
+        )
+
+        result = extract_table(table, exclude_columns=["geom_a"])
+
+        assert "geom_a" not in result.column_names
+        geo = _geo_of(result)
+        assert geo is not None
+        assert geo["primary_column"] == "geom_b"
+        assert set(geo["columns"]) == {"geom_b"}
+
+    def test_unfiltered_extract_keeps_geo_metadata_intact(self):
+        """Nothing is dropped, so nothing about the carried metadata changes."""
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"]}},
+        }
+        table = _table_with_geo(
+            {"id": [1, 2], "geometry": [_wkb_point(0.0, 0.0), _wkb_point(1.0, 1.0)]}, geo
+        )
+
+        result = extract_table(table)
+
+        assert _geo_of(result) == geo

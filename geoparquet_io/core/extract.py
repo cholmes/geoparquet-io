@@ -39,7 +39,7 @@ from geoparquet_io.core.file_utils import (
     is_partition_path,
     safe_file_url,
 )
-from geoparquet_io.core.geo_metadata import strip_derived_stats
+from geoparquet_io.core.geo_metadata import prune_geo_metadata_to_columns, strip_derived_stats
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -454,7 +454,7 @@ def build_column_selection(
     all_columns: list[str],
     include_cols: list[str] | None,
     exclude_cols: list[str] | None,
-    geometry_col: str,
+    geometry_col: str | None,
     bbox_col: str | None,
 ) -> list[str]:
     """
@@ -470,7 +470,7 @@ def build_column_selection(
         all_columns: All columns in schema
         include_cols: Columns to include (or None)
         exclude_cols: Columns to exclude (or None)
-        geometry_col: Name of geometry column
+        geometry_col: Name of geometry column (or None for a table that has none)
         bbox_col: Name of bbox column (or None if not present)
 
     Returns:
@@ -481,7 +481,7 @@ def build_column_selection(
     if include_cols:
         selected = set(include_cols)
         # Always add geometry unless explicitly excluded
-        if geometry_col not in exclude_set:
+        if geometry_col and geometry_col not in exclude_set:
             selected.add(geometry_col)
         # Always add bbox unless explicitly excluded
         if bbox_col and bbox_col not in exclude_set:
@@ -723,35 +723,60 @@ def extract_table(
 
     Returns:
         Filtered PyArrow Table
-    """
-    all_columns, geom_col, bbox_info = _get_table_column_info(table)
-    geom_col = geometry_column or geom_col or "geometry"
 
-    if geom_col not in all_columns:
-        raise ValueError(
-            f"geometry_column '{geom_col}' not found in table columns: {list(all_columns)}"
+    Raises:
+        InvalidParameterError: If a requested column does not exist, if a column
+            is in both ``columns`` and ``exclude_columns``, if an explicitly
+            named ``geometry_column`` is absent, or if ``bbox`` is requested on a
+            table that has no geometry column.
+    """
+    all_columns, detected_geom, bbox_info = _get_table_column_info(table)
+    geom_col = geometry_column or detected_geom
+    bbox_col = bbox_info.get("bbox_column_name")
+
+    if geom_col is not None and geom_col not in all_columns:
+        raise InvalidParameterError(
+            "geometry_column",
+            f"geometry_column '{geom_col}' not found in table columns: {list(all_columns)}",
+        )
+
+    # A table with no geometry column is a legitimate input (an attribute table
+    # from an earlier exclude_columns=['geometry'], say): project and filter its
+    # rows like any other table, and only refuse what actually needs geometry.
+    if geom_col is None and bbox is not None:
+        raise InvalidParameterError(
+            "bbox",
+            f"bbox filtering needs a geometry column; this table has none "
+            f"(columns: {', '.join(all_columns)})",
         )
 
     # Validate before selecting, so an unknown name is reported here by name
     # rather than surfacing later as a writer error about a different column
-    # (#731). This is the check --include-cols/--exclude-cols already make.
+    # (#731). These are the checks --include-cols/--exclude-cols already make.
+    _validate_column_overlap(
+        columns, exclude_columns, geom_col, bbox_col, param_name="columns/exclude_columns"
+    )
     validate_columns(columns, list(all_columns), "columns")
     validate_columns(exclude_columns, list(all_columns), "exclude_columns")
 
     selected_columns = build_column_selection(
-        all_columns, columns, exclude_columns, geom_col, bbox_info.get("bbox_column_name")
+        all_columns, columns, exclude_columns, geom_col, bbox_col
     )
     spatial_filter = build_spatial_filter(bbox, None, bbox_info, geom_col) if bbox else None
 
     if where:
         validate_where_clause(where)
 
+    keeps_geometry = geom_col is not None and geom_col in selected_columns
+
     con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
         con.register("__input_table", table)
-        source_ref, needs_wkb = _setup_geometry_view(con, table, geom_col)
+        source_ref, needs_wkb = (
+            _setup_geometry_view(con, table, geom_col) if geom_col else ("__input_table", False)
+        )
 
-        if needs_wkb and geom_col in selected_columns:
+        if needs_wkb and keeps_geometry:
             query = _build_query_with_wkb_conversion(
                 source_ref, selected_columns, geom_col, spatial_filter, where, limit
             )
@@ -761,15 +786,31 @@ def extract_table(
             )
 
         # Repair invalid geometry (issue #506) before materializing the result.
-        if geom_col in selected_columns:
+        if keeps_geometry:
             query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
 
         result = con.execute(query).arrow().read_all()
         if table.schema.metadata:
-            result = result.replace_schema_metadata(table.schema.metadata)
+            result = result.replace_schema_metadata(
+                _carry_metadata_to_columns(table.schema.metadata, result.column_names)
+            )
         return result
     finally:
         con.close()
+
+
+def _carry_metadata_to_columns(metadata: dict, columns: list[str]) -> dict | None:
+    """Return the input's KV metadata rewritten to describe only ``columns``.
+
+    A column projection can drop the bbox column a ``covering`` points at, a
+    secondary geometry column, or the primary geometry column itself. Carrying
+    the input's ``geo`` block over verbatim would stamp the result with metadata
+    naming schema roots it no longer has, which readers and ``gpio check spec``
+    both reject. The primary is re-pointed at a surviving declared geometry
+    column when there is one, and the whole ``geo`` key is dropped when there is
+    not — an attribute table is plain Parquet, not GeoParquet.
+    """
+    return prune_geo_metadata_to_columns(metadata, columns, repoint_primary=True)
 
 
 def _output_stats_are_stale(
@@ -1114,22 +1155,25 @@ def extract(
 def _validate_column_overlap(
     include_list: list[str] | None,
     exclude_list: list[str] | None,
-    geometry_col: str,
+    geometry_col: str | None,
     bbox_col: str | None,
+    param_name: str = "include_cols/exclude_cols",
 ) -> None:
-    """Validate that only special columns appear in both include and exclude lists."""
+    """Validate that only special columns appear in both include and exclude lists.
+
+    ``param_name`` names the pair in the error message, so the Python API reports
+    ``columns``/``exclude_columns`` and the CLI reports its own option names.
+    """
     if not (include_list and exclude_list):
         return
 
-    special_cols = {geometry_col}
-    if bbox_col:
-        special_cols.add(bbox_col)
+    special_cols = {geometry_col, bbox_col} - {None}
 
     overlap = set(include_list) & set(exclude_list)
     non_special_overlap = overlap - special_cols
     if non_special_overlap:
         raise InvalidParameterError(
-            "include_cols/exclude_cols",
+            param_name,
             f"Columns cannot be in both: {', '.join(sorted(non_special_overlap))}. "
             f"Only geometry ({geometry_col}) and bbox ({bbox_col}) columns can appear in both.",
         )
