@@ -1469,7 +1469,7 @@ class TestStreamingConversion:
         assert _signed_ring_area(hole) < 0
 
     def test_normalize_polygon_winding_passthrough_on_malformed_wkb(self):
-        """Truncated/unparseable WKB is returned unchanged rather than raising."""
+        """Truncated/unparsable WKB is returned unchanged rather than raising."""
         from geoparquet_io.core.arcgis import _normalize_polygon_winding
 
         assert _normalize_polygon_winding(None) is None
