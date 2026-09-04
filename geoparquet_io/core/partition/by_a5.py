@@ -22,6 +22,7 @@ from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
+    raise_if_no_rows,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
@@ -206,6 +207,10 @@ def partition_by_a5(
         keep_a5_column = hive
 
     try:
+        # Nothing to partition: stop before rewriting the whole input just
+        # to add an index column to it (#823).
+        raise_if_no_rows(actual_input)
+
         working_parquet, column_existed, temp_file = _ensure_a5_column(
             actual_input, a5_column_name, resolution, verbose
         )

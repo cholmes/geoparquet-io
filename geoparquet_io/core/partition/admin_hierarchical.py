@@ -30,7 +30,7 @@ from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress, success, warn
-from geoparquet_io.core.partition.common import sanitize_filename
+from geoparquet_io.core.partition.common import raise_if_no_rows, sanitize_filename
 from geoparquet_io.core.partition.staging import (
     PartitionWriteOptions,
     check_output_collision,
@@ -714,6 +714,10 @@ def partition_by_admin_hierarchical(
         actual_input = stdin_temp_file
 
     try:
+        # Nothing to partition: stop before fetching remote admin
+        # boundaries and spatially joining against nothing (#823).
+        raise_if_no_rows(actual_input)
+
         # Setup dataset and get input file info
         dataset, boundary_columns = _setup_admin_dataset(dataset_name, verbose, levels)
         input_path, input_geom_col, input_bbox_col = _get_input_file_info(actual_input, verbose)

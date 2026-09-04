@@ -126,18 +126,57 @@ def calculate_partition_stats(output_folder: str, num_partitions: int) -> tuple[
     return total_size_mb, avg_size_mb
 
 
+def raise_if_no_rows(input_parquet: str) -> None:
+    """Stop cleanly when the input has no rows at all (issue #823).
+
+    A zero-row GeoParquet is an ordinary outcome of a spatial filter, and it has
+    no row groups and no partition values, so DuckDB's aggregates over it come
+    back all-NULL. That used to reach :func:`_calculate_size_estimates` as
+    ``total_rows=None`` and raise a bare ``TypeError``.
+
+    Called twice over, deliberately. Each ``partition_by_*`` entry point calls it
+    on the input it was handed, so nothing is rewritten to add an index column
+    and no admin boundaries are fetched before the command gives up; and
+    :func:`analyze_partition_strategy`, :func:`preview_partition` and
+    :func:`partition_by_column` call it again, which covers direct Python API
+    callers and the ``--skip-analysis`` / ``--force`` paths that bypass the
+    pre-flight analysis.
+
+    Fails open: if the row count cannot be read (a glob, a directory of
+    partitions, an unreadable remote), let the normal code path report whatever
+    it would have reported. The ``None`` guard in
+    :func:`_calculate_size_estimates` is the backstop.
+    """
+    from geoparquet_io.core.duckdb_metadata import get_row_count
+
+    try:
+        row_count = get_row_count(input_parquet)
+    except Exception:
+        return
+
+    if row_count == 0:
+        # No path in the message: with a piped input it would name the spooled
+        # temp file, not anything the caller would recognise.
+        raise PartitionError("Input has no rows to partition")
+
+
 def _calculate_size_estimates(file_size_bytes, total_rows, min_rows, max_rows, avg_rows):
-    """Calculate partition size estimates based on file size and row distribution."""
-    if file_size_bytes > 0 and total_rows > 0:
+    """Calculate partition size estimates based on file size and row distribution.
+
+    ``total_rows`` and the row-distribution aggregates are ``None`` when the
+    grouped pre-scan matched nothing (a zero-row input, or a partition column
+    that is entirely NULL), so every operand is coerced before use (#823).
+    """
+    if file_size_bytes and total_rows:
         bytes_per_row = file_size_bytes / total_rows
         return (
-            int(min_rows * bytes_per_row),
-            int(max_rows * bytes_per_row),
-            int(avg_rows * bytes_per_row),
+            int((min_rows or 0) * bytes_per_row),
+            int((max_rows or 0) * bytes_per_row),
+            int((avg_rows or 0) * bytes_per_row),
         )
     else:
         # Fallback if we can't get file size - assume 1KB per row
-        return min_rows * 1000, max_rows * 1000, avg_rows * 1000
+        return (min_rows or 0) * 1000, (max_rows or 0) * 1000, (avg_rows or 0) * 1000
 
 
 def _check_partition_errors(
@@ -269,6 +308,8 @@ def analyze_partition_strategy(
     Raises:
         PartitionAnalysisError: If blocking issues are detected
     """
+    raise_if_no_rows(input_parquet)
+
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
@@ -322,6 +363,12 @@ def analyze_partition_strategy(
 
     # Unpack results
     partition_count, total_rows, min_rows, max_rows, avg_rows, median_rows = result
+
+    # No groups: the column is entirely NULL (a zero-row input already stopped
+    # in raise_if_no_rows above). Every aggregate below is NULL, so report it
+    # the way preview_partition does instead of dividing by None (#823).
+    if not partition_count:
+        raise PartitionError(f"No non-NULL values found in column '{column_name}'")
 
     # Estimate size based on file size and row distribution
     min_size_bytes, max_size_bytes, avg_size_bytes = _calculate_size_estimates(
@@ -555,6 +602,8 @@ def preview_partition(
     Returns:
         Dictionary with partition statistics
     """
+    raise_if_no_rows(input_parquet)
+
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
@@ -764,6 +813,10 @@ def partition_by_column(
         Distinct partition values that sanitize to the same filename raise a
         ``PartitionError`` rather than silently dropping rows.
     """
+    # Stop before touching the output: nothing to partition means nothing to
+    # write, and --skip-analysis/--force must not get past this either (#823).
+    raise_if_no_rows(input_parquet)
+
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, input_parquet, output_folder)
 

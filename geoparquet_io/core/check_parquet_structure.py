@@ -8,6 +8,10 @@ from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import error, info, progress, success, warn
 from geoparquet_io.core.metadata_utils import has_parquet_geo_row_group_stats
 
+#: What a file with no row groups can be told about its compression: nothing.
+#: Shared with ``check_optimization`` so both checks word it the same way (#823).
+_NO_COMPRESSION_INFO = "No compression information available (file has no row groups)"
+
 
 class CheckProfile(str, Enum):
     """
@@ -587,7 +591,26 @@ def check_compression(parquet_file, verbose=False, return_results=False, quiet=F
             }
         return
 
-    compression = get_compression_info(parquet_file, primary_col)[primary_col]
+    compression = get_compression_info(parquet_file, primary_col).get(primary_col)
+    if compression is None:
+        # A file with no row groups -- a zero-row result of a spatial filter, say --
+        # has no column chunks, so parquet_metadata() reports no codec for any
+        # column. Say so instead of indexing blind (#823). Nothing is wrong with
+        # the file and there is nothing to re-compress, so this passes.
+        if not quiet:
+            progress("\nCompression Analysis:")
+            info(f"ℹ️  {_NO_COMPRESSION_INFO}")
+        if return_results:
+            return {
+                "passed": True,
+                "current_compression": None,
+                "geometry_column": primary_col,
+                "issues": [],
+                "recommendations": [],
+                "fix_available": False,
+            }
+        return
+
     passed = compression == "ZSTD"
 
     issues = []

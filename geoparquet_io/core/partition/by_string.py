@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
-from geoparquet_io.core.partition.common import partition_by_column, preview_partition
+from geoparquet_io.core.partition.common import (
+    partition_by_column,
+    preview_partition,
+    raise_if_no_rows,
+)
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
@@ -104,6 +108,9 @@ def partition_by_string(
         if verbose:
             debug(f"Validating column '{column}'...")
         validate_column_exists(input_parquet, column, verbose)
+
+        # Nothing to partition: stop before analysis or any write (#823).
+        raise_if_no_rows(input_parquet)
 
         # Validate chars parameter if provided
         if chars is not None and chars < 1:
