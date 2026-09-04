@@ -622,15 +622,22 @@ table = gpio.read('input.parquet').add_admin_divisions(vecorel=True)
   dataset's own name, so columns are `gaul_country` under the default dataset and
   `overture_country` under Overture. Pass `prefix='overture'` to keep the pre-1.4 names
 
-#### `add_kdtree(column_name='kdtree_cell', iterations=9, sample_size=100000)`
+#### `add_kdtree(column_name='kdtree_cell', iterations=None, sample_size=100000, *, auto=False, target_rows=120000)`
 
 Add a KD-tree cell column for data-adaptive spatial partitioning.
 
-```python
-# Default settings (512 partitions = 2^9)
-table = gpio.read('input.parquet').add_kdtree()
+Name an `iterations` count, or pass `auto=True` to size the tree from the row
+count the way `gpio add kdtree` does. A call that gives neither -- or both --
+raises `InvalidParameterError`.
 
-# Fewer partitions
+```python
+# Auto: sized from the row count, targeting ~120k rows per cell
+table = gpio.read('input.parquet').add_kdtree(auto=True)
+
+# Auto with a different target
+table = gpio.read('input.parquet').add_kdtree(auto=True, target_rows=50000)
+
+# An explicit count
 table = gpio.read('input.parquet').add_kdtree(iterations=6)  # 64 partitions
 
 # More partitions with larger sample
@@ -845,8 +852,18 @@ All spatial partitioning methods need to be told how finely to split. Give them 
     | `partition_by_quadkey` | `resolution=13, partition_resolution=6` |
     | `partition_by_s2` | `level=13` |
     | `partition_by_a5` | `resolution=15` |
+    | `partition_by_kdtree` | `iterations=9` |
+    | `add_kdtree` | `iterations=9` |
 
-    To get what the CLI gives you instead, pass `auto=True`.
+    To get what the CLI gives you instead, pass `auto=True`. Under `auto=True`
+    the KD-tree methods take `target_rows` (default 120,000) and no
+    `max_partitions`, matching `gpio add kdtree --auto N` and
+    `gpio partition kdtree --auto N`.
+
+    One workflow is exempt: `partition_by_kdtree` on a table that already
+    carries the `kdtree_cell` column (say from `add_kdtree()`) needs no sizing
+    parameter, and never fell back to `iterations=9` — the existing cells drive
+    the partition, before and after this change.
 
 #### `partition_by_quadkey(output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
@@ -938,7 +955,7 @@ stats = table.partition_by_string('output/', column='category')
 stats = table.partition_by_string('output/', column='mgrs_code', chars=2)
 ```
 
-#### `partition_by_kdtree(output_dir, iterations=9, hive=False, keep_kdtree_column=None, overwrite=False)`
+#### `partition_by_kdtree(output_dir, iterations=None, auto=False, target_rows=120000, hive=False, keep_kdtree_column=None, overwrite=False)`
 
 Partition by KD-tree spatial cells.
 
@@ -946,9 +963,15 @@ With `hive=False` the partition value lives only in the file name, so the genera
 `kdtree_cell` column is dropped from the output. Pass `keep_kdtree_column=True` to
 keep it (mirrors the CLI's `--keep-kdtree-column`).
 
+Name an `iterations` count, or pass `auto=True` to size the tree from the row
+count the way `gpio partition kdtree` does. A call that gives neither -- or both
+-- raises `InvalidParameterError`, unless the table already carries the
+`kdtree_cell` column (say from `add_kdtree()`): then no sizing parameter is
+needed and the existing cells drive the partition.
+
 ```python
-# Default (512 partitions = 2^9)
-stats = table.partition_by_kdtree('output/')
+# Auto: sized from the row count, targeting ~120k rows per partition
+stats = table.partition_by_kdtree('output/', auto=True)
 
 # 64 partitions (2^6)
 stats = table.partition_by_kdtree('output/', iterations=6)
@@ -1598,7 +1621,7 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 | `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column — **unavailable in this release**, use `ops.add_a5` |
 | `ops.add_geometry_metrics(table, vecorel=True)` | Add geodesic area and perimeter columns |
 | `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
-| `ops.add_kdtree(table, column_name='kdtree_cell', iterations=9, sample_size=100000, geometry_column=None)` | Add KD-tree cell column |
+| `ops.add_kdtree(table, column_name='kdtree_cell', iterations=None, sample_size=100000, geometry_column=None, auto=False, target_rows=120000)` | Add KD-tree cell column |
 | `ops.sort_hilbert(table, geometry_column=None)` | Reorder by Hilbert curve |
 | `ops.sort_str(table, geometry_column=None, tile_size=50000)` | Reorder with Sort-Tile-Recursive ordering (`tile_size` picks the strip count) |
 | `ops.sort_column(table, column, descending=False)` | Sort by column(s) |
@@ -1620,7 +1643,7 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 | `ops.partition_by_a5(table, output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by A5 cell |
 | `ops.partition_by_s2(table, output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by S2 cell — **unavailable in this release**, use `ops.partition_by_a5` |
 | `ops.partition_by_quadkey(table, output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by quadkey |
-| `ops.partition_by_kdtree(table, output_dir, iterations=9, hive=False, keep_kdtree_column=None, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by KD-tree cell |
+| `ops.partition_by_kdtree(table, output_dir, iterations=None, auto=False, target_rows=120000, hive=False, keep_kdtree_column=None, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by KD-tree cell |
 | `ops.partition_by_string(table, output_dir, column, chars=None, hive=False, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by string column value |
 | `ops.partition_by_admin(table, output_dir, dataset='gaul', levels=None, hive=False, overwrite=False, vecorel=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by administrative boundaries |
 | `ops.sub_partition_by_h3(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, hive=False, overwrite=False, force=False, skip_analysis=False, compression='ZSTD', compression_level=None, ...)` | Split every file in a directory over `min_size` into H3 sub-partitions |

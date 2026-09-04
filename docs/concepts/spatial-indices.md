@@ -216,7 +216,7 @@ Data-adaptive partitioning that divides space based on data distribution.
 gpio add kdtree input.parquet output.parquet
 
 # Python
-gpio.read('input.parquet').add_kdtree().write('output.parquet')
+gpio.read('input.parquet').add_kdtree(auto=True).write('output.parquet')
 ```
 
 ### Summary: Cell Columns

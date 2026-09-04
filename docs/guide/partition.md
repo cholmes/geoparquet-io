@@ -18,7 +18,14 @@ Neither front end guesses for you: pass a resolution, or ask for `auto`. A call 
     pass the old value explicitly to keep the output you had:
     `partition_by_h3(resolution=9)`,
     `partition_by_quadkey(resolution=13, partition_resolution=6)`,
-    `partition_by_s2(level=13)`, `partition_by_a5(resolution=15)`.
+    `partition_by_s2(level=13)`, `partition_by_a5(resolution=15)`,
+    `partition_by_kdtree(iterations=9)`. The same applies to `add_kdtree()`,
+    which pinned `iterations=9` too.
+
+    One workflow is exempt: `partition_by_kdtree()` on a table that already
+    carries the `kdtree_cell` column (say from `add_kdtree()`) needs no sizing
+    parameter — the existing cells drive the partition, exactly as they did
+    before this change.
 
 ### How It Works
 
@@ -573,8 +580,13 @@ Partition by balanced spatial partitions:
     ```python
     import geoparquet_io as gpio
 
-    # Partition using KD-tree (creates 2^iterations partitions)
-    gpio.read('input.parquet').partition_by_kdtree('output/')
+    # Auto mode: size the tree from the row count, like the bare CLI call
+    gpio.read('input.parquet').partition_by_kdtree('output/', auto=True)
+
+    # A different target, still auto
+    gpio.read('input.parquet').partition_by_kdtree(
+        'output/', auto=True, target_rows=50000
+    )
 
     # 64 partitions (2^6)
     gpio.read('input.parquet').partition_by_kdtree('output/', iterations=6)
@@ -594,6 +606,23 @@ Partition by balanced spatial partitions:
 
         - Python `iterations=6` → 64 partitions (2^6)
         - CLI `--partitions 64` → 64 partitions
+
+        Auto mode is spelled `auto=True` with `target_rows=` on the Python side
+        and `--auto N` on the CLI; both mean "size the tree so partitions hold
+        about N rows", and both default to 120,000.
+
+!!! warning "Breaking change for the Python API: the implicit `iterations=9` is gone"
+    `Table.partition_by_kdtree()` and `ops.partition_by_kdtree()` used to fall
+    back to `iterations=9` when they had to build the tree themselves — 512
+    partitions whatever the input — where the bare CLI call sizes the tree from
+    the row count. Such a call now raises `InvalidParameterError`. Pass
+    `auto=True` to get what the CLI gives you, or pass `iterations=9` to keep
+    the output you had.
+
+    A table that already carries the `kdtree_cell` column (say from
+    `add_kdtree()`) is unaffected: it needs no sizing parameter, and never fell
+    back to 512 partitions — the existing cells drive the partition, before and
+    after this change.
 
 **Column behavior:**
 - Similar to H3: excluded by default, included for Hive
@@ -852,7 +881,7 @@ schemes:
 | `gpio partition a5` | `ops.partition_by_a5(table, output_dir, resolution=..., auto=...)` |
 | `gpio partition s2` | `ops.partition_by_s2(table, output_dir, level=..., auto=...)` |
 | `gpio partition quadkey` | `ops.partition_by_quadkey(table, output_dir, resolution=..., partition_resolution=..., auto=...)` |
-| `gpio partition kdtree` | `ops.partition_by_kdtree(table, output_dir, iterations=...)` |
+| `gpio partition kdtree` | `ops.partition_by_kdtree(table, output_dir, iterations=..., auto=...)` |
 | `gpio partition string` | `ops.partition_by_string(table, output_dir, column, chars=...)` |
 | `gpio partition admin` | `ops.partition_by_admin(table, output_dir, dataset=..., levels=...)` |
 
