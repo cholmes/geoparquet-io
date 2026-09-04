@@ -261,126 +261,71 @@ class TestWriteParquetGeoOnly:
 
 
 class TestVersionCLI:
-    """Test CLI options for version control."""
+    """Test CLI options for version control.
 
-    def test_cli_default_version(self, geojson_input, temp_output_file):
-        """Test CLI default version is 1.1."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", geojson_input, temp_output_file, "--skip-hilbert"])
+    One parametrized matrix over (flags, expected version, native types);
+    every cell has a distinct expected outcome, so every former test survives
+    as a param case (issue #666 item 10).
+    """
 
-        assert result.exit_code == 0
-        assert get_geoparquet_version(temp_output_file) == "1.1.0"
-
-    def test_cli_explicit_1_0(self, geojson_input, temp_output_file):
-        """Test CLI with explicit version 1.0."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--geoparquet-version",
-                "1.0",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert get_geoparquet_version(temp_output_file) == "1.0.0"
-
-    def test_cli_explicit_1_1(self, geojson_input, temp_output_file):
-        """Test CLI with explicit version 1.1."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--geoparquet-version",
-                "1.1",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert get_geoparquet_version(temp_output_file) == "1.1.0"
-
-    def test_cli_explicit_2_0(self, geojson_input, temp_output_file):
-        """Test CLI with explicit version 2.0."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--geoparquet-version",
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_version", "expect_native_types", "output_contains"),
+        [
+            # expected_version: metadata version string; None = no geo metadata
+            # expected at all; "invalid" = the CLI must reject the invocation.
+            pytest.param([], "1.1.0", False, None, id="default-1.1"),
+            pytest.param(["--geoparquet-version", "1.0"], "1.0.0", False, None, id="explicit-1.0"),
+            pytest.param(["--geoparquet-version", "1.1"], "1.1.0", False, None, id="explicit-1.1"),
+            pytest.param(["--geoparquet-version", "2.0"], "2.0.0", True, None, id="explicit-2.0"),
+            pytest.param(
+                ["--geoparquet-version", "parquet-geo-only"],
+                None,
+                True,
+                None,
+                id="parquet-geo-only",
+            ),
+            pytest.param(
+                ["--geoparquet-version", "3.0"], "invalid", False, None, id="invalid-3.0-rejected"
+            ),
+            pytest.param(
+                ["--verbose", "--geoparquet-version", "2.0"],
+                "2.0.0",
+                True,
                 "2.0",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert get_geoparquet_version(temp_output_file) == "2.0.0"
-        assert has_native_geo_types(temp_output_file)
-
-    def test_cli_parquet_geo_only(self, geojson_input, temp_output_file):
-        """Test CLI with parquet-geo-only."""
+                id="verbose-shows-version",
+            ),
+        ],
+    )
+    def test_cli_version_matrix(
+        self,
+        geojson_input,
+        temp_output_file,
+        extra_args,
+        expected_version,
+        expect_native_types,
+        output_contains,
+    ):
+        """Each version flag produces its distinct expected output format."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--geoparquet-version",
-                "parquet-geo-only",
-            ],
+            ["convert", geojson_input, temp_output_file, "--skip-hilbert", *extra_args],
         )
+
+        if expected_version == "invalid":
+            assert result.exit_code != 0
+            assert "Invalid value" in result.output or "invalid choice" in result.output.lower()
+            return
 
         assert result.exit_code == 0
-        assert not has_geoparquet_metadata(temp_output_file)
-        assert has_native_geo_types(temp_output_file)
-
-    def test_cli_invalid_version_rejected(self, geojson_input, temp_output_file):
-        """Test CLI rejects invalid version."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--geoparquet-version",
-                "3.0",
-            ],
-        )
-
-        assert result.exit_code != 0
-        assert "Invalid value" in result.output or "invalid choice" in result.output.lower()
-
-    def test_cli_verbose_shows_version(self, geojson_input, temp_output_file):
-        """Test verbose output shows version being used."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                geojson_input,
-                temp_output_file,
-                "--skip-hilbert",
-                "--verbose",
-                "--geoparquet-version",
-                "2.0",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert "2.0" in result.output
+        if expected_version is None:
+            assert not has_geoparquet_metadata(temp_output_file)
+        else:
+            assert get_geoparquet_version(temp_output_file) == expected_version
+        if expect_native_types:
+            assert has_native_geo_types(temp_output_file)
+        if output_contains is not None:
+            assert output_contains in result.output
 
 
 @pytest.mark.slow
