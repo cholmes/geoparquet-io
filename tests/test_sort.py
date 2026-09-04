@@ -20,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import sort
+from geoparquet_io.core import sort_by_column as sort_by_column_module
 from geoparquet_io.core import sort_quadkey as sort_quadkey_module
 from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.sort_by_column import sort_by_column, sort_by_column_table
@@ -597,3 +598,27 @@ class TestSortPartitionSchemaMismatch:
         with pytest.raises(GeoParquetError, match="allow-schema-diff"):
             sort_by_quadkey(str(mismatched_schema_dir), temp_output_file)
         assert not os.path.exists(temp_output_file)
+
+    def test_sort_column_unrelated_invalid_input_propagates(
+        self, places_parts_dir, temp_output_file
+    ):
+        """Only the schema-mismatch complaint is rewrapped; anything else
+        DuckDB calls invalid input must keep its original type and text."""
+        parts_dir, _ = places_parts_dir
+        boom = duckdb.InvalidInputException("something else entirely")
+        with mock.patch.object(
+            sort_by_column_module, "write_parquet_with_metadata", side_effect=boom
+        ):
+            with pytest.raises(duckdb.InvalidInputException, match="something else entirely"):
+                sort_by_column(str(parts_dir), temp_output_file, "name")
+
+    def test_sort_quadkey_unrelated_invalid_input_propagates(
+        self, places_parts_dir, temp_output_file
+    ):
+        parts_dir, _ = places_parts_dir
+        boom = duckdb.InvalidInputException("something else entirely")
+        with mock.patch.object(
+            sort_quadkey_module, "write_parquet_with_metadata", side_effect=boom
+        ):
+            with pytest.raises(duckdb.InvalidInputException, match="something else entirely"):
+                sort_by_quadkey(str(parts_dir), temp_output_file)
