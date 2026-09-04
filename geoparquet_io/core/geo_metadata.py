@@ -356,6 +356,30 @@ def strip_derived_stats(metadata: dict | None) -> dict | None:
     return _rewrite_geo_metadata(metadata, _drop_derived_stats)
 
 
+def strip_orientation(metadata: dict | None, column: str) -> dict | None:
+    """Return a copy of KV ``metadata`` without ``column``'s ``orientation``.
+
+    A geometry repair (``ST_MakeValid``) can rewind rings — the repaired bowtie
+    of issue #812 comes back with clockwise exterior rings — so a carried
+    ``orientation: "counterclockwise"`` declaration no longer describes the
+    rows. Unlike :data:`DERIVED_STAT_KEYS`, which the write path recomputes,
+    ``orientation`` is only removed: gpio does not re-orient rings, and the key
+    is optional per spec, so absence is the honest value after a rewrite.
+
+    Only ``column``'s entry is touched — a repair runs on one geometry column,
+    and any other column's declaration still holds. Both ``"geo"`` and
+    ``b"geo"`` keys are handled; the input is never mutated.
+    """
+
+    def _drop(geo_dict: dict) -> dict:
+        col_meta = (geo_dict.get("columns") or {}).get(column)
+        if isinstance(col_meta, dict):
+            col_meta.pop("orientation", None)
+        return geo_dict
+
+    return _rewrite_geo_metadata(metadata, _drop)
+
+
 def backfill_derived_stats(
     metadata: dict | None,
     table: pa.Table,

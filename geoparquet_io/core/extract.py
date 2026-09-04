@@ -43,6 +43,7 @@ from geoparquet_io.core.geo_metadata import (
     backfill_derived_stats,
     prune_geo_metadata_to_columns,
     strip_derived_stats,
+    strip_orientation,
 )
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -802,8 +803,11 @@ def extract_table(
             if geometry_repaired:
                 # The repair rewrote rows, so the carried stats no longer
                 # describe them (#812): drop them and recompute from the result,
-                # which is what the file path asks the writer to do.
+                # which is what the file path asks the writer to do. A carried
+                # orientation declaration is dropped outright — ST_MakeValid
+                # can rewind rings and gpio does not re-orient.
                 metadata = backfill_derived_stats(strip_derived_stats(metadata), result)
+                metadata = strip_orientation(metadata, geom_col)
             result = result.replace_schema_metadata(metadata)
         return result
     finally:
@@ -937,6 +941,10 @@ def _extract_streaming(
         # write_output backfills whatever is stripped here from the rows it writes.
         if _output_stats_are_stale(input_path, spatial_filter, where, limit, geometry_repaired):
             metadata = strip_derived_stats(metadata)
+        if geometry_repaired:
+            # ST_MakeValid can rewind rings, so a carried orientation
+            # declaration no longer holds; it is dropped, not recomputed.
+            metadata = strip_orientation(metadata, geom_col)
 
         # Write output
         write_output(
@@ -1088,6 +1096,10 @@ def _execute_extraction(
         invalidate_derived_stats = _output_stats_are_stale(
             input_parquet, spatial_filter, where, limit, geometry_repaired
         )
+        if geometry_repaired:
+            # ST_MakeValid can rewind rings, so a carried orientation
+            # declaration no longer holds; it is dropped, not recomputed.
+            metadata = strip_orientation(metadata, geometry_col)
 
         # Write output
         write_parquet_with_metadata(

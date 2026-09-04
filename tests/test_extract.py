@@ -1321,29 +1321,30 @@ def _wkb_of(wkt: str) -> bytes:
         con.close()
 
 
-def _polygon_fixture_table(wkt: str) -> pa.Table:
+def _polygon_fixture_table(wkt: str, orientation: str | None = None) -> pa.Table:
     """One-row GeoParquet 1.1 table declaring Polygon and a world-wide bbox."""
+    column: dict = {
+        "encoding": "WKB",
+        "geometry_types": ["Polygon"],
+        "bbox": list(_WORLD_BBOX),
+    }
+    if orientation is not None:
+        column["orientation"] = orientation
     return _table_with_geo(
         {"id": [1], "geometry": [_wkb_of(wkt)]},
         {
             "version": "1.1.0",
             "primary_column": "geometry",
-            "columns": {
-                "geometry": {
-                    "encoding": "WKB",
-                    "geometry_types": ["Polygon"],
-                    "bbox": list(_WORLD_BBOX),
-                }
-            },
+            "columns": {"geometry": column},
         },
     )
 
 
-def _write_polygon_fixture(path: Path, wkt: str) -> Path:
+def _write_polygon_fixture(path: Path, wkt: str, orientation: str | None = None) -> Path:
     """Write the fixture table of :func:`_polygon_fixture_table` to ``path``."""
     import pyarrow.parquet as pq
 
-    pq.write_table(_polygon_fixture_table(wkt), str(path))
+    pq.write_table(_polygon_fixture_table(wkt, orientation), str(path))
     return path
 
 
@@ -1445,3 +1446,83 @@ class TestRepairInvalidatesCarriedStats:
         col = _geo_of(result)["columns"]["geometry"]
         assert col["geometry_types"] == ["Polygon"]
         assert col["bbox"] == _WORLD_BBOX
+
+
+class TestRepairDropsCarriedOrientation:
+    """A geometry repair can rewind rings, so a carried ``orientation`` must go.
+
+    ``ST_MakeValid`` gives the repaired bowtie clockwise exterior rings, so a
+    carried ``orientation: "counterclockwise"`` declaration would be factually
+    false in the output. Orientation is optional per spec and gpio does not
+    re-orient, so absence is the honest value — dropped only when the repair
+    actually rewrote a row, on the same condition that recomputes bbox and
+    geometry_types.
+    """
+
+    def test_repair_drops_the_carried_orientation(self, tmp_path):
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out))
+
+        assert "orientation" not in _geo_column_of_file(out)
+
+    def test_no_repair_keeps_the_carried_orientation(self, tmp_path):
+        """Repair off leaves the rows alone, so the declaration still holds."""
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out), repair_geometry=False)
+
+        assert _geo_column_of_file(out)["orientation"] == "counterclockwise"
+
+    def test_nothing_to_repair_keeps_the_carried_orientation(self, tmp_path):
+        """Repair on but nothing invalid: no ring was rewound."""
+        src = _write_polygon_fixture(
+            tmp_path / "square.parquet", _SQUARE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out))
+
+        assert _geo_column_of_file(out)["orientation"] == "counterclockwise"
+
+    def test_streaming_repair_drops_the_carried_orientation(self, tmp_path, monkeypatch):
+        import io
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.buffer = buffer
+        monkeypatch.setattr("sys.stdout", mock_stdout)
+
+        extract(str(src), "-")
+
+        buffer.seek(0)
+        col = _geo_of(ipc.open_stream(buffer).read_all())["columns"]["geometry"]
+        assert "orientation" not in col
+
+    def test_extract_table_repair_drops_the_carried_orientation(self):
+        result = extract_table(_polygon_fixture_table(_BOWTIE_WKT, orientation="counterclockwise"))
+
+        assert "orientation" not in _geo_of(result)["columns"]["geometry"]
+
+    def test_extract_table_no_repair_keeps_the_carried_orientation(self):
+        result = extract_table(
+            _polygon_fixture_table(_BOWTIE_WKT, orientation="counterclockwise"),
+            repair_geometry=False,
+        )
+
+        col = _geo_of(result)["columns"]["geometry"]
+        assert col["orientation"] == "counterclockwise"
