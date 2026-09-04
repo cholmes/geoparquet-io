@@ -245,7 +245,9 @@ The output file:
     *omitting* the `crs` key. An input that spells that default out therefore
     comes back without the key: the coordinates and their meaning are unchanged,
     but a byte-for-byte diff of the `geo` metadata will show the key gone. Every
-    gpio write path does this, not just `sort`. Run with `--verbose` to see a
+    gpio write path that rebuilds the `geo` block does this, not just `sort`
+    (a metadata-only rewrite like `add bbox-metadata` carries the block as-is).
+    Run with `--verbose` to see a
     note when it happens, and use `gpio inspect meta` to confirm the result.
 
 !!! note "Version options"
