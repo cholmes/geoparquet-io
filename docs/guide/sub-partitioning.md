@@ -84,17 +84,8 @@ twins refuse their `output_dir=` and `column_name=` arguments for the same
 reason, with the same explanation.
 
 Sub-partitioning is accepted by `gpio partition h3`, `gpio partition a5`,
-`gpio partition quadkey` and `gpio partition s2`. Three of them run today: S2
-alone stops on a missing extension in this release (see the warning below), so
-reach for **H3**, **A5** or **Quadkey**.
-
-!!! warning "S2 sub-partitioning is unavailable in this release"
-    `gpio partition s2` needs the `geography` DuckDB community extension, which is
-    published only up to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so
-    it stops with an explanation instead of partitioning — including when it is
-    reached through `--min-size`. Use the **H3**, **A5** or **Quadkey** tabs below
-    until the extension is republished upstream; see
-    [S2 Spherical Cells](add.md#s2-spherical-cells) for the details.
+`gpio partition quadkey` and `gpio partition s2`. All four run, including when
+they are reached through `--min-size`.
 
 ## Examples
 
@@ -137,15 +128,25 @@ reach for **H3**, **A5** or **Quadkey**.
 
 === "S2"
 
-    Unavailable in this release (see the warning above). Kept for reference — this
-    is the shape the command and its Python twin take once the `geography`
-    extension is republished.
+    As in the A5 tab, a tiny threshold makes the example split the small sample
+    directory; on real data use `100MB` as in the H3 tab.
 
-    <!-- doctest: skip="gpio partition s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737); fenced as inert because no sample partition exceeds the threshold, so the harness would score this as passing without ever invoking S2" -->
-    ```text
-    gpio partition s2 by_country/ --min-size 100MB --level 10 --in-place
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
+    ```bash
+    gpio partition s2 by_country/ --min-size 1B --level 4 --in-place
+    ```
 
-    ops.sub_partition_by_s2('by_country/', min_size='100MB', level=10, in_place=True)
+    <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
+    ```python
+    from geoparquet_io.api import ops
+
+    result = ops.sub_partition_by_s2(
+        'by_country/',
+        min_size='1B',
+        level=4,
+        in_place=True,
+    )
+    print(f"{result['processed']} file(s) sub-partitioned, {len(result['errors'])} failed")
     ```
 
 === "Quadkey"

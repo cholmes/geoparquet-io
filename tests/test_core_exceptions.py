@@ -67,14 +67,16 @@ class TestCoreExceptions:
     def test_geography_hint_offers_a5_and_never_a_forbidden_downgrade(self):
         """The 404 branch must be actionable without violating the pin (#778).
 
-        pyproject requires duckdb>=1.5.2, so telling a user to install 1.5.1
-        leaves `uv pip check` failing and any `uv sync` silently reverting it.
-        `gpio add a5` is the substitute that actually works today.
+        'geography' is published across gpio's DuckDB range again, so a 404 now
+        points at this machine, not at the registry. Either way the hint must
+        not tell a user to install duckdb 1.5.1: pyproject requires >=1.5.2, so
+        that leaves `uv pip check` failing and any `uv sync` silently reverting
+        it. `gpio add a5` is the substitute that works without S2.
         """
         message = str(ExtensionUnavailableError("geography", "1.5.5", _NOT_PUBLISHED))
 
         assert "a5" in message
-        assert "paleolimbot/duckdb-geography#34" in message
+        assert "upgrading DuckDB" in message
         assert "is not published for this one" in message
         # Never recommend a DuckDB the pin forbids.
         assert "duckdb==1.5.1" not in message
@@ -91,7 +93,7 @@ class TestCoreExceptions:
         """
         message = str(ExtensionUnavailableError("geography", "1.5.5", _OFFLINE))
 
-        assert "paleolimbot/duckdb-geography#34" not in message
+        assert "upgrading DuckDB" not in message
         assert "is not published for this one" not in message
         assert "reachable" in message
         assert "proxy" in message
@@ -107,13 +109,13 @@ class TestCoreExceptions:
 
         assert "may not be published" in message
         assert "proxy" not in message
-        assert "paleolimbot" not in message
+        assert "upgrading DuckDB" not in message
 
     def test_extension_unavailable_error_hint_is_extension_specific(self):
         """Other community extensions must not inherit the geography guidance."""
         message = str(ExtensionUnavailableError("h3", "1.5.5", _NOT_PUBLISHED))
 
-        assert "paleolimbot" not in message
+        assert "upgrading DuckDB" not in message
         assert "a5" not in message
         assert "h3" in message
 

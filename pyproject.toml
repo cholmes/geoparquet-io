@@ -35,13 +35,13 @@ dependencies = [
     # row's value. That crashed geometry repair on ordinary extractions (#737)
     # and is why core/geometry_repair.py counts invalid geometry in layers (#645).
     #
-    # Cost of the floor: S2 needs the 'geography' community extension, which is
-    # published only up to DuckDB 1.5.1 — newer releases 404 from
-    # community-extensions.duckdb.org because the build hits a C++11/C++17 link
-    # error in DuckDB's plan_serializer (duckdb/duckdb#22097). The fix is merged
-    # upstream (paleolimbot/duckdb-geography#34) and republication is pending;
-    # until then `gpio add s2` / `gpio partition s2` fail fast with an actionable
-    # ExtensionUnavailableError (see core/duckdb_utils.require_community_extension).
+    # The floor briefly cost S2: the 'geography' community extension would not
+    # build past DuckDB 1.5.1 (a plan_serializer link error). That was fixed
+    # upstream and 'geography' is published for DuckDB 1.5.5 -- what uv.lock
+    # resolves -- so `gpio add s2` / `gpio partition s2` work again (#737).
+    # Community extensions are built per DuckDB release, so a hand-pinned
+    # 1.5.2-1.5.4 still has no build; core/duckdb_utils.require_community_extension
+    # fails fast and says so.
     "duckdb>=1.5.2,<1.6",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",

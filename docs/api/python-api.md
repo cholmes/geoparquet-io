@@ -540,15 +540,6 @@ table = gpio.read('input.parquet').add_h3(column_name='hex_id', resolution=8)
 
 Add an S2 spherical cell column based on geometry location.
 
-!!! warning "Unavailable in this release"
-    S2 needs the `geography` DuckDB community extension, which is published only up
-    to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so this method stops
-    with an explanation instead of running. It returns automatically once the
-    extension is republished upstream; do not pin `duckdb==1.5.1` to get it back.
-    Use `add_a5()` in the meantime — A5 is a hierarchical, globally-uniform cell index
-    over the whole sphere. See
-    [S2 Spherical Cells](../guide/add.md#s2-spherical-cells).
-
 ```python
 # Default level (13, ~1.2 km² cells)
 table = gpio.read('input.parquet').add_s2()
@@ -908,15 +899,6 @@ stats = table.partition_by_h3('output/', auto=True, target_rows=50000)
 
 Partition the table into a directory by S2 cell. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
 
-!!! warning "Unavailable in this release"
-    S2 needs the `geography` DuckDB community extension, which is published only up
-    to DuckDB 1.5.1 while gpio requires DuckDB 1.5.2 or newer, so this method stops
-    with an explanation instead of running. It returns automatically once the
-    extension is republished upstream; do not pin `duckdb==1.5.1` to get it back.
-    Use `partition_by_a5()` in the meantime — A5 is a hierarchical, globally-uniform cell index
-    over the whole sphere. See
-    [S2 Spherical Cells](../guide/add.md#s2-spherical-cells).
-
 With `hive=False` the partition value lives only in the file name, so the generated `s2_cell` column is dropped from the output. Pass `keep_s2_column=True` to keep it (mirrors the CLI's `--keep-*-column`).
 
 ```python
@@ -1187,8 +1169,6 @@ print(f"Processed: {result['processed']}")
 print(f"Errors: {len(result['errors'])}")
 
 # Sub-partition S2 files with auto-resolution
-# NOTE: partition_type='s2' is unavailable in this release (the 'geography'
-# DuckDB extension is not published for DuckDB 1.5.2+, which gpio requires).
 result = sub_partition_directory(
     directory='/data/s2_partitions/',
     partition_type='s2',
@@ -1618,7 +1598,7 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 | `ops.add_quadkey(table, column_name='quadkey', resolution=13, use_centroid=False, geometry_column=None)` | Add quadkey column |
 | `ops.add_h3(table, column_name='h3_cell', resolution=9, geometry_column=None)` | Add H3 cell column |
 | `ops.add_a5(table, column_name='a5_cell', resolution=15, geometry_column=None)` | Add A5 cell column |
-| `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column — **unavailable in this release**, use `ops.add_a5` |
+| `ops.add_s2(table, column_name='s2_cell', level=13, geometry_column=None)` | Add S2 cell column |
 | `ops.add_geometry_metrics(table, vecorel=True)` | Add geodesic area and perimeter columns |
 | `ops.add_admin_divisions(table, dataset='gaul', levels=None, vecorel=False)` | Add admin division columns via spatial join |
 | `ops.add_kdtree(table, column_name='kdtree_cell', iterations=None, sample_size=100000, geometry_column=None, auto=False, target_rows=120000)` | Add KD-tree cell column |
@@ -1641,7 +1621,7 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 | `ops.create_pmtiles_pyramid(input_path, output_path, levels=None, max_tile_kb=500, layer_mode='grouped', include_features=False, features_source=None, max_zoom=None, ...)` | Build a zoom-banded multi-level PMTiles archive from an aggregate file (requires tippecanoe + tile-join) |
 | `ops.partition_by_h3(table, output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_h3_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by H3 cell |
 | `ops.partition_by_a5(table, output_dir, resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_a5_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by A5 cell |
-| `ops.partition_by_s2(table, output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by S2 cell — **unavailable in this release**, use `ops.partition_by_a5` |
+| `ops.partition_by_s2(table, output_dir, level=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_s2_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by S2 cell |
 | `ops.partition_by_quadkey(table, output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False, geometry_column=None)` | Partition into a directory by quadkey |
 | `ops.partition_by_kdtree(table, output_dir, iterations=None, auto=False, target_rows=120000, hive=False, keep_kdtree_column=None, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by KD-tree cell |
 | `ops.partition_by_string(table, output_dir, column, chars=None, hive=False, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by string column value |

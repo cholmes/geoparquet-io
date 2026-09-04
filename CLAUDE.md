@@ -69,17 +69,6 @@ geoparquet_io/
 | `gpio sort` | column, hilbert, quadkey, str | Commands for sorting GeoParquet files |
 <!-- END GENERATED: cli-commands -->
 
-> **S2 is unavailable in this release.** The tables above are generated from the
-> Click command tree, so `s2` still appears under `gpio add` and `gpio partition`,
-> but both subcommands stop with an explanation instead of running: they need the
-> `geography` DuckDB community extension, which is published only up to DuckDB
-> 1.5.1 while gpio requires `duckdb>=1.5.2` ([#737](https://github.com/geoparquet/geoparquet-io/issues/737)).
-> The same applies to `ops.add_s2`, `Table.add_s2` and `Table.partition_by_s2`.
-> Use `gpio add a5` / `gpio partition a5` instead — a hierarchical, globally-uniform
-> cell index over the whole sphere. Do not suggest pinning `duckdb==1.5.1`: it is
-> below the dependency floor, so `uv pip check` fails and the next `uv sync` reverts
-> it. S2 returns with no gpio change once the extension is republished upstream.
-
 <!-- BEGIN GENERATED: core-modules -->
 ### Core Modules
 

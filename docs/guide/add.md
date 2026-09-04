@@ -181,32 +181,12 @@ gpio add h3 input.parquet output.parquet --row-group-size-mb 256MB
 
 ## S2 Spherical Cells
 
-!!! warning "S2 is unavailable in this release — use `gpio add a5`"
-    S2 cells are computed by the [`geography` DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html),
-    which is built per DuckDB release and is published only up to **DuckDB 1.5.1**.
-    gpio requires DuckDB 1.5.2 or newer, because older versions segfault while
-    repairing invalid geometry
-    ([#737](https://github.com/geoparquet/geoparquet-io/issues/737)) — so
-    `gpio add s2` and `gpio partition s2` stop immediately with an explanation,
-    before reading input, draining stdin or writing anything. Every other `gpio`
-    command is unaffected.
-
-    **Use [`gpio add a5`](#a5-cells) instead.** A5 is the closest working
-    substitute: another hierarchical, globally-uniform cell index over the whole
-    sphere, with `gpio partition a5` alongside it.
-
-    Do **not** pin `duckdb==1.5.1` to get S2 back. That version is below gpio's
-    dependency floor, so `uv pip check` fails, the next `uv sync` reverts it, and
-    it carries the geometry-repair segfault above. The upstream build fix is
-    merged ([duckdb-geography#34](https://github.com/paleolimbot/duckdb-geography/pull/34));
-    once the extension is republished for a current DuckDB, S2 starts working
-    again with no change on your side, and the examples below apply unchanged.
-
-Add [S2](https://s2geometry.io/) spherical cell IDs based on geometry centroids:
+Add [S2](https://s2geometry.io/) spherical cell IDs based on geometry centroids.
+S2 cells are computed by the [`geography` DuckDB community extension](https://community-extensions.duckdb.org/extensions/geography.html),
+which gpio installs on first use:
 
 === "CLI"
 
-    <!-- doctest: skip="gpio add s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```bash
     gpio add s2 input.parquet output.parquet --level 13
     ```
@@ -219,7 +199,6 @@ Add [S2](https://s2geometry.io/) spherical cell IDs based on geometry centroids:
 
 === "Python"
 
-    <!-- doctest: skip="gpio add s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
     ```python
     import geoparquet_io as gpio
 
@@ -237,7 +216,7 @@ S2 uses Google's Spherical Geometry library which divides the Earth's surface in
 
 **Options:**
 
-<!-- doctest: menu, skip="gpio add s2 needs the 'geography' extension, unpublished past DuckDB 1.5.1 (#737)" -->
+<!-- doctest: menu -->
 ```bash
 # Custom column name
 gpio add s2 input.parquet output.parquet --s2-name s2_index

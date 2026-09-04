@@ -32,7 +32,7 @@ All transformation commands support Arrow IPC piping:
 | `add h3` | Yes | Yes |
 | `add kdtree` | Yes | Yes |
 | `add a5` | Yes | Yes |
-| `add s2` | No | No (unavailable in this release — see below) |
+| `add s2` | Yes | Yes |
 | `add admin-divisions` | Yes | Yes |
 | `sort hilbert` | Yes | Yes |
 | `sort quadkey` | Yes | Yes |
@@ -43,17 +43,9 @@ All transformation commands support Arrow IPC piping:
 | `partition quadkey` | Yes | No (writes to directory) |
 | `partition h3` | Yes | No (writes to directory) |
 | `partition a5` | Yes | No (writes to directory) |
-| `partition s2` | No | No (unavailable in this release — see below) |
+| `partition s2` | Yes | No (writes to directory) |
 | `partition kdtree` | Yes | No (writes to directory) |
 | `partition admin` | Yes | No (writes to directory) |
-
-!!! warning "S2 cannot be piped in this release"
-    `gpio add s2` and `gpio partition s2` need the `geography` DuckDB community
-    extension, which is published only up to DuckDB 1.5.1 while gpio requires
-    DuckDB 1.5.2 or newer. Both refuse to run — before draining stdin, so a pipeline
-    fails fast rather than consuming its input — and start working again once the
-    extension is republished upstream. Use `gpio add a5` / `gpio partition a5` in
-    the meantime; see [S2 Spherical Cells](add.md#s2-spherical-cells).
 
 ## Performance Benefits
 
