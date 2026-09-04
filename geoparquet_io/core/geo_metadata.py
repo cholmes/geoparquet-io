@@ -843,6 +843,10 @@ def detect_bbox_column_from_schema(schema: pa.Schema, verbose: bool = False) -> 
     geometry, which only the input's own metadata or a gpio-computed column can
     establish.
 
+    Distinct from ``common._detect_bbox_column_from_table``, which consults the
+    table's ``covering`` metadata first and only falls back to the naming
+    convention. The two answer different questions and used to share a name.
+
     When several columns qualify, an exact ``bbox`` wins — it is the name gpio
     itself writes, so preferring it avoids picking some other file's
     ``centroid_bbox`` over the geometry's real envelope.

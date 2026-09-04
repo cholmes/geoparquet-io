@@ -265,7 +265,11 @@ class TestMetadataPathAgrees:
         assert resolved.column("geometry").to_pylist() == meta_only.column("geometry").to_pylist()
 
     def test_apply_geoparquet_metadata_agrees(self):
-        """The whole 1.1 apply path, including the _canonicalize_wkb_columns backstop."""
+        """The whole 1.1 apply path, with _canonicalize_wkb_columns as a second line of defence.
+
+        Not an isolation test of the backstop: _process_geometry_column_for_version
+        already strips the carrier, so this fails only when both mechanisms break.
+        """
         from geoparquet_io.core.common import _apply_geoparquet_metadata
 
         resolved = _apply_geoparquet_metadata(
