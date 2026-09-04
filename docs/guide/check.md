@@ -353,6 +353,9 @@ Validates file structure and metadata against the GeoParquet specification:
         print("Valid STAC!")
     ```
 
+The argument is the STAC Item or Collection JSON — the file `gpio publish stac`
+writes — not the GeoParquet data file it describes.
+
 Validates STAC Item or Collection JSON:
 
 - STAC spec compliance
