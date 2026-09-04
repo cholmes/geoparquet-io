@@ -657,17 +657,24 @@ class TestErrorHandling:
 class TestWFSExceptionHierarchy:
     """Test typed WFS exception subclasses for downstream consumers."""
 
-    def test_empty_layer_error_is_wfs_error(self):
-        """EmptyLayerError should be catchable as WFSError (backward compatible)."""
-        assert issubclass(EmptyLayerError, WFSError)
-
-    def test_layer_not_found_error_is_wfs_error(self):
-        """LayerNotFoundError should be catchable as WFSError (backward compatible)."""
-        assert issubclass(LayerNotFoundError, WFSError)
-
-    def test_auth_error_is_wfs_error(self):
-        """WFSAuthenticationError should be catchable as WFSError (backward compatible)."""
-        assert issubclass(WFSAuthenticationError, WFSError)
+    @pytest.mark.parametrize(
+        ("exc_class", "args"),
+        [
+            pytest.param(EmptyLayerError, ("test:layer",), id="empty-layer"),
+            pytest.param(LayerNotFoundError, ("test:layer",), id="layer-not-found"),
+            pytest.param(
+                WFSAuthenticationError,
+                ("http://example.com/wfs", 401, "Auth required"),
+                id="authentication",
+            ),
+        ],
+    )
+    def test_subclass_catchable_as_wfs_error(self, exc_class, args):
+        """Each typed subclass is catchable as WFSError (backward compatible)."""
+        assert issubclass(exc_class, WFSError)
+        with pytest.raises(WFSError) as exc_info:
+            raise exc_class(*args)
+        assert isinstance(exc_info.value, exc_class)
 
     def test_empty_layer_error_has_typename(self):
         """EmptyLayerError should expose typename attribute."""
@@ -697,14 +704,6 @@ class TestWFSExceptionHierarchy:
         assert err.url == "http://example.com/wfs"
         assert err.status_code == 401
         assert "Auth required" in str(err)
-
-    def test_empty_layer_error_caught_as_wfs_error(self):
-        """Verify backward compatibility - catching as WFSError works."""
-        try:
-            raise EmptyLayerError("test:layer")
-        except WFSError as e:
-            assert isinstance(e, EmptyLayerError)
-            assert e.typename == "test:layer"
 
     @patch("owslib.wfs.WebFeatureService")
     def test_layer_not_found_raises_typed_error(self, mock_wfs_class):
@@ -1371,164 +1370,115 @@ class TestDuckDBNativeWFS:
         assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
 
 
+def _mock_wfs_http_response(body: bytes, content_type: str = "application/json"):
+    """Patch httpx.Client.stream to return a canned 200 response.
+
+    Shared factory for the content-type and properties-handling tests, which
+    previously each carried a near-identical inline mock class (issue #666
+    item 7). The response supports both ``read()`` (error-page validation path)
+    and ``iter_bytes()`` (streaming JSON path).
+    """
+    import httpx
+
+    def mock_stream(*args, **kwargs):
+        class MockResponse:
+            status_code = 200
+            headers = {"content-type": content_type}
+
+            def raise_for_status(self):
+                pass
+
+            def read(self):
+                return body
+
+            def iter_bytes(self, chunk_size=None):
+                yield body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        return MockResponse()
+
+    return patch.object(httpx.Client, "stream", mock_stream)
+
+
+_EMPTY_FEATURE_COLLECTION = b'{"type": "FeatureCollection", "features": []}'
+
+
 class TestContentTypeValidation:
     """Test content-type validation catches error pages returned with 200 OK."""
 
-    def test_rejects_html_content_type(self):
-        """HTML responses should be rejected with clear error."""
-        import httpx
-
+    @pytest.mark.parametrize(
+        ("content_type", "body", "error_match"),
+        [
+            pytest.param(
+                "text/html; charset=utf-8",
+                b"<html><body>Error: Service unavailable</body></html>",
+                "Expected JSON.*text/html",
+                id="rejects-html",
+            ),
+            pytest.param(
+                "application/xml",
+                b"<ows:ExceptionReport>Service error</ows:ExceptionReport>",
+                "Expected JSON.*application/xml",
+                id="rejects-xml",
+            ),
+            pytest.param(
+                "text/plain",
+                b"Error: Invalid request parameters",
+                "Expected JSON.*text/plain",
+                id="rejects-text-plain",
+            ),
+            pytest.param(
+                "application/json", _EMPTY_FEATURE_COLLECTION, None, id="accepts-application-json"
+            ),
+            pytest.param(
+                "text/javascript",
+                _EMPTY_FEATURE_COLLECTION,
+                None,
+                id="accepts-text-javascript",
+            ),
+        ],
+    )
+    def test_content_type_validation(self, content_type, body, error_match):
+        """Non-JSON content types raise WFSError; JSON-ish ones parse normally."""
         from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
 
-        html_response = b"<html><body>Error: Service unavailable</body></html>"
+        with _mock_wfs_http_response(body, content_type):
+            if error_match is not None:
+                with pytest.raises(WFSError, match=error_match):
+                    _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+            else:
+                # Should not raise, returns empty table
+                result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+                assert result.num_rows == 0
 
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "text/html; charset=utf-8"}
 
-                def raise_for_status(self):
-                    pass
+_OMIT_PROPERTIES = object()
+"""Sentinel: build a feature with no 'properties' key at all (malformed GeoJSON)."""
 
-                def read(self):
-                    return html_response
 
-                def __enter__(self):
-                    return self
+def _wfs_point_features(props_list, fids=None):
+    """Build GeoJSON point features with the given per-feature properties.
 
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        with patch.object(httpx.Client, "stream", mock_stream):
-            with pytest.raises(WFSError, match="Expected JSON.*text/html"):
-                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-    def test_rejects_xml_content_type(self):
-        """XML error responses should be rejected."""
-        import httpx
-
-        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
-
-        xml_response = b"<ows:ExceptionReport>Service error</ows:ExceptionReport>"
-
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "application/xml"}
-
-                def raise_for_status(self):
-                    pass
-
-                def read(self):
-                    return xml_response
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        with patch.object(httpx.Client, "stream", mock_stream):
-            with pytest.raises(WFSError, match="Expected JSON.*application/xml"):
-                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-    def test_rejects_text_plain_content_type(self):
-        """text/plain error responses should be rejected."""
-        import httpx
-
-        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
-
-        text_response = b"Error: Invalid request parameters"
-
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "text/plain"}
-
-                def raise_for_status(self):
-                    pass
-
-                def read(self):
-                    return text_response
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        with patch.object(httpx.Client, "stream", mock_stream):
-            with pytest.raises(WFSError, match="Expected JSON.*text/plain"):
-                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-    def test_accepts_application_json(self):
-        """application/json should be accepted."""
-        import httpx
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        json_response = b'{"type": "FeatureCollection", "features": []}'
-
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "application/json"}
-
-                def raise_for_status(self):
-                    pass
-
-                def iter_bytes(self, chunk_size=None):
-                    yield json_response
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        with patch.object(httpx.Client, "stream", mock_stream):
-            # Should not raise, returns empty table
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-            assert result.num_rows == 0
-
-    def test_accepts_text_javascript(self):
-        """text/javascript (used by some servers) should be accepted."""
-        import httpx
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        json_response = b'{"type": "FeatureCollection", "features": []}'
-
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "text/javascript"}
-
-                def raise_for_status(self):
-                    pass
-
-                def iter_bytes(self, chunk_size=None):
-                    yield json_response
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        with patch.object(httpx.Client, "stream", mock_stream):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-            assert result.num_rows == 0
+    ``_OMIT_PROPERTIES`` omits the 'properties' member entirely (malformed per
+    RFC 7946); any other value (including ``None`` and ``{}``) is used as-is.
+    """
+    features = []
+    for i, props in enumerate(props_list):
+        feature = {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [i, i]},
+        }
+        if props is not _OMIT_PROPERTIES:
+            feature["properties"] = props
+        if fids is not None:
+            feature["id"] = fids[i]
+        features.append(feature)
+    return features
 
 
 class TestEmptyProperties:
@@ -1542,228 +1492,73 @@ class TestEmptyProperties:
     See: https://github.com/geoparquet/geoparquet-io/issues/441
     """
 
-    def _make_mock_stream(self, geojson_bytes: bytes):
-        """Create a mock httpx stream response."""
-        import httpx
-
-        def mock_stream(*args, **kwargs):
-            class MockResponse:
-                status_code = 200
-                headers = {"content-type": "application/json"}
-
-                def raise_for_status(self):
-                    pass
-
-                def iter_bytes(self, chunk_size=None):
-                    yield geojson_bytes
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *args):
-                    pass
-
-            return MockResponse()
-
-        return patch.object(httpx.Client, "stream", mock_stream)
-
-    def test_empty_properties_returns_geometry_only(self):
-        """Empty properties ({}) should return geometry-only table."""
+    @pytest.mark.parametrize(
+        ("features", "fetch_kwargs", "exact_columns", "required_columns"),
+        [
+            pytest.param(
+                _wfs_point_features([{}, {}]),
+                {},
+                ["geometry"],
+                [],
+                id="empty-properties-geometry-only",
+            ),
+            pytest.param(
+                _wfs_point_features([None, None]),
+                {},
+                ["geometry"],
+                [],
+                id="null-properties-geometry-only",
+            ),
+            pytest.param(
+                _wfs_point_features([{}, {}], fids=["line.1", "line.2"]),
+                {"extract_fid": True},
+                ["_wfs_fid", "geometry"],
+                [],
+                id="empty-properties-extract-fid",
+            ),
+            pytest.param(
+                _wfs_point_features(
+                    [{"name": "A", "population": 100}, {"name": "B", "population": 200}]
+                ),
+                {},
+                None,
+                ["geometry", "name", "population"],
+                id="normal-properties-unnested",
+            ),
+            pytest.param(
+                _wfs_point_features([{"value": 123}, {"value": "text"}]),
+                {},
+                None,
+                ["geometry", "value"],
+                id="heterogeneous-value-types",
+            ),
+            pytest.param(
+                _wfs_point_features([_OMIT_PROPERTIES, _OMIT_PROPERTIES]),
+                {},
+                ["geometry"],
+                [],
+                id="missing-properties-key-geometry-only",
+            ),
+        ],
+    )
+    def test_properties_handling(self, features, fetch_kwargs, exact_columns, required_columns):
+        """Each properties shape yields the expected columns (geometry-only fallback or unnest)."""
         import json
 
         import pyarrow as pa
 
         from geoparquet_io.core.wfs import _fetch_wfs_page
 
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "properties": {},
-                },
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                    "properties": {},
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+        geojson = {"type": "FeatureCollection", "features": features}
+        with _mock_wfs_http_response(json.dumps(geojson).encode()):
+            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", **fetch_kwargs)
 
         assert isinstance(result, pa.Table)
         assert result.num_rows == 2
-        assert "geometry" in result.column_names
-        # No property columns - only geometry
-        assert result.column_names == ["geometry"]
-
-    def test_null_properties_returns_geometry_only(self):
-        """Null properties should return geometry-only table."""
-        import json
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "properties": None,
-                },
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                    "properties": None,
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 2
-        assert result.column_names == ["geometry"]
-
-    def test_empty_properties_with_extract_fid(self):
-        """Empty properties with extract_fid=True should include _wfs_fid."""
-        import json
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "id": "line.1",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "properties": {},
-                },
-                {
-                    "type": "Feature",
-                    "id": "line.2",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                    "properties": {},
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
-
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 2
-        assert "_wfs_fid" in result.column_names
-        assert "geometry" in result.column_names
-        assert result.column_names == ["_wfs_fid", "geometry"]
-
-    def test_normal_properties_still_works(self):
-        """Normal properties should still be unnested into columns."""
-        import json
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "properties": {"name": "A", "population": 100},
-                },
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                    "properties": {"name": "B", "population": 200},
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 2
-        assert "geometry" in result.column_names
-        assert "name" in result.column_names
-        assert "population" in result.column_names
-
-    def test_heterogeneous_value_types_still_works(self):
-        """Heterogeneous value types (promoted to JSON) should still work."""
-        import json
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    "properties": {"value": 123},
-                },
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                    "properties": {"value": "text"},
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 2
-        assert "geometry" in result.column_names
-        assert "value" in result.column_names
-
-    def test_missing_properties_key_returns_geometry_only(self):
-        """Missing properties key (malformed GeoJSON) should return geometry-only table.
-
-        Per RFC 7946, the 'properties' member is required, but we handle
-        malformed GeoJSON gracefully by returning geometry-only results.
-        """
-        import json
-
-        import pyarrow as pa
-
-        from geoparquet_io.core.wfs import _fetch_wfs_page
-
-        geojson = {
-            "type": "FeatureCollection",
-            "features": [
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [0, 0]},
-                    # No 'properties' key - malformed per RFC 7946
-                },
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [1, 1]},
-                },
-            ],
-        }
-
-        with self._make_mock_stream(json.dumps(geojson).encode()):
-            result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 2
-        assert result.column_names == ["geometry"]
+        if exact_columns is not None:
+            assert result.column_names == exact_columns
+        for column in required_columns:
+            assert column in result.column_names
 
 
 @pytest.mark.usefixtures("offline_wfs_probes")

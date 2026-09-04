@@ -294,14 +294,11 @@ def temp_dir():
 
 
 class TestHilbertSort:
-    """Test hilbert sort output format."""
+    """Test hilbert sort output format.
 
-    def test_default_format(self, sample_parquet, temp_output):
-        """Test default hilbert sort format."""
-        run_command_and_validate(
-            ["sort", "hilbert", sample_parquet, temp_output, "--geoparquet-version", "1.1"],
-            expect_bbox=False,
-        )
+    Default-format and custom-compression cases live in the parametrized
+    TestAllCommandsConsistency matrix (issue #666 item 9).
+    """
 
     def test_with_bbox(self, sample_parquet, temp_output):
         """Test hilbert sort with bbox."""
@@ -316,25 +313,6 @@ class TestHilbertSort:
                 "1.1",
             ],
             expect_bbox=True,
-        )
-
-    def test_custom_compression(self, sample_parquet, temp_output):
-        """Test hilbert sort with custom compression."""
-        run_command_and_validate(
-            [
-                "sort",
-                "hilbert",
-                sample_parquet,
-                temp_output,
-                "--compression",
-                "zstd",
-                "--compression-level",
-                "15",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expected_compression="ZSTD",
-            expect_bbox=False,
         )
 
     def test_row_groups(self, temp_dir, temp_output):
@@ -397,33 +375,11 @@ class TestHilbertSort:
 
 
 class TestAddBbox:
-    """Test add bbox output format."""
+    """Test add bbox output format.
 
-    def test_default_format(self, sample_parquet, temp_output):
-        """Test default add bbox format."""
-        run_command_and_validate(
-            ["add", "bbox", sample_parquet, temp_output, "--geoparquet-version", "1.1"],
-            expect_bbox=True,
-        )
-
-    def test_custom_compression(self, sample_parquet, temp_output):
-        """Test add bbox with custom compression."""
-        run_command_and_validate(
-            [
-                "add",
-                "bbox",
-                sample_parquet,
-                temp_output,
-                "--compression",
-                "zstd",
-                "--compression-level",
-                "15",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expected_compression="ZSTD",
-            expect_bbox=True,
-        )
+    Default-format and custom-compression cases live in the parametrized
+    TestAllCommandsConsistency matrix (issue #666 item 9).
+    """
 
     def test_custom_bbox_name(self, sample_parquet, temp_output):
         """Test add bbox with custom column name."""
@@ -540,14 +496,11 @@ class TestPartition:
 
 
 class TestExtractOutput:
-    """Test extract command output format compliance."""
+    """Test extract command output format compliance.
 
-    def test_default_format(self, sample_parquet, temp_output):
-        """Test default extract format."""
-        run_command_and_validate(
-            ["extract", sample_parquet, temp_output, "--geoparquet-version", "1.1"],
-            expect_bbox=None,  # Don't enforce bbox, just validate format
-        )
+    Default-format and custom-compression cases live in the parametrized
+    TestAllCommandsConsistency matrix (issue #666 item 9).
+    """
 
     def test_with_bbox_filter(self, sample_parquet, temp_output):
         """Test extract with bbox filter produces valid output."""
@@ -591,22 +544,6 @@ class TestExtractOutput:
                 "--geoparquet-version",
                 "1.1",
             ],
-            expect_bbox=None,
-        )
-
-    def test_custom_compression(self, sample_parquet, temp_output):
-        """Test extract with custom compression."""
-        run_command_and_validate(
-            [
-                "extract",
-                sample_parquet,
-                temp_output,
-                "--compression",
-                "gzip",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expected_compression="GZIP",
             expect_bbox=None,
         )
 
@@ -662,155 +599,133 @@ class TestConvertOutput:
         )
 
 
-class TestSortColumnOutput:
-    """Test sort column output format compliance."""
-
-    def test_default_format(self, sample_parquet, temp_output):
-        """Test default sort column format."""
-        # sort column takes: INPUT OUTPUT COLUMNS (positional arg)
-        run_command_and_validate(
-            [
-                "sort",
-                "column",
-                sample_parquet,
-                temp_output,
-                "id",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expect_bbox=None,  # Don't enforce bbox
-        )
-
-    def test_custom_compression(self, sample_parquet, temp_output):
-        """Test sort column with custom compression."""
-        run_command_and_validate(
-            [
-                "sort",
-                "column",
-                sample_parquet,
-                temp_output,
-                "id",
-                "--compression",
-                "gzip",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expected_compression="GZIP",
-            expect_bbox=None,
-        )
-
-
-class TestSortQuadkeyOutput:
-    """Test sort quadkey output format compliance."""
-
-    def test_default_format(self, sample_parquet, temp_output):
-        """Test default sort quadkey format."""
-        run_command_and_validate(
-            [
-                "sort",
-                "quadkey",
-                sample_parquet,
-                temp_output,
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expect_bbox=None,  # Don't enforce bbox
-        )
-
-    def test_custom_compression(self, sample_parquet, temp_output):
-        """Test sort quadkey with custom compression."""
-        run_command_and_validate(
-            [
-                "sort",
-                "quadkey",
-                sample_parquet,
-                temp_output,
-                "--compression",
-                "gzip",
-                "--geoparquet-version",
-                "1.1",
-            ],
-            expected_compression="GZIP",
-            expect_bbox=None,
-        )
-
-
 class TestAllCommandsConsistency:
-    """Test consistency across all commands."""
+    """Parametrized output-format matrix across all writing commands.
 
-    def test_all_produce_correct_version(self, sample_parquet):
-        """Ensure all commands produce the configured GeoParquet version."""
-        # Commands where the pattern is: cmd INPUT OUTPUT [OPTIONS]
-        simple_commands = [
-            ["sort", "hilbert"],
-            ["sort", "quadkey"],
-            ["add", "bbox"],
-            ["extract"],
-        ]
+    One case per command with granular failure IDs. This matrix also carries
+    the per-command default-format and custom-compression cases that used to be
+    duplicated in per-command classes (issue #666 item 9); sort column and
+    sort quadkey have no other output-format cases, so their classes are gone.
+    """
 
-        for cmd_base in simple_commands:
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-                tmp_name = tmp.name
-            # Remove the file so tests don't trigger overwrite checks
-            os.unlink(tmp_name)
+    @pytest.mark.parametrize(
+        ("cmd_base", "positional_extra", "expect_bbox"),
+        [
+            # sort hilbert must NOT add a bbox by default; add bbox MUST produce one
+            pytest.param(["sort", "hilbert"], [], False, id="sort-hilbert"),
+            pytest.param(["sort", "quadkey"], [], None, id="sort-quadkey"),
+            pytest.param(["add", "bbox"], [], True, id="add-bbox"),
+            pytest.param(["extract"], [], None, id="extract"),
+            # sort column has special syntax: sort column INPUT OUTPUT COLUMNS
+            pytest.param(["sort", "column"], ["id"], None, id="sort-column"),
+        ],
+    )
+    def test_all_produce_correct_version(
+        self, sample_parquet, temp_output, cmd_base, positional_extra, expect_bbox
+    ):
+        """Ensure each command produces the configured GeoParquet version."""
+        run_command_and_validate(
+            cmd_base
+            + [sample_parquet, temp_output]
+            + positional_extra
+            + ["--geoparquet-version", "1.1"],
+            expect_bbox=expect_bbox,
+        )
 
-            try:
-                run_command_and_validate(
-                    cmd_base + [sample_parquet, tmp_name, "--geoparquet-version", "1.1"],
-                    expect_bbox=None,  # Don't check bbox, just version/compression
-                )
-            finally:
-                if os.path.exists(tmp_name):
-                    os.unlink(tmp_name)
-
-        # sort column has special syntax: sort column INPUT OUTPUT COLUMNS [OPTIONS]
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-            tmp_name = tmp.name
-        # Remove the file so tests don't trigger overwrite checks
-        os.unlink(tmp_name)
-
-        try:
-            run_command_and_validate(
-                ["sort", "column", sample_parquet, tmp_name, "id", "--geoparquet-version", "1.1"],
-                expect_bbox=None,
-            )
-        finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-
-    def test_compression_options_work(self, sample_parquet):
-        """Test that all compression options work correctly."""
-        compressions = [
-            ("zstd", "ZSTD"),
-            ("gzip", "GZIP"),
-            ("brotli", "BROTLI"),
-            ("lz4", "LZ4"),
-            ("snappy", "SNAPPY"),
-        ]
-
-        for compression_arg, expected_compression in compressions:
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-                tmp_name = tmp.name
-            # Remove the file so tests don't trigger overwrite checks
-            os.unlink(tmp_name)
-
-            try:
-                run_command_and_validate(
-                    [
-                        "sort",
-                        "hilbert",
-                        sample_parquet,
-                        tmp_name,
-                        "--compression",
-                        compression_arg,
-                        "--geoparquet-version",
-                        "1.1",
-                    ],
-                    expected_compression=expected_compression,
-                )
-            finally:
-                if os.path.exists(tmp_name):
-                    os.unlink(tmp_name)
+    @pytest.mark.parametrize(
+        ("cmd_base", "positional_extra", "compression_args", "expected_compression", "expect_bbox"),
+        [
+            # Every supported codec, exercised through sort hilbert
+            pytest.param(
+                ["sort", "hilbert"],
+                [],
+                ["--compression", "zstd", "--compression-level", "15"],
+                "ZSTD",
+                False,
+                id="sort-hilbert-zstd-level",
+            ),
+            pytest.param(
+                ["sort", "hilbert"],
+                [],
+                ["--compression", "gzip"],
+                "GZIP",
+                None,
+                id="sort-hilbert-gzip",
+            ),
+            pytest.param(
+                ["sort", "hilbert"],
+                [],
+                ["--compression", "brotli"],
+                "BROTLI",
+                None,
+                id="sort-hilbert-brotli",
+            ),
+            pytest.param(
+                ["sort", "hilbert"],
+                [],
+                ["--compression", "lz4"],
+                "LZ4",
+                None,
+                id="sort-hilbert-lz4",
+            ),
+            pytest.param(
+                ["sort", "hilbert"],
+                [],
+                ["--compression", "snappy"],
+                "SNAPPY",
+                None,
+                id="sort-hilbert-snappy",
+            ),
+            # Per-command plumbing: --compression reaches each command's writer
+            pytest.param(
+                ["add", "bbox"],
+                [],
+                ["--compression", "zstd", "--compression-level", "15"],
+                "ZSTD",
+                True,
+                id="add-bbox-zstd-level",
+            ),
+            pytest.param(
+                ["extract"], [], ["--compression", "gzip"], "GZIP", None, id="extract-gzip"
+            ),
+            pytest.param(
+                ["sort", "column"],
+                ["id"],
+                ["--compression", "gzip"],
+                "GZIP",
+                None,
+                id="sort-column-gzip",
+            ),
+            pytest.param(
+                ["sort", "quadkey"],
+                [],
+                ["--compression", "gzip"],
+                "GZIP",
+                None,
+                id="sort-quadkey-gzip",
+            ),
+        ],
+    )
+    def test_compression_options_work(
+        self,
+        sample_parquet,
+        temp_output,
+        cmd_base,
+        positional_extra,
+        compression_args,
+        expected_compression,
+        expect_bbox,
+    ):
+        """Test that compression options work and reach every command."""
+        run_command_and_validate(
+            cmd_base
+            + [sample_parquet, temp_output]
+            + positional_extra
+            + compression_args
+            + ["--geoparquet-version", "1.1"],
+            expected_compression=expected_compression,
+            expect_bbox=expect_bbox,
+        )
 
 
 # ============================================================================
