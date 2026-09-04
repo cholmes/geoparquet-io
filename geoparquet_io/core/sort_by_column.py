@@ -9,9 +9,10 @@ from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_m
 from geoparquet_io.core.duckdb_metadata import get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, is_partition_path
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
+from geoparquet_io.core.partition.reader import build_read_parquet_expr, raise_for_schema_mismatch
 from geoparquet_io.core.remote import (
     get_remote_error_hint,
     is_remote_url,
@@ -166,7 +167,9 @@ def sort_by_column(
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
-    safe_url = safe_file_url(input_parquet, verbose)
+    # A directory or glob reads as every parquet file under it, the way
+    # `extract` reads one (#817). The helper owns the single escape.
+    read_expr = build_read_parquet_expr(input_parquet, verbose=verbose)
 
     # Get metadata from original file
     metadata, schema = get_parquet_metadata(input_parquet, verbose)
@@ -196,7 +199,7 @@ def sort_by_column(
     # Build SELECT query
     order_query = f"""
         SELECT *
-        FROM '{safe_url}'
+        FROM {read_expr}
         ORDER BY {order_clause}
     """
 
@@ -221,6 +224,11 @@ def sort_by_column(
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
             memory_limit=memory_limit,
+            # `metadata` is the FIRST file's footer. Over a merged multi-file
+            # input its bbox/geometry_types under-cover the output, and a
+            # conformant reader would skip the rows they leave out, so the
+            # write recomputes them instead of carrying them (#793).
+            invalidate_derived_stats=is_partition_path(input_parquet),
         )
 
         success(f"Sorted by {', '.join(column_list)} to: {output_parquet}")
@@ -229,6 +237,11 @@ def sort_by_column(
         if is_remote_url(input_parquet):
             hints = get_remote_error_hint(str(e), input_parquet)
             raise RemoteAccessError(input_parquet, f"{hints}\n\nOriginal error: {str(e)}") from e
+        raise
+    except duckdb.InvalidInputException as e:
+        # A multi-file input whose files disagree on their columns only
+        # surfaces here, when the read actually runs (#817's new surface).
+        raise_for_schema_mismatch(e, input_parquet)
         raise
     finally:
         con.close()

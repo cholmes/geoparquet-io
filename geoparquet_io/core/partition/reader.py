@@ -19,6 +19,46 @@ from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.remote import is_remote_url
 
 
+def resolve_read_path(
+    path: str,
+    hive_input: bool | None = None,
+    verbose: bool = False,
+) -> tuple[str, dict]:
+    """Return a RAW path DuckDB can actually read, plus the options it implies.
+
+    A bare directory is not something DuckDB's reader can open -- it has to
+    become the glob over the parquet files it holds, or the read dies with a
+    ``Catalog Error`` naming the directory (#817). Single files and globs pass
+    straight through.
+
+    The pass-through is guarded by :func:`is_partition_path` rather than applied
+    unconditionally, because ``resolve_partition_path`` also turns on hive
+    partitioning for any path with a ``key=value`` directory in it: a single
+    file at ``data/country=US/x.parquet`` must keep reading as itself, without
+    the partition keys appearing as extra columns.
+
+    The result is RAW, so the caller still owes it exactly one escape --
+    :func:`safe_file_url` or ``sql_path``, never both.
+
+    Args:
+        path: File path, directory, or glob pattern (local or remote)
+        hive_input: Explicitly enable/disable hive partitioning. None = auto-detect.
+        verbose: Print debug messages
+
+    Returns:
+        tuple: (raw path for DuckDB, read_parquet options dict)
+    """
+    if not is_partition_path(path):
+        return path, {}
+
+    resolved_path, auto_options = resolve_partition_path(path, hive_input)
+    if verbose:
+        debug(f"Resolved partition path: {resolved_path}")
+        if auto_options:
+            debug(f"Auto-detected options: {auto_options}")
+    return resolved_path, auto_options
+
+
 def build_read_parquet_expr(
     path: str,
     allow_schema_diff: bool = False,
@@ -45,18 +85,8 @@ def build_read_parquet_expr(
         str: DuckDB read_parquet() expression like
              "read_parquet('path/*.parquet', hive_partitioning=true)"
     """
-    # Check if this is a partition path and resolve it
-    if is_partition_path(path):
-        resolved_path, auto_options = resolve_partition_path(path, hive_input)
-        safe_path = safe_file_url(resolved_path, verbose=False)
-
-        if verbose:
-            debug(f"Resolved partition path: {resolved_path}")
-            if auto_options:
-                debug(f"Auto-detected options: {auto_options}")
-    else:
-        safe_path = safe_file_url(path, verbose=False)
-        auto_options = {}
+    resolved_path, auto_options = resolve_read_path(path, hive_input, verbose=verbose)
+    safe_path = safe_file_url(resolved_path, verbose=False)
 
     # Build options list
     options = []
@@ -165,6 +195,42 @@ def require_single_file(path: str, command_name: str) -> None:
             f'    gpio extract "{path}" consolidated.parquet\n\n'
             "Then run this command on the consolidated file."
         )
+
+
+def raise_for_schema_mismatch(exc: BaseException, path: str) -> None:
+    """Re-raise DuckDB's multi-file schema-mismatch as a user-facing error.
+
+    A directory whose parquet files disagree on their columns dies in DuckDB
+    with an ``InvalidInputException`` ("schema mismatch in glob ... try
+    setting union_by_name=True"). Reading with ``union_by_name`` implicitly
+    would NULL-fill the union -- for a renamed geometry column that fabricates
+    empty geometries -- so gpio points at the explicit reconciliation instead.
+
+    A no-op for single-file inputs and for unrelated errors, so callers can
+    invoke it first and fall through to their own handling.
+
+    Args:
+        exc: The DuckDB exception that interrupted the read
+        path: The RAW input path the user gave (directory or glob)
+
+    Raises:
+        GeoParquetError: When ``path`` is multi-file and ``exc`` is DuckDB's
+            schema-mismatch complaint.
+    """
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    if not is_partition_path(path):
+        return
+    text = str(exc)
+    if "schema mismatch" not in text.lower() and "union_by_name" not in text:
+        return
+    raise GeoParquetError(
+        f"The parquet files matched by '{path}' do not share one schema, so "
+        "they cannot be read together.\n\n"
+        "Reconcile them into a single file first:\n\n"
+        f'    gpio extract "{path}" merged.parquet --allow-schema-diff\n\n'
+        f"then run this command on the merged file.\n\nOriginal error: {exc}"
+    ) from exc
 
 
 def get_files_to_check(

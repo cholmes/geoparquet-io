@@ -11,13 +11,17 @@ These tests verify that gpio commands properly handle partition input:
 import os
 
 import pyarrow.parquet as pq
+import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import check, extract, inspect
+from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.partition.reader import (
     build_read_parquet_expr,
     get_files_to_check,
     get_partition_info,
+    raise_for_schema_mismatch,
+    resolve_read_path,
 )
 
 
@@ -100,6 +104,69 @@ class TestGetFilesToCheck:
         assert len(files) == 1
         assert files[0] == buildings_test_file
         assert notice == ""
+
+
+class TestResolveReadPath:
+    """Tests for resolve_read_path, the raw-path half of the read helper."""
+
+    def test_directory_becomes_a_glob(self, country_partition_dir):
+        resolved, _options = resolve_read_path(country_partition_dir)
+        assert resolved != country_partition_dir
+        assert resolved.endswith(".parquet")
+        assert "*" in resolved
+
+    def test_single_file_passes_through_untouched(self, buildings_test_file):
+        assert resolve_read_path(buildings_test_file) == (buildings_test_file, {})
+
+    def test_a_single_file_under_a_hive_directory_is_not_read_as_a_partition(self, tmp_path):
+        """A ``key=value`` ancestor must not switch hive partitioning on.
+
+        ``resolve_partition_path`` infers hive mode from the directory names
+        alone, so calling it unguarded would make a plain single-file read
+        sprout the partition keys as extra columns.
+        """
+        hive_dir = tmp_path / "country=US"
+        hive_dir.mkdir()
+        one_file = hive_dir / "part.parquet"
+        one_file.touch()
+        assert resolve_read_path(str(one_file)) == (str(one_file), {})
+
+    def test_hive_directory_still_reports_hive_partitioning(self, tmp_path):
+        root = tmp_path / "hive_root"
+        (root / "country=US").mkdir(parents=True)
+        (root / "country=US" / "part.parquet").touch()
+        _resolved, options = resolve_read_path(str(root))
+        assert options.get("hive_partitioning") is True
+
+    def test_verbose_reports_auto_detected_options(self, tmp_path):
+        """The verbose branch narrates the resolved path AND the options."""
+        root = tmp_path / "hive_root"
+        (root / "country=US").mkdir(parents=True)
+        (root / "country=US" / "part.parquet").touch()
+        _resolved, options = resolve_read_path(str(root), verbose=True)
+        assert options.get("hive_partitioning") is True
+
+
+class TestRaiseForSchemaMismatch:
+    """Direct tests for the helper's pass-through and raising branches."""
+
+    MISMATCH = (
+        'schema mismatch in glob: column "geometry" was read from the original '
+        "file ... If you are trying to read files with different schemas, try "
+        "setting union_by_name=True"
+    )
+
+    def test_single_file_input_is_a_no_op(self, buildings_test_file):
+        """A single file cannot disagree with itself; the caller re-raises."""
+        raise_for_schema_mismatch(Exception(self.MISMATCH), buildings_test_file)
+
+    def test_unrelated_error_on_a_partition_is_a_no_op(self, country_partition_dir):
+        """Other InvalidInputExceptions are not this helper's to rewrap."""
+        raise_for_schema_mismatch(Exception("out of memory"), country_partition_dir)
+
+    def test_mismatch_on_a_partition_raises_the_reconciliation_hint(self, country_partition_dir):
+        with pytest.raises(GeoParquetError, match="allow-schema-diff"):
+            raise_for_schema_mismatch(Exception(self.MISMATCH), country_partition_dir)
 
 
 class TestBuildReadParquetExpr:

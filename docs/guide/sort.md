@@ -231,6 +231,40 @@ Column sorting:
 - Preserves all original columns and metadata
 - Useful for time-series data or alphabetical ordering
 
+## Multi-File Input
+
+`sort column` and `sort quadkey` read a whole dataset — a directory of GeoParquet
+files, or a quoted glob — and write one sorted file:
+
+=== "CLI"
+
+    <!-- doctest: skip="needs a directory of parquet files the sample data does not have" -->
+    ```bash
+    # Every .parquet file in the directory
+    gpio sort column parts/ sorted.parquet name
+
+    # Or a glob. Quote it, or the shell expands it before gpio sees it
+    gpio sort quadkey 'parts/*.parquet' sorted.parquet
+    ```
+
+=== "Python"
+
+    <!-- doctest: skip="needs a directory of parquet files the sample data does not have" -->
+    ```python
+    import geoparquet_io as gpio
+
+    gpio.read_partition('parts/') \
+        .sort_column('name') \
+        .write('sorted.parquet', row_group_rows=50000)
+    ```
+
+The output's `bbox` and `geometry_types` are recomputed over everything written,
+rather than carried from the first file — a merged extent that under-covered the
+result would make conformant readers skip data.
+
+`sort hilbert` and `sort str` take a single file only; they stop with a message
+pointing at `gpio extract` to consolidate first.
+
 ## Output Format
 
 The output file:
