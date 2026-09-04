@@ -4338,7 +4338,10 @@ def add_bbox(
     recomputes instead, since a copy cannot honour them. Use --force to recompute and
     replace an existing bbox column.
 
-    Supports both local and remote (S3, GCS, Azure) inputs and outputs.
+    Reads local paths, s3://, gs://, az:// and https:// URLs, and writes local
+    paths, s3://, gs:// and az:// URLs. Remote work -- the copy included -- goes
+    through the object store gpio is configured to use, so --s3-endpoint,
+    --s3-region, --s3-no-ssl and --aws-profile apply.
 
     Examples:
 

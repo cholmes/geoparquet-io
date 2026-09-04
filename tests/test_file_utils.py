@@ -376,66 +376,163 @@ class TestCopyFile:
         assert dest.read_bytes() == b"geoparquet-bytes"
         assert f"Copying {source} to {dest}" in caplog.text
 
-    def test_remote_copy_uses_fsspec_without_network(self, monkeypatch):
-        """Either side being a remote URL routes through fsspec.open, not shutil.
+    def test_s3_copy_builds_the_store_from_gpio_s_configured_endpoint(self):
+        """The ambient S3 config (--s3-endpoint/--s3-region/--aws-profile) reaches the store.
 
-        fsspec.open is monkeypatched so no real network call is made -- only the
-        branch selection and the copyfileobj plumbing are under test here.
+        A copy that built its own client from ambient credentials would target AWS
+        even when the user pointed gpio at MinIO, while the recompute path on the
+        same command line honoured the setting (#810).
         """
-        import io
-        from unittest import mock
+        from unittest.mock import patch
 
-        import fsspec
+        from geoparquet_io.core.duckdb_utils import s3_config_scope
+        from geoparquet_io.core.file_utils import resolve_object_store
 
-        from geoparquet_io.core.file_utils import copy_file
+        config = {
+            "s3_endpoint": "minio.local:9000",
+            "s3_region": "us-west-2",
+            "s3_use_ssl": False,
+            "profile": "my-minio",
+        }
 
-        content = b"remote-geoparquet-bytes"
-        src_buffer = io.BytesIO(content)
-        dest_buffer = io.BytesIO()
-        opened_paths = []
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch(
+                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
+                return_value=("AKIA-TEST", "secret-test", "eu-central-1"),
+            ) as mock_creds,
+            s3_config_scope(config),
+        ):
+            store, key = resolve_object_store("s3://bucket/path/to/file.parquet")
 
-        def fake_open(path, mode):
-            opened_paths.append((path, mode))
-            handle = mock.MagicMock()
-            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
-            handle.__exit__.return_value = False
-            return handle
+        assert key == "path/to/file.parquet"
+        assert store is mock_s3store.return_value
+        mock_creds.assert_called_once_with("my-minio")
+        assert mock_s3store.call_args.args[0] == "bucket"
+        store_kwargs = mock_s3store.call_args.kwargs
+        assert store_kwargs["endpoint"] == "http://minio.local:9000"
+        assert store_kwargs["region"] == "us-west-2"
+        assert store_kwargs["access_key_id"] == "AKIA-TEST"
+        assert store_kwargs["secret_access_key"] == "secret-test"
 
-        monkeypatch.setattr(fsspec, "open", fake_open)
+    def test_gcs_and_azure_urls_resolve_to_their_own_stores(self):
+        """gs:// and az:// are real destinations now, not an fsspec ImportError (#810)."""
+        from unittest.mock import patch
 
-        copy_file("s3://bucket/source.parquet", "s3://bucket/dest.parquet")
+        from geoparquet_io.core.file_utils import resolve_object_store
 
-        assert dest_buffer.getvalue() == content
-        assert opened_paths == [
-            ("s3://bucket/source.parquet", "rb"),
-            ("s3://bucket/dest.parquet", "wb"),
+        with patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url:
+            _, gs_key = resolve_object_store("gs://bucket/path/file.parquet")
+            _, az_key = resolve_object_store("az://account/container/file.parquet")
+
+        assert gs_key == "path/file.parquet"
+        assert az_key == "file.parquet"
+        assert [call.args[0] for call in mock_from_url.call_args_list] == [
+            "gs://bucket",
+            "az://account/container",
         ]
 
-    def test_remote_source_local_dest_still_uses_fsspec(self, monkeypatch):
-        """Only one side needs to be remote to take the fsspec branch."""
-        import io
-        from unittest import mock
+    def test_https_source_resolves_to_an_http_store_on_the_origin(self):
+        """An https:// input is read through obstore's HTTP store, keyed by its path."""
+        from unittest.mock import patch
 
-        import fsspec
+        from geoparquet_io.core.file_utils import resolve_object_store
+
+        with patch("obstore.store.HTTPStore") as mock_http:
+            store, key = resolve_object_store("https://example.com/data/file.parquet")
+
+        assert key == "data/file.parquet"
+        assert store is mock_http.from_url.return_value
+        mock_http.from_url.assert_called_once_with("https://example.com")
+
+    def test_unsupported_scheme_fails_before_any_store_is_built(self):
+        """abfs:// reached fsspec and died on a missing adlfs; reject it up front (#810)."""
+        from unittest.mock import patch
 
         from geoparquet_io.core.file_utils import copy_file
 
-        content = b"mixed-source-bytes"
-        src_buffer = io.BytesIO(content)
-        dest_buffer = io.BytesIO()
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url,
+            pytest.raises(GeoParquetError) as exc,
+        ):
+            copy_file("abfs://container@account.dfs.core.windows.net/in.parquet", "out.parquet")
 
-        def fake_open(path, mode):
-            handle = mock.MagicMock()
-            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
-            handle.__exit__.return_value = False
-            return handle
+        message = str(exc.value)
+        assert "abfs://" in message
+        assert "az://" in message
+        mock_s3store.assert_not_called()
+        mock_from_url.assert_not_called()
 
-        monkeypatch.setattr(fsspec, "open", fake_open)
+    def test_http_destination_is_rejected_as_read_only(self):
+        """HTTP(S) can be copied from, never to; say so instead of failing mid-stream."""
+        from unittest.mock import patch
 
-        # Only the source is remote; the dest is a plain local-looking path.
-        copy_file("https://example.com/source.parquet", "local_dest.parquet")
+        from geoparquet_io.core.file_utils import copy_file
 
-        assert dest_buffer.getvalue() == content
+        with (
+            patch("obstore.store.HTTPStore") as mock_http,
+            pytest.raises(GeoParquetError, match="read-only"),
+        ):
+            copy_file("local.parquet", "https://example.com/out.parquet")
+
+        mock_http.from_url.assert_not_called()
+
+    def test_remote_to_remote_copy_streams_bytes_through_obstore(self, monkeypatch):
+        """A remote->remote copy moves the real bytes, with no network and no whole-file buffer."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"geoparquet-bytes" * 1000
+        store = MemoryStore()
+        obs.put(store, "in.parquet", payload)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+
+        file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        assert obs.get(store, "out.parquet").bytes().to_bytes() == payload
+
+    def test_remote_source_local_dest_writes_the_local_file(self, monkeypatch, tmp_path):
+        """Only one side needs to be remote; the local side is plain file I/O."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"mixed-source-bytes"
+        store = MemoryStore()
+        obs.put(store, "in.parquet", payload)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        dest = tmp_path / "dest.parquet"
+
+        file_utils.copy_file("s3://bucket/in.parquet", str(dest))
+
+        assert dest.read_bytes() == payload
+
+    def test_local_source_remote_dest_puts_the_object(self, monkeypatch, tmp_path):
+        """A local file uploaded to a remote destination lands under the resolved key."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"local-source-bytes"
+        source = tmp_path / "source.parquet"
+        source.write_bytes(payload)
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+
+        file_utils.copy_file(str(source), "s3://bucket/out.parquet")
+
+        assert obs.get(store, "out.parquet").bytes().to_bytes() == payload
 
 
 # =============================================================================

@@ -54,6 +54,8 @@ The copy matters for pipelines: `gpio add bbox in.parquet out.parquet` always le
 
 The same holds for a stream: `... | gpio add bbox - out.parquet` on an input that already has a bbox column passes the data through untouched and declares no covering for a column gpio did not compute.
 
+That copy is a remote write like any other, so it goes through the object store gpio is configured to use: `--s3-endpoint`, `--s3-region`, `--s3-no-ssl` and `--aws-profile` apply to it exactly as they do to a recomputed output, and a copy to MinIO no longer ends up pointed at AWS ([#810](https://github.com/geoparquet/geoparquet-io/issues/810)). Inputs may be local paths or `s3://`, `gs://`, `az://` and `https://` URLs; outputs may be local paths or `s3://`, `gs://` and `az://` URLs. Another scheme — `abfs://`, say — is refused by name before anything is read, rather than failing partway through.
+
 <!-- doctest: menu -->
 ```bash
 # Already has a bbox: copies input to output, computing nothing
