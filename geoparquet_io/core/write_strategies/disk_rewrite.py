@@ -30,7 +30,7 @@ from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_colu
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
     build_geo_metadata,
-    resolve_geometry_columns,
+    native_geometry_crs,
 )
 from geoparquet_io.core.write_strategies.row_group_sizing import (
     _resolve_row_group_rows,
@@ -39,36 +39,6 @@ from geoparquet_io.core.write_strategies.row_group_sizing import (
 
 if TYPE_CHECKING:
     import duckdb
-
-
-def _native_geometry_crs(
-    geoparquet_version: str,
-    geo_meta: dict,
-    geometry_column: str,
-    geometry_info: dict | None,
-) -> dict[str, dict | None]:
-    """Geometry columns needing a native Parquet GEOMETRY type, each with its CRS.
-
-    Empty below 2.0, where geometry is plain BYTE_ARRAY WKB and the CRS lives in
-    the ``geo`` block alone.
-
-    EVERY declared geometry column, not just the primary: 2.0 validation applies
-    the same requirement to each column in ``geo["columns"]``, and under
-    parquet-geo-only -- which writes no ``geo`` block at all -- the logical type
-    is a column's only geometry identity (#706).
-
-    Each CRS is read back out of the metadata just built for the file, so the
-    type and the block cannot disagree (``v2_crs_consistency``). A column the
-    block gives no ``crs`` is the spec default, and carries none in its type.
-    """
-    if geoparquet_version not in ("2.0", "parquet-geo-only"):
-        return {}
-
-    column_metadata = geo_meta.get("columns") or {}
-    return {
-        column: (column_metadata.get(column) or {}).get("crs")
-        for column in resolve_geometry_columns(geometry_column, geometry_info, geo_meta)
-    }
 
 
 def _native_geometry_schema(schema: pa.Schema, native_crs: dict[str, dict | None]) -> pa.Schema:
@@ -256,7 +226,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             # (#764). parquet-geo-only additionally writes no `geo` block: the
             # one built above is still what the native types are keyed off, but
             # it names a null version, which DuckDB refuses to open.
-            native_crs = _native_geometry_crs(
+            native_crs = native_geometry_crs(
                 geoparquet_version, geo_meta, geometry_column, geometry_info
             )
             if verbose and native_crs:

@@ -1400,36 +1400,26 @@ def _compute_bbox_from_data(table, geometry_column: str, verbose: bool) -> list[
 
 def _assemble_and_apply_geo_metadata(
     table,
-    geometry_column: str,
     geo_meta: dict,
-    input_crs: dict | None,
     metadata_version: str,
     verbose: bool,
 ):
     """
-    Assemble final geo metadata and apply it to the table.
+    Apply the finished geo metadata to the table's schema.
 
-    Adds CRS to geo metadata if provided and applies the complete
-    metadata to the table schema.
+    The geometry column's ``crs`` is already resolved by the caller, which has to
+    do it before this point: the native Parquet GEOMETRY logical types are built
+    from what the block declares, so the block is finished first (#848).
 
     Args:
         table: PyArrow Table to modify
-        geometry_column: Name of the geometry column
-        geo_meta: Geo metadata dict to finalize
-        input_crs: PROJJSON dict with CRS (optional)
+        geo_meta: Geo metadata dict to apply
         metadata_version: GeoParquet metadata version string
         verbose: Whether to print verbose output
 
     Returns:
         pa.Table: Table with geo metadata applied
     """
-    # Set/clear the geometry column's crs per the GeoParquet null-vs-default rule
-    # (shared helper is the single source of truth across all write paths).
-    columns = geo_meta.setdefault("columns", {})
-    apply_output_crs(columns.setdefault(geometry_column, {}), input_crs)
-    if verbose and input_crs and not is_default_crs(input_crs):
-        debug(f"Added CRS to geo metadata: {_format_crs_display(input_crs)}")
-
     # Apply metadata to table
     existing_metadata = dict(table.schema.metadata) if table.schema.metadata else {}
     new_metadata = {}
@@ -1667,7 +1657,57 @@ def _apply_geoparquet_metadata(
             debug(f"Geometry column '{geometry_column}' not found in table, skipping metadata")
         return table
 
-    # Step 1: Handle geometry columns based on version.
+    from geoparquet_io.core.write_strategies.base import (
+        native_geometry_crs,
+        resolve_geometry_columns,
+    )
+
+    # The table entry points (`write_geoparquet_table`, the strategies'
+    # `write_from_table`) get no `geometry_info`, so fall back to naming the
+    # secondaries from the carried geo metadata -- otherwise they would silently
+    # keep the single-column behaviour the loop below exists to replace.
+    # `original_metadata` is deliberately None on the table entry points (passing
+    # it there would smuggle the input's stale geo block into the output), so the
+    # secondary names come from the table's own carried key instead.
+    carried_geo = _parse_geo_metadata_quietly(original_metadata) or _parse_geo_metadata_quietly(
+        table.schema.metadata
+    )
+
+    # Step 1: Build the geo metadata, BEFORE the geometry columns are retyped.
+    #
+    # The 2.0 / parquet-geo-only native Parquet GEOMETRY types take each column's
+    # CRS from the entry that declares it, so that entry has to exist first --
+    # otherwise the primary is typed from `input_crs`, which only a reprojection
+    # supplies, and an ordinary write leaves the type bare beside a block still
+    # declaring the source's EPSG:3857 (#848).
+    #
+    # Built for parquet-geo-only too, which drops it again below: there the
+    # logical type is the column's only geometry identity, so losing the CRS is
+    # not a disagreement but a silent relabelling of projected coordinates.
+    geo_meta = _build_geo_block(
+        table,
+        geometry_column,
+        original_metadata,
+        input_crs,
+        custom_metadata,
+        metadata_version,
+        edges,
+        geometry_info,
+        verbose,
+    )
+
+    # A column the block does not name falls back to what the input declared for
+    # it: on the table entry points the block is built from `original_metadata`,
+    # which is None there, while the carrier decision still has to see the
+    # secondaries the table's own carried key names.
+    declared_crs = dict(carried_geo.get("columns") or {})
+    declared_crs.update((geometry_info or {}).get("metadata", {}))
+    declared_crs.update(geo_meta.get("columns") or {})
+    native_crs = native_geometry_crs(
+        effective_version, {"columns": declared_crs}, geometry_column, geometry_info
+    )
+
+    # Step 2: Handle geometry columns based on version.
     #
     # EVERY geometry column, not just the primary: validation applies the same
     # per-version requirements to each column in geo["columns"], and a secondary
@@ -1675,30 +1715,11 @@ def _apply_geoparquet_metadata(
     # version and dependent on whether anything imported geoarrow.pyarrow (#706).
     # Each column carries its OWN crs -- giving a secondary the primary's fails
     # v2_crs_consistency.
-    from geoparquet_io.core.write_strategies.base import resolve_geometry_columns
-
-    # The table entry points (`write_geoparquet_table`, the strategies'
-    # `write_from_table`) get no `geometry_info`, so fall back to naming the
-    # secondaries from the carried geo metadata -- otherwise they would silently
-    # keep the single-column behaviour this loop exists to replace.
-    # `original_metadata` is deliberately None on the table entry points (passing
-    # it there would smuggle the input's stale geo block into the output), so the
-    # secondary names come from the table's own carried key instead. This feeds
-    # the carrier decision only -- step 2 still builds metadata from
-    # `original_metadata` as passed.
-    carried_geo = _parse_geo_metadata_quietly(original_metadata) or _parse_geo_metadata_quietly(
-        table.schema.metadata
-    )
-    column_metadata = dict(carried_geo.get("columns") or {})
-    column_metadata.update((geometry_info or {}).get("metadata", {}))
     for column in sorted(resolve_geometry_columns(geometry_column, geometry_info, carried_geo)):
         if column not in table.column_names:
             continue
-        column_crs = (
-            input_crs if column == geometry_column else column_metadata.get(column, {}).get("crs")
-        )
         table = _process_geometry_column_for_version(
-            table, column, effective_version, column_crs, verbose
+            table, column, effective_version, native_crs.get(column), verbose
         )
 
     if effective_version in ("1.0", "1.1"):
@@ -1706,72 +1727,70 @@ def _apply_geoparquet_metadata(
             table, resolve_geometry_columns(geometry_column, geometry_info, carried_geo), verbose
         )
 
-    # Step 2: Build and apply geo metadata (unless parquet-geo-only)
+    # Step 3: Apply the geo metadata (unless parquet-geo-only)
     if not should_add_geo_metadata:
-        # parquet-geo-only means no GeoParquet metadata at all. Step 1 has just
+        # parquet-geo-only means no GeoParquet metadata at all. Step 2 has just
         # given the column a native Parquet GEOMETRY logical type, so a 'geo'
         # key carried in from the input would declare a version whose spec
         # forbids that type (issue #687). Drop it, keeping unrelated KV
         # metadata, to match the other write paths.
         return _strip_geo_metadata_key(table, verbose)
 
-    # Detect bbox column from table schema
-    bbox_column = _detect_bbox_column_from_table(table, verbose)
-    bbox_info = {
-        "has_bbox_column": bbox_column is not None,
-        "bbox_column_name": bbox_column,
-    }
+    # Stats are read off the written data, so they are filled in after step 2.
+    col_meta = geo_meta["columns"][geometry_column]
+    if "geometry_types" not in col_meta:
+        col_meta["geometry_types"] = _compute_geometry_types(table, geometry_column, verbose)
 
-    # Create geo metadata using existing helper
+    computed_bbox = _compute_bbox_from_data(table, geometry_column, verbose)
+    if computed_bbox:
+        col_meta["bbox"] = computed_bbox
+
+    return _assemble_and_apply_geo_metadata(table, geo_meta, metadata_version, verbose)
+
+
+def _build_geo_block(
+    table,
+    geometry_column: str,
+    original_metadata: dict | None,
+    input_crs: dict | None,
+    custom_metadata: dict | None,
+    metadata_version: str,
+    edges: str | None,
+    geometry_info: dict | None,
+    verbose: bool,
+) -> dict:
+    """Build the output's ``geo`` block, with the primary column's CRS resolved.
+
+    Everything here reads the table's *schema* only -- the bbox-covering probe --
+    so it can run before the geometry columns are retyped, which is what lets the
+    native Parquet GEOMETRY types be built from the CRS this declares (#848).
+    The per-column stats that need the data (``geometry_types``, ``bbox``) are
+    filled in by the caller afterwards.
+    """
+    bbox_column = _detect_bbox_column_from_table(table, verbose)
     geo_meta = create_geo_metadata(
         original_metadata,
         geometry_column,
-        bbox_info,
+        {"has_bbox_column": bbox_column is not None, "bbox_column_name": bbox_column},
         custom_metadata,
         verbose,
         version=metadata_version,
         edges=edges,
     )
 
-    # Ensure geometry_types is set (required by GeoParquet spec)
-    col_meta = geo_meta.get("columns", {}).get(geometry_column, {})
-    if "geometry_types" not in col_meta:
-        col_meta["geometry_types"] = _compute_geometry_types(table, geometry_column, verbose)
-        geo_meta["columns"][geometry_column] = col_meta
+    # Set/clear the geometry column's crs per the GeoParquet null-vs-default rule
+    # (shared helper is the single source of truth across all write paths).
+    columns = geo_meta.setdefault("columns", {})
+    apply_output_crs(columns.setdefault(geometry_column, {}), input_crs)
+    if verbose and input_crs and not is_default_crs(input_crs):
+        debug(f"Added CRS to geo metadata: {_format_crs_display(input_crs)}")
 
-    # Compute file-level bbox from geometry data
-    computed_bbox = _compute_bbox_from_data(table, geometry_column, verbose)
-    if computed_bbox:
-        col_meta["bbox"] = computed_bbox
-        geo_meta["columns"][geometry_column] = col_meta
+    # Secondary entries are merged in here rather than after the stats pass, so
+    # each one's own `crs` is available to the native-type decision.
+    from geoparquet_io.core.write_strategies.base import merge_secondary_geometry_metadata
 
-    # Handle secondary geometry columns from geometry_info
-    if geometry_info:
-        secondary_columns = geometry_info.get("secondary", [])
-        column_metadata = geometry_info.get("metadata", {})
-
-        for sec_col in secondary_columns:
-            if sec_col not in geo_meta["columns"]:
-                geo_meta["columns"][sec_col] = {}
-
-            sec_meta = geo_meta["columns"][sec_col]
-
-            # Copy metadata from input for secondary columns
-            if sec_col in column_metadata:
-                input_sec_meta = column_metadata[sec_col]
-                for key, value in input_sec_meta.items():
-                    # Preserve input metadata (crs, encoding, geometry_types, etc.)
-                    if key not in sec_meta:
-                        sec_meta[key] = value
-
-            # Ensure encoding is set (required by spec)
-            if "encoding" not in sec_meta:
-                sec_meta["encoding"] = "WKB"
-
-    # Assemble and apply final metadata
-    return _assemble_and_apply_geo_metadata(
-        table, geometry_column, geo_meta, input_crs, metadata_version, verbose
-    )
+    merge_secondary_geometry_metadata(geo_meta, geometry_info)
+    return geo_meta
 
 
 def _estimate_row_size(table) -> int:

@@ -1518,43 +1518,6 @@ class TestNativeGeometryTypeAcrossStrategies:
         assert _failed_checks(out) == []
         assert json.loads(pq.read_schema(out).metadata[b"geo"])["version"] == f"{version}.0"
 
-    def test_disk_rewrite_native_type_carries_the_declared_crs(self, tmp_path):
-        """A projected CRS reaches the logical type, which is where 2.0 keeps it.
-
-        Asserted on the file's own logical type rather than on the Arrow field:
-        ``WkbType.__eq__`` ignores the CRS, so comparing PyArrow types cannot
-        tell a CRS84 column from an EPSG:3857 one. ``v2_crs_consistency`` is the
-        check that notices, and it is in ``_failed_checks`` below.
-        """
-        import pyproj
-
-        crs = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
-        geo_meta = {
-            "version": "1.1.0",
-            "primary_column": "geometry",
-            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"], "crs": crs}},
-        }
-        points = [struct.pack("<BI2d", 1, 1, float(i) * 1000, float(i) * 1000) for i in range(3)]
-        table = pa.table({"id": [0, 1, 2], "geometry": points})
-        source = str(tmp_path / "src_3857.parquet")
-        pq.write_table(
-            table.replace_schema_metadata({b"geo": json.dumps(geo_meta).encode()}), source
-        )
-        out = str(tmp_path / "disk_rewrite_crs.parquet")
-
-        _write_via_query(source, out, "2.0", "disk-rewrite")
-
-        con = get_duckdb_connection(load_spatial=False)
-        try:
-            logical = con.execute(
-                f"SELECT logical_type FROM parquet_schema({sql_path(out)}) WHERE name = 'geometry'"
-            ).fetchone()[0]
-        finally:
-            con.close()
-        assert "Pseudo-Mercator" in str(logical)
-        assert json.loads(pq.read_schema(out).metadata[b"geo"])["columns"]["geometry"]["crs"] == crs
-        assert _failed_checks(out) == []
-
     @pytest.mark.parametrize("strategy", ["disk-rewrite", "streaming"])
     def test_verbose_write_names_the_native_columns(self, strategy, tmp_path, caplog):
         """The verbose branch of the native path is code too, and says which columns.
@@ -1667,3 +1630,235 @@ class TestNativeWkbTypeHelpers:
 
         assert converted.type.storage_type == pa.large_binary()
         assert converted.storage.to_pylist() == [self.WKB_POINT]
+
+
+# ---------------------------------------------------------------------------
+# The native GEOMETRY type's CRS agrees with the geo block's (#848)
+# ---------------------------------------------------------------------------
+
+
+def _type_crs(path: str) -> dict[str, tuple[str, int] | None]:
+    """``(authority, code)`` carried by each geometry column's Parquet logical type.
+
+    Read back through PyArrow with ``geoarrow.pyarrow`` imported, which is what
+    resolves a native GEOMETRY logical type into a typed field carrying its CRS.
+    ``None`` means the type carries no CRS, i.e. the file claims the spec default.
+
+    Not comparable by PyArrow type equality: ``WkbType.__eq__`` ignores the CRS,
+    so a CRS84 column and an EPSG:3857 one compare equal.
+    """
+    import geoarrow.pyarrow  # noqa: F401  -- registers the extension type
+
+    schema = pq.read_schema(path)
+    return {
+        name: _crs_identity(getattr(schema.field(name).type, "crs", None))
+        for name in ("geometry", "geom2")
+        if name in schema.names
+    }
+
+
+def _block_crs(path: str) -> dict[str, tuple[str, int] | None]:
+    """``(authority, code)`` each column's ``geo`` entry declares; ``{}`` with no block."""
+    geo = json.loads((pq.read_schema(path).metadata or {}).get(b"geo") or b"{}")
+    return {
+        name: _crs_identity(entry.get("crs")) for name, entry in (geo.get("columns") or {}).items()
+    }
+
+
+def _crs_identity(crs) -> tuple[str, int] | None:
+    """Normalize a PROJJSON dict or a geoarrow CRS object down to its authority code."""
+    if crs is None:
+        return None
+    if not isinstance(crs, dict):
+        crs = json.loads(crs.to_json())
+    identity = crs.get("id") or {}
+    return (identity.get("authority"), identity.get("code")) if identity else None
+
+
+def _projected_source(tmp_path, *, secondary: bool) -> str:
+    """A 1.1 source whose geometry columns each declare their own projected CRS."""
+    import pyproj
+
+    columns = {
+        "geometry": {
+            "encoding": "WKB",
+            "geometry_types": ["Point"],
+            "crs": pyproj.CRS.from_authority("EPSG", "3857").to_json_dict(),
+        }
+    }
+    points = [struct.pack("<BI2d", 1, 1, float(i) * 1000, float(i) * 1000) for i in range(6)]
+    data = {"id": [0, 1, 2], "geometry": points[:3]}
+    if secondary:
+        columns["geom2"] = {
+            "encoding": "WKB",
+            "geometry_types": ["Point"],
+            "crs": pyproj.CRS.from_authority("EPSG", "27700").to_json_dict(),
+        }
+        data["geom2"] = points[3:]
+
+    geo_meta = {"version": "1.1.0", "primary_column": "geometry", "columns": columns}
+    source = str(tmp_path / "projected.parquet")
+    pq.write_table(
+        pa.table(data).replace_schema_metadata({b"geo": json.dumps(geo_meta).encode()}), source
+    )
+    return source
+
+
+class TestNativeGeometryCrsAcrossStrategies:
+    """Every strategy takes the logical type's CRS from the ``geo`` block it just built.
+
+    Regression suite for #848. At 2.0 the CRS lives in both the native Parquet
+    GEOMETRY logical type and the ``geo`` block, and ``gpio check spec`` requires
+    them to agree. ``duckdb-kv`` and (since #764) ``disk-rewrite`` read each
+    column's CRS out of the metadata built for that same file; the two Arrow-side
+    strategies built the type from the incoming Arrow field alone, so a write that
+    threads no ``input_crs`` -- the ordinary case, since only a reprojection
+    supplies one -- produced a bare Geometry type beside a block declaring
+    EPSG:3857, failing ``v2_crs_consistency_geometry`` and
+    ``v2_crs_in_parquet_type_geometry`` on gpio's own output.
+
+    Under parquet-geo-only there is no block to disagree with and nothing fails
+    those two checks -- the type is the column's only geometry identity, so
+    dropping the CRS silently relabels projected coordinates as CRS84. That is
+    the worse bug of the two, and it is ``coordinates_valid_for_crs`` that
+    catches it.
+    """
+
+    @pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+    @pytest.mark.parametrize("version", NATIVE_VERSIONS)
+    def test_primary_crs_reaches_the_logical_type(self, strategy, version, tmp_path):
+        """The issue's reproducer: one projected geometry column, no ``input_crs``."""
+        source = _projected_source(tmp_path, secondary=False)
+        out = str(tmp_path / f"{strategy}_{version}.parquet")
+
+        _write_via_query(source, out, version, strategy)
+
+        assert _type_crs(out) == {"geometry": ("EPSG", 3857)}
+        if version == "2.0":
+            assert _block_crs(out) == {"geometry": ("EPSG", 3857)}
+        assert _failed_checks(out) == []
+
+    @pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+    @pytest.mark.parametrize("version", NATIVE_VERSIONS)
+    def test_each_column_takes_its_own_crs(self, strategy, version, tmp_path):
+        """A secondary column's type carries *its* CRS, not the primary's (#706)."""
+        source = _projected_source(tmp_path, secondary=True)
+        out = str(tmp_path / f"{strategy}_{version}_two.parquet")
+
+        _write_via_query(
+            source,
+            out,
+            version,
+            strategy,
+            geometry_info={
+                "primary": "geometry",
+                "secondary": ["geom2"],
+                "metadata": {
+                    "geom2": json.loads(pq.read_schema(source).metadata[b"geo"])["columns"]["geom2"]
+                },
+            },
+        )
+
+        assert _type_crs(out) == {"geometry": ("EPSG", 3857), "geom2": ("EPSG", 27700)}
+        if version == "2.0":
+            assert _block_crs(out) == {"geometry": ("EPSG", 3857), "geom2": ("EPSG", 27700)}
+        assert _failed_checks(out) == []
+
+    @pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+    def test_a_requested_crs_still_wins_over_the_source_crs(self, strategy, tmp_path):
+        """``input_crs`` is the output CRS when a caller threads one, on every strategy.
+
+        The reprojection case, and the guard against fixing one disagreement into
+        another: the block applies ``input_crs``, so the type has to follow it
+        rather than the CRS the *source* declared.
+        """
+        import pyproj
+
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        crs = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
+        out = str(tmp_path / f"{strategy}_requested.parquet")
+
+        _write_via_query(source, out, "2.0", strategy, input_crs=crs)
+
+        assert _type_crs(out) == {"geometry": ("EPSG", 3857)}
+        assert _block_crs(out) == {"geometry": ("EPSG", 3857)}
+
+    def test_streaming_table_entry_point_keeps_the_crs_with_no_geo_block(self, tmp_path):
+        """``Table.write()`` under parquet-geo-only: the type is the only identity left.
+
+        The streaming strategy builds a block for this version too and drops it
+        again, which is the only thing keeping a requested CRS on the column once
+        there is no ``geo`` key to read it back out of.
+
+        Asserted on the logical type alone: this entry point still lets the
+        *input's* carried ``geo`` key ride into the output, which is the separate
+        leak tracked in #773 and is not what this write path decides.
+        """
+        import pyproj
+
+        crs = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / "streaming_table_geo_only.parquet")
+
+        WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_STREAMING).write_from_table(
+            table=pq.read_table(source),
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="parquet-geo-only",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+            input_crs=crs,
+        )
+
+        assert _type_crs(out) == {"geometry": ("EPSG", 3857)}
+
+    def test_verbose_write_names_the_crs_it_put_in_the_block(self, tmp_path, caplog):
+        """The in-memory path logs the CRS it resolved; an f-string only ``--verbose`` runs."""
+        import pyproj
+
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / "verbose_crs.parquet")
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            _write_via_query(
+                source,
+                out,
+                "2.0",
+                "in-memory",
+                verbose=True,
+                input_crs=pyproj.CRS.from_authority("EPSG", "3857").to_json_dict(),
+            )
+
+        assert "added crs to geo metadata" in caplog.text.lower()
+        assert _type_crs(out) == {"geometry": ("EPSG", 3857)}
+
+
+class TestMergeSecondaryGeometryMetadata:
+    """The one definition of "give every secondary column a ``geo`` entry"."""
+
+    def test_an_undeclared_secondary_still_gets_the_required_encoding(self):
+        """``encoding`` is required by the spec, so a column the input left bare gets WKB."""
+        from geoparquet_io.core.write_strategies.base import merge_secondary_geometry_metadata
+
+        geo_meta = {"columns": {"geometry": {"encoding": "WKB"}}}
+
+        merge_secondary_geometry_metadata(geo_meta, {"secondary": ["geom2"], "metadata": {}})
+
+        assert geo_meta["columns"]["geom2"] == {"encoding": "WKB"}
+
+    def test_the_input_metadata_wins_over_the_default(self):
+        """A declared secondary keeps its own crs and encoding -- what the native type reads."""
+        from geoparquet_io.core.write_strategies.base import merge_secondary_geometry_metadata
+
+        crs = {"id": {"authority": "EPSG", "code": 27700}}
+        geo_meta = {"columns": {"geometry": {"encoding": "WKB"}}}
+
+        merge_secondary_geometry_metadata(
+            geo_meta,
+            {"secondary": ["geom2"], "metadata": {"geom2": {"encoding": "point", "crs": crs}}},
+        )
+
+        assert geo_meta["columns"]["geom2"] == {"encoding": "point", "crs": crs}
