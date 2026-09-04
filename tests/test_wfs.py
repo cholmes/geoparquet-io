@@ -1827,8 +1827,9 @@ class TestResponseDispatchHelpers:
     @pytest.mark.parametrize(
         ("output_format", "expected"),
         [
-            # Nothing negotiated: ask for GeoJSON, as gpio always has.
-            (None, "application/json"),
+            # Nothing negotiated means outputFormat was deliberately left off
+            # the request, so Accept must not name a format either.
+            (None, "*/*"),
             ("application/gml+xml; version=3.2", "application/gml+xml; version=3.2"),
             # "GML2" and "gml32" are WFS format tokens, not media types. Echoing
             # one into Accept would earn a 406 from a strict server, so ask for
@@ -1888,12 +1889,35 @@ class TestLookupParameterCaseInsensitive:
 class TestFormatPrefixMatching:
     """A version suffix gpio has not seen still resolves to its format family."""
 
-    def test_unlisted_version_suffix_matches_by_prefix(self):
-        """``application/gml+xml;version=3.2.1`` is GML even though it is unlisted."""
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            "application/gml+xml;version=3.2.1",
+            "text/xml; subtype=gml/3.1.1; charset=utf-8",
+        ],
+    )
+    def test_unlisted_media_type_parameter_still_matches(self, advertised):
+        """An extra ``;parameter`` does not hide a format gpio can read."""
         from geoparquet_io.core.wfs import _detect_best_output_format
 
-        advertised = ["application/gml+xml;version=3.2.1"]
-        assert _detect_best_output_format(advertised) == advertised[0]
+        assert _detect_best_output_format([advertised]) == advertised
+
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            # RFC 7464 JSON text sequences: a stream of records, not one
+            # FeatureCollection, so reading it as GeoJSON would fail or -- worse
+            # -- silently return one record.
+            "application/json-seq",
+            "application/geo+json-seq",
+            "gml3-alternate",
+        ],
+    )
+    def test_a_longer_name_is_not_the_same_format(self, advertised):
+        """Matching stops at a media-type parameter; it is not a bare prefix test."""
+        from geoparquet_io.core.wfs import _detect_best_output_format
+
+        assert _detect_best_output_format([advertised]) is None
 
 
 _OMIT_PROPERTIES = object()

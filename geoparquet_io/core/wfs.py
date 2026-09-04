@@ -932,8 +932,13 @@ def _first_matching_format(
 
     Two passes: exact (normalized) equality first, so a server advertising both
     ``gml3`` and ``gml32`` still gets the preference order below honored, then a
-    prefix match so an unlisted version suffix (``…;version=3.2.1``) still
+    parameter match so an unlisted version suffix (``…;version=3.2.1``) still
     resolves to its family instead of being missed.
+
+    The second pass is deliberately not a plain prefix test: that would read
+    ``application/json-seq`` (JSON *text sequences*, which are not a
+    FeatureCollection) as ``application/json``, and ``gml3-something`` as
+    ``gml3``. Only a media-type parameter -- the part after ``;`` -- may differ.
     """
     for want in preferred:
         want_norm = _normalize_output_format(want)
@@ -943,7 +948,7 @@ def _first_matching_format(
     for want in preferred:
         want_norm = _normalize_output_format(want)
         for i, got in enumerate(available_norm):
-            if got.startswith(want_norm):
+            if got.startswith(want_norm) and got[len(want_norm) :].startswith(";"):
                 return available[i]
     return None
 
@@ -1689,9 +1694,13 @@ def _accept_header_for(output_format: str | None) -> str:
     WFS outputFormat values are not always media types (``GML2``, ``gml32``), so
     only a value that looks like one is echoed into Accept; anything else asks
     for whatever the server sends rather than risking a 406.
+
+    ``None`` means the caller decided not to name an ``outputFormat`` at all, so
+    Accept must not name one either — asking for JSON there would contradict the
+    request and could earn a 406 from a server that cannot produce it.
     """
     if not output_format:
-        return "application/json"
+        return "*/*"
     return output_format if "/" in output_format else "*/*"
 
 
