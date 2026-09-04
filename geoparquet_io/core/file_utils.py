@@ -2,6 +2,7 @@
 File path utilities for GeoParquet files.
 """
 
+import contextlib
 import glob as glob_module
 import os
 from pathlib import Path
@@ -180,6 +181,159 @@ def handle_output_overwrite(
     output_file.unlink()
 
 
+# Schemes copy_file can resolve to a configured object store. The aliases map onto
+# the canonical scheme gpio's upload path speaks; every other scheme is_remote_url()
+# accepts is refused by name, rather than dying inside a filesystem library on a
+# dependency gpio does not ship (#810). Azure is refused explicitly:
+# obs.store.from_url("az://account/container") cannot be configured to work (it
+# misreads the account segment as the container).
+# TODO(#864): support az:// copies once a working Azure store
+# construction exists, and re-advertise az:// in the messages below.
+_COPYABLE_STORE_SCHEMES = ("s3", "gs")
+_COPY_SCHEME_ALIASES = {"s3a": "s3", "gcs": "gs"}
+_HTTP_SCHEMES = ("http", "https")
+_AZURE_SCHEMES = ("az", "abfs", "abfss", "azure")
+
+# _setup_store_and_kwargs() folds this into the upload kwargs it returns alongside
+# the store. A streamed copy does not use those kwargs, so this only satisfies the
+# signature; obstore's own default is the same number.
+_COPY_CHUNK_CONCURRENCY = 12
+
+
+def _canonical_remote_url(url: str) -> tuple[str, str]:
+    """Split a remote URL into (canonical scheme, canonical URL)."""
+    scheme, separator, rest = url.partition("://")
+    scheme = scheme.lower()
+    canonical = _COPY_SCHEME_ALIASES.get(scheme, scheme)
+    return canonical, f"{canonical}{separator}{rest}"
+
+
+def _check_copyable_scheme(param_name: str, url: str, writing: bool) -> None:
+    """Reject a scheme copy_file cannot serve, before any store or I/O is built."""
+    scheme, _ = _canonical_remote_url(url)
+
+    if scheme in _HTTP_SCHEMES:
+        if writing:
+            raise InvalidParameterError(
+                param_name,
+                f"'{url}' is an HTTP(S) URL, which is read-only. Write to a local "
+                "path or to an s3:// or gs:// URL instead.",
+            )
+        return
+
+    if scheme in _AZURE_SCHEMES:
+        raise InvalidParameterError(
+            param_name,
+            f"cannot copy '{url}': Azure Blob Storage copies are not supported yet. "
+            "Copy the file with another tool (e.g. azcopy) for now.",
+        )
+
+    if scheme not in _COPYABLE_STORE_SCHEMES:
+        raise InvalidParameterError(
+            param_name,
+            f"cannot copy '{scheme}://' URLs. gpio copies s3:// and gs:// "
+            "URLs, and reads http:// and https:// ones.",
+        )
+
+
+def _copy_http_source(url: str, dest_path: str, dest_is_remote: bool) -> None:
+    """Stream an http(s) copy source with a plain GET of the URL exactly as given.
+
+    The URL is requested **verbatim** -- query string included, nothing
+    re-encoded -- matching the contract of :func:`resolve_file_url` for reads:
+    a URL already is its percent-encoded form (#825), and a presigned URL is
+    only valid with its signature attached. An object store gains nothing here;
+    gpio's store configuration is S3-endpoint plumbing, so HTTP(S) bypasses it.
+
+    The destination is not opened until the server has answered with a success
+    status, so a 404 cannot leave a truncated or empty output behind.
+    """
+    import httpx
+
+    with (
+        httpx.Client(follow_redirects=True) as client,
+        client.stream("GET", url) as response,
+    ):
+        response.raise_for_status()
+
+        with _copy_destination(dest_path, dest_is_remote) as dest_handle:
+            for chunk in response.iter_bytes():
+                dest_handle.write(chunk)
+
+
+@contextlib.contextmanager
+def _copy_destination(dest_path: str, dest_is_remote: bool):
+    """Yield a writable handle for a copy destination, committing only on success.
+
+    Closing an obstore writer **commits** whatever it buffered. Doing that on a
+    failure path would replace a good object at the destination key with a
+    truncated one, so the writer is closed -- committed -- only when the copy
+    body ran to completion. On failure the remote writer is dropped
+    un-committed, which leaves the destination exactly as it was, and a partial
+    local file is unlinked. Cleanup exceptions are suppressed so they cannot
+    mask the copy failure itself.
+    """
+    if dest_is_remote:
+        import obstore as obs
+
+        store, key = resolve_object_store(dest_path)
+        handle = obs.open_writer(store, key)
+    else:
+        handle = open(dest_path, "wb")
+
+    committed = False
+    try:
+        yield handle
+        handle.close()
+        committed = True
+    finally:
+        if not committed and not dest_is_remote:
+            with contextlib.suppress(Exception):
+                handle.close()
+            with contextlib.suppress(OSError):
+                os.unlink(dest_path)
+
+
+def resolve_object_store(url: str) -> tuple[object, str]:
+    """Resolve a remote URL to the ``(obstore store, key)`` pair gpio should use.
+
+    S3 stores are built by :func:`geoparquet_io.core.upload._setup_store_and_kwargs`
+    from the ambient S3 config, so a copy honours ``--s3-endpoint``,
+    ``--s3-region``, ``--s3-no-ssl`` and ``--aws-profile`` exactly as every other
+    remote write in gpio does (#810). GCS goes through obstore's own
+    ``from_url``, which needs no extra dependency. HTTP(S) never reaches this
+    function: it carries a full URL, not a store plus key, and is streamed
+    verbatim by :func:`_copy_http_source` instead.
+
+    Args:
+        url: Remote URL for a scheme in ``_COPYABLE_STORE_SCHEMES`` (or an alias)
+
+    Returns:
+        Tuple of (obstore store, key within that store)
+
+    Raises:
+        InvalidParameterError: If the scheme has no configured store
+    """
+    _check_copyable_scheme("path", url, writing=False)
+    _scheme, canonical = _canonical_remote_url(url)
+
+    from geoparquet_io.core.duckdb_utils import get_active_s3_config
+    from geoparquet_io.core.upload import _setup_store_and_kwargs, parse_object_store_url
+
+    bucket_url, key = parse_object_store_url(canonical)
+    s3_config = get_active_s3_config()
+    store, _kwargs = _setup_store_and_kwargs(
+        bucket_url,
+        s3_config.get("profile"),
+        chunk_concurrency=_COPY_CHUNK_CONCURRENCY,
+        chunk_size=None,
+        s3_endpoint=s3_config.get("s3_endpoint"),
+        s3_region=s3_config.get("s3_region"),
+        s3_use_ssl=s3_config.get("s3_use_ssl", True),
+    )
+    return store, key
+
+
 def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
     """
     Copy a file byte-for-byte, from and to local paths or remote URLs.
@@ -188,14 +342,20 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
     so the output it was asked for is a verbatim copy rather than a rewrite
     (``gpio add bbox`` on a file that already has a bbox column, #728).
 
-    The remote branch opens its own fsspec filesystem, so it does not see gpio's
-    ``--s3-endpoint``/``--s3-region``/``--s3-no-ssl`` configuration, and a
-    ``gs://``/``abfs://`` copy fails for want of gcsfs/adlfs. Tracked in #810.
+    A remote s3://, s3a://, gs:// or gcs:// side is read or written through the
+    object store :func:`resolve_object_store` builds, which is the store gpio is
+    configured to use -- not a filesystem assembled from ambient credentials. An
+    http(s):// source is streamed with a plain GET of the URL exactly as given
+    (:func:`_copy_http_source`). Either way the bytes are streamed rather than
+    held in memory.
 
     Args:
         source_path: Local path or remote URL to read
         dest_path: Local path or remote URL to write
         verbose: Whether to log debug info
+
+    Raises:
+        InvalidParameterError: If either side is a remote URL gpio cannot copy
     """
     import shutil
 
@@ -204,14 +364,44 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
     if verbose:
         debug(f"Copying {source_path} to {dest_path}")
 
-    if not is_remote_url(source_path) and not is_remote_url(dest_path):
+    source_is_remote = is_remote_url(source_path)
+    dest_is_remote = is_remote_url(dest_path)
+
+    if not source_is_remote and not dest_is_remote:
         shutil.copyfile(source_path, dest_path)
         return
 
-    import fsspec
+    # Both schemes are checked before a byte moves, so an unsupported destination
+    # cannot fail halfway through a read.
+    if source_is_remote:
+        _check_copyable_scheme("source_path", source_path, writing=False)
+    if dest_is_remote:
+        _check_copyable_scheme("dest_path", dest_path, writing=True)
 
-    with fsspec.open(source_path, "rb") as src, fsspec.open(dest_path, "wb") as dest:
-        shutil.copyfileobj(src, dest)
+    # An http(s) source is a full URL, not a store plus key: it is streamed with
+    # a plain GET of the URL verbatim, so a presigned query string survives and
+    # nothing is percent-encoded a second time (#825).
+    if source_is_remote and _canonical_remote_url(source_path)[0] in _HTTP_SCHEMES:
+        _copy_http_source(source_path, dest_path, dest_is_remote)
+        return
+
+    import obstore as obs
+
+    if source_is_remote:
+        store, key = resolve_object_store(source_path)
+        source_handle = obs.open_reader(store, key)
+    else:
+        source_handle = open(source_path, "rb")
+
+    try:
+        # _copy_destination commits the write (closes the writer) only if the
+        # stream ran to completion; a mid-copy failure leaves the destination
+        # as it was rather than committing a truncated object.
+        with _copy_destination(dest_path, dest_is_remote) as dest_handle:
+            shutil.copyfileobj(source_handle, dest_handle)
+    finally:
+        with contextlib.suppress(Exception):
+            source_handle.close()
 
 
 def resolve_file_url(file_path, verbose=False):

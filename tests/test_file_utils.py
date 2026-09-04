@@ -5,7 +5,10 @@ Tests file path utilities including glob pattern detection, partition path handl
 SQL escaping, and cache key generation.
 """
 
+import functools
+import http.server
 import os
+import threading
 
 import pytest
 
@@ -357,6 +360,43 @@ class TestHandleOutputOverwrite:
 # =============================================================================
 
 
+class _RecordingHandler(http.server.SimpleHTTPRequestHandler):
+    """Static file handler that records every raw request target it is given."""
+
+    seen: list[str] = []
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        type(self).seen.append(self.path)
+        super().do_GET()
+
+    def log_message(self, *args):  # pragma: no cover - silence stderr noise
+        pass
+
+
+@pytest.fixture
+def recording_http_server(tmp_path):
+    """Serve a directory over loopback HTTP, recording the raw paths requested.
+
+    Yields ``(base_url, served_dir, seen_paths)``. No outside network is
+    touched, so this is not a ``network`` test.
+    """
+    served = tmp_path / "served"
+    served.mkdir()
+
+    handler_cls = type("_Handler", (_RecordingHandler,), {"seen": []})
+    httpd = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(handler_cls, directory=str(served))
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}", served, handler_cls.seen
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 class TestCopyFile:
     """Test byte-for-byte copying, local and remote (#798 diff-cover gap)."""
 
@@ -376,66 +416,334 @@ class TestCopyFile:
         assert dest.read_bytes() == b"geoparquet-bytes"
         assert f"Copying {source} to {dest}" in caplog.text
 
-    def test_remote_copy_uses_fsspec_without_network(self, monkeypatch):
-        """Either side being a remote URL routes through fsspec.open, not shutil.
+    def test_s3_copy_builds_the_store_from_gpio_s_configured_endpoint(self):
+        """The ambient S3 config (--s3-endpoint/--s3-region/--aws-profile) reaches the store.
 
-        fsspec.open is monkeypatched so no real network call is made -- only the
-        branch selection and the copyfileobj plumbing are under test here.
+        A copy that built its own client from ambient credentials would target AWS
+        even when the user pointed gpio at MinIO, while the recompute path on the
+        same command line honoured the setting (#810).
         """
-        import io
-        from unittest import mock
+        from unittest.mock import patch
 
-        import fsspec
+        from geoparquet_io.core.duckdb_utils import s3_config_scope
+        from geoparquet_io.core.file_utils import resolve_object_store
+
+        config = {
+            "s3_endpoint": "minio.local:9000",
+            "s3_region": "us-west-2",
+            "s3_use_ssl": False,
+            "profile": "my-minio",
+        }
+
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch(
+                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
+                return_value=("AKIA-TEST", "secret-test", "eu-central-1"),
+            ) as mock_creds,
+            s3_config_scope(config),
+        ):
+            store, key = resolve_object_store("s3://bucket/path/to/file.parquet")
+
+        assert key == "path/to/file.parquet"
+        assert store is mock_s3store.return_value
+        mock_creds.assert_called_once_with("my-minio")
+        assert mock_s3store.call_args.args[0] == "bucket"
+        store_kwargs = mock_s3store.call_args.kwargs
+        assert store_kwargs["endpoint"] == "http://minio.local:9000"
+        assert store_kwargs["region"] == "us-west-2"
+        assert store_kwargs["access_key_id"] == "AKIA-TEST"
+        assert store_kwargs["secret_access_key"] == "secret-test"
+
+    def test_gcs_urls_resolve_to_their_own_store(self):
+        """gs:// is a real destination now, not an fsspec ImportError (#810)."""
+        from unittest.mock import patch
+
+        from geoparquet_io.core.file_utils import resolve_object_store
+
+        with patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url:
+            _, gs_key = resolve_object_store("gs://bucket/path/file.parquet")
+
+        assert gs_key == "path/file.parquet"
+        assert [call.args[0] for call in mock_from_url.call_args_list] == ["gs://bucket"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "az://account/container/file.parquet",
+            "abfs://container@account.dfs.core.windows.net/in.parquet",
+            "azure://account/container/file.parquet",
+        ],
+    )
+    @pytest.mark.parametrize("side", ["source", "dest"])
+    def test_azure_copy_is_refused_with_a_clear_unsupported_message(self, url, side):
+        """An Azure URL fails with 'not supported yet', not an obstore panic.
+
+        ``obs.store.from_url('az://account/container')`` cannot work: without env
+        config it demands an account, with it the account segment is misread as
+        the container. Until Azure support lands, say so up front -- and build no
+        store at all.
+        """
+        from unittest.mock import patch
 
         from geoparquet_io.core.file_utils import copy_file
 
-        content = b"remote-geoparquet-bytes"
-        src_buffer = io.BytesIO(content)
-        dest_buffer = io.BytesIO()
-        opened_paths = []
+        args = (url, "out.parquet") if side == "source" else ("in.parquet", url)
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url,
+            pytest.raises(InvalidParameterError, match="not supported yet"),
+        ):
+            copy_file(*args)
 
-        def fake_open(path, mode):
-            opened_paths.append((path, mode))
-            handle = mock.MagicMock()
-            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
-            handle.__exit__.return_value = False
-            return handle
+        mock_s3store.assert_not_called()
+        mock_from_url.assert_not_called()
 
-        monkeypatch.setattr(fsspec, "open", fake_open)
+    def test_http_source_copy_requests_path_and_query_verbatim(
+        self, recording_http_server, tmp_path
+    ):
+        """An http(s) source is fetched with a plain GET of the URL exactly as given.
 
-        copy_file("s3://bucket/source.parquet", "s3://bucket/dest.parquet")
+        The object-store route keyed on ``urlsplit(url).path`` discarded the query
+        string, so a presigned URL was requested without its signature. The copy
+        must send path *and* query, untouched.
+        """
+        from geoparquet_io.core.file_utils import copy_file
 
-        assert dest_buffer.getvalue() == content
-        assert opened_paths == [
-            ("s3://bucket/source.parquet", "rb"),
-            ("s3://bucket/dest.parquet", "wb"),
-        ]
+        base_url, served, seen = recording_http_server
+        payload = b"presigned-source-bytes"
+        (served / "data.parquet").write_bytes(payload)
+        dest = tmp_path / "dest.parquet"
 
-    def test_remote_source_local_dest_still_uses_fsspec(self, monkeypatch):
-        """Only one side needs to be remote to take the fsspec branch."""
-        import io
-        from unittest import mock
+        copy_file(f"{base_url}/data.parquet?X-Amz-Signature=abc%2Fdef", str(dest))
 
-        import fsspec
+        assert dest.read_bytes() == payload
+        assert seen == ["/data.parquet?X-Amz-Signature=abc%2Fdef"], seen
+
+    def test_http_source_copy_does_not_double_encode_percent_escapes(
+        self, recording_http_server, tmp_path
+    ):
+        """A ``%20`` in the source URL reaches the server as ``%20``, not ``%2520``.
+
+        Same contract as #825/#845 for reads: the URL the user pasted already is
+        the percent-encoded form, so the copy encodes nothing.
+        """
+        from geoparquet_io.core.file_utils import copy_file
+
+        base_url, served, seen = recording_http_server
+        payload = b"space-named-source-bytes"
+        (served / "my file.parquet").write_bytes(payload)
+        dest = tmp_path / "dest.parquet"
+
+        copy_file(f"{base_url}/my%20file.parquet", str(dest))
+
+        assert dest.read_bytes() == payload
+        assert seen == ["/my%20file.parquet"], seen
+
+    def test_http_source_copy_raises_on_http_error_status(self, recording_http_server, tmp_path):
+        """A 404 on the source surfaces as an error, not an empty destination file."""
+        from geoparquet_io.core.file_utils import copy_file
+
+        base_url, _served, _seen = recording_http_server
+        dest = tmp_path / "dest.parquet"
+
+        with pytest.raises(Exception, match="404"):
+            copy_file(f"{base_url}/missing.parquet", str(dest))
+
+        assert not dest.exists()
+
+    def test_unsupported_scheme_fails_before_any_store_is_built(self):
+        """A scheme with no store dies by name up front, and does not advertise az:// (#810)."""
+        from geoparquet_io.core.file_utils import _check_copyable_scheme
+
+        with pytest.raises(GeoParquetError) as exc:
+            _check_copyable_scheme("source_path", "ftp://example.com/in.parquet", writing=False)
+
+        message = str(exc.value)
+        assert "ftp://" in message
+        assert "az://" not in message, "az:// copies do not work; the error must not suggest them"
+
+    def test_http_destination_is_rejected_as_read_only(self):
+        """HTTP(S) can be copied from, never to; say so instead of failing mid-stream."""
+        from geoparquet_io.core.file_utils import copy_file
+
+        with pytest.raises(GeoParquetError, match="read-only") as exc:
+            copy_file("local.parquet", "https://example.com/out.parquet")
+
+        assert "az://" not in str(exc.value), "the error must not suggest az://; it is unsupported"
+
+    def test_remote_to_remote_copy_streams_bytes_through_obstore(self, monkeypatch):
+        """A remote->remote copy moves the real bytes, with no network and no whole-file buffer."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"geoparquet-bytes" * 1000
+        store = MemoryStore()
+        obs.put(store, "in.parquet", payload)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+
+        file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        assert obs.get(store, "out.parquet").bytes().to_bytes() == payload
+
+    def test_remote_source_local_dest_writes_the_local_file(self, monkeypatch, tmp_path):
+        """Only one side needs to be remote; the local side is plain file I/O."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"mixed-source-bytes"
+        store = MemoryStore()
+        obs.put(store, "in.parquet", payload)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        dest = tmp_path / "dest.parquet"
+
+        file_utils.copy_file("s3://bucket/in.parquet", str(dest))
+
+        assert dest.read_bytes() == payload
+
+    def test_local_source_remote_dest_puts_the_object(self, monkeypatch, tmp_path):
+        """A local file uploaded to a remote destination lands under the resolved key."""
+        import obstore as obs
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        payload = b"local-source-bytes"
+        source = tmp_path / "source.parquet"
+        source.write_bytes(payload)
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+
+        file_utils.copy_file(str(source), "s3://bucket/out.parquet")
+
+        assert obs.get(store, "out.parquet").bytes().to_bytes() == payload
+
+    def test_mid_stream_failure_does_not_commit_the_destination_object(self, monkeypatch):
+        """A copy that dies mid-stream must not commit a truncated object.
+
+        Closing the obstore writer *commits* whatever was buffered, so a
+        ``finally: close()`` turned a torn connection into a truncated object at
+        the destination key. On failure the writer is dropped un-committed and
+        the destination stays absent.
+        """
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        with pytest.raises(FileNotFoundError):
+            obstore.get(store, "out.parquet")
+
+    def test_mid_stream_failure_preserves_a_pre_existing_destination_object(self, monkeypatch):
+        """A good object already at the key survives a failed overwrite attempt."""
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        good = b"the-good-object-bytes"
+        store = MemoryStore()
+        obstore.put(store, "out.parquet", good)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        assert obstore.get(store, "out.parquet").bytes().to_bytes() == good
+
+    def test_mid_stream_failure_unlinks_a_partial_local_destination(self, monkeypatch, tmp_path):
+        """A local destination is not left behind truncated when the source dies."""
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+        dest = tmp_path / "dest.parquet"
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", str(dest))
+
+        assert not dest.exists()
+
+    def test_http_source_torn_mid_stream_unlinks_the_partial_local_destination(self, tmp_path):
+        """The http(s) branch has the same guarantee: no truncated output survives."""
+        import functools as ft
+        import http.server as hs
+        import threading as th
 
         from geoparquet_io.core.file_utils import copy_file
 
-        content = b"mixed-source-bytes"
-        src_buffer = io.BytesIO(content)
-        dest_buffer = io.BytesIO()
+        class _TruncatingHandler(hs.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                self.send_response(200)
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                self.wfile.write(b"only-a-few-bytes")
+                self.wfile.flush()
+                self.connection.close()
 
-        def fake_open(path, mode):
-            handle = mock.MagicMock()
-            handle.__enter__.return_value = src_buffer if mode == "rb" else dest_buffer
-            handle.__exit__.return_value = False
-            return handle
+            def log_message(self, *args):  # pragma: no cover
+                pass
 
-        monkeypatch.setattr(fsspec, "open", fake_open)
+        httpd = hs.ThreadingHTTPServer(("127.0.0.1", 0), ft.partial(_TruncatingHandler))
+        thread = th.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        dest = tmp_path / "dest.parquet"
+        try:
+            with pytest.raises(Exception):  # noqa: B017 - the transport error type varies
+                copy_file(
+                    f"http://127.0.0.1:{httpd.server_address[1]}/in.parquet",
+                    str(dest),
+                )
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
-        # Only the source is remote; the dest is a plain local-looking path.
-        copy_file("https://example.com/source.parquet", "local_dest.parquet")
+        assert not dest.exists()
 
-        assert dest_buffer.getvalue() == content
+
+class _FailingMidStreamReader:
+    """A source handle that yields one chunk, then dies like a broken connection."""
+
+    def __init__(self):
+        self._calls = 0
+
+    def read(self, size=-1):
+        if self._calls == 0:
+            self._calls += 1
+            return b"partial-bytes"
+        raise OSError("connection torn down mid-stream")
+
+    def close(self):
+        pass
 
 
 # =============================================================================

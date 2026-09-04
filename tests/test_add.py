@@ -88,6 +88,45 @@ class TestAddCommands:
         output_count = conn.execute(f'SELECT COUNT(*) FROM "{temp_output_file}"').fetchone()[0]
         assert input_count == output_count
 
+    def test_add_bbox_copy_to_s3_uses_the_configured_endpoint(self, places_with_covering_file):
+        """--s3-endpoint reaches the copy, not only the recompute path (#810).
+
+        The copy that answers an input which already has a bbox opened its own
+        fsspec filesystem, so a MinIO endpoint was ignored and the bytes went to
+        AWS. It now goes through the same configured object store as every other
+        remote write in gpio.
+        """
+        from unittest.mock import patch
+
+        from geoparquet_io.cli.main import cli
+
+        runner = CliRunner()
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch("obstore.open_writer") as mock_open_writer,
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "--s3-endpoint",
+                    "minio.local:9000",
+                    "--s3-region",
+                    "us-west-2",
+                    "add",
+                    "bbox",
+                    places_with_covering_file,
+                    "s3://bucket/out.parquet",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Copied" in result.output
+        assert mock_s3store.call_args.args[0] == "bucket"
+        assert mock_s3store.call_args.kwargs["endpoint"] == "https://minio.local:9000"
+        assert mock_s3store.call_args.kwargs["region"] == "us-west-2"
+        mock_open_writer.assert_called_once()
+        assert mock_open_writer.call_args.args[1] == "out.parquet"
+
     def test_add_bbox_custom_name_alongside_existing_writes_output(
         self, places_with_covering_file, temp_output_file
     ):

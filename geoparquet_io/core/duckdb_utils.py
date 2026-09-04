@@ -43,6 +43,17 @@ def s3_config_scope(s3_config: dict):
         _active_s3_config.reset(token)
 
 
+def get_active_s3_config() -> dict:
+    """Return the ambient S3 config set by :func:`s3_config_scope`, or ``{}``.
+
+    Lets a non-DuckDB remote path (obstore in ``file_utils.copy_file``) read the
+    same ``--s3-endpoint``/``--s3-region``/``--s3-no-ssl``/``--aws-profile``
+    settings ``get_duckdb_connection()`` applies, rather than building a second
+    channel or falling back to ambient credentials (#810).
+    """
+    return dict(_active_s3_config.get() or {})
+
+
 def _extract_bucket_name(path: str) -> str:
     """Extract bucket name from S3 URL."""
     # s3://bucket-name/path -> bucket-name
