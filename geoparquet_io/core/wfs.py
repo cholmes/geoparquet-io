@@ -19,7 +19,7 @@ import json
 import re
 import tempfile
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 - stdlib ET never resolves external entities; see _is_empty_gml_collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -1653,7 +1653,7 @@ def _is_empty_gml_collection(body: bytes) -> bool:
     if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES:
         return False
     try:
-        root = ET.fromstring(body)
+        root = ET.fromstring(body)  # nosec B314 - no external entity resolution; body capped at 1MB, only gates the empty check
     except ET.ParseError:
         return False
     if _local_name(root.tag) != "FeatureCollection":
