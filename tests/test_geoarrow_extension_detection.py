@@ -230,7 +230,7 @@ class TestSharedPredicate:
 
 
 class TestMetadataPathAgrees:
-    """core/common.py and core/geo_metadata.py: the 1.x carrier decision."""
+    """core/common.py's metadata application: the 1.x carrier decision."""
 
     @pytest.mark.parametrize("version", ["1.0", "1.1"])
     def test_process_geometry_column_agrees(self, version):
@@ -264,9 +264,13 @@ class TestMetadataPathAgrees:
         assert _carrier_facts(resolved) == _carrier_facts(meta_only)
         assert resolved.column("geometry").to_pylist() == meta_only.column("geometry").to_pylist()
 
-    def test_geo_metadata_apply_agrees(self):
-        """core/geo_metadata.py has no _canonicalize_wkb_columns backstop of its own."""
-        from geoparquet_io.core.geo_metadata import _apply_geoparquet_metadata
+    def test_apply_geoparquet_metadata_agrees(self):
+        """The whole 1.1 apply path, with _canonicalize_wkb_columns as a second line of defence.
+
+        Not an isolation test of the backstop: _process_geometry_column_for_version
+        already strips the carrier, so this fails only when both mechanisms break.
+        """
+        from geoparquet_io.core.common import _apply_geoparquet_metadata
 
         resolved = _apply_geoparquet_metadata(
             resolved_extension_table(), "geometry", "1.1", None, None, None, False
@@ -279,19 +283,11 @@ class TestMetadataPathAgrees:
 
 
 class TestVersionDetectionAgrees:
-    """core/common.py and core/geo_metadata.py: auto-mode version detection."""
+    """core/common.py: auto-mode version detection."""
 
     @BOTH_SHAPES
     def test_detect_version_from_table_agrees(self, with_geo):
         from geoparquet_io.core.common import _detect_version_from_table
-
-        assert _detect_version_from_table(resolved_extension_table(with_geo)) == (
-            _detect_version_from_table(metadata_only_table(with_geo))
-        )
-
-    @BOTH_SHAPES
-    def test_geo_metadata_detect_version_agrees(self, with_geo):
-        from geoparquet_io.core.geo_metadata import _detect_version_from_table
 
         assert _detect_version_from_table(resolved_extension_table(with_geo)) == (
             _detect_version_from_table(metadata_only_table(with_geo))
