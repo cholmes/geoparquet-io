@@ -1,7 +1,6 @@
 """Tests for hilbert_order helper functions."""
 
 import logging
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -426,23 +425,3 @@ class TestHilbertOrderCLIEmptyGeometries:
         # Output should exist and preserve all rows
         output_table = pq.read_table(output_path)
         assert output_table.num_rows == 3
-
-
-class TestHilbertOrderIntegration:
-    """Integration tests for hilbert_order."""
-
-    @pytest.fixture
-    def sample_file(self):
-        """Return path to the sample file."""
-        return str(Path(__file__).parent / "data" / "sample.parquet")
-
-    def test_hilbert_order_help(self):
-        """Test that hilbert sort command has help."""
-        from click.testing import CliRunner
-
-        from geoparquet_io.cli.main import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["sort", "hilbert", "--help"])
-        assert result.exit_code == 0
-        assert "hilbert" in result.output.lower()

@@ -227,15 +227,6 @@ def test_table_bbox_mode_autodetects_from_schema():
         _resolve_bbox_column_for_table(tbl, "custom")
 
 
-def test_cli_help_has_bucket_point_options():
-    runner = CliRunner()
-    for sub in ("a5", "h3", "admin"):
-        result = runner.invoke(cli, ["process", "aggregate", sub, "--help"])
-        assert result.exit_code == 0
-        assert "--bucket-point" in result.output, f"--bucket-point missing from {sub} --help"
-        assert "--bbox-column" in result.output, f"--bbox-column missing from {sub} --help"
-
-
 def test_admin_joined_sql_uses_point_expr_and_exclude():
     from geoparquet_io.core.process.aggregate.by_admin import _build_joined_sql
 

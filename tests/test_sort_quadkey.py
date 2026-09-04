@@ -31,15 +31,6 @@ class TestSortQuadkeyCommand:
         yield str(tmp_path)
         safe_unlink(tmp_path)
 
-    def test_sort_quadkey_help(self):
-        """Test that quadkey sort command has help."""
-        from geoparquet_io.cli.main import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["sort", "quadkey", "--help"])
-        assert result.exit_code == 0
-        assert "quadkey" in result.output.lower()
-
     def test_sort_quadkey_missing_column_custom_name(self, sample_file, output_file):
         """Test error when custom quadkey column name doesn't exist."""
         from geoparquet_io.cli.main import cli

@@ -28,14 +28,6 @@ def _write_points_geoparquet(path, rows):
     con.close()
 
 
-def test_process_aggregate_h3_help():
-    runner = CliRunner()
-    result = runner.invoke(cli, ["process", "aggregate", "h3", "--help"])
-    assert result.exit_code == 0
-    assert "--resolution" in result.output
-    assert "--out-geometry" in result.output
-
-
 @pytest.mark.slow
 @pytest.mark.network
 def test_aggregate_h3_native_geometry_column(tmp_path):

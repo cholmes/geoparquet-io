@@ -44,14 +44,6 @@ def test_aggregate_admin_country_with_unassigned(tmp_path):
     assert int(df.loc[df["admin_code"] == "unassigned", "count"].iloc[0]) == 1
 
 
-def test_cli_process_aggregate_admin_help():
-    runner = CliRunner()
-    result = runner.invoke(cli, ["process", "aggregate", "admin", "--help"])
-    assert result.exit_code == 0
-    assert "--level" in result.output
-    assert "--out-geometry" in result.output
-
-
 @pytest.mark.slow
 @pytest.mark.network
 def test_cli_process_aggregate_admin_runs(tmp_path):

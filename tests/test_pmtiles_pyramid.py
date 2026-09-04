@@ -164,23 +164,6 @@ class TestParamValidation:
             create_pmtiles_pyramid("in.parquet", "out.pmtiles | cat")
 
 
-class TestCli:
-    def test_help(self):
-        runner = CliRunner()
-        result = runner.invoke(cli, ["pmtiles", "pyramid", "--help"])
-        assert result.exit_code == 0
-        for opt in (
-            "--levels",
-            "--max-tile-kb",
-            "--layer-mode",
-            "--include-features",
-            "--features-source",
-            "--features-min-zoom",
-            "--max-zoom",
-        ):
-            assert opt in result.output
-
-
 # ---------------------------------------------------------------------------
 # Orchestration (fast: tippecanoe/tile-join/metadata rewrite all faked)
 # ---------------------------------------------------------------------------

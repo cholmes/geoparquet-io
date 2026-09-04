@@ -24,29 +24,6 @@ from geoparquet_io.cli.main import extract
 from tests.conftest import safe_unlink
 
 
-class TestExtractCommandGroup:
-    """Test that extract command group works correctly."""
-
-    def test_extract_help_shows_subcommands(self):
-        """Test that extract --help shows both subcommands."""
-        runner = CliRunner()
-        result = runner.invoke(extract, ["--help"])
-        assert result.exit_code == 0
-        assert "geoparquet" in result.output
-        assert "bigquery" in result.output
-
-    def test_extract_bigquery_help(self):
-        """Test that extract bigquery --help works."""
-        runner = CliRunner()
-        result = runner.invoke(extract, ["bigquery", "--help"])
-        assert result.exit_code == 0
-        assert "TABLE_ID" in result.output
-        assert "--project" in result.output
-        assert "--credentials-file" in result.output
-        assert "--where" in result.output
-        assert "--limit" in result.output
-
-
 class TestBackwardsCompatibility:
     """Test that 'gpio extract input.parquet output.parquet' still works."""
 

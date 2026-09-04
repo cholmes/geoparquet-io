@@ -189,17 +189,6 @@ class TestCheckOptimizationQuietMode:
 class TestCheckOptimizationCLI:
     """Tests for the CLI command."""
 
-    def test_cli_command_exists(self):
-        """The 'gpio check optimization' command should be registered."""
-        from click.testing import CliRunner
-
-        from geoparquet_io.cli.main import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["check", "optimization", "--help"])
-        assert result.exit_code == 0
-        assert "optimization" in result.output.lower() or "spatial query" in result.output.lower()
-
     def test_cli_runs_on_file(self, places_test_file):
         """CLI should run successfully on a valid parquet file."""
         from click.testing import CliRunner

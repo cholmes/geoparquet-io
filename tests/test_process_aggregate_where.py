@@ -553,11 +553,3 @@ def test_table_aggregate_a5_where():
     con.close()
     result = Table(tbl).aggregate_a5(resolution=5, where="crop = 'wheat'")
     assert sum(result.table.column("count").to_pylist()) == 1
-
-
-def test_cli_help_has_where_option():
-    runner = CliRunner()
-    for sub in ("a5", "h3", "admin"):
-        result = runner.invoke(cli, ["process", "aggregate", sub, "--help"])
-        assert result.exit_code == 0
-        assert "--where" in result.output, f"--where missing from {sub} --help"

@@ -612,14 +612,6 @@ def test_cli_metric_nodata_requires_metric(tmp_path):
     assert "metric" in result.output.lower()
 
 
-def test_cli_help_has_metric_nodata_option():
-    runner = CliRunner()
-    for sub in ("a5", "h3", "admin"):
-        result = runner.invoke(cli, ["process", "aggregate", sub, "--help"])
-        assert result.exit_code == 0
-        assert "--metric-nodata" in result.output, f"--metric-nodata missing from {sub} --help"
-
-
 # ---------------------------------------------------------------------------
 # End-to-end (needs grid community extensions)
 # ---------------------------------------------------------------------------

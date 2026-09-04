@@ -256,16 +256,6 @@ class TestExplainAnalyze:
 class TestExplainCLI:
     """Tests for benchmark explain CLI command."""
 
-    def test_explain_help(self):
-        """Test benchmark explain --help shows correct options."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["benchmark", "explain", "--help"])
-
-        assert result.exit_code == 0
-        assert "INPUT_FILE" in result.output
-        assert "--query" in result.output
-        assert "--format" in result.output
-
     def test_explain_basic(self):
         """Test basic explain invocation."""
         runner = CliRunner()

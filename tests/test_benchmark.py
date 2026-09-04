@@ -261,47 +261,8 @@ class TestRunBenchmark:
         assert "not found" in str(exc_info.value)
 
 
-class TestBenchmarkCommandGroup:
-    """Tests for benchmark command group."""
-
-    def test_benchmark_is_group(self):
-        """Test that benchmark is a command group."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["benchmark", "--help"])
-
-        assert result.exit_code == 0
-        assert "suite" in result.output
-        assert "compare" in result.output
-
-    def test_benchmark_suite_help(self):
-        """Test benchmark suite --help."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["benchmark", "suite", "--help"])
-
-        assert result.exit_code == 0
-        assert "--operations" in result.output
-        assert "--iterations" in result.output
-
-    def test_benchmark_compare_help(self):
-        """Test benchmark compare --help (existing functionality)."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["benchmark", "compare", "--help"])
-
-        assert result.exit_code == 0
-        assert "INPUT_FILE" in result.output
-
-
 class TestCLI:
     """Tests for CLI interface."""
-
-    def test_benchmark_compare_help_with_options(self):
-        """Test benchmark compare command help shows all options."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["benchmark", "compare", "--help"])
-
-        assert result.exit_code == 0
-        assert "--iterations" in result.output
-        assert "--converters" in result.output
 
     def test_benchmark_cli_basic(self):
         """Test basic benchmark CLI invocation."""

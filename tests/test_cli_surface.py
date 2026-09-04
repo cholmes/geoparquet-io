@@ -123,6 +123,12 @@ def describe_param(param: click.Parameter) -> dict:
     makes ``--warmup/--no-warmup`` (a boolean flag whose off-switch clears the
     value) indistinguishable from ``--warmup``/``--no-warmup`` declared as two
     aliases for the *same* switch, which is a user-visible behavior change.
+
+    ``metavar`` records the *declared* override, not the rendered token. Click
+    derives an argument's usage token from ``name.upper()`` when none is
+    declared, so ``(name, metavar)`` together pin the placeholder a user reads
+    in ``Usage:`` -- the one piece of help text that is an addressable part of
+    the CLI surface rather than reflowable prose.
     """
     return {
         "name": param.name,
@@ -135,6 +141,7 @@ def describe_param(param: click.Parameter) -> dict:
         "is_flag": bool(getattr(param, "is_flag", False)),
         "multiple": bool(getattr(param, "multiple", False)),
         "hidden": bool(getattr(param, "hidden", False)),
+        "metavar": param.metavar,
         "nargs": param.nargs,
     }
 

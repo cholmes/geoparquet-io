@@ -8,13 +8,6 @@ from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.process.aggregate.by_a5 import aggregate_by_a5
 
 
-def test_process_aggregate_group_exists():
-    runner = CliRunner()
-    result = runner.invoke(cli, ["process", "aggregate", "--help"])
-    assert result.exit_code == 0
-    assert "aggregate" in result.output.lower()
-
-
 def _write_points_geoparquet(path, rows):
     """rows: list of (lon, lat, crop, area). Writes a tiny GeoParquet of points.
 
