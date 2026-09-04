@@ -14,9 +14,14 @@ from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QU
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
 from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import (
+    handle_output_overwrite,
+    is_partition_path,
+    safe_file_url,
+)
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
+from geoparquet_io.core.partition.reader import build_read_parquet_expr, resolve_read_path
 from geoparquet_io.core.remote import (
     needs_httpfs,
     setup_aws_profile_if_needed,
@@ -171,7 +176,10 @@ def sort_by_quadkey(
 
     # Track if we created a temporary file with quadkey
     temp_file = None
-    actual_input = input_parquet
+    # A directory has to become the glob over its files before anything reads
+    # it (#817). `input_parquet` itself stays raw: it is what messages quote and
+    # what the multi-file stats guard below is asked about.
+    actual_input = resolve_read_path(input_parquet, verbose=verbose)[0]
 
     if not column_exists:
         if not using_default_name:
@@ -189,15 +197,16 @@ def sort_by_quadkey(
                 f"Auto-adding at resolution {resolution}..."
             )
 
-        # Create temporary file for quadkey-enriched data
+        # Create temporary file for quadkey-enriched data. The input's basename
+        # is deliberately not part of the name: a directory input has none (or
+        # a trailing separator), and a glob's `*` is not a legal filename
+        # character on Windows.
         temp_dir = tempfile.gettempdir()
-        temp_file = os.path.join(
-            temp_dir, f"quadkey_enriched_{uuid.uuid4().hex}_{os.path.basename(input_parquet)}"
-        )
+        temp_file = os.path.join(temp_dir, f"quadkey_enriched_{uuid.uuid4().hex}.parquet")
 
         try:
             add_quadkey_column(
-                input_parquet=input_parquet,
+                input_parquet=actual_input,
                 output_parquet=temp_file,
                 quadkey_column_name=quadkey_column_name,
                 resolution=resolution,
@@ -222,7 +231,7 @@ def sort_by_quadkey(
         debug(f"Using existing quadkey column '{quadkey_column_name}'")
 
     # Get metadata from input file (use actual_input in case we added quadkey)
-    actual_safe_url = safe_file_url(actual_input, verbose)
+    read_expr = build_read_parquet_expr(actual_input, verbose=verbose)
     metadata, _ = get_parquet_metadata(actual_input, verbose)
 
     # Get usable columns for building SELECT clause
@@ -247,7 +256,7 @@ def sort_by_quadkey(
         # Build sort query
         query = f"""
             SELECT {select_clause}
-            FROM '{actual_safe_url}'
+            FROM {read_expr}
             ORDER BY {quote_identifier(quadkey_column_name)}
         """
 
@@ -269,6 +278,11 @@ def sort_by_quadkey(
             geoparquet_version=geoparquet_version,
             input_file=input_parquet,
             memory_limit=memory_limit,
+            # `metadata` describes only the first file of a multi-file input
+            # (and the auto-add step carried that footer forward), so its
+            # bbox/geometry_types under-cover the merged output. Recompute
+            # rather than carry (#793).
+            invalidate_derived_stats=is_partition_path(input_parquet),
         )
 
         if remove_quadkey_column:

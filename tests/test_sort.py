@@ -3,6 +3,7 @@ Tests for sort commands.
 """
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -11,12 +12,14 @@ from pathlib import Path
 from unittest import mock
 
 import duckdb
+import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
 import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import sort
+from geoparquet_io.core import sort_quadkey as sort_quadkey_module
 from geoparquet_io.core.sort_by_column import sort_by_column, sort_by_column_table
 from tests.conftest import safe_unlink
 
@@ -379,3 +382,132 @@ class TestSortByColumnStreaming:
         reader = ipc.RecordBatchStreamReader(output_buffer)
         result = reader.read_all()
         assert result.num_rows > 0
+
+
+def _geo_bbox(parquet_path) -> list[float] | None:
+    """The primary column's declared ``bbox`` from a file's geo metadata."""
+    geo = json.loads(pq.ParquetFile(parquet_path).metadata.metadata[b"geo"])
+    return geo["columns"][geo["primary_column"]].get("bbox")
+
+
+@pytest.fixture
+def places_parts_dir(places_test_file, tmp_path):
+    """A directory of three GeoParquet files split out of places.parquet.
+
+    Each part declares its OWN extent in geo metadata, so a first-file ``bbox``
+    carried onto the merged output is distinguishable from one recomputed over
+    everything written. Returns ``(directory, union_bbox)``.
+    """
+    table = pq.read_table(places_test_file)
+    table = table.take(pc.sort_indices(pc.struct_field(table["bbox"], "xmin")))
+
+    def extent(bbox_col):
+        return [pc.min(pc.struct_field(bbox_col, k)).as_py() for k in ("xmin", "ymin")] + [
+            pc.max(pc.struct_field(bbox_col, k)).as_py() for k in ("xmax", "ymax")
+        ]
+
+    parts_dir = tmp_path / "places_parts"
+    parts_dir.mkdir()
+    n = table.num_rows
+    slices = [table.slice(0, n // 3), table.slice(n // 3, n // 3), table.slice(2 * (n // 3))]
+    for i, part in enumerate(slices):
+        meta = dict(part.schema.metadata)
+        geo = json.loads(meta[b"geo"])
+        geo["columns"]["geometry"]["bbox"] = extent(part["bbox"])
+        meta[b"geo"] = json.dumps(geo).encode()
+        pq.write_table(part.replace_schema_metadata(meta), parts_dir / f"part_{i}.parquet")
+
+    union = extent(table["bbox"])
+    # Fixture sanity: the first file's declared extent must NOT be the union,
+    # or the carry assertions below could not tell the two apart.
+    assert _geo_bbox(parts_dir / "part_0.parquet") != pytest.approx(union)
+    return parts_dir, union
+
+
+class TestSortPartitionInput:
+    """``sort column`` and ``sort quadkey`` accept a directory of files (#817).
+
+    Both already read a quoted glob, but a bare directory reached DuckDB as
+    ``FROM '<dir>'`` and died with a Catalog Error. ``sort hilbert`` and
+    ``sort str`` reject every multi-file input with a consolidation hint, and
+    keep doing so.
+    """
+
+    @pytest.mark.parametrize("version_args", [[], ["--geoparquet-version=2.0"]])
+    def test_sort_column_accepts_bare_directory(
+        self, places_parts_dir, temp_output_file, version_args
+    ):
+        parts_dir, union_bbox = places_parts_dir
+        runner = CliRunner()
+        result = runner.invoke(
+            sort, ["column", f"{parts_dir}{os.sep}", temp_output_file, "name", *version_args]
+        )
+        assert result.exit_code == 0, result.output
+
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == 766
+        names = out.column("name").to_pylist()
+        assert names == sorted(names)
+        # The merged output's extent, not the first part's (#793's carry guard).
+        assert _geo_bbox(temp_output_file) == pytest.approx(union_bbox)
+
+    @pytest.mark.parametrize("version_args", [[], ["--geoparquet-version=2.0"]])
+    def test_sort_column_glob_describes_the_merged_output(
+        self, places_parts_dir, temp_output_file, version_args
+    ):
+        parts_dir, union_bbox = places_parts_dir
+        runner = CliRunner()
+        result = runner.invoke(
+            sort,
+            ["column", str(parts_dir / "*.parquet"), temp_output_file, "name", *version_args],
+        )
+        assert result.exit_code == 0, result.output
+        assert pq.read_metadata(temp_output_file).num_rows == 766
+        assert _geo_bbox(temp_output_file) == pytest.approx(union_bbox)
+
+    def test_sort_quadkey_accepts_bare_directory(self, places_parts_dir, temp_output_file):
+        parts_dir, union_bbox = places_parts_dir
+        runner = CliRunner()
+        result = runner.invoke(sort, ["quadkey", str(parts_dir), temp_output_file])
+        assert result.exit_code == 0, result.output
+
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == 766
+        quadkeys = out.column("quadkey").to_pylist()
+        assert quadkeys == sorted(quadkeys)
+        assert _geo_bbox(temp_output_file) == pytest.approx(union_bbox)
+
+    def test_sort_quadkey_directory_temp_name_has_no_glob_character(
+        self, places_parts_dir, temp_output_file
+    ):
+        """The auto-add scratch file must be a name every OS can create.
+
+        It used to end in ``os.path.basename(input_parquet)``; for a glob
+        input that is a literal ``*.parquet``, and ``*`` is not a legal
+        filename character on Windows.
+        """
+        parts_dir, _ = places_parts_dir
+        seen = []
+        real_add = sort_quadkey_module.add_quadkey_column
+
+        def spy(**kwargs):
+            seen.append(kwargs["output_parquet"])
+            return real_add(**kwargs)
+
+        with mock.patch.object(sort_quadkey_module, "add_quadkey_column", spy):
+            result = CliRunner().invoke(
+                sort, ["quadkey", str(parts_dir / "*.parquet"), temp_output_file]
+            )
+        assert result.exit_code == 0, result.output
+        assert seen, "expected the quadkey column to be auto-added"
+        assert not any(c in os.path.basename(seen[0]) for c in '*?"<>|'), seen[0]
+
+    @pytest.mark.parametrize("subcommand", ["hilbert", "str"])
+    def test_spatial_sorts_still_reject_a_directory_with_guidance(
+        self, subcommand, places_parts_dir, temp_output_file
+    ):
+        parts_dir, _ = places_parts_dir
+        result = CliRunner().invoke(sort, [subcommand, str(parts_dir), temp_output_file])
+        assert result.exit_code != 0
+        assert "requires a single parquet file" in result.output
+        assert "gpio extract" in result.output

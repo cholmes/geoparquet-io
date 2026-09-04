@@ -19,6 +19,46 @@ from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.remote import is_remote_url
 
 
+def resolve_read_path(
+    path: str,
+    hive_input: bool | None = None,
+    verbose: bool = False,
+) -> tuple[str, dict]:
+    """Return a RAW path DuckDB can actually read, plus the options it implies.
+
+    A bare directory is not something DuckDB's reader can open -- it has to
+    become the glob over the parquet files it holds, or the read dies with a
+    ``Catalog Error`` naming the directory (#817). Single files and globs pass
+    straight through.
+
+    The pass-through is guarded by :func:`is_partition_path` rather than applied
+    unconditionally, because ``resolve_partition_path`` also turns on hive
+    partitioning for any path with a ``key=value`` directory in it: a single
+    file at ``data/country=US/x.parquet`` must keep reading as itself, without
+    the partition keys appearing as extra columns.
+
+    The result is RAW, so the caller still owes it exactly one escape --
+    :func:`safe_file_url` or ``sql_path``, never both.
+
+    Args:
+        path: File path, directory, or glob pattern (local or remote)
+        hive_input: Explicitly enable/disable hive partitioning. None = auto-detect.
+        verbose: Print debug messages
+
+    Returns:
+        tuple: (raw path for DuckDB, read_parquet options dict)
+    """
+    if not is_partition_path(path):
+        return path, {}
+
+    resolved_path, auto_options = resolve_partition_path(path, hive_input)
+    if verbose:
+        debug(f"Resolved partition path: {resolved_path}")
+        if auto_options:
+            debug(f"Auto-detected options: {auto_options}")
+    return resolved_path, auto_options
+
+
 def build_read_parquet_expr(
     path: str,
     allow_schema_diff: bool = False,
@@ -45,18 +85,8 @@ def build_read_parquet_expr(
         str: DuckDB read_parquet() expression like
              "read_parquet('path/*.parquet', hive_partitioning=true)"
     """
-    # Check if this is a partition path and resolve it
-    if is_partition_path(path):
-        resolved_path, auto_options = resolve_partition_path(path, hive_input)
-        safe_path = safe_file_url(resolved_path, verbose=False)
-
-        if verbose:
-            debug(f"Resolved partition path: {resolved_path}")
-            if auto_options:
-                debug(f"Auto-detected options: {auto_options}")
-    else:
-        safe_path = safe_file_url(path, verbose=False)
-        auto_options = {}
+    resolved_path, auto_options = resolve_read_path(path, hive_input, verbose=verbose)
+    safe_path = safe_file_url(resolved_path, verbose=False)
 
     # Build options list
     options = []

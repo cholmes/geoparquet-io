@@ -28,8 +28,7 @@
 1 geoparquet_io/core/process/overview/detect.py
 1 geoparquet_io/core/process/overview/rollup.py
 5 geoparquet_io/core/reproject.py
-1 geoparquet_io/core/sort_by_column.py
-2 geoparquet_io/core/sort_quadkey.py
+1 geoparquet_io/core/sort_quadkey.py
 1 geoparquet_io/core/stream_io.py
 16 geoparquet_io/core/validate.py
 4 geoparquet_io/core/wfs.py
