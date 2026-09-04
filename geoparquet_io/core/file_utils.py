@@ -188,7 +188,7 @@ def handle_output_overwrite(
 # dependency gpio does not ship (#810). Azure is refused explicitly:
 # obs.store.from_url("az://account/container") cannot be configured to work (it
 # misreads the account segment as the container).
-# TODO(the Azure support issue): support az:// copies once a working Azure store
+# TODO(#864): support az:// copies once a working Azure store
 # construction exists, and re-advertise az:// in the messages below.
 _COPYABLE_STORE_SCHEMES = ("s3", "gs")
 _COPY_SCHEME_ALIASES = {"s3a": "s3", "gcs": "gs"}
