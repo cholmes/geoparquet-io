@@ -3683,7 +3683,10 @@ def hilbert_order(
     by their position along a Hilbert space-filling curve.
 
     Applies optimal formatting (configurable compression, optimized row groups,
-    bbox metadata) while preserving the CRS.
+    bbox metadata). A non-default CRS is carried through unchanged; a CRS that
+    spells out the GeoParquet default (OGC:CRS84 / EPSG:4326) is normalized to
+    how the spec writes it, an omitted crs key. Use --verbose to see when that
+    happens.
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
     """

@@ -301,3 +301,138 @@ def test_warn_on_two_distinct_null_files(null_crs_parquet, buildings_test_file, 
         extract_crs_from_parquet(null_crs_parquet)
         extract_crs_from_parquet(second_path)
     assert len(_null_crs_warnings(caplog.records)) == 2
+
+
+# --------------------------------------------------------------------------- #
+# verbose note when an explicit default crs is normalized away (#815)
+# --------------------------------------------------------------------------- #
+
+EPSG_4326 = {"id": {"authority": "EPSG", "code": 4326}}
+OGC_CRS84 = {"id": {"authority": "OGC", "code": "CRS84"}}
+EPSG_3857 = {"id": {"authority": "EPSG", "code": 3857}}
+
+
+def _normalization_notes(records):
+    return [r for r in records if "explicit default CRS" in r.message]
+
+
+def _apply_and_capture(caplog, col_meta, input_crs=None):
+    """Run ``apply_output_crs`` at DEBUG and return its normalization notes."""
+    import logging
+
+    from geoparquet_io.core.crs_utils import apply_output_crs
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+        apply_output_crs(col_meta, input_crs)
+    return _normalization_notes(caplog.records)
+
+
+@pytest.mark.parametrize("declared", [EPSG_4326, OGC_CRS84])
+def test_note_when_explicit_default_crs_is_dropped(caplog, declared):
+    """Every spelling of the default gets one note when its key is dropped."""
+    col_meta = {"crs": declared}
+    notes = _apply_and_capture(caplog, col_meta)
+    assert "crs" not in col_meta
+    assert len(notes) == 1
+
+
+def test_note_mentions_the_omitted_crs_key(caplog):
+    notes = _apply_and_capture(caplog, {"crs": EPSG_4326})
+    assert "crs" in notes[0].message
+    assert "OGC:CRS84" in notes[0].message
+
+
+def test_no_note_when_there_is_no_crs_key(caplog):
+    col_meta = {"encoding": "WKB"}
+    assert _apply_and_capture(caplog, col_meta) == []
+    assert "crs" not in col_meta
+
+
+def test_no_note_when_a_non_default_crs_is_carried(caplog):
+    col_meta = {"crs": EPSG_3857}
+    assert _apply_and_capture(caplog, col_meta) == []
+    assert col_meta["crs"] == EPSG_3857
+
+
+def test_no_note_for_an_explicit_null_crs(caplog):
+    """``crs: null`` means *unknown*; it has its own warning, not this note."""
+    col_meta = {"crs": None}
+    assert _apply_and_capture(caplog, col_meta) == []
+
+
+def test_no_note_when_a_stale_non_default_crs_is_replaced(caplog):
+    """Reprojecting 3857 -> the default drops a key that never said 4326."""
+    col_meta = {"crs": EPSG_3857}
+    assert _apply_and_capture(caplog, col_meta, input_crs=EPSG_4326) == []
+    assert "crs" not in col_meta
+
+
+def test_note_when_output_crs_is_the_default_and_input_said_so(caplog):
+    col_meta = {"crs": EPSG_4326}
+    assert len(_apply_and_capture(caplog, col_meta, input_crs=OGC_CRS84)) == 1
+
+
+def test_no_note_when_a_non_default_crs_is_written(caplog):
+    col_meta = {"crs": EPSG_4326}
+    assert _apply_and_capture(caplog, col_meta, input_crs=EPSG_3857) == []
+    assert col_meta["crs"] == EPSG_3857
+
+
+def test_sort_hilbert_verbose_notes_the_normalization(default_crs_parquet, temp_output_file):
+    """The CLI surfaces the drop at --verbose, and the key really is gone."""
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import sort
+
+    result = CliRunner().invoke(
+        sort, ["hilbert", default_crs_parquet, temp_output_file, "--verbose"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" in result.output
+    assert _col_crs(temp_output_file) == (False, None)
+
+
+def test_sort_hilbert_is_quiet_about_it_without_verbose(default_crs_parquet, temp_output_file):
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import sort
+
+    result = CliRunner().invoke(sort, ["hilbert", default_crs_parquet, temp_output_file])
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+
+
+def test_sort_hilbert_verbose_is_silent_for_an_absent_crs(absent_crs_parquet, temp_output_file):
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import sort
+
+    result = CliRunner().invoke(
+        sort, ["hilbert", absent_crs_parquet, temp_output_file, "--verbose"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+
+
+def test_sort_hilbert_verbose_is_silent_for_a_non_default_crs(buildings_test_file, tmp_path):
+    """A projected input keeps its CRS, so there is nothing to note."""
+    import json
+
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import sort
+
+    table = pq.read_table(buildings_test_file)
+    meta = dict(table.schema.metadata)
+    geo = json.loads(meta[b"geo"].decode("utf-8"))
+    geo["columns"][geo.get("primary_column", "geometry")]["crs"] = EPSG_3857
+    meta[b"geo"] = json.dumps(geo).encode("utf-8")
+    src = str(tmp_path / "epsg3857.parquet")
+    pq.write_table(table.replace_schema_metadata(meta), src)
+
+    out = str(tmp_path / "sorted_3857.parquet")
+    result = CliRunner().invoke(sort, ["hilbert", src, out, "--verbose"])
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+    assert _col_crs(out)[0] is True
