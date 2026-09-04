@@ -71,6 +71,14 @@ NAME_OVERRIDES: dict[tuple[str, ...], list[str]] = {
     ("check", "optimization"): ["check_optimization"],
     ("inspect", "summary"): ["info"],
     ("convert", "geoparquet"): ["write"],
+    # `gpio partition <index>` is two operations behind one command: a single
+    # file, and a *directory* walked with --min-size. The second has its own
+    # `ops` twin (#811), so name it here -- otherwise its defaults would drift
+    # from the flags they mirror with nothing watching.
+    ("partition", "a5"): ["partition_by_a5", "sub_partition_by_a5"],
+    ("partition", "h3"): ["partition_by_h3", "sub_partition_by_h3"],
+    ("partition", "s2"): ["partition_by_s2", "sub_partition_by_s2"],
+    ("partition", "quadkey"): ["partition_by_quadkey", "sub_partition_by_quadkey"],
 }
 
 # CLI-only plumbing (I/O paths, output formatting) with no API analogue.

@@ -13,6 +13,96 @@ _REQUIRED_EXTENSIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "s2": (("geography", "gpio partition s2"),),
 }
 
+# The index column each partition type creates when nobody names one, keyed by
+# type, with the CLI option that would have named it. Directory mode uses the
+# default and writes one sibling directory per file, so a custom name is
+# refused rather than silently dropped (#790) -- through either front door.
+SUB_PARTITION_COLUMN_OPTIONS: dict[str, tuple[str, str]] = {
+    "h3": ("--h3-name", "h3_cell"),
+    "s2": ("--s2-name", "s2_cell"),
+    "a5": ("--a5-name", "a5_cell"),
+    "quadkey": ("--quadkey-column", "quadkey"),
+}
+
+
+def offending_single_file_only_options(
+    partition_type: str,
+    column_name: str | None = None,
+    output_folder: str | None = None,
+    *,
+    column_label: str | None = None,
+    output_label: str = "OUTPUT_FOLDER",
+) -> list[str]:
+    """Name the arguments a directory sub-partition run cannot honour.
+
+    Args:
+        partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
+        column_name: Index column name the caller asked for, if any
+        output_folder: Single output directory the caller asked for, if any
+        column_label: How to spell the column argument back at the caller
+            (defaults to the CLI option name for ``partition_type``)
+        output_label: How to spell the output argument back at the caller
+
+    Returns:
+        The labels that were supplied and cannot be honoured, in the order they
+        should be reported. Empty when there is nothing to refuse.
+    """
+    option, default = SUB_PARTITION_COLUMN_OPTIONS.get(partition_type, (None, None))
+    label = column_label or option
+
+    offending = []
+    if label and column_name is not None and column_name != default:
+        offending.append(label)
+    if output_folder:
+        offending.append(output_label)
+    return offending
+
+
+def single_file_only_option_message(partition_type: str, offending: list[str]) -> str:
+    """Explain why ``offending`` cannot be honoured in directory mode."""
+    verb = "does" if len(offending) == 1 else "do"
+    return (
+        f"{' and '.join(offending)} {verb} not apply to directory input with a size "
+        f"threshold.\n\n"
+        f"Each file over the threshold is partitioned into a sibling <file>_{partition_type}/\n"
+        "directory, using the default index column name. Run on a single file if you\n"
+        "need to control those."
+    )
+
+
+def plan_sub_partition(
+    directory: str,
+    partition_type: str,
+    min_size_bytes: int,
+    recursive: bool = True,
+) -> list[dict]:
+    """List the files a sub-partition run would process, and where each would go.
+
+    The read-only half of :func:`sub_partition_directory`, backing ``--preview``
+    and its API twin: nothing is partitioned and nothing is removed.
+
+    Args:
+        directory: Directory containing parquet files
+        partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
+        min_size_bytes: Minimum file size to process
+        recursive: Search subdirectories (default: True)
+
+    Returns:
+        One dict per candidate -- ``path``, ``size_bytes`` and the ``output_dir``
+        it would be partitioned into -- largest file first.
+    """
+    candidates = []
+    for file_path in find_large_files(directory, min_size_bytes, recursive=recursive):
+        path = Path(file_path)
+        candidates.append(
+            {
+                "path": file_path,
+                "size_bytes": path.stat().st_size,
+                "output_dir": str(path.parent / f"{path.stem}_{partition_type}"),
+            }
+        )
+    return candidates
+
 
 def _assert_no_rows_lost(source_file: str, output_dir: str) -> None:
     """Refuse to delete an original whose rows did not all reach the output.

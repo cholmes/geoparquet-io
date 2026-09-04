@@ -216,6 +216,23 @@ class TestCoreExceptions:
         with pytest.raises(PartitionError):
             raise PartitionError("Invalid partition scheme")
 
+    def test_partition_error_carries_no_result_by_default(self):
+        """Most partition failures are about one file and have nothing to report."""
+        assert PartitionError("Invalid partition scheme").result is None
+
+    def test_partition_error_can_carry_the_run_that_failed(self):
+        """A directory sub-partition run fails *partly*: the survivors still matter.
+
+        `ops.sub_partition_by_*` raises once the run finishes, so the caller needs
+        what succeeded as well as what did not (#811).
+        """
+        run = {"processed": 2, "skipped": 0, "errors": [{"file": "a.parquet", "error": "boom"}]}
+
+        exc = PartitionError("1 of 3 file(s) failed to sub-partition", result=run)
+
+        assert exc.result == run
+        assert str(exc) == "1 of 3 file(s) failed to sub-partition"
+
     def test_validation_error(self):
         with pytest.raises(ValidationError):
             raise ValidationError("File does not conform to GeoParquet spec")
