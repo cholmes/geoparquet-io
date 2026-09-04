@@ -70,6 +70,29 @@ def is_geoarrow_extension_field(field: pa.Field) -> bool:
     return name is not None and name.startswith("geoarrow.")
 
 
+def native_wkb_type(crs: dict | None):
+    """The ``geoarrow.wkb`` type a 2.0 / parquet-geo-only geometry column is written as.
+
+    PyArrow writes this extension type as a native Parquet GEOMETRY logical
+    type, which 2.0 requires for every column in ``geo["columns"]`` and which is
+    a parquet-geo-only column's *only* geometry identity (#706, #764).
+
+    The CRS belongs in the type at these versions, and is taken from what the
+    ``geo`` block declares for that column, so the two can never disagree
+    (``v2_crs_consistency``). A default CRS is signalled by carrying none, the
+    same way the metadata signals it by omitting the key.
+
+    One definition, shared by every strategy that builds the type: the streaming
+    writer's output schema and the disk-rewrite writer's.
+    """
+    import geoarrow.pyarrow as ga
+
+    geoarrow_type = ga.wkb()
+    if crs and not is_default_crs(crs):
+        geoarrow_type = geoarrow_type.with_crs(crs)
+    return geoarrow_type
+
+
 def is_wkb_extension_field(field: pa.Field) -> bool:
     """True when a field declares a WKB extension type, in either carrier shape.
 

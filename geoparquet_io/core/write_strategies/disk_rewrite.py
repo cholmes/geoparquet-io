@@ -24,11 +24,13 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     quote_identifier,
 )
-from geoparquet_io.core.geoarrow_encoding import arrow_extension_name
+from geoparquet_io.core.geoarrow_encoding import arrow_extension_name, native_wkb_type
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
+from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_column
 from geoparquet_io.core.write_strategies.base import (
     BaseWriteStrategy,
     build_geo_metadata,
+    resolve_geometry_columns,
 )
 from geoparquet_io.core.write_strategies.row_group_sizing import (
     _resolve_row_group_rows,
@@ -37,6 +39,82 @@ from geoparquet_io.core.write_strategies.row_group_sizing import (
 
 if TYPE_CHECKING:
     import duckdb
+
+
+def _native_geometry_crs(
+    geoparquet_version: str,
+    geo_meta: dict,
+    geometry_column: str,
+    geometry_info: dict | None,
+) -> dict[str, dict | None]:
+    """Geometry columns needing a native Parquet GEOMETRY type, each with its CRS.
+
+    Empty below 2.0, where geometry is plain BYTE_ARRAY WKB and the CRS lives in
+    the ``geo`` block alone.
+
+    EVERY declared geometry column, not just the primary: 2.0 validation applies
+    the same requirement to each column in ``geo["columns"]``, and under
+    parquet-geo-only -- which writes no ``geo`` block at all -- the logical type
+    is a column's only geometry identity (#706).
+
+    Each CRS is read back out of the metadata just built for the file, so the
+    type and the block cannot disagree (``v2_crs_consistency``). A column the
+    block gives no ``crs`` is the spec default, and carries none in its type.
+    """
+    if geoparquet_version not in ("2.0", "parquet-geo-only"):
+        return {}
+
+    column_metadata = geo_meta.get("columns") or {}
+    return {
+        column: (column_metadata.get(column) or {}).get("crs")
+        for column in resolve_geometry_columns(geometry_column, geometry_info, geo_meta)
+    }
+
+
+def _native_geometry_schema(schema: pa.Schema, native_crs: dict[str, dict | None]) -> pa.Schema:
+    """Retype the given geometry columns as ``geoarrow.wkb``, leaving the rest alone.
+
+    ``pa.schema`` starts with no metadata, so the source's is reattached: the
+    caller reads the carried KV keys straight off the returned schema, and
+    dropping them here would make the metadata a function of the target version.
+    """
+    fields = [
+        pa.field(field.name, native_wkb_type(native_crs[field.name]), nullable=field.nullable)
+        if field.name in native_crs
+        else field
+        for field in schema
+    ]
+    return pa.schema(fields, metadata=schema.metadata)
+
+
+def _to_native_geometry(column, target_type):
+    """Encode one WKB column as ``target_type``, chunk by chunk.
+
+    ``to_geoarrow_column`` (shared with the streaming strategy) takes a single
+    array; a row group read back through PyArrow -- and anything the row-group
+    coarsening concatenates -- arrives as a ChunkedArray.
+    """
+    if not isinstance(column, pa.ChunkedArray):
+        return to_geoarrow_column(column, target_type)
+    chunks = [to_geoarrow_column(chunk, target_type) for chunk in column.chunks]
+    if not chunks:
+        return pa.chunked_array([], type=target_type)
+    return pa.chunked_array(chunks, type=chunks[0].type)
+
+
+def _conform_row_group(table: pa.Table, schema: pa.Schema, native_crs: dict[str, dict | None]):
+    """Give one row group the output schema, converting its native geometry columns."""
+    if not native_crs:
+        return table.replace_schema_metadata(schema.metadata)
+    columns = [
+        _to_native_geometry(table.column(index), field.type)
+        if field.name in native_crs
+        else table.column(index)
+        for index, field in enumerate(schema)
+    ]
+    # Built against the output schema, so the field's type -- and the CRS that
+    # `WkbType.__eq__` ignores -- is what reaches the writer.
+    return pa.Table.from_arrays(columns, schema=schema)
 
 
 class DiskRewriteStrategy(BaseWriteStrategy):
@@ -167,15 +245,29 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 geometry_info=geometry_info,
             )
 
+            # 2.0 and parquet-geo-only require a native Parquet GEOMETRY logical
+            # type; 1.0/1.1 require plain BYTE_ARRAY WKB and forbid it. Every
+            # other strategy branches on the version here -- this one did not, so
+            # its 2.0 output declared a version whose own spec its bytes violated
+            # (#764). parquet-geo-only additionally writes no `geo` block: the
+            # one built above is still what the native types are keyed off, but
+            # it names a null version, which DuckDB refuses to open.
+            native_crs = _native_geometry_crs(
+                geoparquet_version, geo_meta, geometry_column, geometry_info
+            )
+            if verbose and native_crs:
+                debug(f"Writing native Parquet GEOMETRY types for {sorted(native_crs)}")
+
             self._rewrite_with_metadata(
                 input_path=temp_path,
                 output_path=final_path,
-                geo_meta=geo_meta,
+                geo_meta=None if geoparquet_version == "parquet-geo-only" else geo_meta,
                 compression=validated_compression,
                 compression_level=validated_level,
                 verbose=verbose,
                 extra_kv_metadata=extra_kv_metadata,
                 row_group_rows=resolved_row_group_rows,
+                native_geometry_crs=native_crs,
             )
 
             os.unlink(temp_path)
@@ -381,14 +473,25 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         self,
         input_path: str,
         output_path: str,
-        geo_meta: dict,
+        geo_meta: dict | None,
         compression: str,
         compression_level: int | None,
         verbose: bool,
         extra_kv_metadata: dict[str, str] | None = None,
         row_group_rows: int | None = None,
+        native_geometry_crs: dict[str, dict | None] | None = None,
     ) -> None:
         """Rewrite file with proper geo metadata, row group by row group.
+
+        ``geo_meta`` is ``None`` for parquet-geo-only output, which carries its
+        geometry typing in the Parquet schema and must declare no GeoParquet
+        version at all -- writing the block built for it put ``"version": null``
+        in the file, which DuckDB's reader rejects outright (#764).
+
+        ``native_geometry_crs`` names the geometry columns that must reach the
+        writer as a native Parquet GEOMETRY logical type (2.0 and
+        parquet-geo-only), each with the CRS its ``geo`` entry declares. Empty at
+        1.0/1.1, where the same columns stay plain BYTE_ARRAY WKB.
 
         ``row_group_rows`` is the already-resolved rows-per-group request. The
         DuckDB COPY that produced ``input_path`` was given the same value, but it
@@ -406,11 +509,25 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         every over-full batch into a full group plus a runt, which is how a
         request of 25 against 10-row sources produced ``[25, 5, 25, 5, ...]``.
         """
+        from geoparquet_io.core.common import _CARRIED_SCHEMA_METADATA_KEYS_BYTES
+
+        native_crs = native_geometry_crs or {}
+
         pf = pq.ParquetFile(input_path)
-        schema = pf.schema_arrow
+        schema = _native_geometry_schema(pf.schema_arrow, native_crs)
 
         new_meta = dict(schema.metadata or {})
-        new_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+        if geo_meta is not None:
+            new_meta[b"geo"] = json.dumps(geo_meta).encode("utf-8")
+        else:
+            # parquet-geo-only: no `geo` key, and no serialized descriptor of the
+            # input's schema either -- the same exclusion set the other write
+            # paths use (`_strip_geo_metadata_key`).
+            new_meta = {
+                key: value
+                for key, value in new_meta.items()
+                if key not in _CARRIED_SCHEMA_METADATA_KEYS_BYTES
+            }
         if extra_kv_metadata:
             for key, value in extra_kv_metadata.items():
                 bkey = key.encode("utf-8") if isinstance(key, str) else key
@@ -434,7 +551,9 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             # No sizing request: keep the source's row-group shape, one for one.
             if not row_group_rows:
                 for i in range(num_source_groups):
-                    writer.write_table(pf.read_row_group(i).replace_schema_metadata(new_meta))
+                    writer.write_table(
+                        _conform_row_group(pf.read_row_group(i), new_schema, native_crs)
+                    )
                     if verbose and (i + 1) % 10 == 0:
                         debug(f"Rewrote {i + 1}/{num_source_groups} row groups...")
             else:
@@ -443,7 +562,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 pending: list[pa.Table] = []
                 pending_rows = 0
                 for i in range(num_source_groups):
-                    table = pf.read_row_group(i).replace_schema_metadata(new_meta)
+                    table = _conform_row_group(pf.read_row_group(i), new_schema, native_crs)
                     pending.append(table)
                     pending_rows += table.num_rows
                     while pending_rows >= row_group_rows:
