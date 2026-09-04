@@ -25,6 +25,7 @@ from geoparquet_io.core.streaming import (
     apply_geo_metadata,
     apply_geoarrow_extension_type,
     apply_metadata_to_table,
+    extract_crs_from_table,
     extract_geo_metadata,
     find_geometry_column_from_metadata,
     find_geometry_column_from_table,
@@ -955,3 +956,205 @@ class TestReadStdinToTempFile:
             assert pq.read_table(path).num_rows == 2
         finally:
             os.remove(path)
+
+
+OGC_CRS84_PROJJSON = {
+    "$schema": "https://proj.org/schemas/v0.7/projjson.schema.json",
+    "type": "GeographicCRS",
+    "name": "WGS 84 (CRS84)",
+    "datum": {
+        "type": "GeodeticReferenceFrame",
+        "name": "World Geodetic System 1984",
+        "ellipsoid": {
+            "name": "WGS 84",
+            "semi_major_axis": 6378137,
+            "inverse_flattening": 298.257223563,
+        },
+    },
+    "coordinate_system": {
+        "subtype": "ellipsoidal",
+        "axis": [
+            {
+                "name": "Geodetic longitude",
+                "abbreviation": "Lon",
+                "direction": "east",
+                "unit": "degree",
+            },
+            {
+                "name": "Geodetic latitude",
+                "abbreviation": "Lat",
+                "direction": "north",
+                "unit": "degree",
+            },
+        ],
+    },
+    "id": {"authority": "OGC", "code": "CRS84"},
+}
+
+
+class _OpaqueCrs:
+    """A CRS-ish object that is neither PROJJSON nor a geoarrow ``Crs``."""
+
+    def __repr__(self) -> str:
+        return "Opaque(EPSG:9999)"
+
+
+class _OpaqueCrsType(pa.ExtensionType):
+    """An extension type exposing ``.crs`` as an object gpio cannot interpret."""
+
+    def __init__(self):
+        super().__init__(pa.binary(), "gpio.test.opaque_crs")
+
+    def __arrow_ext_serialize__(self) -> bytes:
+        return b""
+
+    @classmethod
+    def __arrow_ext_deserialize__(cls, _storage_type, _serialized):
+        return cls()
+
+    @property
+    def crs(self):
+        return _OpaqueCrs()
+
+
+def _geoarrow_typed_table(crs, nrows: int = 1) -> pa.Table:
+    """A table whose geometry column carries a *resolved* geoarrow type.
+
+    Importing ``geoarrow.pyarrow`` registers the extension types, which is the
+    process state issue #816 depends on.
+    """
+    import geoarrow.pyarrow  # noqa: F401  -- registers the extension types
+
+    table = pa.table(
+        {
+            "id": list(range(nrows)),
+            "geometry": pa.array([_wkb_polygon(4)] * nrows, type=pa.large_binary()),
+        }
+    )
+    return apply_geoarrow_extension_type(table, "geometry", crs=crs)
+
+
+class TestExtractCrsFromGeoArrowType:
+    """`extract_crs_from_table` must read a geoarrow CRS object, not stringify it.
+
+    Regression guard for issue #816. Once ``geoarrow.pyarrow`` is imported
+    anywhere in the process, PyArrow resolves ``geoarrow.wkb`` fields into real
+    extension types whose ``.crs`` is a ``geoarrow.types.crs.Crs`` object. The
+    old ``if hasattr(crs, "__str__"): return str(crs)`` catch-all matched every
+    Python object, so the CRS came back as the repr ``"ProjJsonCrs(OGC:CRS84)"``
+    and the writer split it into authority ``PROJJSONCRS(OGC`` / code ``CRS84)``.
+    """
+
+    def test_projjson_crs_object_returns_projjson_dict(self):
+        """A ProjJsonCrs object comes back as PROJJSON, not as its repr."""
+        table = _geoarrow_typed_table(OGC_CRS84_PROJJSON)
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert not isinstance(crs, str), f"stringified the CRS object: {crs!r}"
+        assert isinstance(crs, dict)
+        assert crs["id"] == {"authority": "OGC", "code": "CRS84"}
+
+    def test_string_crs_object_resolves_to_projjson(self):
+        """A StringCrs object ("EPSG:3857") resolves through its PROJJSON accessor."""
+        table = _geoarrow_typed_table("EPSG:3857")
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert crs is not None
+        parsed = crs if isinstance(crs, dict) else json.loads(crs)
+        assert parsed["id"] == {"authority": "EPSG", "code": 3857}
+
+    def test_result_is_parseable_by_pyproj(self):
+        """Whatever comes back must be a CRS pyproj can round-trip."""
+        import pyproj
+
+        table = _geoarrow_typed_table(OGC_CRS84_PROJJSON)
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert pyproj.CRS(crs).to_authority() == ("OGC", "CRS84")
+
+    def test_unregistered_extension_shape_falls_back_to_geo_metadata(self):
+        """The other shape -- ``ARROW:extension:name`` in field metadata with no
+        resolved extension type -- must keep reading the CRS out of ``geo``.
+
+        This is what PyArrow produces for a geoarrow field when the extension
+        type is not registered, and it is the path most sessions take.
+        """
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {
+                    "encoding": "WKB",
+                    "geometry_types": [],
+                    "crs": OGC_CRS84_PROJJSON,
+                }
+            },
+        }
+        field = pa.field(
+            "geometry",
+            pa.binary(),
+            metadata={
+                b"ARROW:extension:name": b"geoarrow.wkb",
+                b"ARROW:extension:metadata": b'{"crs": {"id": {"authority": "OGC"}}}',
+            },
+        )
+        schema = pa.schema(
+            [pa.field("id", pa.int64()), field],
+            metadata={b"geo": json.dumps(geo).encode("utf-8")},
+        )
+        table = pa.table(
+            [pa.array([1]), pa.array([_wkb_polygon(4)], type=pa.binary())], schema=schema
+        )
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert crs == OGC_CRS84_PROJJSON
+
+    def test_unknown_crs_object_is_rejected_not_stringified(self):
+        """An unrecognised CRS object yields None, never its repr.
+
+        The old catch-all would have returned ``"Opaque(EPSG:9999)"``, which the
+        writer then split on ``:`` into a fabricated authority/code pair.
+        """
+        storage = pa.array([_wkb_polygon(4)], type=pa.binary())
+        geom = pa.ExtensionArray.from_storage(_OpaqueCrsType(), storage)
+        table = pa.table({"id": [1], "geometry": geom})
+
+        assert extract_crs_from_table(table, "geometry") is None
+
+
+class TestGeoArrowCrsSurvivesWrite:
+    """End-to-end: a geoarrow-typed table writes a CRS the validator accepts (#816)."""
+
+    def _write_and_validate(self, tmp_path, crs):
+        import pyarrow.parquet as pq
+
+        import geoparquet_io as gpio
+        from geoparquet_io.core.validate import validate_geoparquet
+
+        table = _geoarrow_typed_table(crs, nrows=2)
+        out = tmp_path / "out.parquet"
+        gpio.Table(table, geometry_column="geometry").write(str(out))
+
+        geo = json.loads(pq.read_schema(str(out)).metadata[b"geo"].decode("utf-8"))
+        written = geo["columns"][geo["primary_column"]].get("crs")
+        failed = sorted(
+            {c.name for c in validate_geoparquet(str(out)).checks if c.status.value == "failed"}
+        )
+        return written, failed
+
+    def test_crs84_geoarrow_table_passes_crs_valid_geometry(self, tmp_path):
+        written, failed = self._write_and_validate(tmp_path, OGC_CRS84_PROJJSON)
+
+        assert "crs_valid_geometry" not in failed
+        assert written is None or written["id"] == {"authority": "OGC", "code": "CRS84"}
+
+    def test_projected_geoarrow_table_keeps_its_authority_code(self, tmp_path):
+        written, failed = self._write_and_validate(tmp_path, "EPSG:3857")
+
+        assert "crs_valid_geometry" not in failed
+        assert written is not None
+        assert written["id"] == {"authority": "EPSG", "code": 3857}
