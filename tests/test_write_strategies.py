@@ -625,6 +625,36 @@ class TestWriteStrategiesNoGeometry:
 
         self._assert_valid_plain_parquet(output_file)
 
+    def test_disk_rewrite_query_no_geometry_verbose(
+        self, duckdb_connection, non_geo_query, output_file, caplog
+    ):
+        """The verbose row count on the plain-Parquet path opens the file it just wrote.
+
+        Same shape as the geo path's temp-file peek: the handle has to be closed
+        before the work directory is torn down, which on Windows is the
+        difference between a cleaned-up temp dir and a leaked one.
+        """
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            strategy.write_from_query(
+                con=duckdb_connection,
+                query=non_geo_query,
+                output_path=output_file,
+                geometry_column=None,
+                original_metadata=None,
+                geoparquet_version="1.1",
+                compression="ZSTD",
+                compression_level=15,
+                row_group_size_mb=None,
+                row_group_rows=None,
+                input_crs=None,
+                verbose=True,
+            )
+
+        assert "Wrote 3 rows" in caplog.text
+        self._assert_valid_plain_parquet(output_file)
+
     def test_compression_options_honored_no_geometry(self, non_geo_table, output_file):
         """Compression options are honored when writing non-geo data."""
         strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DUCKDB_KV)
@@ -1542,6 +1572,41 @@ class TestNativeGeometryTypeAcrossStrategies:
         assert "native parquet geometry type" in caplog.text.lower()
         assert "'geometry'" in caplog.text
         assert _geometry_carriers(out) == {"geometry": "native"}
+
+    def test_verbose_write_leaves_no_open_parquet_handle(self, tmp_path, monkeypatch):
+        """disk-rewrite deletes its temp file, so nothing may still hold it open.
+
+        The verbose row-count peek at the DuckDB temp file kept a
+        ``pq.ParquetFile`` alive in the enclosing frame until ``write_from_query``
+        returned -- past the ``os.unlink`` of that very file. POSIX unlinks an
+        open file happily; Windows raises ``PermissionError: [WinError 32]``, so
+        every ``--verbose`` disk-rewrite write died there.
+
+        Asserted as the invariant rather than as the platform error, so this
+        fails on every OS: when the write returns, every ParquetFile it opened
+        is closed.
+        """
+        opened = []
+        real_parquet_file = pq.ParquetFile
+
+        def tracking_parquet_file(source, *args, **kwargs):
+            handle = real_parquet_file(source, *args, **kwargs)
+            # Only the strategy's own scratch directory: those are the files it
+            # deletes, and the only ones whose handles have to be closed by the
+            # time it returns.
+            if "gpio_disk_rewrite_" in str(source):
+                opened.append(handle)
+            return handle
+
+        monkeypatch.setattr(pq, "ParquetFile", tracking_parquet_file)
+
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / "handles.parquet")
+
+        _write_via_query(source, out, "2.0", "disk-rewrite", verbose=True)
+
+        assert opened, "no temp-file ParquetFile opened -- test no longer exercises the path"
+        assert [h.closed for h in opened] == [True] * len(opened)
 
     def test_disk_rewrite_native_type_survives_row_group_coarsening(self, tmp_path):
         """The rewrite is per row group, so a resized write must stay native throughout."""

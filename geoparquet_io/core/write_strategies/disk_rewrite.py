@@ -228,10 +228,15 @@ class DiskRewriteStrategy(BaseWriteStrategy):
             con.execute(copy_query)
 
             if verbose:
-                pf = pq.ParquetFile(temp_path)
-                debug(
-                    f"DuckDB wrote {pf.metadata.num_rows:,} rows, {pf.metadata.num_row_groups} row groups"
-                )
+                # Closed before leaving the block: this file is `os.unlink`ed a
+                # few lines below, and Windows refuses to delete a file with an
+                # open handle -- `--verbose` disk-rewrite writes died there with
+                # `PermissionError: [WinError 32]` while POSIX cleaned up fine.
+                with pq.ParquetFile(temp_path) as pf:
+                    debug(
+                        f"DuckDB wrote {pf.metadata.num_rows:,} rows, "
+                        f"{pf.metadata.num_row_groups} row groups"
+                    )
 
             geo_meta = build_geo_metadata(
                 geometry_column=geometry_column,
@@ -460,8 +465,8 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                 upload_if_remote(local_path, output_path, is_directory=False, verbose=verbose)
 
             if verbose:
-                pf = pq.ParquetFile(local_path)
-                success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
+                with pq.ParquetFile(local_path) as pf:
+                    success(f"Wrote {pf.metadata.num_rows:,} rows to {output_path}")
         finally:
             if work_dir and os.path.exists(work_dir):
                 import shutil
@@ -508,11 +513,41 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         every over-full batch into a full group plus a runt, which is how a
         request of 25 against 10-row sources produced ``[25, 5, 25, 5, ...]``.
         """
-        from geoparquet_io.core.common import _CARRIED_SCHEMA_METADATA_KEYS_BYTES
-
         native_crs = native_geometry_crs or {}
 
         pf = pq.ParquetFile(input_path)
+        try:
+            self._write_rewritten_row_groups(
+                pf,
+                output_path,
+                geo_meta,
+                compression,
+                compression_level,
+                verbose,
+                extra_kv_metadata,
+                row_group_rows,
+                native_crs,
+            )
+        finally:
+            # The caller unlinks `input_path` as soon as this returns, and
+            # Windows refuses to delete a file this process still has open.
+            pf.close()
+
+    def _write_rewritten_row_groups(
+        self,
+        pf: pq.ParquetFile,
+        output_path: str,
+        geo_meta: dict | None,
+        compression: str,
+        compression_level: int | None,
+        verbose: bool,
+        extra_kv_metadata: dict[str, str] | None,
+        row_group_rows: int | None,
+        native_crs: dict[str, dict | None],
+    ) -> None:
+        """Write the already-open source file out again, one row group at a time."""
+        from geoparquet_io.core.common import _CARRIED_SCHEMA_METADATA_KEYS_BYTES
+
         schema = _native_geometry_schema(pf.schema_arrow, native_crs)
 
         new_meta = dict(schema.metadata or {})
@@ -580,5 +615,5 @@ class DiskRewriteStrategy(BaseWriteStrategy):
                     writer.write_table(pa.concat_tables(pending), row_group_size=row_group_rows)
 
         if verbose:
-            result_pf = pq.ParquetFile(output_path)
-            success(f"Wrote {result_pf.metadata.num_rows:,} rows to {output_path}")
+            with pq.ParquetFile(output_path) as result_pf:
+                success(f"Wrote {result_pf.metadata.num_rows:,} rows to {output_path}")
