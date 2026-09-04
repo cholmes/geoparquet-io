@@ -1156,16 +1156,23 @@ class TestOutputFormatNegotiation:
 # WFS 2.0 GetCapabilities that spells the parameter "OutputFormat" (capital O),
 # as NextGIS and deegree do. The WFS 2.0 spec spells it "outputFormat", but
 # OWSLib keys op.parameters by whatever the XML said. Issue #818.
+#
+# The advertised version must match the one _nextgis_wfs requests exactly.
+# owslib 0.36 raises CapabilitiesError on a mismatch where 0.35 did not, and
+# uv.lock resolves 0.36 only on Python >= 3.12 -- so declaring a realistic
+# NextGIS "2.0.2" against a "2.0.0" request passes on 3.10/3.11 and fails on
+# 3.12/3.13. The capitalization is what this fixture is for; the version string
+# is incidental, so it is pinned to the requested one.
 MOCK_CAPABILITIES_UPPERCASE_FORMAT_XML = """<?xml version="1.0"?>
 <WFS_Capabilities xmlns="http://www.opengis.net/wfs/2.0"
     xmlns:ows="http://www.opengis.net/ows/1.1"
     xmlns:fes="http://www.opengis.net/fes/2.0"
     xmlns:xlink="http://www.w3.org/1999/xlink"
-    version="2.0.2">
+    version="2.0.0">
   <ows:ServiceIdentification>
     <ows:Title>Mock GML-only WFS</ows:Title>
     <ows:ServiceType>WFS</ows:ServiceType>
-    <ows:ServiceTypeVersion>2.0.2</ows:ServiceTypeVersion>
+    <ows:ServiceTypeVersion>2.0.0</ows:ServiceTypeVersion>
   </ows:ServiceIdentification>
   <ows:OperationsMetadata>
     <ows:Operation name="GetFeature">
