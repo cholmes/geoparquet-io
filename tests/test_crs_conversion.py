@@ -32,12 +32,12 @@ from geoparquet_io.core.crs_utils import (
     extract_crs_from_parquet,
     is_default_crs,
 )
-from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
 from geoparquet_io.core.reproject import (
     _detect_crs_from_table,
     _detect_geometry_column_from_table,
     _detect_source_crs,
 )
+from tests.geo_schema_helpers import parse_geometry_type_from_schema
 
 # Helper functions for CRS testing
 

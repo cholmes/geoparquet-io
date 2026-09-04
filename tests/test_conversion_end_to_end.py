@@ -55,7 +55,7 @@ def _check_all_passed(results: dict, allow_outdated_version: bool = False) -> bo
 
 def get_parquet_type_crs(parquet_file):
     """Extract CRS from Parquet native geo type schema."""
-    from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
+    from tests.geo_schema_helpers import parse_geometry_type_from_schema
 
     pf = pq.ParquetFile(parquet_file)
     schema = pf.schema_arrow
