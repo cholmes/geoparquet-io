@@ -236,9 +236,19 @@ Column sorting:
 The output file:
 
 - Defaults to GeoParquet 1.1 spec (use `--geoparquet-version 2.0` for native spatial stats)
-- Preserves CRS information
+- Carries a non-default CRS through unchanged
 - Includes bbox covering metadata
 - Uses optimal row group sizes
+
+!!! note "An explicit default CRS is normalized, not preserved"
+    GeoParquet writes its default CRS (OGC:CRS84, equivalently EPSG:4326) by
+    *omitting* the `crs` key. An input that spells that default out therefore
+    comes back without the key: the coordinates and their meaning are unchanged,
+    but a byte-for-byte diff of the `geo` metadata will show the key gone. Every
+    gpio write path that rebuilds the `geo` block does this, not just `sort`
+    (a metadata-only rewrite like `add bbox-metadata` carries the block as-is).
+    Run with `--verbose` to see a
+    note when it happens, and use `gpio inspect meta` to confirm the result.
 
 !!! note "Version options"
     Use `--geoparquet-version` to control the output format: `1.1` (default), `2.0` (recommended for spatial filter pushdown), or `parquet-geo-only` (Parquet native geo types without GeoParquet metadata).
