@@ -224,8 +224,10 @@ def resolve_file_url(file_path, verbose=False):
     ``my%20file.parquet`` into ``my%2520file.parquet`` and 404 (#825); ``%20``
     (an encoded space) and ``%2520`` (a name containing ``%20``) cannot be told
     apart from the string, so -- as with SQL escaping (#718) -- the value is
-    transformed exactly once, at the boundary where its state is known. A URL
-    with a raw space or bracket in it is now the caller's to encode.
+    transformed exactly once, at the boundary where its state is known. What an
+    un-encoded URL (raw space, bracket) does is no longer defined by gpio but
+    by the underlying reader -- today's HTTP stacks happen to encode a raw
+    space themselves -- so encode it yourself rather than rely on that.
 
     Local paths are checked for existence. Nothing here escapes the result for
     SQL -- use this for anything that opens the file directly (fsspec, pyarrow,
