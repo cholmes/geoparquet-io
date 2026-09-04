@@ -101,7 +101,7 @@ jobs:
       # diff-cover gate); when each re-derived `os == ... && python-version ==
       # ...` for itself, moving the baseline (drop 3.11, add 3.14) would have
       # turned all four false at once — no coverage measured, nothing uploaded,
-      # and BOTH the 67% floor and the 90% diff-cover gate silently gone with
+      # and BOTH the 80% floor and the 90% diff-cover gate silently gone with
       # every check green. Change the baseline HERE and everything follows.
       # (Deliberately not a `matrix.coverage` flag added via `include:`: an
       # include-contributed key is appended to the generated job name, so the
@@ -189,10 +189,10 @@ jobs:
           # and obscures where the gate lives, not a matrix speedup.
           #
           # The reporting job passes every flag explicitly because `addopts` no
-          # longer carries them: the 67% floor is enforced HERE.
+          # longer carries them: the 80% floor is enforced HERE.
           COV_ARGS: >-
             ${{ env.COVERAGE_JOB == 'true'
-            && '--cov=geoparquet_io --cov-report=term-missing --cov-report=xml --cov-fail-under=67'
+            && '--cov=geoparquet_io --cov-report=term-missing --cov-report=xml --cov-fail-under=80'
             || '--no-cov' }}
         run: |
           # word-splitting intended: COV_ARGS is a flag list (or --no-cov)
@@ -332,7 +332,7 @@ jobs:
         env:
           # Only ubuntu uploads slow-suite coverage to Codecov (step below);
           # macOS and Windows discarded theirs. --cov-fail-under=0 stays on the
-          # reporting job because the slow suite alone never reaches the 67%
+          # reporting job because the slow suite alone never reaches the 80%
           # floor that [tool.coverage.report] would otherwise apply.
           COV_ARGS: >-
             ${{ matrix.os == 'ubuntu-latest'

@@ -2,7 +2,7 @@
 
 Exactly one matrix combination reports coverage: it is the only job that
 measures lines at all, the only one that uploads to Codecov, the only one that
-enforces the 67% floor, and the only one that runs the 90% diff-cover gate.
+enforces the 80% floor, and the only one that runs the 90% diff-cover gate.
 
 Four separate places key off that decision (checkout depth, the pytest flag
 list, the Codecov upload, the diff-cover gate). While each re-derived
@@ -128,7 +128,7 @@ class TestCoverageLegIsSingleSourced:
         assert selected in combos, (
             f"{COVERAGE_FLAG} points at {selected}, which is not one of the "
             f"{len(combos)} combinations this matrix actually schedules "
-            f"({combos}). No job would measure coverage, so the 67% floor and "
+            f"({combos}). No job would measure coverage, so the 80% floor and "
             "the 90% diff-cover gate would both vanish with all checks green."
         )
 
@@ -204,7 +204,7 @@ class TestCoverageLegStillEnforcesTheGates:
         """`addopts` no longer carries coverage, so these flags are the gate."""
         step = _step_by_name(test_job, "Run fast tests")
         cov_args = step["env"]["COV_ARGS"]
-        for flag in ("--cov=geoparquet_io", "--cov-report=xml", "--cov-fail-under=67"):
+        for flag in ("--cov=geoparquet_io", "--cov-report=xml", "--cov-fail-under=80"):
             assert flag in cov_args, (
                 f"{flag} missing from COV_ARGS. Coverage flags are no longer in "
                 "pyproject `addopts`, so this env var is the only thing enforcing "
