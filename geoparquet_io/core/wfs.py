@@ -319,6 +319,48 @@ def _clean_service_url(url: str) -> str:
     )
 
 
+def _merge_query_params(url: str, params: dict) -> str:
+    """
+    Merge additional query params into a URL that may already have a query string.
+
+    Building the final URL by naive string concatenation (``f"{url}?{...}"``)
+    corrupts any pre-existing query string (e.g. ``?apikey=mykey``) by adding
+    a second ``?``, which has no delimiter meaning in a query string — the
+    server sees a single, garbled query and everything after the first ``?``
+    (including the real ``apikey`` value) is misparsed (Issue #828).
+
+    New params take precedence over any same-named param already present in
+    ``url`` (WFS control params like ``service``/``request``/``version``
+    should always reflect the request being built, not a stale value carried
+    over from the caller's URL).
+
+    Args:
+        url: Base URL, with or without an existing query string.
+        params: Additional query params to merge in.
+
+    Returns:
+        URL with a single, correctly merged query string.
+    """
+    parsed = urlparse(url)
+    existing_params = parse_qs(parsed.query, keep_blank_values=True)
+    # dict values from parse_qs are lists; flatten before merging with new
+    # scalar values so urlencode doesn't emit e.g. "apikey=['mykey']".
+    merged = {k: v[0] if len(v) == 1 else v for k, v in existing_params.items()}
+    merged.update(params)
+
+    new_query = urlencode(merged, doseq=True)
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            "",
+        )
+    )
+
+
 def get_wfs_capabilities(service_url: str, version: str = "1.1.0"):
     """
     Get WFS capabilities using OWSLib.
@@ -2367,8 +2409,6 @@ def _build_wfs_url(
     replies in its own default — the only thing that works on a service which
     advertises no format gpio recognizes (issue #818).
     """
-    from urllib.parse import urlencode
-
     clean_url = _clean_service_url(service_url)
 
     params = {
@@ -2404,7 +2444,7 @@ def _build_wfs_url(
     if sort_by and version != "1.0.0":
         params["sortBy"] = sort_by
 
-    return f"{clean_url}?{urlencode(params)}"
+    return _merge_query_params(clean_url, params)
 
 
 def _single_fetch_mode(

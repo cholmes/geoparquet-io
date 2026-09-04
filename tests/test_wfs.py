@@ -2974,6 +2974,97 @@ class TestVersionNegotiation:
 
 
 # =============================================================================
+# Query Param Merging Tests (Issue #828)
+# =============================================================================
+
+
+class TestBuildWfsUrlQueryParamMerging:
+    """A service_url with an existing query param (e.g. an apikey) must not
+    be corrupted by a second "?" when WFS GetFeature params are appended."""
+
+    def test_build_wfs_url_preserves_existing_query_param(self):
+        """The issue's exact reproduction: an apikey query param must survive
+        intact, joined with '&' rather than a second '?'."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/geo/wfs?apikey=mykey",
+            "layer",
+            "2.0.0",
+        )
+
+        # Exactly one '?' delimiter in the whole URL.
+        assert url.count("?") == 1
+
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert params["apikey"] == ["mykey"]
+        assert params["service"] == ["WFS"]
+        assert params["version"] == ["2.0.0"]
+        assert params["request"] == ["GetFeature"]
+        assert params["typeNames"] == ["layer"]
+
+    def test_build_wfs_url_no_existing_query_param(self):
+        """Non-regression: a service_url with no query string still produces
+        a single '?' and no stray leading '&'."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="2.0.0",
+        )
+
+        assert url.count("?") == 1
+        assert "?&" not in url
+        assert url.startswith("https://example.com/wfs?")
+
+    def test_build_wfs_url_merges_multiple_existing_query_params(self):
+        """Multiple pre-existing query params must all be preserved and
+        merged with the WFS params."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs?apikey=mykey&format=json",
+            "test:layer",
+            version="1.1.0",
+        )
+
+        assert url.count("?") == 1
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert params["apikey"] == ["mykey"]
+        assert params["format"] == ["json"]
+        assert params["service"] == ["WFS"]
+        assert params["typeName"] == ["test:layer"]
+
+    def test_build_wfs_url_strips_wfs_specific_params_before_merging(self):
+        """A service_url that already carries GetCapabilities-style WFS
+        params (service/request/version) must not end up with duplicate or
+        conflicting keys after merging."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs?service=WFS&request=GetCapabilities&apikey=mykey",
+            "test:layer",
+            version="2.0.0",
+        )
+
+        assert url.count("?") == 1
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        # Stale GetCapabilities value must not survive; GetFeature is authoritative.
+        assert params["request"] == ["GetFeature"]
+        assert params["apikey"] == ["mykey"]
+
+
+# =============================================================================
 # CRS Validation Tests (Issue #398)
 # =============================================================================
 
