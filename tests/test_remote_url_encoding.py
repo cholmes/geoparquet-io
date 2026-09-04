@@ -79,6 +79,11 @@ class TestHttpUrlIsTakenAsEncoded:
         url = "https://example.com/my<file>.parquet"
         assert resolve_file_url(url) == url
 
+    def test_verbose_logs_and_returns_the_url_unchanged(self):
+        """The verbose debug line reports the URL as given, not a re-encoding."""
+        url = "https://example.com/my%20file.parquet"
+        assert resolve_file_url(url, verbose=True) == url
+
     def test_non_http_remote_schemes_unchanged(self):
         """S3/GCS/Azure URLs were never encoded and still are not."""
         for url in (
