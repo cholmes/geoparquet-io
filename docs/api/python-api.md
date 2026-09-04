@@ -828,6 +828,8 @@ arrow_table = table.to_arrow()
 
 Each method below has an `ops.partition_by_*` twin taking a `pa.Table` plus the output directory, for callers who are not using the fluent wrapper -- `ops.partition_by_h3(table, 'output/', resolution=7)` does exactly what `Table.partition_by_h3('output/', resolution=7)` does. See [Pure Functions](#pure-functions-ops-module).
 
+Every partition method -- spatial, string and admin alike, through `Table` or `ops` -- returns the same dict: `{'output_dir': str, 'file_count': int, 'hive': bool}`, where `file_count` is the number of `.parquet` files written under `output_dir`.
+
 All spatial partitioning methods need to be told how finely to split. Give them an explicit resolution (or `level`), or pass `auto=True` to size one from the data -- the same choice `gpio partition` offers, and the same calculation behind it. A call that gives neither raises `InvalidParameterError` rather than picking a default for you. Under `auto=True`, `target_rows` (default 100,000) sets the rows you want per partition and `max_partitions` (default 10,000) caps how many are created; passing `auto=True` together with an explicit resolution is an error.
 
 !!! warning "Breaking change: the implicit resolutions are gone"
@@ -1519,7 +1521,8 @@ pq.write_table(table, 'output.parquet')
 
 Partitioning is the exception to the `table in -> table out` shape: like the CLI it
 writes a *directory*, so `ops.partition_by_*` takes the table plus an output
-directory and returns the run's statistics.
+directory and returns the run's statistics -- the same
+`{'output_dir': str, 'file_count': int, 'hive': bool}` dict from every scheme.
 
 ```python
 import pyarrow.parquet as pq
@@ -1531,9 +1534,9 @@ table = pq.read_table('input.parquet')
 stats = ops.partition_by_h3(table, 'output/', resolution=7)
 stats = ops.partition_by_a5(table, 'output/', auto=True, target_rows=50000)
 
-# Non-spatial schemes
-ops.partition_by_string(table, 'output/', column='region', hive=True)
-ops.partition_by_admin(table, 'output/', levels=['country'])
+# Non-spatial schemes return the same dict
+stats = ops.partition_by_string(table, 'output/', column='region', hive=True)
+stats = ops.partition_by_admin(table, 'output/', levels=['country'])
 
 print(f"Created {stats['file_count']} files")
 ```

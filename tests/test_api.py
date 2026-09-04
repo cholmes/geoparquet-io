@@ -35,7 +35,11 @@ from geoparquet_io.core.add import quadkey as core_quadkey
 from geoparquet_io.core.add import s2 as core_s2
 from geoparquet_io.core.process.aggregate import by_a5 as core_aggregate_a5
 from geoparquet_io.core.process.aggregate import by_h3 as core_aggregate_h3
-from tests.conftest import safe_unlink, skip_if_geography_available
+from tests.conftest import (
+    safe_unlink,
+    skip_if_geography_available,
+    skip_if_geography_unavailable,
+)
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
 PLACES_PARQUET = TEST_DATA_DIR / "places_test.parquet"
@@ -2280,7 +2284,6 @@ class TestOpsPartition:
         assert self._partition_names(tmp_path / "out")
 
     def test_partition_by_kdtree(self, arrow_table, tmp_path):
-        """kdtree/string/admin return the core result, not the file-count stats."""
         result = ops.partition_by_kdtree(arrow_table, tmp_path / "out", iterations=2)
 
         assert isinstance(result, dict)
@@ -2361,6 +2364,115 @@ class TestOpsPartition:
         assert kwargs["dataset_name"] == "overture"
         assert kwargs["levels"] == ["country", "region"]
         assert kwargs["vecorel"] is True
+
+    # -- every partitioner returns the same stats dict (#822) ---------------
+
+    PARTITION_STATS_KEYS = frozenset({"output_dir", "file_count", "hive"})
+
+    @staticmethod
+    def _use_local_admin_dataset(monkeypatch, tmp_path):
+        """Point the admin join at one local CRS84 polygon covering the places sample.
+
+        The same shape as `local_admin_dataset` in test_crs_aware_operations:
+        a ``current``-style file with a ``country`` column, so the boundaries
+        dataset is never downloaded and the test needs no network.
+        """
+        import duckdb
+
+        from geoparquet_io.core.admin_datasets import CurrentAdminDataset
+        from geoparquet_io.core.common import add_bbox
+
+        admin = str(tmp_path / "admin.parquet")
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial")
+        con.execute(
+            f"""
+            COPY (
+                SELECT 'XX' AS country,
+                       ST_GeomFromText('POLYGON((-2 9, 2 9, 2 13, -2 13, -2 9))') AS geometry
+            ) TO '{admin}' (FORMAT PARQUET)
+            """
+        )
+        con.close()
+        add_bbox(admin, "bbox", False)
+
+        def fake_create(dataset_name, source_path=None, verbose=False):
+            return CurrentAdminDataset(source_path=admin, verbose=verbose)
+
+        monkeypatch.setattr(
+            "geoparquet_io.core.partition.admin_hierarchical.AdminDatasetFactory.create",
+            staticmethod(fake_create),
+        )
+
+    def test_partition_by_admin_returns_the_shared_stats_dict(
+        self, arrow_table, tmp_path, monkeypatch
+    ):
+        """Both front doors return the cell-index partitioners' dict, not the core int (#822).
+
+        `partition_by_admin_hierarchical` is annotated ``-> int`` and returns a
+        partition count. The API passed that straight through, so a run that
+        wrote partitions returned an ``int`` from two functions annotated
+        ``-> dict``.
+        """
+        self._use_local_admin_dataset(monkeypatch, tmp_path)
+
+        via_ops = ops.partition_by_admin(
+            arrow_table, tmp_path / "ops", dataset="current", levels=["country"]
+        )
+        via_table = Table(arrow_table).partition_by_admin(
+            tmp_path / "table", dataset="current", levels=["country"], hive=True
+        )
+
+        for result in (via_ops, via_table):
+            assert isinstance(result, dict), f"got {type(result).__name__}: {result!r}"
+            assert set(result) == self.PARTITION_STATS_KEYS
+        assert via_ops["file_count"] == len(self._partition_names(tmp_path / "ops")) == 1
+        assert via_ops["output_dir"] == str(tmp_path / "ops")
+        assert via_ops["hive"] is False
+        assert via_table["hive"] is True
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [
+            ("partition_by_h3", {"resolution": 2}),
+            ("partition_by_a5", {"resolution": 4}),
+            ("partition_by_s2", {"level": 3}),
+            ("partition_by_quadkey", {"resolution": 13, "partition_resolution": 3}),
+            ("partition_by_kdtree", {"iterations": 2, "hive": True}),
+            ("partition_by_string", {"column": "region"}),
+            ("partition_by_admin", {"dataset": "current", "levels": ["country"]}),
+        ],
+    )
+    def test_every_partitioner_returns_the_same_stats_dict(
+        self, method, kwargs, arrow_table, tmp_path, monkeypatch
+    ):
+        """One return contract across all seven schemes, through `ops` and `Table` alike.
+
+        Pinned rather than left true by accident: the shape comes from
+        `_run_partition_with_temp_file`, and the core functions underneath it
+        return an ``int`` (admin), ``None`` (kdtree, string) or nothing the
+        caller can use.
+        """
+        if method == "partition_by_s2":
+            skip_if_geography_unavailable()
+        if method == "partition_by_admin":
+            self._use_local_admin_dataset(monkeypatch, tmp_path)
+
+        table = arrow_table
+        if method == "partition_by_string":
+            regions = pa.array(["north" if i % 2 else "south" for i in range(table.num_rows)])
+            table = table.append_column("region", regions)
+
+        via_ops = getattr(ops, method)(table, tmp_path / "ops", **kwargs)
+        via_table = getattr(Table(table), method)(tmp_path / "table", **kwargs)
+
+        for result in (via_ops, via_table):
+            assert isinstance(result, dict), f"{method} returned {result!r}"
+            assert set(result) == self.PARTITION_STATS_KEYS
+        assert via_ops["file_count"] == len(self._partition_names(tmp_path / "ops")) > 0
+        assert via_ops["file_count"] == via_table["file_count"]
+        assert via_ops["output_dir"] == str(tmp_path / "ops")
+        assert via_ops["hive"] is kwargs.get("hive", False)
 
     # -- the ops twin and the Table method are the same operation -----------
 

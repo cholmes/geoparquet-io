@@ -799,7 +799,9 @@ def partition_by_h3(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        dict with output_dir, file_count and hive
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -858,7 +860,9 @@ def partition_by_a5(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        dict with output_dir, file_count and hive
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -920,7 +924,9 @@ def partition_by_s2(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        dict with output_dir, file_count and hive
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -983,7 +989,9 @@ def partition_by_quadkey(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        dict with output_dir, file_count and hive
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -1040,9 +1048,9 @@ def partition_by_kdtree(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        The core run's result, which for KD-tree is ``{'status': 'completed'}``.
-        Unlike the cell-index partitioners this one does not count the files it
-        wrote, so there is no ``file_count`` here -- read ``output_dir``.
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -1092,10 +1100,9 @@ def partition_by_string(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        The core run's result, which for a string partition is
-        ``{'status': 'completed'}``. Unlike the cell-index partitioners this one
-        does not count the files it wrote, so there is no ``file_count`` here --
-        read ``output_dir``.
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
 
     Example:
         >>> from geoparquet_io.api import ops
@@ -1150,11 +1157,12 @@ def partition_by_admin(
         geometry_column: Geometry column name (auto-detected if None)
 
     Returns:
-        The core run's result. The admin partitioner returns the number of
-        partitions it created, so a run that wrote at least one partition
-        returns that ``int``; a run that created none returns
-        ``{'status': 'completed'}``. There is no ``file_count`` here -- read
-        ``output_dir``.
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the same
+        dict every ``partition_by_*`` function returns, where ``file_count``
+        counts the ``.parquet`` files under ``output_dir``.
+        The ``int`` partition count that ``partition_by_admin_hierarchical``
+        reports is not passed through (#822); ``file_count`` is counted off
+        the output directory instead.
 
     Example:
         >>> from geoparquet_io.api import ops

@@ -856,6 +856,8 @@ schemes:
 | `gpio partition string` | `ops.partition_by_string(table, output_dir, column, chars=...)` |
 | `gpio partition admin` | `ops.partition_by_admin(table, output_dir, dataset=..., levels=...)` |
 
+Every one of them returns the same dict -- `{'output_dir': str, 'file_count': int, 'hive': bool}` -- as does the matching `Table.partition_by_*` method.
+
 <!-- doctest: skip="the 766-row sample is too small to partition meaningfully, has no 'region' column for partition_by_string, and partition_by_admin would download a boundaries dataset" -->
 ```python
 import pyarrow.parquet as pq
@@ -867,9 +869,9 @@ table = pq.read_table('input.parquet')
 stats = ops.partition_by_h3(table, 'output/', resolution=7)
 stats = ops.partition_by_a5(table, 'output/', auto=True, target_rows=50000)
 
-# Non-spatial schemes
-ops.partition_by_string(table, 'output/', column='region', hive=True)
-ops.partition_by_admin(table, 'output/', levels=['country'])
+# Non-spatial schemes return the same dict
+stats = ops.partition_by_string(table, 'output/', column='region', hive=True)
+stats = ops.partition_by_admin(table, 'output/', levels=['country'])
 
 print(f"Created {stats['file_count']} files")
 ```
