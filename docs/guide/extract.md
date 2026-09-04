@@ -1205,7 +1205,7 @@ To find service URLs:
 
 ## Extracting from WFS Services
 
-Web Feature Service (WFS) is an OGC standard for serving vector geospatial data over HTTP. Many government agencies and organizations publish data via WFS. gpio uses DuckDB's httpfs extension to stream JSON directly over HTTP, making extraction very fast.
+Web Feature Service (WFS) is an OGC standard for serving vector geospatial data over HTTP. Many government agencies and organizations publish data via WFS. gpio streams each response to disk and parses it locally with DuckDB, making extraction very fast.
 
 ### Basic Usage
 
@@ -1358,6 +1358,24 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
     --wfs-version 1.1.0
 ```
 
+### Response Formats
+
+gpio reads the formats a service advertises in its `GetCapabilities` response
+and asks for the best one it can parse: GeoJSON first, because it is the
+fastest to read, then GML. Nothing needs to be configured — a GeoJSON service
+and a GML-only service are extracted with the same command.
+
+Older WFS 1.0.0/1.1.0 deployments frequently offer GML and nothing else, and
+some servers answer with GML even when a different format was requested. gpio
+decides how to parse a response from the `Content-Type` the server actually
+sent, so either case works. GML is read through GDAL, which resolves the
+geometry, the attributes and the CRS the server used.
+
+If a service advertises formats but none is one gpio can read, gpio omits
+`outputFormat` from the request entirely and takes the server's own default,
+rather than demanding a format the service has just said it does not offer. If
+a service advertises nothing at all, gpio asks for GeoJSON as it always has.
+
 ### Axis Order
 
 WFS 1.1.0+ with URN-format CRS (e.g., `urn:ogc:def:crs:EPSG::4326`) uses lat,lon axis order per OGC spec. gpio auto-detects this, but you can override:
@@ -1386,7 +1404,8 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 ```
 
 When a server reports the CRS it actually used (GeoServer and most WFS servers
-echo it in the GeoJSON `crs` member), gpio trusts that declaration verbatim —
+echo it in the GeoJSON `crs` member, and a GML response carries an `srsName` on
+its geometries), gpio trusts that declaration verbatim —
 it never second-guesses a server-honored CRS by inspecting coordinates. This
 matters for projected systems: a bounding box alone cannot distinguish, say,
 EPSG:22174 (Argentine Gauss-Krüger) from EPSG:3857 (Web Mercator), so guessing
@@ -1410,6 +1429,7 @@ gpio extract wfs https://geo.example.com/wfs cities output.parquet \
 
 - **Transport for Cairo**: `https://data.transportforcairo.com/geoserver/geonode/ows`
 - **GeoServer Demo**: `https://demo.geoserver.org/geoserver/wfs`
+- **NextGIS Demo** (GML-only): `https://demo.nextgis.com/api/resource/9748/wfs`
 - State GIS portals (varies by state)
 - Municipal open data portals
 

@@ -54,6 +54,7 @@ from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
 )
 from geoparquet_io.core.geometry_repair import repair_arrow_table_geometry
 from geoparquet_io.core.http_retry import (
@@ -116,6 +117,10 @@ class WFSAuthenticationError(WFSError):
         super().__init__(message)
 
 
+# What gpio requests when a service advertises no output formats at all, which
+# is also what it requested unconditionally before issue #818.
+DEFAULT_OUTPUT_FORMAT: Final[str] = "application/json"
+
 # GeoJSON output format identifiers (in preference order)
 GEOJSON_FORMATS = [
     "application/json",
@@ -125,13 +130,21 @@ GEOJSON_FORMATS = [
     "application/vnd.geo+json",
 ]
 
-# GML output format identifiers (fallback, in preference order)
+# GML output format identifiers (fallback, in preference order).
+#
+# Servers spell these with wildly inconsistent whitespace and version suffixes
+# (``application/gml+xml;version=3.2`` from NextGIS vs
+# ``application/gml+xml; version=3.1`` from GeoServer), so matching is done on a
+# whitespace-stripped, lowercased form and falls back to a prefix match — see
+# _detect_best_output_format.
 GML_FORMATS = [
     "gml3",
     "text/xml; subtype=gml/3.1.1",
     "application/gml+xml; version=3.1",
     "gml32",
     "text/xml; subtype=gml/3.2",
+    "application/gml+xml; version=3.2",
+    "application/gml+xml",
     "gml2",
     "text/xml; subtype=gml/2.1.2",
 ]
@@ -441,9 +454,11 @@ def _crs_matches(crs1: str, crs2: str) -> bool:
 def _with_server_crs(table: pa.Table, server_crs: str | None) -> pa.Table:
     """Attach the server-declared CRS to a table's schema metadata.
 
-    Carries the CRS the server reported in its GeoJSON response up through the
+    Carries the CRS the server reported in its response up through the
     fetch/concat/type-inference pipeline so wfs_to_table can trust it instead of
-    guessing from coordinates. No-op when ``server_crs`` is None.
+    guessing from coordinates. The source is the GeoJSON ``crs`` member or, for
+    a GML body, the CRS GDAL reports on the geometry column. No-op when
+    ``server_crs`` is None.
     """
     if not server_crs:
         return table
@@ -647,7 +662,7 @@ def _resolve_crs_for_output(
     """Decide the CRS to label (and optionally reproject) the fetched data to.
 
     Trust order:
-      1. The CRS the server declared in its GeoJSON response — authoritative.
+      1. The CRS the server declared in its response — authoritative.
          When present we never second-guess it with coordinate heuristics.
       2. A bbox-coordinate guess — last resort, only when the server declared
          nothing. The guess cannot tell two projected CRSs apart, so it is used
@@ -657,7 +672,7 @@ def _resolve_crs_for_output(
     """
     server_crs = _read_server_crs(table)
     if server_crs:
-        debug(f"Server declared CRS {server_crs} in GeoJSON response")
+        debug(f"Server declared CRS {server_crs} in its response")
         return _reconcile_source_crs(
             table,
             source_crs=server_crs,
@@ -668,7 +683,7 @@ def _resolve_crs_for_output(
         )
 
     debug(
-        f"Server declared no CRS in its GeoJSON response; inferring from "
+        f"Server declared no CRS in its response; inferring from "
         f"coordinates and trusting the requested {requested_crs} unless they clearly disagree."
     )
     crs_valid, detected_crs = _validate_crs_coordinates(table, requested_crs, strict=strict_crs)
@@ -753,6 +768,27 @@ def _detect_sortable_attribute(wfs, typename: str) -> str | None:
     return None
 
 
+def _lookup_parameter_ci(parameters: dict, name: str) -> list | None:
+    """Read an operation parameter's allowed values, ignoring capitalization.
+
+    OWSLib keys ``operation.parameters`` by the literal ``name`` attribute in
+    the capabilities XML. The WFS 2.0 spec writes ``outputFormat``, but NextGIS
+    and deegree publish ``OutputFormat``, so a case-sensitive lookup reported
+    *no* advertised formats for those servers — after which gpio fell back to
+    demanding GeoJSON from a GML-only service.
+    See https://github.com/geoparquet/geoparquet-io/issues/818
+    """
+    if not parameters:
+        return None
+    wanted = name.lower()
+    for key, value in parameters.items():
+        if str(key).lower() != wanted:
+            continue
+        if isinstance(value, dict) and value.get("values"):
+            return list(value["values"])
+    return None
+
+
 def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> WFSLayerInfo:
     """
     Get metadata for a specific WFS layer.
@@ -809,9 +845,9 @@ def get_layer_info(service_url: str, typename: str, version: str = "1.1.0") -> W
     if hasattr(wfs, "operations"):
         for op in wfs.operations:
             if op.name == "GetFeature" and hasattr(op, "parameters"):
-                params = op.parameters
-                if "outputFormat" in params and "values" in params["outputFormat"]:
-                    available_formats = list(params["outputFormat"]["values"])
+                values = _lookup_parameter_ci(op.parameters, "outputFormat")
+                if values:
+                    available_formats = list(values)
                     break
 
     # Method 2: Legacy attribute (some OWSLib versions)
@@ -878,34 +914,76 @@ def list_available_layers(service_url: str, version: str = "1.1.0") -> list[dict
     return layers
 
 
-def _detect_best_output_format(available_formats: list[str]) -> str:
+def _normalize_output_format(fmt: str) -> str:
+    """Fold an outputFormat string to a comparable form.
+
+    Servers differ only cosmetically: ``application/gml+xml;version=3.2`` and
+    ``application/gml+xml; version=3.2`` are the same format, and case is not
+    significant in a media type. Lowercasing and dropping all whitespace makes
+    those variants compare equal.
+    """
+    return re.sub(r"\s+", "", fmt).lower()
+
+
+def _first_matching_format(
+    available: list[str], available_norm: list[str], preferred: list[str]
+) -> str | None:
+    """Return the caller's spelling of the most preferred format on offer.
+
+    Two passes: exact (normalized) equality first, so a server advertising both
+    ``gml3`` and ``gml32`` still gets the preference order below honored, then a
+    prefix match so an unlisted version suffix (``…;version=3.2.1``) still
+    resolves to its family instead of being missed.
+    """
+    for want in preferred:
+        want_norm = _normalize_output_format(want)
+        for i, got in enumerate(available_norm):
+            if got == want_norm:
+                return available[i]
+    for want in preferred:
+        want_norm = _normalize_output_format(want)
+        for i, got in enumerate(available_norm):
+            if got.startswith(want_norm):
+                return available[i]
+    return None
+
+
+def _detect_best_output_format(available_formats: list[str]) -> str | None:
     """
     Detect the best output format from available formats.
 
     Prefers GeoJSON for faster parsing, falls back to GML.
 
+    The two ways of not finding a match are answered differently, because they
+    say different things (issue #818):
+
+    * The server advertised formats and none is one gpio can read. Returning
+      ``None`` omits ``outputFormat`` from the request so the server answers in
+      its own default. Naming a format the server has just said it does not
+      support is how gpio used to demand GeoJSON from a GML-only service, and
+      picking the first advertised one instead is no better — on GeoServer that
+      can be ``SHAPE-ZIP``.
+    * The server advertised nothing at all, so there is nothing to honor. gpio
+      keeps asking for ``application/json``, which is what it has always sent
+      and what every GeoJSON-capable service answers. A server that ignores the
+      parameter and replies with GML is now parsed on the response content type
+      rather than rejected, so this costs nothing when the guess is wrong.
+
     Args:
         available_formats: List of format strings from capabilities
 
     Returns:
-        Best format string to request
+        Best format string to request, or None to let the server decide
     """
-    available_lower = [f.lower() for f in available_formats]
+    if not available_formats:
+        return DEFAULT_OUTPUT_FORMAT
 
-    # Check for GeoJSON formats (preferred - faster to parse)
-    for fmt in GEOJSON_FORMATS:
-        if fmt.lower() in available_lower:
-            idx = available_lower.index(fmt.lower())
-            return available_formats[idx]
+    available_norm = [_normalize_output_format(f) for f in available_formats]
 
-    # Check for GML formats
-    for fmt in GML_FORMATS:
-        if fmt.lower() in available_lower:
-            idx = available_lower.index(fmt.lower())
-            return available_formats[idx]
-
-    # Fallback to first available or default
-    return available_formats[0] if available_formats else "GML3"
+    # GeoJSON is preferred - faster to parse - then GML.
+    return _first_matching_format(
+        available_formats, available_norm, GEOJSON_FORMATS
+    ) or _first_matching_format(available_formats, available_norm, GML_FORMATS)
 
 
 def _negotiate_crs(layer_info: WFSLayerInfo, output_crs: str | None = None) -> str:
@@ -1488,21 +1566,162 @@ def _read_count_and_server_crs(
     return feature_count, server_crs
 
 
+# Content types that carry a GML FeatureCollection. WFS 1.x servers -- and
+# NextGIS at every version -- answer GetFeature with GML under one of these,
+# regardless of the outputFormat that was requested, so the *response* type is
+# what decides how gpio parses. An ows:ExceptionReport arrives under the same
+# types, which is why the GML parse falls back to the error-page message rather
+# than the content type deciding on its own.
+_GML_CONTENT_TYPE_MARKERS: Final[tuple[str, ...]] = ("gml", "xml")
+
+# Content types that are never a feature response: HTML and plain-text error
+# pages returned with 200 OK.
+_ERROR_PAGE_CONTENT_TYPE_MARKERS: Final[tuple[str, ...]] = ("html", "text/plain")
+
+# GDAL reports a GML layer's CRS in the DuckDB column type, e.g.
+# GEOMETRY('EPSG:4326'). That is the server's own statement of the CRS it
+# returned, so it plays the same role the GeoJSON `crs` member does.
+_GEOMETRY_TYPE_CRS_RE: Final = re.compile(r"GEOMETRY\('([^']+)'\)", re.IGNORECASE)
+
+
+def _classify_wfs_content_type(content_type: str) -> str:
+    """Decide how to parse a WFS response body from its Content-Type.
+
+    Returns ``"json"``, ``"gml"``, or ``"error"``. An empty or unrecognized
+    content type is treated as JSON, preserving the previous behavior for
+    servers that send ``application/octet-stream`` for GeoJSON.
+    """
+    if not content_type:
+        return "json"
+    if "json" in content_type or "javascript" in content_type:
+        return "json"
+    if any(marker in content_type for marker in _ERROR_PAGE_CONTENT_TYPE_MARKERS):
+        return "error"
+    if any(marker in content_type for marker in _GML_CONTENT_TYPE_MARKERS):
+        return "gml"
+    return "json"
+
+
+def _error_page_error(content_type: str, preview: str) -> WFSError:
+    """Build the "server returned an error page" failure with a body preview."""
+    return WFSError(
+        f"Expected JSON response but got {content_type}. "
+        f"Server may have returned an error page:\n{preview}"
+    )
+
+
+def _read_body_preview(path: str) -> str:
+    """Read the first 500 characters of a downloaded response body."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read(500)
+    except OSError:  # pragma: no cover - the file was just written
+        return ""
+
+
+def _gml_geometry_column(
+    con: duckdb.DuckDBPyConnection, tmp_path: str, content_type: str
+) -> tuple[str, list[str], str | None]:
+    """Describe a GML file and return (geometry column, other columns, CRS).
+
+    ``ST_Read`` raises ``IOException`` when GDAL cannot open the body at all,
+    which is exactly what an ``ows:ExceptionReport`` looks like. That case is
+    reported with the same "error page" message (and body preview) the JSON path
+    has always used, so a genuinely broken response still reads the same way.
+    """
+    try:
+        described = con.execute(f"DESCRIBE SELECT * FROM ST_Read({sql_path(tmp_path)})").fetchall()
+    except duckdb.IOException as e:
+        raise _error_page_error(content_type, _read_body_preview(tmp_path)) from e
+
+    geometry_column: str | None = None
+    server_crs: str | None = None
+    other_columns: list[str] = []
+    for row in described:
+        name, column_type = str(row[0]), str(row[1])
+        if geometry_column is None and column_type.upper().startswith("GEOMETRY"):
+            geometry_column = name
+            match = _GEOMETRY_TYPE_CRS_RE.search(column_type)
+            server_crs = _normalize_crs(match.group(1)) if match else None
+        else:
+            other_columns.append(name)
+
+    if geometry_column is None:
+        raise _error_page_error(content_type, _read_body_preview(tmp_path))
+
+    return geometry_column, other_columns, server_crs
+
+
+def _parse_gml_response(
+    con: duckdb.DuckDBPyConnection, tmp_path: str, extract_fid: bool, content_type: str
+) -> pa.Table:
+    """Parse a GML FeatureCollection into the same shape the GeoJSON path returns.
+
+    Geometry lands in a WKB column named ``geometry`` and every server attribute
+    is kept, so everything downstream (repair, CRS validation, type inference,
+    tile deduplication) works unchanged.
+    """
+    geometry_column, other_columns, server_crs = _gml_geometry_column(con, tmp_path, content_type)
+
+    # OGC_FID is synthesized by GDAL as a per-file row number, not server data.
+    # Keeping it would give every page of a paginated fetch the same ids.
+    excluded = [geometry_column]
+    if "OGC_FID" in other_columns:
+        excluded.append("OGC_FID")
+
+    select_parts = [f"ST_AsWKB({quote_identifier(geometry_column)}) AS geometry"]
+    # gml:id is the GML equivalent of a GeoJSON feature id, used to deduplicate
+    # features that straddle two spatial tiles.
+    if extract_fid and "gml_id" in other_columns:
+        select_parts.append("gml_id AS _wfs_fid")
+        excluded.append("gml_id")
+    exclude_list = ", ".join(quote_identifier(c) for c in excluded)
+    select_parts.append(f"* EXCLUDE({exclude_list})")
+
+    query = f"SELECT {', '.join(select_parts)} FROM ST_Read({sql_path(tmp_path)})"
+    table = con.execute(query).arrow().read_all()
+    return _with_server_crs(table, server_crs)
+
+
+def _accept_header_for(output_format: str | None) -> str:
+    """Choose the Accept header for a requested outputFormat.
+
+    WFS outputFormat values are not always media types (``GML2``, ``gml32``), so
+    only a value that looks like one is echoed into Accept; anything else asks
+    for whatever the server sends rather than risking a 406.
+    """
+    if not output_format:
+        return "application/json"
+    return output_format if "/" in output_format else "*/*"
+
+
 def _fetch_wfs_page(
-    url: str, extract_fid: bool = False, max_retries: int = 3, retry_delay: float = 2.0
+    url: str,
+    extract_fid: bool = False,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
+    output_format: str | None = None,
 ) -> pa.Table:
     """
-    Fetch a WFS GeoJSON page via httpx and parse with DuckDB locally.
+    Fetch a WFS page via httpx and parse with DuckDB locally.
 
-    Downloads GeoJSON using Python httpx (thread-safe, ~10x faster than DuckDB
-    httpfs for JSON), streams to a temp file, then parses with DuckDB's spatial
-    extension. Includes automatic retry for transient network errors.
+    Downloads the response using Python httpx (thread-safe, ~10x faster than
+    DuckDB httpfs for JSON), streams it to a temp file, then parses it with
+    DuckDB's spatial extension. Includes automatic retry for transient network
+    errors.
+
+    The parser is chosen from the *response* Content-Type, not from
+    ``output_format``: servers such as NextGIS ignore an outputFormat they don't
+    support and answer with GML at HTTP 200, so trusting the request would make
+    gpio reject a perfectly good FeatureCollection (issue #818).
 
     Args:
         url: Full WFS GetFeature URL with all parameters
-        extract_fid: If True, extract feature.id as _wfs_fid column (for dedup)
+        extract_fid: If True, extract the feature id as _wfs_fid column (for dedup)
         max_retries: Number of retry attempts for transient errors
         retry_delay: Base delay between retries (exponential backoff)
+        output_format: The outputFormat requested in ``url``, used only to set
+            the Accept header
 
     Returns:
         PyArrow Table with geometry column (WKB) and all properties
@@ -1510,6 +1729,7 @@ def _fetch_wfs_page(
     import httpx
 
     last_exception: Exception | None = None
+    accept = _accept_header_for(output_format)
 
     for attempt in range(max_retries):
         start_time = time.time()
@@ -1518,45 +1738,45 @@ def _fetch_wfs_page(
         else:
             debug(f"Fetching: {url[:100]}...")
 
-        # Stream response to temp file to avoid memory exhaustion on large responses
+        # Stream the response into a temp *directory*, not a temp file: GDAL
+        # writes a .gfs schema sidecar next to a schema-less GML body, and only
+        # a directory cleanup is guaranteed to take it with it.
+        tmp_dir = tempfile.TemporaryDirectory(prefix="gpio-wfs-")
         tmp_path = None
+        content_type = ""
+        body_kind = "json"
         total_bytes = 0
         try:
-            with tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-                client = _get_shared_http_client(timeout=600)
+            client = _get_shared_http_client(timeout=600)
 
-                with client.stream(
-                    "GET",
-                    url,
-                    headers={"Accept": "application/json", "Accept-Encoding": "gzip, deflate"},
-                ) as response:
-                    # Check HTTP status
-                    if response.status_code == 400:
-                        body = response.read().decode("utf-8", errors="replace")
-                        if "startindex" in body.lower():
-                            raise WFSError(
-                                f"Server rejected paginated request (startIndex limit): {body.strip()}"
-                            )
-                        raise WFSError(f"WFS request failed with HTTP 400: {body[:500]}")
-                    response.raise_for_status()
+            with client.stream(
+                "GET",
+                url,
+                headers={"Accept": accept, "Accept-Encoding": "gzip, deflate"},
+            ) as response:
+                # Check HTTP status
+                if response.status_code == 400:
+                    body = response.read().decode("utf-8", errors="replace")
+                    if "startindex" in body.lower():
+                        raise WFSError(
+                            f"Server rejected paginated request (startIndex limit): {body.strip()}"
+                        )
+                    raise WFSError(f"WFS request failed with HTTP 400: {body[:500]}")
+                response.raise_for_status()
 
-                    # Validate content-type (servers may return HTML errors with 200 OK)
-                    content_type = response.headers.get("content-type", "").lower()
-                    if (
-                        content_type
-                        and "json" not in content_type
-                        and "javascript" not in content_type
-                    ):
-                        # Reject HTML, XML, or text/plain (often error pages)
-                        if any(t in content_type for t in ("html", "xml", "text/plain")):
-                            preview = response.read().decode("utf-8", errors="replace")[:500]
-                            raise WFSError(
-                                f"Expected JSON response but got {content_type}. "
-                                f"Server may have returned an error page:\n{preview}"
-                            )
+                # Dispatch on the content-type the server actually sent. HTML and
+                # text/plain are never feature responses (error pages returned
+                # with 200 OK); XML/GML may be either a FeatureCollection or an
+                # ows:ExceptionReport, which the GML parser tells apart.
+                content_type = response.headers.get("content-type", "").lower()
+                body_kind = _classify_wfs_content_type(content_type)
+                if body_kind == "error":
+                    preview = response.read().decode("utf-8", errors="replace")[:500]
+                    raise _error_page_error(content_type, preview)
 
-                    # Stream content to file
+                suffix = ".gml" if body_kind == "gml" else ".json"
+                tmp_path = str(Path(tmp_dir.name) / f"response{suffix}")
+                with open(tmp_path, "wb") as tmp_file:
                     for chunk in response.iter_bytes(chunk_size=65536):
                         tmp_file.write(chunk)
                         total_bytes += len(chunk)
@@ -1568,14 +1788,12 @@ def _fetch_wfs_page(
             break
 
         except httpx.HTTPStatusError as e:
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+            tmp_dir.cleanup()
             raise WFSError(f"WFS request failed with HTTP {e.response.status_code}") from e
         except (httpx.RequestError, httpx.RemoteProtocolError) as e:
             # Transient network error - retry
             last_exception = e
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+            tmp_dir.cleanup()
             if attempt < max_retries - 1:
                 delay = retry_delay * (attempt + 1)
                 warn(f"Network error (attempt {attempt + 1}/{max_retries}): {e}")
@@ -1585,8 +1803,7 @@ def _fetch_wfs_page(
                 continue
             raise WFSError(f"Failed to fetch WFS data after {max_retries} attempts: {e}") from e
         except WFSError:
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+            tmp_dir.cleanup()
             raise
     else:
         # Exhausted retries without success
@@ -1596,6 +1813,15 @@ def _fetch_wfs_page(
     try:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         safe_path = _escape_sql_string(tmp_path)
+
+        if body_kind == "gml":
+            parse_start = time.time()
+            table = _parse_gml_response(con, tmp_path, extract_fid, content_type)
+            debug(
+                f"Parsed {table.num_rows:,} GML rows in {time.time() - parse_start:.1f}s "
+                f"(total: {time.time() - start_time:.1f}s)"
+            )
+            return table
 
         # Read the feature count (DuckDB can't UNNEST empty JSON arrays) and the
         # authoritative CRS the server reported in its GeoJSON response, if any,
@@ -1631,7 +1857,7 @@ def _fetch_wfs_page(
     finally:
         if con:
             con.close()
-        Path(tmp_path).unlink(missing_ok=True)
+        tmp_dir.cleanup()
 
 
 def _generate_tile_grid(
@@ -1805,6 +2031,7 @@ def _fetch_with_spatial_tiles(
     axis_order: str = "auto",
     max_features: int | None = None,
     sort_by: str | None = None,
+    output_format: str | None = None,
 ) -> pa.Table:
     """
     Fetch a large WFS dataset by subdividing into spatial tiles.
@@ -1850,6 +2077,7 @@ def _fetch_with_spatial_tiles(
             axis_order=axis_order,
             extract_fid=True,
             sort_by=sort_by,
+            output_format=output_format,
         )
         if tile_table.num_rows > 0:
             all_tables.append(tile_table)
@@ -1890,6 +2118,7 @@ def _probe_startindex_limit(
     version: str,
     crs: str | None = None,
     axis_order: str = "auto",
+    output_format: str | None = None,
 ) -> int | None:
     """
     Probe a WFS server to discover any startIndex limit.
@@ -1915,6 +2144,7 @@ def _probe_startindex_limit(
         start_index=probe_offset,
         crs=crs,
         axis_order=axis_order,
+        output_format=output_format,
     )
 
     try:
@@ -1957,8 +2187,15 @@ def _build_wfs_url(
     crs: str | None = None,
     axis_order: str = "auto",
     sort_by: str | None = None,
+    output_format: str | None = None,
 ) -> str:
-    """Build a WFS GetFeature URL with pagination support."""
+    """Build a WFS GetFeature URL with pagination support.
+
+    ``output_format`` is the format negotiated from GetCapabilities. When it is
+    None the ``outputFormat`` parameter is omitted entirely, so the server
+    replies in its own default — the only thing that works on a service which
+    advertises no format gpio recognizes (issue #818).
+    """
     from urllib.parse import urlencode
 
     clean_url = _clean_service_url(service_url)
@@ -1968,8 +2205,10 @@ def _build_wfs_url(
         "version": version,
         "request": "GetFeature",
         "typeNames" if version == "2.0.0" else "typeName": typename,
-        "outputFormat": "application/json",
     }
+
+    if output_format:
+        params["outputFormat"] = output_format
 
     if max_features is not None:
         # WFS 2.0 uses count, WFS 1.x uses maxFeatures
@@ -2006,6 +2245,7 @@ def _single_fetch_mode(
     crs: str | None,
     axis_order: str,
     extract_fid: bool,
+    output_format: str | None = None,
 ) -> pa.Table:
     """
     Fetch all features in a single request.
@@ -2020,8 +2260,9 @@ def _single_fetch_mode(
         bbox=bbox,
         crs=crs,
         axis_order=axis_order,
+        output_format=output_format,
     )
-    table = _fetch_wfs_page(url, extract_fid=extract_fid)
+    table = _fetch_wfs_page(url, extract_fid=extract_fid, output_format=output_format)
     if extract_fid:
         return table
     # _infer_column_types rebuilds the schema and drops metadata; re-attach the
@@ -2040,6 +2281,7 @@ def _sequential_pagination_mode(
     axis_order: str,
     extract_fid: bool,
     sort_by: str | None = None,
+    output_format: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using sequential adaptive pagination.
@@ -2064,9 +2306,10 @@ def _sequential_pagination_mode(
             crs=crs,
             axis_order=axis_order,
             sort_by=sort_by,
+            output_format=output_format,
         )
         try:
-            table = _fetch_wfs_page(url, extract_fid=extract_fid)
+            table = _fetch_wfs_page(url, extract_fid=extract_fid, output_format=output_format)
         except Exception as e:
             raise WFSError(f"Failed to fetch page {page_num + 1} (offset {offset}): {e}") from e
 
@@ -2102,6 +2345,7 @@ def _parallel_pagination_mode(
     axis_order: str,
     extract_fid: bool,
     sort_by: str | None = None,
+    output_format: str | None = None,
 ) -> dict[int, pa.Table]:
     """
     Fetch features using parallel pagination.
@@ -2128,6 +2372,7 @@ def _parallel_pagination_mode(
             crs=crs,
             axis_order=axis_order,
             sort_by=sort_by,
+            output_format=output_format,
         )
         pages.append((i, start, url))
 
@@ -2135,7 +2380,10 @@ def _parallel_pagination_mode(
     results: dict[int, pa.Table] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_page = {
-            executor.submit(_fetch_wfs_page, url, extract_fid): (page_num, start)
+            executor.submit(_fetch_wfs_page, url, extract_fid, output_format=output_format): (
+                page_num,
+                start,
+            )
             for page_num, start, url in pages
         }
 
@@ -2164,6 +2412,7 @@ def fetch_all_features_duckdb(
     extract_fid: bool = False,
     sort_by: str | None = None,
     total_count: int | None = None,
+    output_format: str | None = None,
 ) -> pa.Table:
     """
     Fetch WFS features via Python httpx download and DuckDB local parsing.
@@ -2191,6 +2440,9 @@ def fetch_all_features_duckdb(
         sort_by: Attribute to sort by for stable pagination (auto-detected if None)
         total_count: Pre-fetched feature count (avoids re-querying at this version).
             Pass this when the caller already has a trusted count from WFS 2.0.0.
+        output_format: outputFormat to request, as negotiated from
+            GetCapabilities. None omits the parameter so the server answers in
+            its own default format (issue #818).
 
     Returns:
         PyArrow Table with geometry (WKB) and all properties
@@ -2215,7 +2467,15 @@ def fetch_all_features_duckdb(
             progress("Fetching features...")
 
         table = _single_fetch_mode(
-            service_url, typename, version, max_features, bbox, crs, axis_order, extract_fid
+            service_url,
+            typename,
+            version,
+            max_features,
+            bbox,
+            crs,
+            axis_order,
+            extract_fid,
+            output_format=output_format,
         )
         expected = max_features or total_count
         if expected and table.num_rows < expected and version != "1.0.0":
@@ -2233,13 +2493,26 @@ def fetch_all_features_duckdb(
     if effective_total is None:
         warn("Cannot determine feature count; falling back to single request mode.")
         return _single_fetch_mode(
-            service_url, typename, version, max_features, bbox, crs, axis_order, extract_fid
+            service_url,
+            typename,
+            version,
+            max_features,
+            bbox,
+            crs,
+            axis_order,
+            extract_fid,
+            output_format=output_format,
         )
 
     # Probe for server-side startIndex limit (skip for tile fetches)
     if not extract_fid:
         startindex_limit = _probe_startindex_limit(
-            service_url, typename, version, crs=crs, axis_order=axis_order
+            service_url,
+            typename,
+            version,
+            crs=crs,
+            axis_order=axis_order,
+            output_format=output_format,
         )
         if startindex_limit is not None:
             max_reachable = startindex_limit + page_size
@@ -2275,6 +2548,7 @@ def fetch_all_features_duckdb(
             axis_order,
             extract_fid,
             sort_by=sort_by,
+            output_format=output_format,
         )
     else:
         results = _parallel_pagination_mode(
@@ -2290,6 +2564,7 @@ def fetch_all_features_duckdb(
             axis_order,
             extract_fid,
             sort_by=sort_by,
+            output_format=output_format,
         )
 
     # Combine tables in order
@@ -2433,9 +2708,11 @@ def wfs_to_table(
     # Negotiate CRS
     crs = _negotiate_crs(layer_info, output_crs)
 
-    # Detect best output format
+    # Detect the best output format we can actually parse. None means the
+    # server advertises nothing we recognize, so we omit outputFormat and take
+    # whatever it sends -- which is how GML-only services work (issue #818).
     output_format = _detect_best_output_format(layer_info.available_formats)
-    debug(f"Using output format: {output_format}")
+    debug(f"Using output format: {output_format or 'server default (none requested)'}")
 
     # Auto-detect sortBy attribute for stable pagination (Issue #488)
     # GeoServer requires sortBy for pagination on layers without a primary key
@@ -2474,7 +2751,12 @@ def wfs_to_table(
     tiling_limit = 0
     if auto_tile and version != "1.0.0" and expected_count:
         startindex_limit = _probe_startindex_limit(
-            service_url, layer_info.typename, version, crs=crs, axis_order=axis_order
+            service_url,
+            layer_info.typename,
+            version,
+            crs=crs,
+            axis_order=axis_order,
+            output_format=output_format,
         )
         if startindex_limit:
             effective = min(limit, expected_count) if limit else expected_count
@@ -2503,6 +2785,7 @@ def wfs_to_table(
             axis_order=axis_order,
             max_features=limit,
             sort_by=effective_sort_by,
+            output_format=output_format,
         )
     else:
         # Normal fetch — pass expected_count so we don't re-query at this version
@@ -2519,6 +2802,7 @@ def wfs_to_table(
             axis_order=axis_order,
             sort_by=effective_sort_by,
             total_count=expected_count,
+            output_format=output_format,
         )
 
         # Check for maxFeatures cap (reactive tiling)
@@ -2552,6 +2836,7 @@ def wfs_to_table(
                     axis_order=axis_order,
                     max_features=limit,
                     sort_by=effective_sort_by,
+                    output_format=output_format,
                 )
 
     if table.num_rows == 0:

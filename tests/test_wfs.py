@@ -1018,19 +1018,58 @@ class TestFormatDetection:
             # GML2 as last resort
             (["text/xml; subtype=gml/2.1.2"], "text/xml; subtype=gml/2.1.2"),
             (["gml2"], "gml2"),
-            # Unknown format - return first available
-            (["application/x-custom", "unknown/type"], "application/x-custom"),
+            # Media-type GML variants that differ only in spacing/version from
+            # the canonical spellings (NextGIS, deegree). Issue #818.
+            (
+                ["application/gml+xml;version=3.2"],
+                "application/gml+xml;version=3.2",
+            ),
+            (
+                ["application/gml+xml; version=3.2"],
+                "application/gml+xml; version=3.2",
+            ),
+            (
+                ["Application/GML+XML;Version=3.2"],
+                "Application/GML+XML;Version=3.2",
+            ),
+            (
+                ["text/xml;subtype=gml/3.1.1"],
+                "text/xml;subtype=gml/3.1.1",
+            ),
+            # Mixed-case GeoJSON still wins over GML
+            (
+                ["Application/GML+XML;version=3.2", "Application/JSON"],
+                "Application/JSON",
+            ),
+            # Unknown format - nothing we can parse, so request nothing
+            (["application/x-custom", "unknown/type"], None),
         ],
     )
     def test_format_preference_order(self, available_formats, expected_format):
-        """Formats are selected in order: GeoJSON > GML3 > GML2 > first available."""
+        """Formats are selected in order: GeoJSON > GML3 > GML2 > nothing."""
         result = _detect_best_output_format(available_formats)
         assert result == expected_format
 
-    def test_empty_formats_returns_default(self):
-        """Empty format list returns default GML3."""
-        result = _detect_best_output_format([])
-        assert result == "GML3"
+    def test_unparseable_formats_request_nothing(self):
+        """Advertising only formats gpio cannot read means asking for nothing.
+
+        Inventing "GML3", or taking the first advertised format, made gpio name
+        an outputFormat the server never offered. Returning None lets
+        _build_wfs_url omit the parameter so the server answers in its own
+        default format (issue #818).
+        """
+        assert _detect_best_output_format(["SHAPE-ZIP", "csv"]) is None
+
+    def test_empty_formats_keep_the_historical_json_request(self):
+        """A server that advertises nothing is still asked for GeoJSON.
+
+        There is no advertisement to honor here, so gpio keeps sending what it
+        sent before issue #818 rather than giving up the fast path for every
+        service whose capabilities it cannot parse. A server that ignores the
+        parameter and answers with GML is parsed on the response content type,
+        so a wrong guess is no longer fatal.
+        """
+        assert _detect_best_output_format([]) == "application/json"
 
     @pytest.mark.parametrize(
         "format_string,expected_is_json",
@@ -1064,6 +1103,141 @@ class TestFormatDetection:
         formats = ["gml2", "gml3"]
         result = _detect_best_output_format(formats)
         assert result == "gml3"  # GML3 preferred over GML2
+
+
+class TestOutputFormatNegotiation:
+    """_build_wfs_url requests the format the caller negotiated (issue #818).
+
+    Before this, the builder hardcoded ``outputFormat=application/json`` and the
+    format detected from GetCapabilities was computed and thrown away, so a
+    GML-only server was always asked for GeoJSON.
+    """
+
+    # The exact URL gpio sent before issue #818, kept literal so a refactor of
+    # the parameter order cannot silently change what servers receive.
+    _LEGACY_JSON_URL = (
+        "http://example.com/wfs?service=WFS&version=1.1.0&request=GetFeature"
+        "&typeName=layer&outputFormat=application%2Fjson&maxFeatures=10"
+    )
+
+    def test_requested_format_is_sent(self):
+        """A negotiated GML format reaches the URL."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="1.1.0",
+            max_features=10,
+            output_format="application/gml+xml;version=3.2",
+        )
+        assert "outputFormat=application%2Fgml%2Bxml%3Bversion%3D3.2" in url
+
+    def test_none_omits_the_parameter(self):
+        """No negotiated format means no outputFormat: the server picks."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="1.1.0",
+            max_features=10,
+        )
+        assert "outputFormat" not in url
+
+    def test_application_json_reproduces_the_legacy_url(self):
+        """Passing the old hardcoded value rebuilds the pre-#818 URL byte for byte."""
+        url = _build_wfs_url(
+            "http://example.com/wfs",
+            "layer",
+            version="1.1.0",
+            max_features=10,
+            output_format="application/json",
+        )
+        assert url == self._LEGACY_JSON_URL
+
+
+# WFS 2.0 GetCapabilities that spells the parameter "OutputFormat" (capital O),
+# as NextGIS and deegree do. The WFS 2.0 spec spells it "outputFormat", but
+# OWSLib keys op.parameters by whatever the XML said. Issue #818.
+MOCK_CAPABILITIES_UPPERCASE_FORMAT_XML = """<?xml version="1.0"?>
+<WFS_Capabilities xmlns="http://www.opengis.net/wfs/2.0"
+    xmlns:ows="http://www.opengis.net/ows/1.1"
+    xmlns:fes="http://www.opengis.net/fes/2.0"
+    xmlns:xlink="http://www.w3.org/1999/xlink"
+    version="2.0.2">
+  <ows:ServiceIdentification>
+    <ows:Title>Mock GML-only WFS</ows:Title>
+    <ows:ServiceType>WFS</ows:ServiceType>
+    <ows:ServiceTypeVersion>2.0.2</ows:ServiceTypeVersion>
+  </ows:ServiceIdentification>
+  <ows:OperationsMetadata>
+    <ows:Operation name="GetFeature">
+      <ows:DCP>
+        <ows:HTTP>
+          <ows:Get xlink:href="http://mock.wfs.server/wfs?"/>
+        </ows:HTTP>
+      </ows:DCP>
+      <ows:Parameter name="OutputFormat">
+        <ows:AllowedValues>
+          <ows:Value>application/gml+xml;version=3.2</ows:Value>
+        </ows:AllowedValues>
+      </ows:Parameter>
+    </ows:Operation>
+  </ows:OperationsMetadata>
+  <FeatureTypeList>
+    <FeatureType>
+      <Name>Vector_Layer__UK_Cities</Name>
+      <Title>Vector Layer (UK Cities)</Title>
+      <DefaultCRS>EPSG:3857</DefaultCRS>
+      <OtherCRS>EPSG:4326</OtherCRS>
+      <ows:WGS84BoundingBox>
+        <ows:LowerCorner>-7.333284 50.133721</ows:LowerCorner>
+        <ows:UpperCorner>1.300013 60.150035</ows:UpperCorner>
+      </ows:WGS84BoundingBox>
+    </FeatureType>
+  </FeatureTypeList>
+</WFS_Capabilities>
+"""
+
+
+class TestCapabilityOutputFormatCase:
+    """get_layer_info must find outputFormat however the server capitalizes it.
+
+    This is the root cause of issue #818: the lookup was case-sensitive, so a
+    server advertising ``OutputFormat`` reported *no* formats at all, and gpio
+    then fell back to demanding GeoJSON from a GML-only service.
+    """
+
+    def _nextgis_wfs(self):
+        from owslib.wfs import WebFeatureService
+
+        wfs = WebFeatureService(
+            url="http://mock.wfs.server/wfs",
+            version="2.0.0",
+            xml=MOCK_CAPABILITIES_UPPERCASE_FORMAT_XML.encode(),
+        )
+        # DescribeFeatureType would hit the network; the geometry-column and
+        # sortable-attribute probes both tolerate a failure here.
+        wfs.get_schema = MagicMock(side_effect=Exception("offline"))
+        return wfs
+
+    def test_uppercase_output_format_parameter_is_found(self):
+        """``<ows:Parameter name="OutputFormat">`` yields the advertised format."""
+        wfs = self._nextgis_wfs()
+        with patch.object(wfs_module, "get_wfs_capabilities", return_value=wfs):
+            layer_info = get_layer_info(
+                "http://mock.wfs.server/wfs", "Vector_Layer__UK_Cities", "2.0.0"
+            )
+        assert layer_info.available_formats == ["application/gml+xml;version=3.2"]
+
+    def test_detected_format_is_the_advertised_gml(self):
+        """The advertised GML format survives detection instead of becoming JSON."""
+        wfs = self._nextgis_wfs()
+        with patch.object(wfs_module, "get_wfs_capabilities", return_value=wfs):
+            layer_info = get_layer_info(
+                "http://mock.wfs.server/wfs", "Vector_Layer__UK_Cities", "2.0.0"
+            )
+        assert (
+            _detect_best_output_format(layer_info.available_formats)
+            == "application/gml+xml;version=3.2"
+        )
 
 
 # =============================================================================
@@ -1370,8 +1544,45 @@ class TestDuckDBNativeWFS:
         assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
 
 
-def _mock_wfs_http_response(body: bytes, content_type: str = "application/json"):
-    """Patch httpx.Client.stream to return a canned 200 response.
+@pytest.mark.network
+@pytest.mark.slow
+class TestGMLOnlyServerEndToEnd:
+    """End-to-end extraction from a real GML-only WFS (issue #818).
+
+    NextGIS advertises only ``application/gml+xml;version=3.2`` and spells the
+    capabilities parameter ``OutputFormat``. Before the fix gpio saw no formats,
+    demanded GeoJSON, and rejected the GML the server returned.
+    """
+
+    WFS_URL = "https://demo.nextgis.com/api/resource/9748/wfs"
+    TYPENAME = "Vector_Layer__UK_Cities"
+
+    @pytest.mark.xfail(reason="external demo service, may be unavailable", strict=False)
+    def test_extract_from_gml_only_server(self, tmp_path):
+        """A GML-only server yields a readable GeoParquet file."""
+        import pyarrow.parquet as pq
+
+        from geoparquet_io.core.wfs import convert_wfs_to_geoparquet
+
+        output = tmp_path / "uk_cities.parquet"
+        convert_wfs_to_geoparquet(
+            self.WFS_URL,
+            self.TYPENAME,
+            str(output),
+            version="2.0.0",
+            limit=5,
+        )
+
+        assert output.exists()
+        table = pq.read_table(output)
+        assert table.num_rows > 0
+        assert "geometry" in table.column_names
+
+
+def _mock_wfs_http_response(
+    body: bytes, content_type: str = "application/json", status_code: int = 200
+):
+    """Patch httpx.Client.stream to return a canned response.
 
     Shared factory for the content-type and properties-handling tests, which
     previously each carried a near-identical inline mock class (issue #666
@@ -1380,9 +1591,13 @@ def _mock_wfs_http_response(body: bytes, content_type: str = "application/json")
     """
     import httpx
 
+    # Bound outside the class body: a class body does not see an enclosing
+    # function's variable when the same name is assigned inside it.
+    response_status = status_code
+
     def mock_stream(*args, **kwargs):
         class MockResponse:
-            status_code = 200
+            status_code = response_status
             headers = {"content-type": content_type}
 
             def raise_for_status(self):
@@ -1427,6 +1642,17 @@ class TestContentTypeValidation:
                 id="rejects-xml",
             ),
             pytest.param(
+                "text/xml",
+                b'<?xml version="1.0"?><ows:ExceptionReport '
+                b'xmlns:ows="http://www.opengis.net/ows/1.1" version="2.0.0">'
+                b'<ows:Exception exceptionCode="InvalidParameterValue" '
+                b'locator="outputFormat"><ows:ExceptionText>Unsupported '
+                b"outputFormat</ows:ExceptionText></ows:Exception>"
+                b"</ows:ExceptionReport>",
+                "Expected JSON.*text/xml",
+                id="rejects-exception-report",
+            ),
+            pytest.param(
                 "text/plain",
                 b"Error: Invalid request parameters",
                 "Expected JSON.*text/plain",
@@ -1441,10 +1667,25 @@ class TestContentTypeValidation:
                 None,
                 id="accepts-text-javascript",
             ),
+            # A GML FeatureCollection at 200 is a valid answer, not an error
+            # page: WFS 1.x servers (and NextGIS at any version) return it under
+            # an XML content type. Issue #818.
+            pytest.param(
+                "text/xml; charset=utf-8",
+                MOCK_GML_RESPONSE.encode(),
+                None,
+                id="accepts-gml-feature-collection",
+            ),
+            pytest.param(
+                "application/gml+xml; version=3.2",
+                MOCK_GML_RESPONSE.encode(),
+                None,
+                id="accepts-gml-media-type",
+            ),
         ],
     )
     def test_content_type_validation(self, content_type, body, error_match):
-        """Non-JSON content types raise WFSError; JSON-ish ones parse normally."""
+        """Non-parseable content types raise WFSError; JSON and GML parse normally."""
         from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
 
         with _mock_wfs_http_response(body, content_type):
@@ -1452,9 +1693,200 @@ class TestContentTypeValidation:
                 with pytest.raises(WFSError, match=error_match):
                     _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
             else:
-                # Should not raise, returns empty table
-                result = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
-                assert result.num_rows == 0
+                # Should not raise; a parseable body yields a table
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+
+class TestGMLResponseParsing:
+    """_fetch_wfs_page parses GML bodies, not just GeoJSON (issue #818).
+
+    NextGIS answers every GetFeature with GML at HTTP 200 regardless of the
+    requested outputFormat, so dispatching on the *response* content type is
+    what makes those servers usable at all.
+    """
+
+    def _fetch_gml(self, content_type="text/xml; charset=utf-8"):
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        with _mock_wfs_http_response(MOCK_GML_RESPONSE.encode(), content_type):
+            return _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+    def test_parses_features_with_correct_axis_order(self):
+        """The urn srsName in MOCK_GML_RESPONSE means lat/lon in the file, lon/lat out."""
+        import duckdb
+
+        table = self._fetch_gml()
+        assert table.num_rows == 1
+
+        con = duckdb.connect()
+        con.execute("INSTALL spatial; LOAD spatial;")
+        con.register("features", table)
+        wkt = con.execute("SELECT ST_AsText(ST_GeomFromWKB(geometry)) FROM features").fetchone()[0]
+        con.close()
+        assert wkt == "POINT (-122.4194 37.7749)"
+
+    def test_keeps_attribute_columns(self):
+        """Feature attributes survive the GML path, like they do for GeoJSON."""
+        table = self._fetch_gml()
+        assert "geometry" in table.column_names
+        assert "name" in table.column_names
+        assert table.column("name").to_pylist() == ["San Francisco"]
+
+    def test_geometry_column_is_wkb(self):
+        """The geometry column is WKB binary, matching the GeoJSON path."""
+        import pyarrow as pa
+
+        table = self._fetch_gml()
+        geom_type = table.schema.field("geometry").type
+        assert pa.types.is_binary(geom_type) or pa.types.is_large_binary(geom_type)
+
+    def test_records_server_declared_crs(self):
+        """The CRS GDAL read off the GML is carried up like the GeoJSON crs member."""
+        from geoparquet_io.core.wfs import _SERVER_CRS_METADATA_KEY
+
+        table = self._fetch_gml()
+        assert table.schema.metadata.get(_SERVER_CRS_METADATA_KEY) == b"EPSG:4326"
+
+    def test_leaves_no_temp_files_behind(self):
+        """GDAL writes a .gfs sidecar for schema-less GML; nothing may survive.
+
+        The GeoJSON path used a NamedTemporaryFile and unlinked exactly that one
+        path, which would strand the sidecar. The GML path must use a temporary
+        *directory* so every file GDAL creates is removed.
+        """
+        import tempfile
+
+        before = set(os.listdir(tempfile.gettempdir()))
+        self._fetch_gml()
+        after = set(os.listdir(tempfile.gettempdir()))
+        leaked = {name for name in after - before if name.endswith((".gml", ".gfs", ".xml"))}
+        assert not leaked, f"GML parse leaked temp files: {sorted(leaked)}"
+
+    def test_extract_fid_uses_gml_id(self):
+        """Tiled fetches dedupe on gml:id, the GML analogue of a GeoJSON feature id."""
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        with _mock_wfs_http_response(MOCK_GML_RESPONSE.encode(), "text/xml"):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
+
+        assert table.column("_wfs_fid").to_pylist() == ["cities.1"]
+        # The id is consumed as the dedup key, not left behind as an attribute.
+        assert "gml_id" not in table.column_names
+
+    def test_xml_without_features_reads_as_an_error_page(self):
+        """An ows:ExceptionReport is XML but has no geometry, so it is an error.
+
+        The content type alone cannot tell a FeatureCollection from an exception
+        report -- servers send both as text/xml -- so the GML parser decides,
+        and must produce the same message (with a body preview) the JSON path
+        gives for an error page.
+        """
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        report = (
+            b'<?xml version="1.0"?><ows:ExceptionReport '
+            b'xmlns:ows="http://www.opengis.net/ows/1.1"><ows:Exception '
+            b'exceptionCode="NoApplicableCode"/></ows:ExceptionReport>'
+        )
+        with _mock_wfs_http_response(report, "text/xml; subtype=gml/3.1.1"):
+            with pytest.raises(WFSError, match="ExceptionReport"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+
+class TestResponseDispatchHelpers:
+    """The small decisions that route a WFS response to a parser (issue #818)."""
+
+    @pytest.mark.parametrize(
+        ("content_type", "expected"),
+        [
+            ("application/json", "json"),
+            ("text/javascript", "json"),
+            ("text/html; charset=utf-8", "error"),
+            ("text/plain", "error"),
+            ("text/xml; subtype=gml/3.1.1", "gml"),
+            ("application/gml+xml; version=3.2", "gml"),
+            # No content type at all, and a type gpio has no opinion about:
+            # both stay on the JSON path, which is what servers that send
+            # application/octet-stream for GeoJSON have always relied on.
+            ("", "json"),
+            ("application/octet-stream", "json"),
+        ],
+    )
+    def test_classify_content_type(self, content_type, expected):
+        from geoparquet_io.core.wfs import _classify_wfs_content_type
+
+        assert _classify_wfs_content_type(content_type) == expected
+
+    @pytest.mark.parametrize(
+        ("output_format", "expected"),
+        [
+            # Nothing negotiated: ask for GeoJSON, as gpio always has.
+            (None, "application/json"),
+            ("application/gml+xml; version=3.2", "application/gml+xml; version=3.2"),
+            # "GML2" and "gml32" are WFS format tokens, not media types. Echoing
+            # one into Accept would earn a 406 from a strict server, so ask for
+            # anything instead.
+            ("GML2", "*/*"),
+            ("gml32", "*/*"),
+        ],
+    )
+    def test_accept_header_for(self, output_format, expected):
+        from geoparquet_io.core.wfs import _accept_header_for
+
+        assert _accept_header_for(output_format) == expected
+
+    def test_http_400_surfaces_the_server_message(self):
+        """A 400 is reported with the server's own body, not a bare status code."""
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        with _mock_wfs_http_response(b"Unknown typeName", "text/plain", status_code=400):
+            with pytest.raises(WFSError, match="HTTP 400.*Unknown typeName"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+    def test_http_400_names_the_startindex_limit(self):
+        """The startIndex rejection keeps its own message, which pagination reads."""
+        from geoparquet_io.core.wfs import WFSError, _fetch_wfs_page
+
+        body = b"Value of startIndex exceeds the maximum"
+        with _mock_wfs_http_response(body, "text/plain", status_code=400):
+            with pytest.raises(WFSError, match="startIndex limit"):
+                _fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+
+class TestLookupParameterCaseInsensitive:
+    """_lookup_parameter_ci reads capabilities however a server capitalizes them."""
+
+    def test_finds_a_differently_cased_key(self):
+        from geoparquet_io.core.wfs import _lookup_parameter_ci
+
+        params = {"OutputFormat": {"values": ["application/gml+xml"]}}
+        assert _lookup_parameter_ci(params, "outputFormat") == ["application/gml+xml"]
+
+    @pytest.mark.parametrize(
+        ("parameters", "reason"),
+        [
+            ({}, "no parameters at all"),
+            ({"resultType": {"values": ["results"]}}, "no such parameter"),
+            ({"outputFormat": {"values": []}}, "parameter declares no values"),
+            ({"outputFormat": "application/json"}, "parameter is not a value bag"),
+        ],
+    )
+    def test_returns_none_when_there_is_nothing_to_read(self, parameters, reason):
+        """Every shape that is not an allowed-value list reads as "unknown"."""
+        from geoparquet_io.core.wfs import _lookup_parameter_ci
+
+        assert _lookup_parameter_ci(parameters, "outputFormat") is None, reason
+
+
+class TestFormatPrefixMatching:
+    """A version suffix gpio has not seen still resolves to its format family."""
+
+    def test_unlisted_version_suffix_matches_by_prefix(self):
+        """``application/gml+xml;version=3.2.1`` is GML even though it is unlisted."""
+        from geoparquet_io.core.wfs import _detect_best_output_format
+
+        advertised = ["application/gml+xml;version=3.2.1"]
+        assert _detect_best_output_format(advertised) == advertised[0]
 
 
 _OMIT_PROPERTIES = object()
@@ -1596,7 +2028,7 @@ class TestAutoPageSingleWorker:
 
         call_count = 0
 
-        def mock_fetch(url, extract_fid=False):
+        def mock_fetch(url, extract_fid=False, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -1679,7 +2111,7 @@ class TestAutoPageSingleWorker:
 
         call_count = 0
 
-        def mock_fetch(url, extract_fid=False):
+        def mock_fetch(url, extract_fid=False, **kwargs):
             nonlocal call_count
             call_count += 1
             n = 10000 if call_count == 1 else 5000
