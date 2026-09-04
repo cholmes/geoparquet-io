@@ -490,14 +490,8 @@ class TestAddKDTreePythonAPI:
         assert pa.types.is_binary(table.schema.field(primary).type)
         assert table.column(primary).null_count == 0
 
-        # Every validator check except one, which is excused by name and for a
-        # reason outside this branch: in a session that imported
-        # `geoarrow.pyarrow`, PyArrow resolves the geometry extension type and
-        # `Table.crs` (via `core/streaming.py::extract_crs_from_table`)
-        # stringifies the resolved CRS object to "ProjJsonCrs(OGC:CRS84)". The
-        # writer parses that back as authority "PROJJSONCRS(OGC" / code
-        # "CRS84)", so `crs_valid_geometry` fails. That is pre-existing on main
-        # in a module this branch does not touch, which is also why the failure
-        # depends on what else the test session had imported.
-        failed = [name for name in _failed_checks(temp_output_file) if name != "crs_valid_geometry"]
-        assert failed == []
+        # Every validator check, with nothing excused. `crs_valid_geometry` used
+        # to fail here in any session that had imported `geoarrow.pyarrow`,
+        # because `extract_crs_from_table` stringified the resolved geoarrow CRS
+        # object into "ProjJsonCrs(OGC:CRS84)" (issue #816, fixed).
+        assert _failed_checks(temp_output_file) == []
