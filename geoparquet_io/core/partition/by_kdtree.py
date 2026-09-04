@@ -6,7 +6,11 @@ import os
 import tempfile
 import uuid
 
-from geoparquet_io.core.add.kdtree import add_kdtree_column, require_iterations_or_auto
+from geoparquet_io.core.add.kdtree import (
+    ITERATIONS_CONFLICT,
+    add_kdtree_column,
+    require_iterations_or_auto,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -70,6 +74,11 @@ def _add_kdtree_column_to_temp(
             auto_target_rows=auto_target_rows,
         )
         return temp_file
+    except InvalidParameterError:
+        # A parameter fault is the caller's to fix, not a partition failure:
+        # let it surface under its own type, as it does through `add kdtree`.
+        _cleanup_temp_file(temp_file)
+        raise
     except Exception as e:
         _cleanup_temp_file(temp_file)
         raise PartitionError(f"Failed to add KD-tree column: {str(e)}") from e
@@ -149,7 +158,9 @@ def partition_by_kdtree(
         output_folder: Output directory
         kdtree_column_name: Name of KD-tree column (default: 'kdtree_cell')
         iterations: Number of recursive splits (1-20). Required unless
-            auto_target_rows is given, which sizes the tree from the row count.
+            auto_target_rows is given, which sizes the tree from the row count,
+            or the input already carries the kdtree column (nothing is added,
+            so there is no tree to size).
         hive: Use Hive-style partitioning
         overwrite: Overwrite existing files
         preview: Show preview of partitions without creating files
@@ -200,7 +211,14 @@ def partition_by_kdtree(
         # the tree from the row count below. Defaulting it to 9 here (as this did
         # until #813) silently overrode `--auto` with 512 partitions whatever the
         # input -- the same guess the Python API used to make.
-        require_iterations_or_auto(iterations, auto_target_rows)
+        #
+        # An input already carrying the kdtree column needs no sizing at all:
+        # the add step is skipped and the existing cells drive the partition, so
+        # only the contradiction of naming both is still refused.
+        if not column_exists:
+            require_iterations_or_auto(iterations, auto_target_rows)
+        elif iterations is not None and auto_target_rows is not None:
+            raise InvalidParameterError("auto", ITERATIONS_CONFLICT)
 
         # Note: With approximate mode (default), large datasets are handled efficiently
         if not column_exists and verbose and total_rows > 10_000_000:

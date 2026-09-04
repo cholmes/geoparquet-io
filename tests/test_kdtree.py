@@ -5,6 +5,7 @@ Tests for KD-tree partitioning commands.
 import json
 import os
 import sys
+from unittest import mock
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -473,6 +474,168 @@ class TestKDTreeBinaryIDs:
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower()
+
+
+class TestKdtreeAutoSizing:
+    """Unit contracts for the auto-sizing helpers in `core/add/kdtree.py` (#813).
+
+    These pin each branch the front doors route through: the bare-int and
+    ``("mb", value)`` shapes of ``auto_target_rows``, the unstat-able-path
+    fallback in ``_file_size_mb``, and the guards that turn a bad target into a
+    named error instead of a ZeroDivisionError or a 2^20-partition derail.
+    """
+
+    def test_file_size_mb_returns_zero_when_the_path_cannot_be_stated(self):
+        from geoparquet_io.core.add.kdtree import _file_size_mb
+
+        assert _file_size_mb("/no/such/dir/missing.parquet") == 0.0
+
+    def test_mb_target_sizes_from_the_file_size(self):
+        """1000 rows in 4 MB at a 1 MB target -> ~250 rows/partition -> 2 splits."""
+        from geoparquet_io.core.add.kdtree import resolve_auto_iterations
+
+        assert resolve_auto_iterations(1000, ("mb", 1.0), 4.0, announce=False) == 2
+
+    def test_bare_int_target_means_rows(self):
+        """A bare ``N`` is the same target as ``("rows", N)``."""
+        from geoparquet_io.core.add.kdtree import resolve_auto_iterations
+
+        assert resolve_auto_iterations(1000, 250, 4.0, announce=False) == 2
+        assert resolve_auto_iterations(1000, ("rows", 250), 4.0, announce=False) == 2
+
+    def test_mb_target_without_a_file_size_raises_instead_of_dividing_by_zero(self):
+        """A remote or in-memory input has no size to stat; say so, don't crash."""
+        from geoparquet_io.core.add.kdtree import resolve_auto_iterations
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="size"):
+            resolve_auto_iterations(1000, ("mb", 1.0), 0.0, announce=False)
+
+    @pytest.mark.parametrize("target", [0, -5, ("rows", 0), ("rows", -1), ("mb", 0), ("mb", -2.5)])
+    def test_non_positive_targets_are_refused(self, target):
+        """target_rows=0 used to derail auto to iterations=20 (2^20 partitions)."""
+        from geoparquet_io.core.add.kdtree import resolve_auto_iterations
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="positive"):
+            resolve_auto_iterations(1000, target, 4.0, announce=False)
+
+    def test_add_kdtree_table_validates_iterations_before_serializing(self, monkeypatch):
+        """An out-of-range ``iterations`` must fail before the table is written out.
+
+        The check used to run only after ``pq.write_table`` had serialized the
+        whole table to a temp file, so an invalid call paid the full I/O cost of
+        a valid one first.
+        """
+        import types
+
+        import geoparquet_io.core.add.kdtree as kdtree_mod
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        serialized = []
+        monkeypatch.setattr(
+            kdtree_mod,
+            "pq",
+            types.SimpleNamespace(write_table=lambda *a, **k: serialized.append(a)),
+        )
+
+        with pytest.raises(InvalidParameterError, match="between 1 and 20"):
+            kdtree_mod.add_kdtree_table(pa.table({"a": [1]}), iterations=25)
+
+        assert serialized == []
+
+    @staticmethod
+    def _pipe_in(monkeypatch, parquet_path):
+        """Mock stdin to carry ``parquet_path`` as an Arrow IPC stream."""
+        import io
+
+        from pyarrow import ipc
+
+        source = pq.read_table(parquet_path)
+        ipc_buffer = io.BytesIO()
+        with ipc.RecordBatchStreamWriter(ipc_buffer, source.schema) as writer:
+            writer.write_table(source)
+        ipc_buffer.seek(0)
+
+        mock_stdin = mock.MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.buffer = ipc_buffer
+        monkeypatch.setattr(sys, "stdin", mock_stdin)
+
+    def test_streaming_auto_sizes_the_tree_from_the_row_count(
+        self, buildings_test_file, monkeypatch
+    ):
+        """A stdin-to-stdout pipe takes `_add_kdtree_streaming`; auto must work there too."""
+        import io
+
+        from pyarrow import ipc
+
+        from geoparquet_io.core.add.kdtree import add_kdtree_column
+
+        self._pipe_in(monkeypatch, buildings_test_file)
+        output_buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.buffer = output_buffer
+        mock_stdout.isatty.return_value = False
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        add_kdtree_column("-", "-", auto_target_rows=("rows", 10))
+
+        output_buffer.seek(0)
+        result = ipc.RecordBatchStreamReader(output_buffer).read_all()
+        assert "kdtree_cell" in result.column_names
+        # 42 rows at a 10-row target -> 2 splits -> ids of length 3 ('0' + 2)
+        assert {len(c) for c in result.column("kdtree_cell").to_pylist()} == {3}
+
+    def test_partition_reads_stdin_input(self, buildings_test_file, tmp_path, monkeypatch):
+        """`partition_by_kdtree("-", ...)` spools the piped stream to a temp file."""
+        from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
+
+        self._pipe_in(monkeypatch, buildings_test_file)
+        out_dir = tmp_path / "parts"
+
+        partition_by_kdtree("-", str(out_dir), iterations=2, skip_analysis=True)
+
+        assert len(list(out_dir.glob("*.parquet"))) == 4
+
+    def test_partition_verbose_announces_the_partition_count(self, buildings_test_file, tmp_path):
+        """The verbose pre-add debug line names the partition count it will build."""
+        from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
+
+        out_dir = tmp_path / "parts"
+        partition_by_kdtree(
+            buildings_test_file,
+            str(out_dir),
+            iterations=2,
+            verbose=True,
+            skip_analysis=True,
+        )
+
+        assert len(list(out_dir.glob("*.parquet"))) == 4
+
+    def test_partition_with_existing_column_needs_no_sizing_but_refuses_both(
+        self, buildings_test_file, tmp_path
+    ):
+        """A file already carrying the column partitions without a sizing parameter.
+
+        The add step is skipped and the existing cells drive the partition, as
+        before #813 -- only the contradiction of naming both iterations and an
+        auto target is still refused.
+        """
+        from geoparquet_io.core.add.kdtree import add_kdtree_column
+        from geoparquet_io.core.exceptions import InvalidParameterError
+        from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
+
+        enriched = str(tmp_path / "enriched.parquet")
+        add_kdtree_column(buildings_test_file, enriched, iterations=2)
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            partition_by_kdtree(
+                enriched, str(tmp_path / "out"), iterations=2, auto_target_rows=("rows", 100)
+            )
+
+        partition_by_kdtree(enriched, str(tmp_path / "out"), skip_analysis=True)
+        assert len(list((tmp_path / "out").glob("*.parquet"))) == 4
 
 
 class TestAddKDTreePythonAPI:

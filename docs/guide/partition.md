@@ -22,6 +22,11 @@ Neither front end guesses for you: pass a resolution, or ask for `auto`. A call 
     `partition_by_kdtree(iterations=9)`. The same applies to `add_kdtree()`,
     which pinned `iterations=9` too.
 
+    One workflow is exempt: `partition_by_kdtree()` on a table that already
+    carries the `kdtree_cell` column (say from `add_kdtree()`) needs no sizing
+    parameter — the existing cells drive the partition, exactly as they did
+    before this change.
+
 ### How It Works
 
 Auto-resolution analyzes your dataset and calculates the optimal spatial index resolution to achieve your target partition size:
@@ -608,10 +613,16 @@ Partition by balanced spatial partitions:
 
 !!! warning "Breaking change for the Python API: the implicit `iterations=9` is gone"
     `Table.partition_by_kdtree()` and `ops.partition_by_kdtree()` used to fall
-    back to `iterations=9` — 512 partitions whatever the input — where the bare
-    CLI call sizes the tree from the row count. Such a call now raises
-    `InvalidParameterError`. Pass `auto=True` to get what the CLI gives you, or
-    pass `iterations=9` to keep the output you had.
+    back to `iterations=9` when they had to build the tree themselves — 512
+    partitions whatever the input — where the bare CLI call sizes the tree from
+    the row count. Such a call now raises `InvalidParameterError`. Pass
+    `auto=True` to get what the CLI gives you, or pass `iterations=9` to keep
+    the output you had.
+
+    A table that already carries the `kdtree_cell` column (say from
+    `add_kdtree()`) is unaffected: it needs no sizing parameter, and never fell
+    back to 512 partitions — the existing cells drive the partition, before and
+    after this change.
 
 **Column behavior:**
 - Similar to H3: excluded by default, included for Hive

@@ -1050,7 +1050,8 @@ def partition_by_kdtree(
     `gpio partition kdtree`. Recursively splits the data spatially, producing
     ``2 ** iterations`` balanced partitions. Like both of them it refuses to
     guess: pass ``iterations``, or pass ``auto=True`` to size the tree from the
-    row count.
+    row count. A table already carrying a ``kdtree_cell`` column needs neither
+    -- the existing cells drive the partition and no tree is built.
 
     Args:
         table: Input PyArrow Table with a geometry column
@@ -1074,7 +1075,7 @@ def partition_by_kdtree(
 
     Raises:
         InvalidParameterError: If both ``iterations`` and ``auto`` were given, or
-            neither was
+            neither was and the table does not already carry the column
 
     Example:
         >>> from geoparquet_io.api import ops

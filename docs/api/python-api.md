@@ -858,6 +858,11 @@ All spatial partitioning methods need to be told how finely to split. Give them 
     `max_partitions`, matching `gpio add kdtree --auto N` and
     `gpio partition kdtree --auto N`.
 
+    One workflow is exempt: `partition_by_kdtree` on a table that already
+    carries the `kdtree_cell` column (say from `add_kdtree()`) needs no sizing
+    parameter, and never fell back to `iterations=9` — the existing cells drive
+    the partition, before and after this change.
+
 #### `partition_by_quadkey(output_dir, resolution=None, partition_resolution=None, auto=False, target_rows=100000, max_partitions=10000, compression='ZSTD', hive=False, keep_quadkey_column=None, overwrite=False)`
 
 Partition the table into a directory by quadkey. Pass `hive=True` for Hive-style `key=value/` subdirectories (matches CLI `--hive`).
@@ -958,7 +963,9 @@ keep it (mirrors the CLI's `--keep-kdtree-column`).
 
 Name an `iterations` count, or pass `auto=True` to size the tree from the row
 count the way `gpio partition kdtree` does. A call that gives neither -- or both
--- raises `InvalidParameterError`.
+-- raises `InvalidParameterError`, unless the table already carries the
+`kdtree_cell` column (say from `add_kdtree()`): then no sizing parameter is
+needed and the existing cells drive the partition.
 
 ```python
 # Auto: sized from the row count, targeting ~120k rows per partition

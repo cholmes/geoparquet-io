@@ -3135,6 +3135,8 @@ class Table:
 
         Like ``gpio partition kdtree``, this refuses to guess: pass
         ``iterations``, or pass ``auto=True`` to size the tree from the row count.
+        A table already carrying a ``kdtree_cell`` column needs neither -- the
+        existing cells drive the partition and no tree is built.
 
         Args:
             output_dir: Output directory for partition files
@@ -3161,7 +3163,7 @@ class Table:
 
         Raises:
             InvalidParameterError: If both ``iterations`` and ``auto`` were given,
-                or neither was
+                or neither was and the table does not already carry the column
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -3170,12 +3172,23 @@ class Table:
         """
         from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
 
-        _require_auto_or_resolution(
-            auto,
-            {"iterations": iterations},
-            conflict=ITERATIONS_CONFLICT,
-            missing=ITERATIONS_MISSING,
-        )
+        if "kdtree_cell" in self._table.column_names:
+            # The table already carries the kdtree column: the add step is
+            # skipped and the existing cells drive the partition, so there is
+            # no tree to size (`add_kdtree(...).partition_by_kdtree(dir)` needs
+            # no sizing parameter). Only the contradiction of naming both is
+            # still refused, before any I/O is spent on it.
+            if auto and iterations is not None:
+                from geoparquet_io.core.exceptions import InvalidParameterError
+
+                raise InvalidParameterError("auto", ITERATIONS_CONFLICT)
+        else:
+            _require_auto_or_resolution(
+                auto,
+                {"iterations": iterations},
+                conflict=ITERATIONS_CONFLICT,
+                missing=ITERATIONS_MISSING,
+            )
 
         return _run_partition_with_temp_file(
             self._table,

@@ -105,19 +105,34 @@ def resolve_auto_iterations(
 
     Returns:
         The number of recursive splits to run (partitions are ``2 ** result``)
+
+    Raises:
+        InvalidParameterError: If the target is not positive (a zero target
+            would push the search to its 20-iteration ceiling -- 2^20 partitions
+            from any input), or an ``"mb"`` target was given for an input whose
+            size is unknown (``file_size_mb <= 0``)
     """
     if isinstance(auto_target_rows, tuple):
         mode, value = auto_target_rows
-        if mode == "mb":
-            # Rows that fit in the target size: (total_rows * target_mb) / file_mb
-            target_rows = int((total_count * value) / file_size_mb)
-            target_desc = f"{value:,.1f} MB"
-        else:
-            target_rows = value
-            target_desc = f"{value:,} rows"
     else:
-        target_rows = auto_target_rows
-        target_desc = f"{auto_target_rows:,} rows"
+        mode, value = "rows", auto_target_rows
+
+    if value <= 0:
+        raise InvalidParameterError("target_rows", f"must be positive, got {value}")
+
+    if mode == "mb":
+        if file_size_mb <= 0:
+            raise InvalidParameterError(
+                "auto",
+                "cannot size partitions from a MB target: the input's file size "
+                "is unknown; use a rows target instead",
+            )
+        # Rows that fit in the target size: (total_rows * target_mb) / file_mb
+        target_rows = max(1, int((total_count * value) / file_size_mb))
+        target_desc = f"{value:,.1f} MB"
+    else:
+        target_rows = value
+        target_desc = f"{value:,} rows"
 
     iterations = _find_optimal_iterations(total_count, target_rows, verbose)
 
@@ -341,9 +356,17 @@ def add_kdtree_table(
 
     Raises:
         InvalidParameterError: If both ``iterations`` and ``auto_target_rows``
-            were given, or neither was
+            were given, or neither was; if ``iterations`` is outside 1-20; or
+            if ``auto_target_rows`` names a non-positive target. (Not a
+            ``ValueError``: every parameter fault in this module raises the
+            same framework-agnostic type.)
     """
     require_iterations_or_auto(iterations, auto_target_rows)
+
+    # Validate before any work is spent on the call: serializing the table to a
+    # temp file used to happen first, so an invalid call paid a full write.
+    if iterations is not None and not 1 <= iterations <= 20:
+        raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
     # Find geometry column
     geom_col = geometry_column or find_geometry_column_from_table(table)
@@ -360,15 +383,12 @@ def add_kdtree_table(
         if iterations is None:
             # The temp copy's size stands in for the input's: an in-memory table
             # has no file, and the figure only feeds the report and the "mb" target.
+            # The resolver only ever returns 1-20, so no range check is needed here.
             iterations = resolve_auto_iterations(
                 table.num_rows,
                 auto_target_rows,
                 _file_size_mb(temp_path),
             )
-
-        # Validate iterations
-        if not 1 <= iterations <= 20:
-            raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
         # Process using file-based mode
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)

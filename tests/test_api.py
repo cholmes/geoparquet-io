@@ -1569,6 +1569,72 @@ class TestKdtreeAutoMode:
 
         assert len(set(result.to_arrow().column("kdtree_cell").to_pylist())) == 8
 
+    # -- a table already carrying the column needs no sizing -----------------
+
+    def test_partition_by_kdtree_uses_an_existing_column_without_sizing(
+        self, sample_table, tmp_path
+    ):
+        """`add_kdtree(...).partition_by_kdtree(dir)` worked on main; keep it working.
+
+        When the kdtree column is already on the table the add step is skipped
+        and the existing cells drive the partition, so there is no tree to size
+        and nothing for the iterations/auto gate to guard.
+        """
+        enriched = sample_table.add_kdtree(iterations=2)
+
+        enriched.partition_by_kdtree(tmp_path / "api")
+
+        assert len(self._partition_names(tmp_path / "api")) == 4
+
+    def test_ops_partition_by_kdtree_uses_an_existing_column_without_sizing(self, tmp_path):
+        enriched = ops.add_kdtree(pq.read_table(PLACES_PARQUET), iterations=2)
+
+        ops.partition_by_kdtree(enriched, tmp_path / "api")
+
+        assert len(self._partition_names(tmp_path / "api")) == 4
+
+    def test_an_existing_column_still_refuses_a_contradictory_call(self, sample_table, tmp_path):
+        """Skipping the gate must not also skip the iterations/auto conflict."""
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        enriched = sample_table.add_kdtree(iterations=2)
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            enriched.partition_by_kdtree(tmp_path / "out", iterations=3, auto=True)
+
+    # -- a non-positive target is refused, not derailed to 2^20 --------------
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(
+                lambda t, d: t.add_kdtree(auto=True, target_rows=0), id="Table.add_kdtree"
+            ),
+            pytest.param(
+                lambda t, d: ops.add_kdtree(t.to_arrow(), auto=True, target_rows=-5),
+                id="ops.add_kdtree",
+            ),
+            pytest.param(
+                lambda t, d: t.partition_by_kdtree(d, auto=True, target_rows=0),
+                id="Table.partition_by_kdtree",
+            ),
+            pytest.param(
+                lambda t, d: ops.partition_by_kdtree(t.to_arrow(), d, auto=True, target_rows=0),
+                id="ops.partition_by_kdtree",
+            ),
+        ],
+    )
+    def test_a_non_positive_target_rows_is_refused(self, sample_table, tmp_path, call):
+        """The CLI clamps ``--auto 0`` to the default; the API refuses it by name.
+
+        Without the guard, ``target_rows=0`` drove `_find_optimal_iterations` to
+        its 20-iteration ceiling -- 1,048,576 partitions from any input.
+        """
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="positive"):
+            call(sample_table, tmp_path / "out")
+
 
 class TestPublicExceptionExports:
     """The errors the docs tell users to catch must be importable from the package.
