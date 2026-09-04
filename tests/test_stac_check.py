@@ -255,3 +255,81 @@ def test_check_stac_invalid_raises(temp_output_dir):
         check_stac(output_path, verbose=False)
 
     assert "validation failed" in str(exc_info.value).lower()
+
+
+def _assert_not_stac_json_message(message: str, path: str) -> None:
+    """The wrong-input message names the file and says what was expected."""
+    assert path in message
+    assert "not a STAC JSON file" in message
+    assert "Item/Collection JSON" in message
+    assert "gpio publish stac" in message
+    assert "codec can't decode" not in message
+
+
+def test_validate_parquet_file_says_it_wants_stac_json(places_test_file):
+    """A GeoParquet file gets an explanation, not a raw UnicodeDecodeError."""
+    results = validate_stac_file(places_test_file, verbose=False)
+
+    assert results["valid"] is False
+    assert len(results["errors"]) == 1
+    _assert_not_stac_json_message(results["errors"][0], places_test_file)
+
+
+def test_validate_parquet_extension_beats_file_not_found(temp_output_dir):
+    """A .parquet path is called out before the file is opened at all.
+
+    Precedence is pinned deliberately: someone who passed a .parquet path used
+    the wrong argument, so "File not found" would send them hunting for a file
+    instead of telling them the command wants the STAC JSON.
+    """
+    missing = os.path.join(temp_output_dir, "does_not_exist.parquet")
+    results = validate_stac_file(missing, verbose=False)
+
+    assert results["valid"] is False
+    _assert_not_stac_json_message(results["errors"][0], missing)
+    assert "File not found" not in results["errors"][0]
+
+
+def test_validate_non_utf8_json_named_file(temp_output_dir):
+    """Non-UTF-8 bytes behind a .json name still get the clear message."""
+    output_path = os.path.join(temp_output_dir, "binary.json")
+    with open(output_path, "wb") as f:
+        f.write(b"PAR1\x00\x9e\xff\xfe garbage")
+
+    results = validate_stac_file(output_path, verbose=False)
+
+    assert results["valid"] is False
+    _assert_not_stac_json_message(results["errors"][0], output_path)
+
+
+def test_validate_missing_json_file_message_unchanged(temp_output_dir):
+    """A missing .json path still reports File not found, not the new message."""
+    missing = os.path.join(temp_output_dir, "does_not_exist.json")
+    results = validate_stac_file(missing, verbose=False)
+
+    assert results["valid"] is False
+    assert "File not found" in results["errors"][0]
+    assert "not a STAC JSON file" not in results["errors"][0]
+
+
+def test_check_stac_cli_reports_wrong_input(places_test_file):
+    """The CLI surfaces the explanation for a GeoParquet argument."""
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import cli
+
+    result = CliRunner().invoke(cli, ["check", "stac", places_test_file])
+
+    assert result.exit_code != 0
+    _assert_not_stac_json_message(result.output, places_test_file)
+
+
+def test_validate_stac_api_reports_wrong_input(places_test_file):
+    """The Python API twin surfaces the same explanation."""
+    from geoparquet_io.api.stac import validate_stac
+
+    result = validate_stac(places_test_file)
+
+    assert result.passed() is False
+    failures = "\n".join(str(f) for f in result.failures())
+    _assert_not_stac_json_message(failures, places_test_file)

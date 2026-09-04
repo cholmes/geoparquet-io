@@ -12,13 +12,28 @@ from geoparquet_io.core.exceptions import ValidationError
 from geoparquet_io.core.logging_config import debug, error, progress, success, warn
 
 
+def _not_stac_json_error(stac_path: str) -> ValueError:
+    """Explain that the argument should have been the STAC JSON, not the data."""
+    return ValueError(
+        f"{stac_path} is not a STAC JSON file (check stac validates the STAC "
+        "Item/Collection JSON, not the GeoParquet data file — generate one "
+        "with gpio publish stac)"
+    )
+
+
 def _load_stac_json(stac_path: str) -> dict:
     """Load STAC JSON file."""
+    # A .parquet argument is the data file, not the STAC JSON: say so up front
+    # rather than reporting that it is missing or undecodable.
+    if stac_path.lower().endswith(".parquet"):
+        raise _not_stac_json_error(stac_path)
     try:
-        with open(stac_path) as f:
+        with open(stac_path, encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON: {e}") from e
+    except UnicodeDecodeError as e:
+        raise _not_stac_json_error(stac_path) from e
     except FileNotFoundError:
         raise FileNotFoundError(f"File not found: {stac_path}") from None
 
