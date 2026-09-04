@@ -220,6 +220,7 @@ def _get_pyarrow_logical_type(field) -> str | None:
     Returns DuckDB-compatible logical type string like:
     - GeometryType(crs=projjson:key_name)
     - GeometryType(crs=srid:5070)
+    - GeometryType(crs=EPSG:32633)  (bare authority code)
     - GeometryType(crs={...})  (inline PROJJSON)
     - GeometryType()  (no CRS)
 
@@ -650,6 +651,108 @@ def get_num_row_groups(parquet_file: str, con=None) -> int:
     return metadata.get("num_row_groups", 0)
 
 
+#: The prefixed CRS forms, which have the same ``a:b`` shape as a bare
+#: ``<authority>:<code>`` and must therefore be matched *before* it. ``srid:`` is
+#: an SRID (``srid:0`` meaning "unknown"), not an authority named "srid", and
+#: ``projjson:`` names a file-metadata key, not a CRS code.
+_PREFIXED_CRS_FORMS = ("projjson:", "srid:")
+
+#: A bare ``<authority>:<code>`` CRS, e.g. ``EPSG:32633`` or ``OGC:CRS84``.
+#:
+#: The Parquet geospatial spec permits it alongside ``srid:``, ``projjson:`` and
+#: inline PROJJSON, and geoarrow-based writers emit it whenever their CRS is a
+#: plain authority code. Deliberately narrow: an authority is an identifier and
+#: a code is alphanumeric, so neither ``<null>`` nor an empty ``crs=`` (what
+#: DuckDB emits for a type that declares no CRS) can match.
+_AUTHORITY_CODE_CRS = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*:[A-Za-z0-9_.\-]+$")
+
+
+def _authority_code_crs(crs_value: Any) -> tuple[str, str] | None:
+    """The ``(authority, code)`` a bare ``<authority>:<code>`` CRS names, else None.
+
+    Returns None for the prefixed forms (``srid:``, ``projjson:``), which share
+    the shape but not the meaning, and for every value that is not that form.
+    """
+    if not isinstance(crs_value, str):
+        return None
+    token = crs_value.strip()
+    if token.lower().startswith(_PREFIXED_CRS_FORMS):
+        return None
+    if not _AUTHORITY_CODE_CRS.match(token):
+        return None
+    authority, code = token.split(":", 1)
+    return authority, code
+
+
+def resolve_authority_code_crs(crs_value: Any) -> Any:
+    """Resolve a bare ``<authority>:<code>`` CRS to PROJJSON, via pyproj.
+
+    Anything else -- another CRS form, an unknown authority, a code the PROJ
+    database does not carry -- is returned unchanged, so callers can keep
+    treating the value as opaque.
+    """
+    pair = _authority_code_crs(crs_value)
+    if pair is None:
+        return crs_value
+
+    from geoparquet_io.core.crs_utils import _projjson_from_authority
+
+    projjson = _projjson_from_authority(*pair)
+    return crs_value if projjson is None else json.loads(projjson)
+
+
+def _parse_crs_property(params: str) -> Any:
+    """The ``crs=`` property of a geo logical type's parameters, or None if it has none.
+
+    The property has four shapes, and this returns each one as the value it
+    means:
+
+    - ``crs=`` / ``crs=<null>`` -- the type declares no CRS: None
+    - ``crs={...}`` -- inline PROJJSON: the parsed dict
+    - ``crs=srid:XXXX`` / ``crs=projjson:key`` -- a reference: the string, for
+      :func:`resolve_crs_reference` to look up
+    - ``crs=EPSG:32633`` -- a bare authority code: the string, likewise
+
+    Returning None for "declares no CRS" is what keeps the ``crs`` key out of
+    :func:`parse_geometry_logical_type`'s result; callers read that absence as
+    the Parquet spec's OGC:CRS84 default, so no *unrecognized* value may reach
+    it -- that would turn a CRS the file names into a CRS84 claim it never made
+    (#814).
+    """
+    crs_start = params.find("crs=")
+    if crs_start == -1:
+        return None
+    crs_value = params[crs_start + 4 :]
+
+    if crs_value.startswith("{"):
+        # Find the matching closing brace for inline PROJJSON.
+        brace_count = 0
+        end_pos = 0
+        for i, char in enumerate(crs_value):
+            if char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    end_pos = i + 1
+                    break
+        if end_pos == 0:
+            return None
+        crs_json_str = crs_value[:end_pos]
+        try:
+            return json.loads(crs_json_str)
+        except json.JSONDecodeError:
+            return crs_json_str
+
+    # Every other form is a single token, ending at the next parameter.
+    token = crs_value.split(",", 1)[0].strip()
+    if token.lower().startswith(_PREFIXED_CRS_FORMS):
+        return token
+    if _authority_code_crs(token) is not None:
+        return token
+    return None
+
+
 def parse_geometry_logical_type(logical_type: str) -> dict | None:
     """
     Parse Geometry/Geography logical type string from DuckDB schema.
@@ -658,6 +761,7 @@ def parse_geometry_logical_type(logical_type: str) -> dict | None:
     - GeometryType(crs={"$schema": "...", "id": {"authority": "EPSG", "code": 4326}})
     - GeographyType(algorithm=spherical)
     - GeometryType(crs=<null>)
+    - GeometryType(crs=EPSG:32633)
 
     Returns dict with keys: geo_type, geometry_type, coordinate_dimension, crs, algorithm
     """
@@ -674,49 +778,11 @@ def parse_geometry_logical_type(logical_type: str) -> dict | None:
 
     result: dict[str, Any] = {"geo_type": geo_type}
 
-    # Parse CRS if present (handle nested JSON with brace counting)
-    # DuckDB returns:
-    # - crs=<null> for files without CRS
-    # - crs={...} for inline PROJJSON
-    # - crs=projjson:key_name for reference to metadata field
-    crs_start = params.find("crs=")
-    if crs_start != -1:
-        crs_start += 4  # Skip "crs="
-        crs_value = params[crs_start:]
-
-        # Check for <null> - DuckDB's way of indicating no CRS
-        if crs_value.startswith("<null>"):
-            pass  # No CRS specified, leave result without "crs" key
-        elif crs_value.startswith("projjson:") or crs_value.startswith("srid:"):
-            # Reference to metadata field: projjson:key_name
-            # Or SRID reference: srid:XXXX (interpreted as EPSG:XXXX)
-            # Extract the reference (up to next comma or end of string)
-            end_pos = crs_value.find(",")
-            if end_pos == -1:
-                end_pos = crs_value.find(")")
-            if end_pos == -1:
-                end_pos = len(crs_value)
-            # Store the full reference string for later resolution
-            result["crs"] = crs_value[:end_pos].strip()
-        elif crs_value.startswith("{"):
-            # Find matching closing brace for inline PROJJSON
-            brace_count = 0
-            end_pos = 0
-            for i, char in enumerate(crs_value):
-                if char == "{":
-                    brace_count += 1
-                elif char == "}":
-                    brace_count -= 1
-                    if brace_count == 0:
-                        end_pos = i + 1
-                        break
-
-            if end_pos > 0:
-                crs_json_str = crs_value[:end_pos]
-                try:
-                    result["crs"] = json.loads(crs_json_str)
-                except json.JSONDecodeError:
-                    result["crs"] = crs_json_str
+    # Parse CRS if present. A type that declares no CRS leaves no "crs" key at
+    # all, which callers read as the Parquet spec's OGC:CRS84 default.
+    crs = _parse_crs_property(params)
+    if crs is not None:
+        result["crs"] = crs
 
     # Parse algorithm for Geography
     algo_match = re.search(r"algorithm=(planar|spherical)", params)
@@ -784,6 +850,7 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
     - Inline PROJJSON (dict)
     - Reference to metadata field: "projjson:key_name"
     - SRID reference: "srid:XXXX" (interpreted as EPSG:XXXX)
+    - Bare authority code: "EPSG:32633"
 
     Args:
         parquet_file: Path to the parquet file
@@ -791,6 +858,7 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
             - A dict (already resolved PROJJSON)
             - A string like "projjson:key_name" (reference to metadata field)
             - A string like "srid:5070" (interpreted as EPSG:5070)
+            - A string like "EPSG:32633" (a bare authority code)
             - None
 
     Returns:
@@ -833,8 +901,9 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
             pass  # Fall through to return the original value
         return crs_value  # Return the srid string if resolution failed
 
-    # Return as-is for other string values
-    return crs_value
+    # Handle a bare <authority>:<code>, e.g. "EPSG:32633". Checked last: the
+    # prefixed forms above share its shape and mean something else.
+    return resolve_authority_code_crs(crs_value)
 
 
 def detect_geometry_columns(parquet_file: str, con=None) -> dict[str, str]:

@@ -284,6 +284,12 @@ Validates file structure and metadata against the GeoParquet specification:
   file passes. If the coordinates really are lon/lat WGS84, drop the null
   instead: `gpio convert reproject in.parquet out.parquet --assume-crs84`
   writes the default (see [convert](../cli/convert.md)).
+- **Every CRS form the Parquet geo type may use** — the `GEOMETRY`/`GEOGRAPHY`
+  logical type can name its CRS as inline PROJJSON, `srid:<id>`,
+  `projjson:<key>` or the compact `<authority>:<code>` (e.g. `EPSG:32633`), and
+  `v2_crs_consistency` compares the real CRS in each case. A type whose CRS gpio
+  cannot read would otherwise look like one that names no CRS, which the Parquet
+  spec defines as OGC:CRS84 — a claim the file never made.
 - **Datum-aware epoch validation** — a coordinate `epoch` on a datum ensemble
   (e.g. EPSG:4326, or the OGC:CRS84 default when `crs` is omitted) fails; on a
   specific static frame (e.g. GDA2020) it warns; on a dynamic frame (e.g. ITRF)
