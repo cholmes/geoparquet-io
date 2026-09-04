@@ -23,9 +23,11 @@ def _not_stac_json_error(stac_path: str) -> ValueError:
 
 def _load_stac_json(stac_path: str) -> dict:
     """Load STAC JSON file."""
-    # A .parquet argument is the data file, not the STAC JSON: say so up front
-    # rather than reporting that it is missing or undecodable.
-    if stac_path.lower().endswith(".parquet"):
+    # A .parquet argument is the data file, and a directory is partitioned
+    # GeoParquet output — neither is the STAC JSON: say so up front rather
+    # than reporting it missing, undecodable, or (for a directory) letting
+    # open() raise a platform-dependent OSError.
+    if stac_path.lower().endswith(".parquet") or Path(stac_path).is_dir():
         raise _not_stac_json_error(stac_path)
     try:
         with open(stac_path, encoding="utf-8") as f:

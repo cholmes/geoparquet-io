@@ -302,6 +302,14 @@ def test_validate_non_utf8_json_named_file(temp_output_dir):
     _assert_not_stac_json_message(results["errors"][0], output_path)
 
 
+def test_validate_directory_input_gets_wrong_input_message(temp_output_dir):
+    """A directory (partitioned GeoParquet output) gets the message, not a traceback."""
+    results = validate_stac_file(temp_output_dir, verbose=False)
+
+    assert results["valid"] is False
+    _assert_not_stac_json_message(results["errors"][0], temp_output_dir)
+
+
 def test_validate_missing_json_file_message_unchanged(temp_output_dir):
     """A missing .json path still reports File not found, not the new message."""
     missing = os.path.join(temp_output_dir, "does_not_exist.json")
