@@ -12,6 +12,10 @@ gpio uses different libraries for reads and writes:
 
 The `--aws-profile` global flag is available on all commands for AWS authentication. See also `--s3-endpoint`, `--s3-region`, and `--s3-no-ssl` for S3-compatible storage.
 
+### URLs are taken as-is
+
+A URL you pass to gpio is used exactly as you typed it: gpio assumes it is already percent-encoded, as a URL is by definition, and never re-encodes it. Paste the URL that works in your browser or in `curl` — `gpio inspect meta 'https://example.com/my%20file.parquet'` requests `my%20file.parquet`, not `my%2520file.parquet`. A URL containing a raw space, bracket or other character that has to be escaped is yours to encode before passing it in.
+
 ### gpio publish upload
 
 For more control over uploads, use `gpio publish upload` which provides:
@@ -220,6 +224,7 @@ See [Command Piping](piping.md) for more streaming patterns.
 ## Notes
 
 - Remote writes use temporary local storage (~2× output file size required)
+- URLs are passed through unchanged; encode them yourself if they contain spaces or other reserved characters
 - HTTPS wildcards (`*.parquet`) not supported
 - For very large files (>10 GB), consider processing locally for better performance
 - S3-compatible endpoints work with all commands via `--s3-endpoint`

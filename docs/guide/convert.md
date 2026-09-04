@@ -417,7 +417,7 @@ gpio convert s3://bucket/input.parquet local-optimized.parquet
 gpio convert s3://bucket/data.parquet local.gpkg
 ```
 
-See [Remote Files Guide](remote-files.md) for authentication setup.
+A URL is used exactly as you paste it — gpio takes it as already percent-encoded and never re-encodes it. See [Remote Files Guide](remote-files.md) for authentication setup.
 
 ## Options
 

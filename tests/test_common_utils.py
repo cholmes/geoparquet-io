@@ -708,13 +708,19 @@ class TestValidateParquetExtension:
 class TestSafeFileUrl:
     """Tests for safe_file_url function."""
 
-    def test_http_url_encoding(self):
-        """Test that HTTP URLs with special characters are encoded properly."""
+    def test_http_url_is_taken_as_already_encoded(self):
+        """An http(s) URL is passed through verbatim, encoded or not (#825).
 
-        # URL with spaces and special chars
-        result = safe_file_url("https://example.com/path with spaces/file.parquet")
-        assert "path%20with%20spaces" in result
-        assert "example.com" in result
+        gpio used to percent-encode the path, which double-encoded a URL the
+        user had copied from a browser. It now encodes nothing -- including
+        the raw space below, which is the caller's to encode.
+        """
+
+        already_encoded = "https://example.com/path%20with%20spaces/file.parquet"
+        assert safe_file_url(already_encoded) == already_encoded
+
+        raw_space = "https://example.com/path with spaces/file.parquet"
+        assert safe_file_url(raw_space) == raw_space
 
     def test_http_preserves_duckdb_safe_chars(self):
         """Test that DuckDB-safe chars like * ? [ ] are preserved."""

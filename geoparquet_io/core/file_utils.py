@@ -4,7 +4,6 @@ File path utilities for GeoParquet files.
 
 import glob as glob_module
 import os
-import urllib.parse
 from pathlib import Path
 
 from geoparquet_io.core.duckdb_utils import _escape_sql_string
@@ -219,10 +218,21 @@ def resolve_file_url(file_path, verbose=False):
     """
     Validate a path and resolve it to the URL readers should open.
 
-    Percent-encodes HTTP(S) URLs and checks that a local path exists, but does
-    **not** escape it for SQL -- use this for anything that opens the file
-    directly (fsspec, pyarrow, metadata helpers). :func:`safe_file_url` is the
-    SQL-facing variant, and it is the single point at which a path is escaped.
+    A remote URL is passed through **verbatim**: per RFC 3986 a URL already *is*
+    the percent-encoded form, so gpio takes the one the user pasted as-is rather
+    than encoding it again. Encoding here used to turn a browser-copied
+    ``my%20file.parquet`` into ``my%2520file.parquet`` and 404 (#825); ``%20``
+    (an encoded space) and ``%2520`` (a name containing ``%20``) cannot be told
+    apart from the string, so -- as with SQL escaping (#718) -- the value is
+    transformed exactly once, at the boundary where its state is known. What an
+    un-encoded URL (raw space, bracket) does is no longer defined by gpio but
+    by the underlying reader -- today's HTTP stacks happen to encode a raw
+    space themselves -- so encode it yourself rather than rely on that.
+
+    Local paths are checked for existence. Nothing here escapes the result for
+    SQL -- use this for anything that opens the file directly (fsspec, pyarrow,
+    metadata helpers). :func:`safe_file_url` is the SQL-facing variant, and it
+    is the single point at which a path is escaped.
 
     Args:
         file_path: Local path or remote URL
@@ -234,18 +244,10 @@ def resolve_file_url(file_path, verbose=False):
     from geoparquet_io.core.remote import is_remote_url
 
     if is_remote_url(file_path):
-        if file_path.startswith(("http://", "https://")):
-            parsed = urllib.parse.urlparse(file_path)
-            duckdb_safe_chars = "/*?[]=,"
-            encoded_path = urllib.parse.quote(parsed.path, safe=duckdb_safe_chars)
-            resolved = parsed._replace(path=encoded_path).geturl()
-        else:
-            resolved = file_path
-
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
-            debug(f"Reading from {protocol}: {resolved}")
-        return resolved
+            debug(f"Reading from {protocol}: {file_path}")
+        return file_path
 
     if not has_glob_pattern(file_path) and not os.path.exists(file_path):
         raise FileNotFoundGeoParquetError(file_path)
@@ -256,8 +258,10 @@ def safe_file_url(file_path, verbose=False):
     """
     Prepare a file path for safe use in SQL queries.
 
-    Handles URL encoding for HTTP(S) URLs and escapes single quotes
-    to prevent SQL injection when paths are interpolated into queries.
+    Resolves the path with :func:`resolve_file_url` -- which takes a remote URL
+    as already percent-encoded (#825) -- and escapes single quotes to prevent
+    SQL injection when paths are interpolated into queries. That escape is the
+    only transform applied to the value.
 
     Escaping is **not** idempotent: the result is only ever interpolated into
     SQL, never re-escaped and never handed back to a filesystem API. Pass the
