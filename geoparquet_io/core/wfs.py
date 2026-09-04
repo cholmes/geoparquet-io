@@ -19,6 +19,7 @@ import json
 import re
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -1624,6 +1625,49 @@ def _read_body_preview(path: str) -> str:
         return ""
 
 
+# An empty FeatureCollection is a few hundred bytes of markup; a body larger
+# than this holds features and can skip the extra XML parse.
+_EMPTY_GML_SNIFF_MAX_BYTES: Final = 1024 * 1024
+
+# FeatureCollection children that carry no features: bounds, metadata, or a
+# featureMembers wrapper with nothing inside (GeoServer's GML 3.1 empty shape).
+_EMPTY_GML_METADATA_CHILDREN: Final = frozenset({"boundedBy", "metadata"})
+
+
+def _local_name(tag: str) -> str:
+    """Strip the ``{namespace}`` prefix ElementTree puts on a qualified tag."""
+    return tag.rpartition("}")[2]
+
+
+def _is_empty_gml_collection(body: bytes) -> bool:
+    """True when ``body`` is a GML FeatureCollection holding zero features.
+
+    A zero-feature collection is a legitimate WFS answer (an empty bbox), but
+    GDAL cannot open one -- and on Linux builds ``ST_Read`` *segfaults* on it
+    rather than raising -- so the body must be recognized as empty before GDAL
+    ever sees it. stdlib ElementTree ignores external entities by default, so
+    parsing the raw server bytes is safe. Anything that is not XML, not a
+    FeatureCollection, or has any feature-bearing child goes to GDAL, keeping
+    the error-page WFSError for genuinely broken bodies.
+    """
+    if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES:
+        return False
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return False
+    if _local_name(root.tag) != "FeatureCollection":
+        return False
+    for child in root:
+        name = _local_name(child.tag)
+        if name in _EMPTY_GML_METADATA_CHILDREN:
+            continue
+        if name == "featureMembers" and len(child) == 0:
+            continue
+        return False
+    return True
+
+
 def _gml_geometry_column(
     con: duckdb.DuckDBPyConnection, tmp_path: str, content_type: str
 ) -> tuple[str, list[str], str | None] | None:
@@ -1635,9 +1679,10 @@ def _gml_geometry_column(
     has always used, so a genuinely broken response still reads the same way.
 
     A zero-feature FeatureCollection also fails to open -- GDAL finds no layer
-    to build -- but with its own "contains no layers" message. That is a
-    legitimate WFS answer to an empty bbox, not an error, so it is returned as
-    ``None`` for the caller to turn into an empty table.
+    to build -- but with its own "contains no layers" message, returned as
+    ``None`` for the caller to turn into an empty table. That is only a
+    fallback: ``_is_empty_gml_collection`` recognizes empty bodies before GDAL
+    is invoked at all, because Linux builds segfault here instead of raising.
     """
     try:
         described = con.execute(f"DESCRIBE SELECT * FROM ST_Read({sql_path(tmp_path)})").fetchall()
@@ -1673,11 +1718,17 @@ def _parse_gml_response(
     is kept, so everything downstream (repair, CRS validation, type inference,
     tile deduplication) works unchanged.
     """
+    # Zero-feature collection: same shape the JSON path returns for an empty
+    # ``features`` array (geometry-only, no _wfs_fid), so pagination and tiled
+    # fetches see an empty page, not a failure. Decided from the bytes, before
+    # ST_Read -- Linux GDAL segfaults on a zero-layer GML dataset. The
+    # ``described is None`` branch is the fallback for platforms that raise.
+    if _is_empty_gml_collection(Path(tmp_path).read_bytes()):
+        debug("Empty GML response, returning empty table")
+        return pa.table({"geometry": pa.array([], type=pa.binary())})
+
     described = _gml_geometry_column(con, tmp_path, content_type)
     if described is None:
-        # Zero-feature collection: same shape the JSON path returns for an
-        # empty ``features`` array (geometry-only, no _wfs_fid), so pagination
-        # and tiled fetches see an empty page, not a failure.
         debug("Empty GML response, returning empty table")
         return pa.table({"geometry": pa.array([], type=pa.binary())})
     geometry_column, other_columns, server_crs = described

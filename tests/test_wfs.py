@@ -306,6 +306,17 @@ MOCK_EMPTY_GML_WFS11 = """<?xml version="1.0" encoding="UTF-8"?>
 </wfs:FeatureCollection>
 """
 
+# GeoServer's GML 3.1 flavor of the same answer: an empty featureMembers child.
+MOCK_EMPTY_GML_FEATUREMEMBERS = """<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+    xmlns:wfs="http://www.opengis.net/wfs"
+    xmlns:gml="http://www.opengis.net/gml"
+    numberOfFeatures="0"
+    timeStamp="2026-03-23T12:00:00Z">
+    <gml:featureMembers/>
+</wfs:FeatureCollection>
+"""
+
 # GML response whose features carry no gml:id at all. GDAL synthesizes
 # gml_id = '' (empty string, not NULL) for these, which must not become a
 # shared dedup key.
@@ -1861,15 +1872,20 @@ class TestGMLResponseParsing:
                 "text/xml; subtype=gml/3.1.1",
                 id="wfs11-null-boundedby",
             ),
+            pytest.param(
+                MOCK_EMPTY_GML_FEATUREMEMBERS,
+                "text/xml; subtype=gml/3.1.1",
+                id="wfs11-empty-featuremembers",
+            ),
         ],
     )
     def test_empty_collection_returns_empty_table(self, body, content_type):
         """A zero-feature GML FeatureCollection is a valid answer, not an error.
 
-        GDAL cannot open one at all ("contains no layers"), but it is what a
-        server sends for an empty bbox, so the GML path must return the same
-        empty geometry-only table the JSON path returns for zero features --
-        pagination and tiled fetches rely on that to stop cleanly.
+        GDAL cannot open one at all, but it is what a server sends for an empty
+        bbox, so the GML path must return the same empty geometry-only table
+        the JSON path returns for zero features -- pagination and tiled fetches
+        rely on that to stop cleanly.
         """
         import pyarrow as pa
 
@@ -1881,6 +1897,59 @@ class TestGMLResponseParsing:
         assert table.num_rows == 0
         assert table.column_names == ["geometry"]
         assert pa.types.is_binary(table.schema.field("geometry").type)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(MOCK_EMPTY_GML_WFS20, id="wfs20-self-closing"),
+            pytest.param(MOCK_EMPTY_GML_WFS11, id="wfs11-null-boundedby"),
+            pytest.param(MOCK_EMPTY_GML_FEATUREMEMBERS, id="wfs11-empty-featuremembers"),
+        ],
+    )
+    def test_empty_collection_never_reaches_gdal(self, body):
+        """An empty collection must be answered without ever calling ST_Read.
+
+        On Linux builds of DuckDB spatial, ST_Read *segfaults* on a zero-layer
+        GML dataset instead of raising IOException, so mapping the exception is
+        not enough -- the body has to be recognized as empty before GDAL sees
+        it.
+        """
+        from geoparquet_io.core import wfs as wfs_module
+
+        def _tripwire(*args, **kwargs):
+            raise AssertionError("empty GML body reached ST_Read")
+
+        with (
+            _mock_wfs_http_response(body.encode(), "text/xml"),
+            patch.object(wfs_module, "_gml_geometry_column", side_effect=_tripwire),
+        ):
+            table = wfs_module._fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
+
+        assert table.num_rows == 0
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(MOCK_EMPTY_GML_WFS20.encode(), True, id="empty-wfs20"),
+            pytest.param(MOCK_EMPTY_GML_WFS11.encode(), True, id="empty-wfs11"),
+            pytest.param(MOCK_EMPTY_GML_FEATUREMEMBERS.encode(), True, id="empty-featuremembers"),
+            pytest.param(MOCK_GML_RESPONSE.encode(), False, id="collection-with-features"),
+            pytest.param(
+                b'<?xml version="1.0"?><ows:ExceptionReport '
+                b'xmlns:ows="http://www.opengis.net/ows/1.1"/>',
+                False,
+                id="exception-report",
+            ),
+            pytest.param(b"<html><body>Error</body></html>", False, id="html-error-page"),
+            pytest.param(b"not xml at all", False, id="not-xml"),
+        ],
+    )
+    def test_is_empty_gml_collection(self, body, expected):
+        """Only a featureless FeatureCollection counts as empty; everything else
+        goes to GDAL, which keeps the error-page WFSError for broken bodies."""
+        from geoparquet_io.core.wfs import _is_empty_gml_collection
+
+        assert _is_empty_gml_collection(body) is expected
 
     def test_idless_features_get_null_fid(self):
         """Features without gml:id must get a NULL _wfs_fid, not GDAL's ''.
