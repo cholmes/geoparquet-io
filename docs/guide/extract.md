@@ -171,7 +171,7 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
     ```
 
 !!! note "Remote file support"
-    S3, GCS, Azure, and HTTPS URLs are supported via DuckDB's httpfs extension. See the [Remote Files guide](remote-files.md) for credential configuration.
+    S3, GCS, Azure, and HTTPS URLs are supported via DuckDB's httpfs extension. A URL is used exactly as you paste it — gpio takes it as already percent-encoded and never re-encodes it. See the [Remote Files guide](remote-files.md) for credential configuration.
 
 **CRS Awareness**: The tool detects coordinate system mismatches. If your bbox looks like lat/long coordinates but the data uses a projected CRS, you'll get a helpful warning showing the data's actual bounds.
 

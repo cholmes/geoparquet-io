@@ -482,11 +482,10 @@ class TestSafeFileUrl:
         with pytest.raises(FileNotFoundGeoParquetError):
             safe_file_url(str(tmp_path / "nonexistent.parquet"))
 
-    def test_remote_url_encoding(self):
-        """Remote URLs are properly encoded."""
+    def test_remote_url_passes_through(self):
+        """Remote URLs are resolved without being altered."""
         url = "https://example.com/path/to/file.parquet"
-        result = safe_file_url(url)
-        assert "example.com" in result
+        assert safe_file_url(url) == url
 
     def test_s3_url_passes_through(self):
         """S3 URLs pass through unchanged (except quote escaping)."""
@@ -494,12 +493,17 @@ class TestSafeFileUrl:
         result = safe_file_url(url)
         assert result == url
 
-    def test_http_url_with_special_chars(self):
-        """HTTP URLs with special characters are encoded."""
-        url = "https://example.com/path with spaces/file.parquet"
-        result = safe_file_url(url)
-        # Spaces should be encoded
-        assert "%20" in result or " " not in result.split("://")[1]
+    def test_http_url_with_special_chars_is_taken_as_given(self):
+        """HTTP URLs are taken as already percent-encoded (#825).
+
+        Both a valid encoded URL and one with a raw space reach the reader
+        unchanged; see tests/test_remote_url_encoding.py for the contract.
+        """
+        encoded = "https://example.com/path%20with%20spaces/file.parquet"
+        assert safe_file_url(encoded) == encoded
+
+        raw = "https://example.com/path with spaces/file.parquet"
+        assert safe_file_url(raw) == raw
 
     def test_sql_injection_prevention(self, tmp_path):
         """SQL injection via single quotes is prevented."""

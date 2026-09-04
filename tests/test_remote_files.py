@@ -75,11 +75,15 @@ class TestSafeFileURL:
         url = "https://example.com/path/file.parquet"
         assert safe_file_url(url) == url
 
-    def test_safe_file_url_https_with_spaces(self):
-        """Test HTTPS URL with spaces gets encoded."""
+    def test_safe_file_url_https_percent_encoded(self):
+        """An already-encoded HTTPS URL is not encoded a second time (#825)."""
+        url = "https://example.com/path%20with%20spaces/file.parquet"
+        assert safe_file_url(url) == url
+
+    def test_safe_file_url_https_with_raw_spaces_is_not_encoded(self):
+        """BREAKING (#825): a raw space is passed through, not encoded."""
         url = "https://example.com/path with spaces/file.parquet"
-        result = safe_file_url(url)
-        assert "path%20with%20spaces" in result
+        assert safe_file_url(url) == url
 
     def test_safe_file_url_s3(self):
         """Test S3 URL handling."""
