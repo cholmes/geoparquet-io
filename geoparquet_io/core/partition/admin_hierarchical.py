@@ -187,16 +187,19 @@ def _compute_input_extent(con, input_path, input_bbox_col, input_geom_col, sourc
     return None
 
 
-def _build_admin_where_clause(dataset, levels, admin_bbox_col, extent, verbose):
+def _build_admin_where_clause(dataset, levels, admin_bbox_col, extent, verbose, admin_source=None):
     """Build WHERE clause for admin boundaries with filters.
 
     ``extent`` is the precomputed input extent (from ``_compute_input_extent``)
     or None; it is reused across levels instead of being recomputed each call.
+    ``admin_source`` is the resolved source for these levels: how much
+    filtering the subtype clause has to carry depends on whether it is a
+    pre-filtered cache or a raw release (#819).
     """
     admin_where_clauses = []
 
     # Add subtype filter if applicable
-    subtype_filter = dataset.get_subtype_filter(levels)
+    subtype_filter = dataset.get_subtype_filter(levels, source=admin_source)
     if subtype_filter:
         admin_where_clauses.append(subtype_filter)
         if verbose:
@@ -410,7 +413,7 @@ def _perform_per_level_enrichment_join(
         output_column_names.extend(level_outputs)
 
         admin_where_clause = _build_admin_where_clause(
-            dataset, [level], admin_bbox_col, extent, verbose
+            dataset, [level], admin_bbox_col, extent, verbose, admin_source=level_source
         )
 
         is_last = i == len(levels) - 1
@@ -768,7 +771,12 @@ def partition_by_admin_hierarchical(
                     con, input_path, input_bbox_col, input_geom_col, source_crs
                 )
                 admin_where_clause = _build_admin_where_clause(
-                    dataset, levels, admin_bbox_col, extent, verbose
+                    dataset,
+                    levels,
+                    admin_bbox_col,
+                    extent,
+                    verbose,
+                    admin_source=dataset.get_source(),
                 )
                 _perform_enrichment_join(
                     con,

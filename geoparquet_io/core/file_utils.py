@@ -181,6 +181,40 @@ def handle_output_overwrite(
     output_file.unlink()
 
 
+def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
+    """
+    Copy a file byte-for-byte, from and to local paths or remote URLs.
+
+    Used when a command's requested end state is already satisfied by its input,
+    so the output it was asked for is a verbatim copy rather than a rewrite
+    (``gpio add bbox`` on a file that already has a bbox column, #728).
+
+    The remote branch opens its own fsspec filesystem, so it does not see gpio's
+    ``--s3-endpoint``/``--s3-region``/``--s3-no-ssl`` configuration, and a
+    ``gs://``/``abfs://`` copy fails for want of gcsfs/adlfs. Tracked in #810.
+
+    Args:
+        source_path: Local path or remote URL to read
+        dest_path: Local path or remote URL to write
+        verbose: Whether to log debug info
+    """
+    import shutil
+
+    from geoparquet_io.core.remote import is_remote_url
+
+    if verbose:
+        debug(f"Copying {source_path} to {dest_path}")
+
+    if not is_remote_url(source_path) and not is_remote_url(dest_path):
+        shutil.copyfile(source_path, dest_path)
+        return
+
+    import fsspec
+
+    with fsspec.open(source_path, "rb") as src, fsspec.open(dest_path, "wb") as dest:
+        shutil.copyfileobj(src, dest)
+
+
 def resolve_file_url(file_path, verbose=False):
     """
     Validate a path and resolve it to the URL readers should open.
