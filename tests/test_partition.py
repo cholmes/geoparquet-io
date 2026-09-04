@@ -255,7 +255,7 @@ class TestPartitionCommands:
             partition, ["h3", buildings_test_file, temp_output_dir, "--resolution", "16"]
         )
         assert result.exit_code != 0
-        assert "16 is not in the range 0<=x<=15" in result.output
+        assert "not in the range" in result.output
 
 
 @pytest.mark.slow

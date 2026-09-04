@@ -65,7 +65,7 @@ targets fail on Python 3.10. Every patch here is `patch.object(module, name)`,
 which is unaffected -- the trap is about string targets only.
 
 Running note: this file mocks core out, so it covers very little of the package
-and running it *alone* trips the 67% coverage gate. Use `--no-cov` when running
+and running it *alone* trips the coverage floor. Use `--no-cov` when running
 it in isolation; in the full suite it is a non-issue.
 """
 
