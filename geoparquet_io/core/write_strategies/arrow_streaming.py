@@ -25,7 +25,11 @@ from geoparquet_io.core.geoarrow_encoding import (
     native_wkb_type,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
-from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
+from geoparquet_io.core.write_strategies.base import (
+    BaseWriteStrategy,
+    merge_secondary_geometry_metadata,
+    native_geometry_crs,
+)
 
 if TYPE_CHECKING:
     import duckdb
@@ -340,7 +344,10 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 f"Available columns: {schema.names}"
             )
 
-        # Build geo metadata
+        # Build geo metadata. Built even for parquet-geo-only, which writes no
+        # `geo` block: the native Parquet GEOMETRY types below are keyed off the
+        # CRS the block declares per column, so it is what the types come from
+        # before it is dropped (#848). Discarded immediately afterwards.
         geo_meta = self._build_geo_metadata_for_query(
             schema,
             geometry_column,
@@ -348,12 +355,16 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             input_crs,
             verbose,
             version_config["metadata_version"],
-            should_add_geo_metadata,
             precomputed_geom_types,
             precomputed_bbox,
             geometry_info,
             geoarrow_encoding=geoarrow_encoding,
         )
+        native_crs = native_geometry_crs(
+            geoparquet_version, geo_meta, geometry_column, geometry_info
+        )
+        if not should_add_geo_metadata:
+            geo_meta = None
 
         # Prepare writer kwargs
         writer_kwargs = {"compression": validated_compression or "NONE"}
@@ -378,7 +389,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             geometry_column,
             geo_meta,
             use_native_geometry,
-            input_crs,
+            native_crs,
             precomputed_geom_types,
             writer_kwargs,
             verbose,
@@ -416,18 +427,18 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         input_crs: dict | None,
         verbose: bool,
         metadata_version: str,
-        should_add_geo_metadata: bool,
         precomputed_geom_types: list[str],
         precomputed_bbox: list[float] | None,
         geometry_info: dict | None = None,
         geoarrow_encoding: str | None = None,
-    ) -> dict | None:
-        """Build geo metadata for query results."""
+    ) -> dict:
+        """Build geo metadata for query results.
+
+        Always returns a block, even for parquet-geo-only: the caller keys the
+        native Parquet GEOMETRY types off it and then drops it (#848).
+        """
         from geoparquet_io.core.crs_utils import apply_output_crs
         from geoparquet_io.core.geo_metadata import create_geo_metadata
-
-        if not should_add_geo_metadata:
-            return None
 
         bbox_info = _detect_bbox_column(schema)
         geo_meta = create_geo_metadata(
@@ -452,27 +463,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             col_meta["encoding"] = geoarrow_encoding
 
         # Handle secondary geometry columns from geometry_info
-        if geometry_info:
-            secondary_columns = geometry_info.get("secondary", [])
-            column_metadata = geometry_info.get("metadata", {})
-
-            for sec_col in secondary_columns:
-                if sec_col not in geo_meta["columns"]:
-                    geo_meta["columns"][sec_col] = {}
-
-                sec_meta = geo_meta["columns"][sec_col]
-
-                # Copy metadata from input for secondary columns
-                if sec_col in column_metadata:
-                    input_sec_meta = column_metadata[sec_col]
-                    for key, value in input_sec_meta.items():
-                        # Preserve input metadata (crs, encoding, geometry_types, etc.)
-                        if key not in sec_meta:
-                            sec_meta[key] = value
-
-                # Ensure encoding is set (required by spec)
-                if "encoding" not in sec_meta:
-                    sec_meta["encoding"] = "WKB"
+        merge_secondary_geometry_metadata(geo_meta, geometry_info)
 
         return geo_meta
 
@@ -484,7 +475,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_column: str,
         geo_meta: dict | None,
         use_native_geometry: bool,
-        input_crs: dict | None,
+        native_crs: dict[str, dict | None],
         precomputed_geom_types: list[str],
         writer_kwargs: dict,
         verbose: bool,
@@ -503,7 +494,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 geometry_column,
                 geo_meta,
                 use_native_geometry,
-                input_crs,
+                native_crs,
                 writer_kwargs,
                 verbose,
                 extra_kv_metadata=extra_kv_metadata,
@@ -517,7 +508,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             geometry_column=geometry_column,
             geo_meta=geo_meta,
             use_native_geometry=use_native_geometry,
-            input_crs=input_crs,
+            native_crs=native_crs,
             geom_types=precomputed_geom_types,
             verbose=verbose,
             extra_kv_metadata=extra_kv_metadata,
@@ -553,7 +544,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_column: str,
         geo_meta: dict | None,
         use_native_geometry: bool,
-        input_crs: dict | None,
+        native_crs: dict[str, dict | None],
         writer_kwargs: dict,
         verbose: bool,
         extra_kv_metadata: dict[str, str] | None = None,
@@ -566,7 +557,7 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             geometry_column=geometry_column,
             geo_meta=geo_meta,
             use_native_geometry=use_native_geometry,
-            input_crs=input_crs,
+            native_crs=native_crs,
             geom_types=[],
             verbose=verbose,
             extra_kv_metadata=extra_kv_metadata,
@@ -715,9 +706,8 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geoarrow_target_type = None
         geoarrow_encoding = None
 
-        geo_meta = None
+        geom_types: list[str] = []
         if should_add_geo_metadata:
-            bbox_info = {"has_bbox_column": False, "bbox_column_name": None}
             geom_types = _compute_geometry_types(table, geometry_column, verbose)
 
             if geoarrow_native:
@@ -736,30 +726,37 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 if verbose:
                     debug(f"1.1-geoarrow target encoding: {geoarrow_encoding}")
 
-            geo_meta = create_geo_metadata(
-                original_metadata=None,
-                geom_col=geometry_column,
-                bbox_info=bbox_info,
-                custom_metadata=custom_metadata,
-                verbose=verbose,
-                version=metadata_version,
-            )
-            geo_meta["columns"][geometry_column]["encoding"] = "WKB"
-            geo_meta["columns"][geometry_column]["geometry_types"] = geom_types
+        # Built for every version, parquet-geo-only included: it writes no `geo`
+        # block, but the native Parquet GEOMETRY types are keyed off the CRS this
+        # resolves per column, so it is built first and dropped after (#848).
+        geo_meta = create_geo_metadata(
+            original_metadata=None,
+            geom_col=geometry_column,
+            bbox_info={"has_bbox_column": False, "bbox_column_name": None},
+            custom_metadata=custom_metadata,
+            verbose=verbose,
+            version=metadata_version,
+        )
+        geo_meta["columns"][geometry_column]["encoding"] = "WKB"
+        geo_meta["columns"][geometry_column]["geometry_types"] = geom_types
 
-            apply_output_crs(geo_meta["columns"][geometry_column], input_crs)
+        apply_output_crs(geo_meta["columns"][geometry_column], input_crs)
 
-            # Override encoding when geoarrow_target_type resolved a native encoding.
-            # geoarrow_encoding is "WKB" for mixed/unconvertible geometry — no override.
-            if geoarrow_encoding is not None and geoarrow_encoding != "WKB":
-                geo_meta["columns"][geometry_column]["encoding"] = geoarrow_encoding
+        # Override encoding when geoarrow_target_type resolved a native encoding.
+        # geoarrow_encoding is "WKB" for mixed/unconvertible geometry — no override.
+        if geoarrow_encoding is not None and geoarrow_encoding != "WKB":
+            geo_meta["columns"][geometry_column]["encoding"] = geoarrow_encoding
+
+        native_crs = native_geometry_crs(effective_version, geo_meta, geometry_column)
+        if not should_add_geo_metadata:
+            geo_meta = None
 
         schema_with_meta = self._build_streaming_schema(
             schema=table.schema,
             geometry_column=geometry_column,
             geo_meta=geo_meta,
             use_native_geometry=use_native_geometry,
-            input_crs=input_crs,
+            native_crs=native_crs,
             geom_types=geo_meta["columns"][geometry_column]["geometry_types"] if geo_meta else [],
             verbose=verbose,
             extra_kv_metadata=extra_kv_metadata,
@@ -801,14 +798,22 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_column: str,
         geo_meta: dict | None,
         use_native_geometry: bool,
-        input_crs: dict | None,
+        native_crs: dict[str, dict | None],
         geom_types: list[str],
         verbose: bool,
         extra_kv_metadata: dict[str, str] | None = None,
         geoarrow_target_type=None,
         geometry_columns: set[str] | None = None,
     ) -> pa.Schema:
-        """Build the output schema for streaming write."""
+        """Build the output schema for streaming write.
+
+        ``native_crs`` maps each geometry column to the CRS its ``geo`` entry
+        declares, from ``native_geometry_crs``; empty when the target version
+        writes plain BYTE_ARRAY WKB. It replaces the ``input_crs`` this used to
+        take: a caller only supplies one when it is *changing* the CRS, so on
+        every other write the primary column was typed with ``None`` while the
+        block kept the source's EPSG:3857 -- the disagreement in #848.
+        """
         schema_metadata = dict(schema.metadata or {})
 
         geo_columns = set(geometry_columns or ())
@@ -820,19 +825,13 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
             # validation requires a native Parquet GEOMETRY type for each column in
             # geo["columns"], and under parquet-geo-only (which writes no geo
             # metadata) the logical type is a column's only geometry identity.
-            # Each column carries its own CRS — the primary's from input_crs, a
-            # secondary's from its geo metadata — so the native type stays
-            # consistent with what the metadata declares.
-            column_crs = {
-                name: (geo_meta or {}).get("columns", {}).get(name, {}).get("crs")
-                for name in geo_columns
-            }
-            column_crs[geometry_column] = input_crs
+            # Each column's CRS comes from the geo entry built for that same
+            # column, so the type and the block cannot disagree (#848).
             if verbose:
-                with_crs = sorted(name for name, crs in column_crs.items() if crs)
+                with_crs = sorted(name for name, crs in native_crs.items() if crs)
                 debug(f"Native Parquet GEOMETRY type for {sorted(geo_columns)}, CRS on {with_crs}")
             new_fields = [
-                pa.field(field.name, native_wkb_type(column_crs[field.name]))
+                pa.field(field.name, native_wkb_type(native_crs.get(field.name)))
                 if field.name in geo_columns
                 else field
                 for field in schema

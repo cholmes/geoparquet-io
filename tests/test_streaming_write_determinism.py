@@ -173,7 +173,7 @@ class TestCanonicalStreamingSchema:
             geometry_column="geometry",
             geo_meta=json.loads(json.dumps(GEO_1_1)),
             use_native_geometry=False,
-            input_crs=None,
+            native_crs={},
             geom_types=["Point"],
             verbose=False,
         )
