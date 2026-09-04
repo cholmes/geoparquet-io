@@ -300,7 +300,9 @@ class _CallRecorder:
 
     Returns its first positional argument -- the real core functions return a
     table that both doors immediately re-wrap, so returning ``None`` would blow
-    up before anything could be inspected.
+    up before anything could be inspected. That return doubles as a sentinel:
+    the delegation test asserts each door hands it back, so a wrapper that
+    calls core but drops the result cannot pass.
     """
 
     def __init__(self, reference: Callable):
@@ -690,14 +692,24 @@ class TestFrontDoorDelegation:
     def test_both_front_doors_hand_core_the_same_call(self, case, arrow_table, gpio_table):
         via_ops = _CallRecorder(case.reference)
         with patch.object(case.ops_patch_module, case.core_name, via_ops):
-            case.ops_call(arrow_table)
+            ops_result = case.ops_call(arrow_table)
 
         via_table = _CallRecorder(case.reference)
         with patch.object(case.core_module, case.core_name, via_table):
-            case.table_call(gpio_table)
+            table_result = case.table_call(gpio_table)
 
         assert via_ops.delivered is not None, f"ops.{case.id} never called core"
         assert via_table.delivered is not None, f"Table.{case.id} never called core"
+
+        # Each door must also *return* core's result, not just make the call.
+        # The recorder hands back its input table as a sentinel: the `ops`
+        # wrapper returns core's table as-is, and the `Table` method wraps it
+        # in a new Table -- so a wrapper that computes but drops the result
+        # (the classic missing-`return` refactor bug) fails here.
+        assert ops_result is arrow_table, f"ops.{case.id} did not return core's result"
+        assert isinstance(table_result, Table), f"Table.{case.id} did not return a Table"
+        assert table_result is not gpio_table, f"Table.{case.id} returned self, not a new Table"
+        assert table_result.table is gpio_table.table, f"Table.{case.id} did not wrap core's result"
 
         # Every named knob arrives, under core's own spelling...
         for name, value in case.expected.items():
