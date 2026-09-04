@@ -98,12 +98,17 @@ def _run_partition_with_temp_file(
     core_kwargs: dict,
     compression: str = "ZSTD",
     compression_level: int | None = None,
-    collect_stats: bool = False,
 ) -> dict:
     """
     Run a partition operation using a temporary file.
 
     Handles temp file creation, writing, partition function call, and cleanup.
+
+    The core partition functions disagree on what they return -- an ``int``
+    partition count (admin), ``None`` (kdtree, string), nothing the cell-index
+    ones promise -- so the core result is not passed through. Every
+    ``Table.partition_by_*`` method gets the same dict from here, counted off
+    the output directory (#822).
 
     Args:
         table: The PyArrow table to partition
@@ -114,10 +119,11 @@ def _run_partition_with_temp_file(
         core_kwargs: Keyword arguments for the core function
         compression: Compression codec
         compression_level: Compression level (None lets the codec pick its own)
-        collect_stats: If True, return file count stats instead of core_fn result
 
     Returns:
-        dict with partition results or file stats if collect_stats=True
+        ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the output
+        directory, the number of ``.parquet`` files written under it, and
+        whether they are laid out Hive-style.
     """
     import tempfile
     import uuid
@@ -134,23 +140,20 @@ def _run_partition_with_temp_file(
             compression_level=compression_level,
         )
 
-        result = core_fn(
+        core_fn(
             input_parquet=str(temp_input),
             output_folder=str(output_dir),
             **core_kwargs,
             verbose=False,
         )
 
-        if collect_stats:
-            output_path = PathLib(output_dir)
-            parquet_files = list(output_path.rglob("*.parquet"))
-            return {
-                "output_dir": str(output_path),
-                "file_count": len(parquet_files),
-                "hive": core_kwargs.get("hive", False),
-            }
-
-        return result if result else {"status": "completed"}
+        output_path = PathLib(output_dir)
+        parquet_files = list(output_path.rglob("*.parquet"))
+        return {
+            "output_dir": str(output_path),
+            "file_count": len(parquet_files),
+            "hive": core_kwargs.get("hive", False),
+        }
     finally:
         _safe_unlink(temp_input)
 
@@ -1932,7 +1935,9 @@ class Table:
             overwrite: Overwrite existing output directory
 
         Returns:
-            dict with partition statistics (file_count, etc.)
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -1968,7 +1973,6 @@ class Table:
                 "overwrite": overwrite,
             },
             compression=compression,
-            collect_stats=True,
         )
 
     def partition_by_h3(
@@ -2009,7 +2013,9 @@ class Table:
             overwrite: Overwrite existing output directory
 
         Returns:
-            dict with partition statistics (file_count, etc.)
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -2042,7 +2048,6 @@ class Table:
                 "overwrite": overwrite,
             },
             compression=compression,
-            collect_stats=True,
         )
 
     def partition_by_s2(
@@ -2086,7 +2091,9 @@ class Table:
             overwrite: Overwrite existing output directory
 
         Returns:
-            dict with partition statistics (file_count, etc.)
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -2119,7 +2126,6 @@ class Table:
                 "overwrite": overwrite,
             },
             compression=compression,
-            collect_stats=True,
         )
 
     def partition_by_a5(
@@ -2163,7 +2169,9 @@ class Table:
             overwrite: Overwrite existing output directory
 
         Returns:
-            dict with partition statistics (file_count, etc.)
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -2196,7 +2204,6 @@ class Table:
                 "overwrite": overwrite,
             },
             compression=compression,
-            collect_stats=True,
         )
 
     def upload(
@@ -3059,7 +3066,9 @@ class Table:
                 codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
-            dict with partition statistics
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -3119,7 +3128,9 @@ class Table:
                 codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
-            dict with partition statistics
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
@@ -3178,7 +3189,9 @@ class Table:
                 codecs whose valid range excludes it (GZIP accepts 1-9).
 
         Returns:
-            dict with partition statistics
+            ``{'output_dir': str, 'file_count': int, 'hive': bool}`` -- the
+            same dict every ``partition_by_*`` method returns, where
+            ``file_count`` counts the ``.parquet`` files under ``output_dir``.
 
         Example:
             >>> table = gpio.read('data.parquet')
