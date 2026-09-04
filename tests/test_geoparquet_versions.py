@@ -273,7 +273,10 @@ class TestVersionCLI:
         [
             # expected_version: metadata version string; None = no geo metadata
             # expected at all; "invalid" = the CLI must reject the invocation.
-            pytest.param([], "1.1.0", False, None, id="default-1.1"),
+            # "Done in" pins the non-verbose progress message: the dropped
+            # test_cli_output_messages asserted it in default mode, and line
+            # coverage alone cannot notice it moving behind --verbose.
+            pytest.param([], "1.1.0", False, "Done in", id="default-1.1"),
             pytest.param(["--geoparquet-version", "1.0"], "1.0.0", False, None, id="explicit-1.0"),
             pytest.param(["--geoparquet-version", "1.1"], "1.1.0", False, None, id="explicit-1.1"),
             pytest.param(["--geoparquet-version", "2.0"], "2.0.0", True, None, id="explicit-2.0"),
