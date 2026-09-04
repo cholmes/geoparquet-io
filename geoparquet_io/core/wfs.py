@@ -19,7 +19,7 @@ import json
 import re
 import tempfile
 import time
-import xml.etree.ElementTree as ET  # nosec B405 - stdlib ET never resolves external entities; see _is_empty_gml_collection
+import xml.etree.ElementTree as ET  # nosec B405 - the one parse here (_is_empty_gml_collection) refuses any body declaring a DTD, so no entity expansion is possible; stdlib ET never resolves external entities regardless
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -954,6 +954,30 @@ def _first_matching_format(
     return None
 
 
+# C0 controls and DEL. h11 refuses to put any of these in a header value, and
+# a WFS outputFormat is a media type or a bare token -- never a control byte.
+_CONTROL_CHARACTERS: Final = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _sanitize_output_format(fmt: str) -> str:
+    """Drop control characters from a format string the server advertised.
+
+    A capabilities document is server-controlled text, and a value such as
+    ``application/json;\\r\\nX-Evil: 1`` matches ``application/json`` on the
+    normalized comparison (which drops whitespace) while being returned in the
+    server's own spelling. Echoed back unchanged it is not an injection -- h11
+    rejects an illegal header value before it reaches the socket -- but the user
+    pays three retries to reach an opaque "Illegal header value" (issue #838).
+
+    Sanitizing here, at the single point where a negotiated format is produced,
+    rather than inside ``_accept_header_for``, is deliberate: the same value is
+    also sent back as the ``outputFormat=`` query parameter, where urlencode
+    would percent-encode the control bytes into the URL instead of rejecting
+    them.
+    """
+    return _CONTROL_CHARACTERS.sub("", fmt)
+
+
 def _detect_best_output_format(available_formats: list[str]) -> str | None:
     """
     Detect the best output format from available formats.
@@ -987,9 +1011,10 @@ def _detect_best_output_format(available_formats: list[str]) -> str | None:
     available_norm = [_normalize_output_format(f) for f in available_formats]
 
     # GeoJSON is preferred - faster to parse - then GML.
-    return _first_matching_format(
+    matched = _first_matching_format(
         available_formats, available_norm, GEOJSON_FORMATS
     ) or _first_matching_format(available_formats, available_norm, GML_FORMATS)
+    return _sanitize_output_format(matched) if matched is not None else None
 
 
 def _negotiate_crs(layer_info: WFSLayerInfo, output_crs: str | None = None) -> str:
@@ -1609,9 +1634,14 @@ def _classify_wfs_content_type(content_type: str) -> str:
 
 
 def _error_page_error(content_type: str, preview: str) -> WFSError:
-    """Build the "server returned an error page" failure with a body preview."""
+    """Build the "server returned an error page" failure with a body preview.
+
+    The wording is format-neutral because this is raised from the GML path too,
+    where gpio deliberately requested GML: naming JSON there told the user the
+    server had failed to send a format gpio never asked for (issue #838).
+    """
     return WFSError(
-        f"Expected JSON response but got {content_type}. "
+        f"Expected a feature collection (GeoJSON or GML) but got {content_type}. "
         f"Server may have returned an error page:\n{preview}"
     )
 
@@ -1639,21 +1669,43 @@ def _local_name(tag: str) -> str:
     return tag.rpartition("}")[2]
 
 
+# Every entity-expansion attack (billion laughs, quadratic blowup) needs one of
+# these; a WFS FeatureCollection needs neither.
+_DTD_MARKERS: Final = (b"<!doctype", b"<!entity")
+
+
+def _declares_a_dtd(body: bytes) -> bool:
+    """True when ``body`` declares a doctype or an entity, in any casing."""
+    lowered = body.lower()
+    return any(marker in lowered for marker in _DTD_MARKERS)
+
+
 def _is_empty_gml_collection(body: bytes) -> bool:
     """True when ``body`` is a GML FeatureCollection holding zero features.
 
     A zero-feature collection is a legitimate WFS answer (an empty bbox), but
     GDAL cannot open one -- and on Linux builds ``ST_Read`` *segfaults* on it
     rather than raising -- so the body must be recognized as empty before GDAL
-    ever sees it. stdlib ElementTree ignores external entities by default, so
-    parsing the raw server bytes is safe. Anything that is not XML, not a
-    FeatureCollection, or has any feature-bearing child goes to GDAL, keeping
-    the error-page WFSError for genuinely broken bodies.
+    ever sees it. Anything that is not XML, not a FeatureCollection, or has any
+    feature-bearing child goes to GDAL, keeping the error-page WFSError for
+    genuinely broken bodies.
+
+    A body declaring a DTD is refused before it is parsed. Entity expansion is
+    the attack class that matters for untrusted XML -- a couple of kilobytes of
+    nested ``<!ENTITY>`` definitions expand to gigabytes on an expat built
+    without amplification protection, which the size cap does nothing about --
+    and every form of it needs a DTD. A WFS FeatureCollection never carries one,
+    so refusing it costs nothing: such a body takes the same route as any other
+    unrecognized one (issue #840).
     """
-    if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES:
+    if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES or _declares_a_dtd(body):
         return False
     try:
-        root = ET.fromstring(body)  # nosec B314 - no external entity resolution; body capped at 1MB, only gates the empty check
+        # nosec B314 - the body reaching this line declares no DTD (checked
+        # above), so no entity expansion is possible; stdlib ET never resolves
+        # external entities regardless; the body is capped at 1MB; and the parse
+        # only gates an empty-collection check whose fallback is GDAL.
+        root = ET.fromstring(body)  # nosec B314
     except ET.ParseError:
         return False
     if _local_name(root.tag) != "FeatureCollection":

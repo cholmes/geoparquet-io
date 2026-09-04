@@ -7,6 +7,8 @@ Network tests are marked separately for optional integration testing.
 
 import logging
 import os
+import re
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1666,7 +1668,10 @@ class TestGMLOnlyServerEndToEnd:
 
 
 def _mock_wfs_http_response(
-    body: bytes, content_type: str = "application/json", status_code: int = 200
+    body: bytes,
+    content_type: str = "application/json",
+    status_code: int = 200,
+    sent_headers: dict | None = None,
 ):
     """Patch httpx.Client.stream to return a canned response.
 
@@ -1674,6 +1679,10 @@ def _mock_wfs_http_response(
     previously each carried a near-identical inline mock class (issue #666
     item 7). The response supports both ``read()`` (error-page validation path)
     and ``iter_bytes()`` (streaming JSON path).
+
+    Pass ``sent_headers`` to have the request headers gpio would have put on the
+    wire copied into it, for tests that assert on what was requested rather than
+    on what came back.
     """
     import httpx
 
@@ -1682,6 +1691,9 @@ def _mock_wfs_http_response(
     response_status = status_code
 
     def mock_stream(*args, **kwargs):
+        if sent_headers is not None:
+            sent_headers.update(kwargs.get("headers") or {})
+
         class MockResponse:
             status_code = response_status
             headers = {"content-type": content_type}
@@ -1709,6 +1721,23 @@ def _mock_wfs_http_response(
 _EMPTY_FEATURE_COLLECTION = b'{"type": "FeatureCollection", "features": []}'
 
 
+def _billion_laughs_gml(levels: int = 10) -> bytes:
+    """A FeatureCollection whose internal DTD expands to ``10**levels`` entities.
+
+    The classic entity-expansion bomb: about a kilobyte of markup that a parser
+    with no expansion limit turns into gigabytes. It wears a FeatureCollection
+    root on purpose, so nothing but the DTD guard itself can turn it away.
+    """
+    entities = ['<!ENTITY lol0 "lol">']
+    entities += [f'<!ENTITY lol{i} "{f"&lol{i - 1};" * 10}">' for i in range(1, levels + 1)]
+    return (
+        '<?xml version="1.0"?>\n'
+        "<!DOCTYPE wfs:FeatureCollection [\n" + "\n".join(entities) + "\n]>\n"
+        '<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0">'
+        f"&lol{levels};</wfs:FeatureCollection>"
+    ).encode()
+
+
 class TestContentTypeValidation:
     """Test content-type validation catches error pages returned with 200 OK."""
 
@@ -1718,13 +1747,13 @@ class TestContentTypeValidation:
             pytest.param(
                 "text/html; charset=utf-8",
                 b"<html><body>Error: Service unavailable</body></html>",
-                "Expected JSON.*text/html",
+                "Expected a feature collection.*text/html",
                 id="rejects-html",
             ),
             pytest.param(
                 "application/xml",
                 b"<ows:ExceptionReport>Service error</ows:ExceptionReport>",
-                "Expected JSON.*application/xml",
+                "Expected a feature collection.*application/xml",
                 id="rejects-xml",
             ),
             pytest.param(
@@ -1735,13 +1764,13 @@ class TestContentTypeValidation:
                 b'locator="outputFormat"><ows:ExceptionText>Unsupported '
                 b"outputFormat</ows:ExceptionText></ows:Exception>"
                 b"</ows:ExceptionReport>",
-                "Expected JSON.*text/xml",
+                "Expected a feature collection.*text/xml",
                 id="rejects-exception-report",
             ),
             pytest.param(
                 "text/plain",
                 b"Error: Invalid request parameters",
-                "Expected JSON.*text/plain",
+                "Expected a feature collection.*text/plain",
                 id="rejects-text-plain",
             ),
             pytest.param(
@@ -1833,20 +1862,28 @@ class TestGMLResponseParsing:
         table = self._fetch_gml()
         assert table.schema.metadata.get(_SERVER_CRS_METADATA_KEY) == b"EPSG:4326"
 
-    def test_leaves_no_temp_files_behind(self):
+    def test_leaves_no_temp_files_behind(self, tmp_path, monkeypatch):
         """GDAL writes a .gfs sidecar for schema-less GML; nothing may survive.
 
         The GeoJSON path used a NamedTemporaryFile and unlinked exactly that one
         path, which would strand the sidecar. The GML path must use a temporary
         *directory* so every file GDAL creates is removed.
+
+        The assertion is on the ``gpio-wfs-*`` *directory*, not on file suffixes
+        directly under the temp root: the response body and its sidecar live one
+        level down, so a suffix filter over ``gettempdir()`` sees nothing either
+        way and stays green even when the directory is stranded (issue #838).
+
+        Redirecting ``tempfile.tempdir`` at a per-test directory keeps this from
+        reading other xdist workers' in-flight fetches as leaks.
         """
         import tempfile
 
-        before = set(os.listdir(tempfile.gettempdir()))
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
         self._fetch_gml()
-        after = set(os.listdir(tempfile.gettempdir()))
-        leaked = {name for name in after - before if name.endswith((".gml", ".gfs", ".xml"))}
-        assert not leaked, f"GML parse leaked temp files: {sorted(leaked)}"
+
+        leaked = sorted(p.name for p in tmp_path.glob("gpio-wfs-*"))
+        assert not leaked, f"GML parse leaked temp directories: {leaked}"
 
     def test_extract_fid_uses_gml_id(self):
         """Tiled fetches dedupe on gml:id, the GML analogue of a GeoJSON feature id."""
@@ -1942,6 +1979,32 @@ class TestGMLResponseParsing:
             ),
             pytest.param(b"<html><body>Error</body></html>", False, id="html-error-page"),
             pytest.param(b"not xml at all", False, id="not-xml"),
+            # A WFS FeatureCollection never carries a DTD, so any body that
+            # declares one is refused before it reaches the parser (issue #840).
+            pytest.param(
+                b'<!DOCTYPE wfs:FeatureCollection [<!ENTITY x "y">]>'
+                b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
+                False,
+                id="doctype-with-entity",
+            ),
+            pytest.param(
+                b'<!doctype wfs:FeatureCollection [<!entity x "y">]>'
+                b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
+                False,
+                id="doctype-lowercase",
+            ),
+            pytest.param(
+                b'<!DoCtYpE wfs:FeatureCollection [<!EnTiTy x "y">]>'
+                b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
+                False,
+                id="doctype-mixed-case",
+            ),
+            pytest.param(
+                b'<!ENTITY x SYSTEM "file:///etc/passwd">'
+                b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
+                False,
+                id="entity-without-doctype",
+            ),
         ],
     )
     def test_is_empty_gml_collection(self, body, expected):
@@ -1950,6 +2013,22 @@ class TestGMLResponseParsing:
         from geoparquet_io.core.wfs import _is_empty_gml_collection
 
         assert _is_empty_gml_collection(body) is expected
+
+    def test_entity_expansion_bomb_is_refused_immediately(self):
+        """A billion-laughs body is rejected on the DTD, not parsed (issue #840).
+
+        Without the guard this hands ~1KB of markup to expat and asks it to
+        build 10**10 entity expansions. A libexpat with amplification protection
+        (>= 2.4) raises quickly, so the guard is what makes the outcome the same
+        on a build that has the protection compiled out: refused in constant
+        time instead of hanging or exhausting memory. The 1MB body cap does not
+        help here -- expansion is what is unbounded, not size.
+        """
+        from geoparquet_io.core.wfs import _is_empty_gml_collection
+
+        start = time.perf_counter()
+        assert _is_empty_gml_collection(_billion_laughs_gml()) is False
+        assert time.perf_counter() - start < 1.0, "the DTD was handed to the parser"
 
     def test_idless_features_get_null_fid(self):
         """Features without gml:id must get a NULL _wfs_fid, not GDAL's ''.
@@ -2118,6 +2197,67 @@ class TestFormatPrefixMatching:
         from geoparquet_io.core.wfs import _detect_best_output_format
 
         assert _detect_best_output_format([advertised]) is None
+
+
+# h11 refuses to put any of these on the wire, so a format carrying one turns
+# into three retries and an opaque "Illegal header value" (issue #838).
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+# A capabilities document is server-controlled text. This value matches
+# ``application/json`` once normalized -- whitespace is dropped for the
+# comparison -- so without sanitizing it would be echoed back verbatim.
+_HOSTILE_FORMAT = "application/json;\r\nX-Evil: 1"
+
+
+class TestHostileAdvertisedFormat:
+    """A control character in an advertised outputFormat never leaves gpio."""
+
+    def test_negotiated_format_has_no_control_characters(self):
+        """The value is still matched, but returned without the control bytes."""
+        from geoparquet_io.core.wfs import _detect_best_output_format
+
+        negotiated = _detect_best_output_format([_HOSTILE_FORMAT])
+
+        assert negotiated is not None, "normalized matching must still find the format"
+        assert negotiated.startswith("application/json")
+        assert not _CONTROL_CHARS.search(negotiated)
+
+    def test_request_still_goes_out_with_a_legal_accept_header(self):
+        """Sanitizing must not break the request: it is sent, with a legal header."""
+        from geoparquet_io.core.wfs import _accept_header_for, _detect_best_output_format
+
+        negotiated = _detect_best_output_format([_HOSTILE_FORMAT])
+        accept = _accept_header_for(negotiated)
+        assert not _CONTROL_CHARS.search(accept)
+
+        sent: dict = {}
+        with _mock_wfs_http_response(
+            _EMPTY_FEATURE_COLLECTION, "application/json", sent_headers=sent
+        ):
+            table = wfs_module._fetch_wfs_page(
+                "http://mock.wfs/wfs?service=WFS", output_format=negotiated
+            )
+
+        assert table.num_rows == 0
+        assert not _CONTROL_CHARS.search(sent["Accept"])
+
+    def test_sanitizing_covers_the_output_format_parameter_too(self):
+        """The negotiated value is also the ``outputFormat=`` query parameter.
+
+        Sanitizing at ``_detect_best_output_format`` -- rather than inside
+        ``_accept_header_for`` -- is what keeps the control bytes out of the URL
+        as well as out of the header.
+        """
+        from geoparquet_io.core.wfs import _build_wfs_url, _detect_best_output_format
+
+        negotiated = _detect_best_output_format([_HOSTILE_FORMAT])
+        url = _build_wfs_url(
+            "http://mock.wfs/wfs", "topp:states", "2.0.0", output_format=negotiated
+        )
+
+        assert "outputFormat" in url
+        assert not _CONTROL_CHARS.search(url)
+        assert "%0D" not in url.upper()
 
 
 _OMIT_PROPERTIES = object()
