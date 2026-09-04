@@ -281,6 +281,74 @@ MOCK_GML_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
 </wfs:FeatureCollection>
 """
 
+# Zero-feature GML responses. A WFS 2.0 server answers an empty bbox with a
+# self-closing FeatureCollection; a WFS 1.x server (GeoServer) sends one whose
+# only child is a null boundedBy. GDAL can open neither ("contains no layers"),
+# so the GML path must recognize them as legitimately empty, not as error pages.
+MOCK_EMPTY_GML_WFS20 = """<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+    xmlns:wfs="http://www.opengis.net/wfs/2.0"
+    xmlns:gml="http://www.opengis.net/gml/3.2"
+    numberMatched="0"
+    numberReturned="0"
+    timeStamp="2026-03-23T12:00:00Z"/>
+"""
+
+MOCK_EMPTY_GML_WFS11 = """<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+    xmlns:wfs="http://www.opengis.net/wfs"
+    xmlns:gml="http://www.opengis.net/gml"
+    numberOfFeatures="0"
+    timeStamp="2026-03-23T12:00:00Z">
+    <gml:boundedBy>
+        <gml:null>unknown</gml:null>
+    </gml:boundedBy>
+</wfs:FeatureCollection>
+"""
+
+# GML response whose features carry no gml:id at all. GDAL synthesizes
+# gml_id = '' (empty string, not NULL) for these, which must not become a
+# shared dedup key.
+MOCK_GML_IDLESS_RESPONSE = """<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+    xmlns:wfs="http://www.opengis.net/wfs"
+    xmlns:gml="http://www.opengis.net/gml"
+    xmlns:test="http://mock.wfs.server/test"
+    numberOfFeatures="3"
+    timeStamp="2026-03-23T12:00:00Z">
+    <gml:featureMember>
+        <test:cities>
+            <test:geometry>
+                <gml:Point srsName="urn:ogc:def:crs:EPSG::4326">
+                    <gml:pos>37.7749 -122.4194</gml:pos>
+                </gml:Point>
+            </test:geometry>
+            <test:name>San Francisco</test:name>
+        </test:cities>
+    </gml:featureMember>
+    <gml:featureMember>
+        <test:cities>
+            <test:geometry>
+                <gml:Point srsName="urn:ogc:def:crs:EPSG::4326">
+                    <gml:pos>40.7128 -74.0060</gml:pos>
+                </gml:Point>
+            </test:geometry>
+            <test:name>New York</test:name>
+        </test:cities>
+    </gml:featureMember>
+    <gml:featureMember>
+        <test:cities>
+            <test:geometry>
+                <gml:Point srsName="urn:ogc:def:crs:EPSG::4326">
+                    <gml:pos>51.5074 -0.1278</gml:pos>
+                </gml:Point>
+            </test:geometry>
+            <test:name>London</test:name>
+        </test:cities>
+    </gml:featureMember>
+</wfs:FeatureCollection>
+"""
+
 # XSD schema response for DescribeFeatureType
 MOCK_DESCRIBE_FEATURE_TYPE = """<?xml version="1.0" encoding="UTF-8"?>
 <xsd:schema
@@ -1779,6 +1847,69 @@ class TestGMLResponseParsing:
         assert table.column("_wfs_fid").to_pylist() == ["cities.1"]
         # The id is consumed as the dedup key, not left behind as an attribute.
         assert "gml_id" not in table.column_names
+
+    @pytest.mark.parametrize(
+        ("body", "content_type"),
+        [
+            pytest.param(
+                MOCK_EMPTY_GML_WFS20,
+                "application/gml+xml; version=3.2",
+                id="wfs20-self-closing",
+            ),
+            pytest.param(
+                MOCK_EMPTY_GML_WFS11,
+                "text/xml; subtype=gml/3.1.1",
+                id="wfs11-null-boundedby",
+            ),
+        ],
+    )
+    def test_empty_collection_returns_empty_table(self, body, content_type):
+        """A zero-feature GML FeatureCollection is a valid answer, not an error.
+
+        GDAL cannot open one at all ("contains no layers"), but it is what a
+        server sends for an empty bbox, so the GML path must return the same
+        empty geometry-only table the JSON path returns for zero features --
+        pagination and tiled fetches rely on that to stop cleanly.
+        """
+        import pyarrow as pa
+
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        with _mock_wfs_http_response(body.encode(), content_type):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
+
+        assert table.num_rows == 0
+        assert table.column_names == ["geometry"]
+        assert pa.types.is_binary(table.schema.field("geometry").type)
+
+    def test_idless_features_get_null_fid(self):
+        """Features without gml:id must get a NULL _wfs_fid, not GDAL's ''.
+
+        GDAL synthesizes gml_id = '' (empty string) when a feature has no
+        gml:id/fid. Passed through as-is, every id-less feature shares the
+        dedup key '' and tile deduplication keeps exactly one of them. NULL
+        routes them to the geometry-bytes fallback instead, like the GeoJSON
+        path's missing feature.id.
+        """
+        from geoparquet_io.core.wfs import _fetch_wfs_page
+
+        with _mock_wfs_http_response(MOCK_GML_IDLESS_RESPONSE.encode(), "text/xml"):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
+
+        assert table.num_rows == 3
+        assert table.column("_wfs_fid").to_pylist() == [None, None, None]
+        assert "gml_id" not in table.column_names
+
+    def test_idless_features_survive_tile_dedup(self):
+        """Three distinct id-less features stay three rows after deduplication."""
+        from geoparquet_io.core.wfs import _deduplicate_tiles, _fetch_wfs_page
+
+        with _mock_wfs_http_response(MOCK_GML_IDLESS_RESPONSE.encode(), "text/xml"):
+            table = _fetch_wfs_page("http://mock.wfs/wfs?service=WFS", extract_fid=True)
+
+        result = _deduplicate_tiles(table)
+        assert result.num_rows == 3
+        assert sorted(result.column("name").to_pylist()) == ["London", "New York", "San Francisco"]
 
     def test_xml_without_features_reads_as_an_error_page(self):
         """An ows:ExceptionReport is XML but has no geometry, so it is an error.

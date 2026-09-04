@@ -1626,17 +1626,24 @@ def _read_body_preview(path: str) -> str:
 
 def _gml_geometry_column(
     con: duckdb.DuckDBPyConnection, tmp_path: str, content_type: str
-) -> tuple[str, list[str], str | None]:
+) -> tuple[str, list[str], str | None] | None:
     """Describe a GML file and return (geometry column, other columns, CRS).
 
     ``ST_Read`` raises ``IOException`` when GDAL cannot open the body at all,
     which is exactly what an ``ows:ExceptionReport`` looks like. That case is
     reported with the same "error page" message (and body preview) the JSON path
     has always used, so a genuinely broken response still reads the same way.
+
+    A zero-feature FeatureCollection also fails to open -- GDAL finds no layer
+    to build -- but with its own "contains no layers" message. That is a
+    legitimate WFS answer to an empty bbox, not an error, so it is returned as
+    ``None`` for the caller to turn into an empty table.
     """
     try:
         described = con.execute(f"DESCRIBE SELECT * FROM ST_Read({sql_path(tmp_path)})").fetchall()
     except duckdb.IOException as e:
+        if "contains no layers" in str(e):
+            return None
         raise _error_page_error(content_type, _read_body_preview(tmp_path)) from e
 
     geometry_column: str | None = None
@@ -1666,7 +1673,14 @@ def _parse_gml_response(
     is kept, so everything downstream (repair, CRS validation, type inference,
     tile deduplication) works unchanged.
     """
-    geometry_column, other_columns, server_crs = _gml_geometry_column(con, tmp_path, content_type)
+    described = _gml_geometry_column(con, tmp_path, content_type)
+    if described is None:
+        # Zero-feature collection: same shape the JSON path returns for an
+        # empty ``features`` array (geometry-only, no _wfs_fid), so pagination
+        # and tiled fetches see an empty page, not a failure.
+        debug("Empty GML response, returning empty table")
+        return pa.table({"geometry": pa.array([], type=pa.binary())})
+    geometry_column, other_columns, server_crs = described
 
     # OGC_FID is synthesized by GDAL as a per-file row number, not server data.
     # Keeping it would give every page of a paginated fetch the same ids.
@@ -1676,9 +1690,11 @@ def _parse_gml_response(
 
     select_parts = [f"ST_AsWKB({quote_identifier(geometry_column)}) AS geometry"]
     # gml:id is the GML equivalent of a GeoJSON feature id, used to deduplicate
-    # features that straddle two spatial tiles.
+    # features that straddle two spatial tiles. GDAL synthesizes gml_id = ''
+    # (not NULL) for features with no gml:id; NULLIF sends those to the
+    # geometry-bytes dedup fallback instead of collapsing them onto one key.
     if extract_fid and "gml_id" in other_columns:
-        select_parts.append("gml_id AS _wfs_fid")
+        select_parts.append("NULLIF(gml_id, '') AS _wfs_fid")
         excluded.append("gml_id")
     exclude_list = ", ".join(quote_identifier(c) for c in excluded)
     select_parts.append(f"* EXCLUDE({exclude_list})")
