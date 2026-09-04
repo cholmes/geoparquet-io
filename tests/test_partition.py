@@ -1,5 +1,17 @@
 """
 Tests for partition commands.
+
+Partition tests read the outputs back and assert two things about every
+partitioning run: row-count conservation (partition rows sum to the input's
+row count) and partition-key correctness (every row landed in the partition
+its key says it belongs to).
+
+Pinned fixture facts these tests rely on:
+
+- ``places_test.parquet``: 766 rows; the first character of ``fsq_place_id``
+  splits it into exactly three partitions: '4' (201 rows), '5' (523),
+  '6' (42).
+- ``buildings_test.parquet``: 42 rows.
 """
 
 import os
@@ -10,6 +22,11 @@ from click.testing import CliRunner
 
 from geoparquet_io.cli.main import partition
 
+PLACES_ROWS = 766
+BUILDINGS_ROWS = 42
+# substr(fsq_place_id, 1, 1) -> row count, verified against the fixture.
+PLACES_PREFIX_COUNTS = {"4": 201, "5": 523, "6": 42}
+
 
 # Shared CliRunner to avoid repeated instantiation
 @pytest.fixture(scope="module")
@@ -18,22 +35,52 @@ def cli_runner():
     return CliRunner()
 
 
+def _partition_files(folder):
+    """Return the .parquet files directly inside folder."""
+    return sorted(f for f in os.listdir(folder) if f.endswith(".parquet"))
+
+
+def _total_rows(paths):
+    """Sum row counts across parquet files without reading data pages."""
+    return sum(pq.ParquetFile(p).metadata.num_rows for p in paths)
+
+
+def _assert_string_partitions_correct(folder, prefix=""):
+    """Assert flat string-partition outputs conserve rows and honor keys."""
+    files = _partition_files(folder)
+    stems = {f.removeprefix(prefix).removesuffix(".parquet") for f in files}
+    assert stems == set(PLACES_PREFIX_COUNTS), stems
+    total = 0
+    for f in files:
+        stem = f.removeprefix(prefix).removesuffix(".parquet")
+        table = pq.read_table(os.path.join(folder, f), columns=["fsq_place_id"])
+        assert table.num_rows == PLACES_PREFIX_COUNTS[stem]
+        # Partition-key correctness: every row belongs under this stem.
+        values = table.column("fsq_place_id").to_pylist()
+        assert all(v.startswith(stem) for v in values)
+        total += table.num_rows
+    assert total == PLACES_ROWS
+
+
 class TestPartitionCommands:
     """Test suite for partition commands."""
 
     def test_partition_string_preview(self, places_test_file):
-        """Test partition string command with preview mode."""
+        """Preview reports the exact partition breakdown without writing."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
             ["string", places_test_file, "--column", "fsq_place_id", "--chars", "1", "--preview"],
         )
         assert result.exit_code == 0
-        # Preview should show partition information
-        assert "partition" in result.output.lower() or "preview" in result.output.lower()
+        assert "Total partitions: 3" in result.output
+        assert f"Total records: {PLACES_ROWS}" in result.output
+        # The dominant partition and its share are pinned fixture facts.
+        assert "523" in result.output
+        assert "68.28%" in result.output
 
     def test_partition_string_by_column(self, places_test_file, temp_output_dir):
-        """Test partition string command by first character."""
+        """Flat string partitioning conserves rows and honors the key."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
@@ -48,14 +95,10 @@ class TestPartitionCommands:
             ],
         )
         assert result.exit_code == 0
-        # Should have created partition files
-        output_files = os.listdir(temp_output_dir)
-        assert len(output_files) > 0
-        # All files should be .parquet
-        assert all(f.endswith(".parquet") for f in output_files)
+        _assert_string_partitions_correct(temp_output_dir)
 
     def test_partition_string_with_hive(self, places_test_file, temp_output_dir):
-        """Test partition string command with Hive-style partitioning."""
+        """Hive-style partitioning writes key=value dirs with correct rows."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
@@ -71,12 +114,27 @@ class TestPartitionCommands:
             ],
         )
         assert result.exit_code == 0
-        # Should have created partition directories
-        items = os.listdir(temp_output_dir)
-        assert len(items) > 0
+        dirs = sorted(
+            d
+            for d in os.listdir(temp_output_dir)
+            if os.path.isdir(os.path.join(temp_output_dir, d))
+        )
+        assert dirs == [f"fsq_place_id_prefix={c}" for c in sorted(PLACES_PREFIX_COUNTS)]
+        total = 0
+        for d in dirs:
+            key = d.split("=", 1)[1]
+            files = _partition_files(os.path.join(temp_output_dir, d))
+            assert files, f"no parquet files in {d}"
+            table = pq.read_table(
+                os.path.join(temp_output_dir, d, files[0]), columns=["fsq_place_id"]
+            )
+            assert table.num_rows == PLACES_PREFIX_COUNTS[key]
+            assert all(v.startswith(key) for v in table.column("fsq_place_id").to_pylist())
+            total += table.num_rows
+        assert total == PLACES_ROWS
 
     def test_partition_string_with_verbose(self, places_test_file, temp_output_dir):
-        """Test partition string command with verbose flag."""
+        """Verbose partitioning still writes correct, row-conserving output."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
@@ -92,9 +150,10 @@ class TestPartitionCommands:
             ],
         )
         assert result.exit_code == 0
+        _assert_string_partitions_correct(temp_output_dir)
 
     def test_partition_string_preview_with_limit(self, places_test_file):
-        """Test partition string preview with custom limit."""
+        """--preview-limit truncates the table but not the totals."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
@@ -111,23 +170,30 @@ class TestPartitionCommands:
             ],
         )
         assert result.exit_code == 0
+        # Two-character prefixes split places into 27 partitions; the limit
+        # shows 5 of them and summarizes the remaining 22.
+        assert "Total partitions: 27" in result.output
+        assert f"Total records: {PLACES_ROWS}" in result.output
+        assert "and 22 more partition(s)" in result.output
 
     def test_partition_string_no_output_folder(self, places_test_file):
-        """Test partition string without output folder (should fail unless preview)."""
+        """Omitting the output folder without --preview is a usage error."""
         runner = CliRunner()
         result = runner.invoke(partition, ["string", places_test_file, "--column", "fsq_place_id"])
-        # Should fail because output folder is required without --preview
         assert result.exit_code != 0
+        assert "OUTPUT_FOLDER is required unless using --preview" in result.output
 
     def test_partition_string_nonexistent_column(self, places_test_file, temp_output_dir):
-        """Test partition string with nonexistent column."""
+        """A missing partition column fails naming the available columns."""
         runner = CliRunner()
         result = runner.invoke(
             partition,
             ["string", places_test_file, temp_output_dir, "--column", "nonexistent_column"],
         )
-        # Should fail with non-zero exit code
         assert result.exit_code != 0
+        assert "'nonexistent_column' not found" in result.output
+        # Nothing must be written on failure.
+        assert _partition_files(temp_output_dir) == []
 
     # Admin partition tests - skip because test files don't have admin:country_code column
     @pytest.mark.skip(reason="Test files don't have admin:country_code column")
@@ -139,11 +205,11 @@ class TestPartitionCommands:
         pass
 
     def test_partition_admin_no_output_folder(self, places_test_file):
-        """Test partition admin without output folder (should fail unless preview)."""
+        """partition admin without an output folder is the same usage error."""
         runner = CliRunner()
         result = runner.invoke(partition, ["admin", places_test_file])
-        # Should fail because output folder is required without --preview
         assert result.exit_code != 0
+        assert "OUTPUT_FOLDER is required unless using --preview" in result.output
 
     # H3 partition tests - Quick tests (preview, error cases)
     def test_partition_h3_preview(self, buildings_test_file, cli_runner):
@@ -154,7 +220,8 @@ class TestPartitionCommands:
         assert result.exit_code == 0
         assert "Partition Preview" in result.output
         assert "Total partitions:" in result.output
-        assert "Total records:" in result.output
+        # Preview accounts for every input row.
+        assert f"Total records: {BUILDINGS_ROWS}" in result.output
 
     def test_partition_h3_preview_with_limit(self, buildings_test_file, cli_runner):
         """Test partition h3 preview with custom limit."""
@@ -172,20 +239,23 @@ class TestPartitionCommands:
         )
         assert result.exit_code == 0
         assert "Partition Preview" in result.output
+        assert f"Total records: {BUILDINGS_ROWS}" in result.output
 
     def test_partition_h3_no_output_folder(self, buildings_test_file, cli_runner):
-        """Test partition h3 without output folder (should fail unless preview)."""
+        """partition h3 without an output folder is a usage error."""
         result = cli_runner.invoke(partition, ["h3", buildings_test_file, "--resolution", "9"])
         assert result.exit_code != 0
+        assert "OUTPUT_FOLDER is required unless using --preview" in result.output
 
     def test_partition_h3_invalid_resolution(
         self, buildings_test_file, temp_output_dir, cli_runner
     ):
-        """Test partition h3 with invalid resolution."""
+        """An out-of-range H3 resolution is rejected by option validation."""
         result = cli_runner.invoke(
             partition, ["h3", buildings_test_file, temp_output_dir, "--resolution", "16"]
         )
         assert result.exit_code != 0
+        assert "16 is not in the range 0<=x<=15" in result.output
 
 
 @pytest.mark.slow
@@ -217,7 +287,7 @@ class TestPartitionH3Operations:
         assert "H3 column" in result.output
 
         # Verify partition files were created
-        output_files = [f for f in os.listdir(temp_output_dir) if f.endswith(".parquet")]
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
 
         # Verify H3 cell ID format (always 15 characters)
@@ -225,9 +295,12 @@ class TestPartitionH3Operations:
             h3_id = f.replace(".parquet", "")
             assert len(h3_id) == 15, f"Expected 15-char H3 ID, got {len(h3_id)}"
 
+        # Row-count conservation: partitions sum to the input row count.
+        paths = [os.path.join(temp_output_dir, f) for f in output_files]
+        assert _total_rows(paths) == BUILDINGS_ROWS
+
         # Verify H3 column is excluded by default (non-Hive)
-        sample_file = os.path.join(temp_output_dir, output_files[0])
-        table = pq.read_table(sample_file)
+        table = pq.read_table(paths[0])
         assert "h3_cell" not in table.schema.names
 
     def test_partition_h3_resolution_7(self, buildings_test_file, temp_output_dir, cli_runner):
@@ -237,9 +310,11 @@ class TestPartitionH3Operations:
             ["h3", buildings_test_file, temp_output_dir, "--resolution", "7", "--skip-analysis"],
         )
         assert result.exit_code == 0
-        output_files = os.listdir(temp_output_dir)
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
         assert all(len(f.replace(".parquet", "")) == 15 for f in output_files)
+        paths = [os.path.join(temp_output_dir, f) for f in output_files]
+        assert _total_rows(paths) == BUILDINGS_ROWS
 
     def test_partition_h3_keeps_column_with_flag(
         self, buildings_test_file, temp_output_dir, cli_runner
@@ -258,12 +333,18 @@ class TestPartitionH3Operations:
             ],
         )
         assert result.exit_code == 0
-        output_files = [f for f in os.listdir(temp_output_dir) if f.endswith(".parquet")]
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
 
-        sample_file = os.path.join(temp_output_dir, output_files[0])
-        table = pq.read_table(sample_file)
-        assert "h3_cell" in table.schema.names
+        # Partition-key correctness: with the column kept, every row's
+        # h3_cell must equal the cell the file is named after.
+        total = 0
+        for f in output_files:
+            cell = f.replace(".parquet", "")
+            table = pq.read_table(os.path.join(temp_output_dir, f), columns=["h3_cell"])
+            assert set(table.column("h3_cell").to_pylist()) == {cell}
+            total += table.num_rows
+        assert total == BUILDINGS_ROWS
 
     def test_partition_h3_custom_column_name(
         self, buildings_test_file, temp_output_dir, cli_runner
@@ -283,8 +364,12 @@ class TestPartitionH3Operations:
             ],
         )
         assert result.exit_code == 0
-        output_files = os.listdir(temp_output_dir)
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
+        paths = [os.path.join(temp_output_dir, f) for f in output_files]
+        assert _total_rows(paths) == BUILDINGS_ROWS
+        # The custom-named partition column is excluded by default too.
+        assert "custom_h3" not in pq.ParquetFile(paths[0]).schema_arrow.names
 
     def test_partition_h3_hive_comprehensive(
         self, buildings_test_file, temp_output_dir, cli_runner
@@ -315,15 +400,20 @@ class TestPartitionH3Operations:
         ]
         assert len(hive_dirs) > 0
 
-        # Find and verify a parquet file in Hive partition
-        sample_dir = os.path.join(temp_output_dir, hive_dirs[0])
-        parquet_files = [f for f in os.listdir(sample_dir) if f.endswith(".parquet")]
-        assert len(parquet_files) > 0
-
-        # Verify H3 column is kept by default for Hive
-        sample_file = os.path.join(sample_dir, parquet_files[0])
-        pf = pq.ParquetFile(sample_file)
-        assert "h3_cell" in pf.schema_arrow.names
+        # Row conservation and key correctness across all Hive partitions:
+        # the h3_cell column is kept by default for Hive, and every row's
+        # cell must match its directory's key.
+        total = 0
+        for d in hive_dirs:
+            key = d.split("=", 1)[1]
+            part_dir = os.path.join(temp_output_dir, d)
+            parquet_files = [f for f in os.listdir(part_dir) if f.endswith(".parquet")]
+            assert parquet_files, f"no parquet files in {d}"
+            for f in parquet_files:
+                table = pq.read_table(os.path.join(part_dir, f), columns=["h3_cell"])
+                assert set(table.column("h3_cell").to_pylist()) == {key}
+                total += table.num_rows
+        assert total == BUILDINGS_ROWS
 
 
 @pytest.mark.slow
@@ -347,9 +437,10 @@ class TestPartitionPrefix:
             ],
         )
         assert result.exit_code == 0
-        output_files = os.listdir(temp_output_dir)
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
-        assert all(f.startswith("places_") and f.endswith(".parquet") for f in output_files)
+        assert all(f.startswith("places_") for f in output_files)
+        _assert_string_partitions_correct(temp_output_dir, prefix="places_")
 
     def test_partition_h3_with_prefix(self, buildings_test_file, temp_output_dir, cli_runner):
         """Test partition h3 command with custom filename prefix."""
@@ -367,12 +458,14 @@ class TestPartitionPrefix:
             ],
         )
         assert result.exit_code == 0
-        output_files = os.listdir(temp_output_dir)
+        output_files = _partition_files(temp_output_dir)
         assert len(output_files) > 0
-        assert all(f.startswith("buildings_") and f.endswith(".parquet") for f in output_files)
+        assert all(f.startswith("buildings_") for f in output_files)
         for f in output_files:
             h3_cell = f.replace("buildings_", "").replace(".parquet", "")
             assert len(h3_cell) == 15
+        paths = [os.path.join(temp_output_dir, f) for f in output_files]
+        assert _total_rows(paths) == BUILDINGS_ROWS
 
     def test_partition_string_with_prefix_and_hive(
         self, places_test_file, temp_output_dir, cli_runner
@@ -396,7 +489,16 @@ class TestPartitionPrefix:
         assert result.exit_code == 0
 
         items = os.listdir(temp_output_dir)
-        hive_dirs = [d for d in items if os.path.isdir(os.path.join(temp_output_dir, d))]
-        sample_dir = os.path.join(temp_output_dir, hive_dirs[0])
-        parquet_files = [f for f in os.listdir(sample_dir) if f.endswith(".parquet")]
-        assert all(f.startswith("places_") for f in parquet_files)
+        hive_dirs = sorted(d for d in items if os.path.isdir(os.path.join(temp_output_dir, d)))
+        assert hive_dirs == [f"fsq_place_id_prefix={c}" for c in sorted(PLACES_PREFIX_COUNTS)]
+        total = 0
+        for d in hive_dirs:
+            key = d.split("=", 1)[1]
+            sample_dir = os.path.join(temp_output_dir, d)
+            parquet_files = [f for f in os.listdir(sample_dir) if f.endswith(".parquet")]
+            assert all(f.startswith("places_") for f in parquet_files)
+            for f in parquet_files:
+                table = pq.read_table(os.path.join(sample_dir, f), columns=["fsq_place_id"])
+                assert all(v.startswith(key) for v in table.column("fsq_place_id").to_pylist())
+                total += table.num_rows
+        assert total == PLACES_ROWS
