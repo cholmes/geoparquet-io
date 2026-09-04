@@ -6,6 +6,7 @@ import os
 import tempfile
 import uuid
 
+import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
@@ -21,7 +22,11 @@ from geoparquet_io.core.file_utils import (
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
-from geoparquet_io.core.partition.reader import build_read_parquet_expr, resolve_read_path
+from geoparquet_io.core.partition.reader import (
+    build_read_parquet_expr,
+    raise_for_schema_mismatch,
+    resolve_read_path,
+)
 from geoparquet_io.core.remote import (
     needs_httpfs,
     setup_aws_profile_if_needed,
@@ -225,6 +230,10 @@ def sort_by_quadkey(
         except Exception as e:
             if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
+            # A multi-file input whose files disagree on their columns dies
+            # here, in the first read over the glob. Report the mismatch,
+            # not a failed quadkey add (#817's new surface).
+            raise_for_schema_mismatch(e, input_parquet)
             raise GeoParquetError(f"Failed to add quadkey column: {str(e)}") from e
 
     elif verbose:
@@ -290,6 +299,11 @@ def sort_by_quadkey(
         else:
             success(f"Sorted by quadkey to: {output_parquet}")
 
+    except duckdb.InvalidInputException as e:
+        # When the quadkey column already exists there is no auto-add step,
+        # so a schema mismatch across the glob first strikes the sort itself.
+        raise_for_schema_mismatch(e, input_parquet)
+        raise
     finally:
         con.close()
         # Clean up temp file if we created one

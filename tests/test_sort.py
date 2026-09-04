@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import duckdb
+import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.ipc as ipc
 import pyarrow.parquet as pq
@@ -20,7 +21,9 @@ from click.testing import CliRunner
 
 from geoparquet_io.cli.main import sort
 from geoparquet_io.core import sort_quadkey as sort_quadkey_module
+from geoparquet_io.core.exceptions import GeoParquetError
 from geoparquet_io.core.sort_by_column import sort_by_column, sort_by_column_table
+from geoparquet_io.core.sort_quadkey import sort_by_quadkey
 from tests.conftest import safe_unlink
 
 
@@ -511,3 +514,86 @@ class TestSortPartitionInput:
         assert result.exit_code != 0
         assert "requires a single parquet file" in result.output
         assert "gpio extract" in result.output
+
+
+@pytest.fixture
+def mismatched_schema_dir(places_test_file, tmp_path):
+    """A directory of two files whose geometry columns are named differently.
+
+    ``a.parquet`` keeps the column as ``geometry``; ``b.parquet`` renames it to
+    ``geom`` (in the schema and in its geo metadata). DuckDB refuses to read
+    the pair as one glob, and the sort commands must turn that refusal into a
+    user-facing error, not a raw ``InvalidInputException`` traceback.
+    """
+    table = pq.read_table(places_test_file)
+    half = table.num_rows // 2
+    parts_dir = tmp_path / "mismatched_parts"
+    parts_dir.mkdir()
+    pq.write_table(table.slice(0, half), parts_dir / "a.parquet")
+
+    part = table.slice(half)
+    meta = dict(part.schema.metadata)
+    geo = json.loads(meta[b"geo"])
+    geo["columns"]["geom"] = geo["columns"].pop("geometry")
+    geo["primary_column"] = "geom"
+    meta[b"geo"] = json.dumps(geo).encode()
+    renamed = part.rename_columns(
+        ["geom" if name == "geometry" else name for name in part.column_names]
+    ).replace_schema_metadata(meta)
+    pq.write_table(renamed, parts_dir / "b.parquet")
+    return parts_dir
+
+
+class TestSortPartitionSchemaMismatch:
+    """Mismatched schemas across a directory's files fail cleanly (#817 follow-up).
+
+    Reachable only through the multi-file input this branch added: a single
+    file can never disagree with itself. The message points at the explicit
+    reconciliation (``gpio extract ... --allow-schema-diff``) instead of
+    quietly union-by-naming, which would NULL-fill a renamed geometry column.
+    """
+
+    def test_sort_column_cli_reports_mismatch_cleanly(
+        self, mismatched_schema_dir, temp_output_file
+    ):
+        result = CliRunner().invoke(
+            sort, ["column", str(mismatched_schema_dir), temp_output_file, "name"]
+        )
+        assert result.exit_code == 1
+        assert "do not share one schema" in result.output
+        assert "--allow-schema-diff" in result.output
+        assert "InvalidInputException" not in result.output
+        assert "Traceback" not in result.output
+        assert not os.path.exists(temp_output_file)
+
+    def test_sort_column_core_raises_geoparquet_error(
+        self, mismatched_schema_dir, temp_output_file
+    ):
+        with pytest.raises(GeoParquetError, match="allow-schema-diff"):
+            sort_by_column(str(mismatched_schema_dir), temp_output_file, "name")
+        assert not os.path.exists(temp_output_file)
+
+    def test_sort_quadkey_cli_reports_mismatch_cleanly(
+        self, mismatched_schema_dir, temp_output_file
+    ):
+        """The auto-add step reads the whole glob, so it hits the mismatch."""
+        result = CliRunner().invoke(sort, ["quadkey", str(mismatched_schema_dir), temp_output_file])
+        assert result.exit_code == 1
+        assert "do not share one schema" in result.output
+        assert "--allow-schema-diff" in result.output
+        assert "InvalidInputException" not in result.output
+        assert not os.path.exists(temp_output_file)
+
+    def test_sort_quadkey_existing_column_raises_geoparquet_error(
+        self, mismatched_schema_dir, temp_output_file
+    ):
+        """With quadkey already present the sort itself reads the glob."""
+        for name in ("a.parquet", "b.parquet"):
+            path = mismatched_schema_dir / name
+            part = pq.read_table(path)
+            part = part.append_column("quadkey", pa.array(["0"] * part.num_rows))
+            pq.write_table(part, path)
+
+        with pytest.raises(GeoParquetError, match="allow-schema-diff"):
+            sort_by_quadkey(str(mismatched_schema_dir), temp_output_file)
+        assert not os.path.exists(temp_output_file)

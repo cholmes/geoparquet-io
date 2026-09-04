@@ -12,7 +12,7 @@ from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessErr
 from geoparquet_io.core.file_utils import handle_output_overwrite, is_partition_path
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
-from geoparquet_io.core.partition.reader import build_read_parquet_expr
+from geoparquet_io.core.partition.reader import build_read_parquet_expr, raise_for_schema_mismatch
 from geoparquet_io.core.remote import (
     get_remote_error_hint,
     is_remote_url,
@@ -237,6 +237,11 @@ def sort_by_column(
         if is_remote_url(input_parquet):
             hints = get_remote_error_hint(str(e), input_parquet)
             raise RemoteAccessError(input_parquet, f"{hints}\n\nOriginal error: {str(e)}") from e
+        raise
+    except duckdb.InvalidInputException as e:
+        # A multi-file input whose files disagree on their columns only
+        # surfaces here, when the read actually runs (#817's new surface).
+        raise_for_schema_mismatch(e, input_parquet)
         raise
     finally:
         con.close()

@@ -197,6 +197,42 @@ def require_single_file(path: str, command_name: str) -> None:
         )
 
 
+def raise_for_schema_mismatch(exc: BaseException, path: str) -> None:
+    """Re-raise DuckDB's multi-file schema-mismatch as a user-facing error.
+
+    A directory whose parquet files disagree on their columns dies in DuckDB
+    with an ``InvalidInputException`` ("schema mismatch in glob ... try
+    setting union_by_name=True"). Reading with ``union_by_name`` implicitly
+    would NULL-fill the union -- for a renamed geometry column that fabricates
+    empty geometries -- so gpio points at the explicit reconciliation instead.
+
+    A no-op for single-file inputs and for unrelated errors, so callers can
+    invoke it first and fall through to their own handling.
+
+    Args:
+        exc: The DuckDB exception that interrupted the read
+        path: The RAW input path the user gave (directory or glob)
+
+    Raises:
+        GeoParquetError: When ``path`` is multi-file and ``exc`` is DuckDB's
+            schema-mismatch complaint.
+    """
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    if not is_partition_path(path):
+        return
+    text = str(exc)
+    if "schema mismatch" not in text.lower() and "union_by_name" not in text:
+        return
+    raise GeoParquetError(
+        f"The parquet files matched by '{path}' do not share one schema, so "
+        "they cannot be read together.\n\n"
+        "Reconcile them into a single file first:\n\n"
+        f'    gpio extract "{path}" merged.parquet --allow-schema-diff\n\n'
+        f"then run this command on the merged file.\n\nOriginal error: {exc}"
+    ) from exc
+
+
 def get_files_to_check(
     path: str,
     check_all: bool = False,
