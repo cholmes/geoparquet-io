@@ -5,7 +5,10 @@ Tests file path utilities including glob pattern detection, partition path handl
 SQL escaping, and cache key generation.
 """
 
+import functools
+import http.server
 import os
+import threading
 
 import pytest
 
@@ -357,6 +360,43 @@ class TestHandleOutputOverwrite:
 # =============================================================================
 
 
+class _RecordingHandler(http.server.SimpleHTTPRequestHandler):
+    """Static file handler that records every raw request target it is given."""
+
+    seen: list[str] = []
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        type(self).seen.append(self.path)
+        super().do_GET()
+
+    def log_message(self, *args):  # pragma: no cover - silence stderr noise
+        pass
+
+
+@pytest.fixture
+def recording_http_server(tmp_path):
+    """Serve a directory over loopback HTTP, recording the raw paths requested.
+
+    Yields ``(base_url, served_dir, seen_paths)``. No outside network is
+    touched, so this is not a ``network`` test.
+    """
+    served = tmp_path / "served"
+    served.mkdir()
+
+    handler_cls = type("_Handler", (_RecordingHandler,), {"seen": []})
+    httpd = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(handler_cls, directory=str(served))
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}", served, handler_cls.seen
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 class TestCopyFile:
     """Test byte-for-byte copying, local and remote (#798 diff-cover gap)."""
 
@@ -432,18 +472,58 @@ class TestCopyFile:
             "az://account/container",
         ]
 
-    def test_https_source_resolves_to_an_http_store_on_the_origin(self):
-        """An https:// input is read through obstore's HTTP store, keyed by its path."""
-        from unittest.mock import patch
+    def test_http_source_copy_requests_path_and_query_verbatim(
+        self, recording_http_server, tmp_path
+    ):
+        """An http(s) source is fetched with a plain GET of the URL exactly as given.
 
-        from geoparquet_io.core.file_utils import resolve_object_store
+        The object-store route keyed on ``urlsplit(url).path`` discarded the query
+        string, so a presigned URL was requested without its signature. The copy
+        must send path *and* query, untouched.
+        """
+        from geoparquet_io.core.file_utils import copy_file
 
-        with patch("obstore.store.HTTPStore") as mock_http:
-            store, key = resolve_object_store("https://example.com/data/file.parquet")
+        base_url, served, seen = recording_http_server
+        payload = b"presigned-source-bytes"
+        (served / "data.parquet").write_bytes(payload)
+        dest = tmp_path / "dest.parquet"
 
-        assert key == "data/file.parquet"
-        assert store is mock_http.from_url.return_value
-        mock_http.from_url.assert_called_once_with("https://example.com")
+        copy_file(f"{base_url}/data.parquet?X-Amz-Signature=abc%2Fdef", str(dest))
+
+        assert dest.read_bytes() == payload
+        assert seen == ["/data.parquet?X-Amz-Signature=abc%2Fdef"], seen
+
+    def test_http_source_copy_does_not_double_encode_percent_escapes(
+        self, recording_http_server, tmp_path
+    ):
+        """A ``%20`` in the source URL reaches the server as ``%20``, not ``%2520``.
+
+        Same contract as #825/#845 for reads: the URL the user pasted already is
+        the percent-encoded form, so the copy encodes nothing.
+        """
+        from geoparquet_io.core.file_utils import copy_file
+
+        base_url, served, seen = recording_http_server
+        payload = b"space-named-source-bytes"
+        (served / "my file.parquet").write_bytes(payload)
+        dest = tmp_path / "dest.parquet"
+
+        copy_file(f"{base_url}/my%20file.parquet", str(dest))
+
+        assert dest.read_bytes() == payload
+        assert seen == ["/my%20file.parquet"], seen
+
+    def test_http_source_copy_raises_on_http_error_status(self, recording_http_server, tmp_path):
+        """A 404 on the source surfaces as an error, not an empty destination file."""
+        from geoparquet_io.core.file_utils import copy_file
+
+        base_url, _served, _seen = recording_http_server
+        dest = tmp_path / "dest.parquet"
+
+        with pytest.raises(Exception, match="404"):
+            copy_file(f"{base_url}/missing.parquet", str(dest))
+
+        assert not dest.exists()
 
     def test_unsupported_scheme_fails_before_any_store_is_built(self):
         """abfs:// reached fsspec and died on a missing adlfs; reject it up front (#810)."""

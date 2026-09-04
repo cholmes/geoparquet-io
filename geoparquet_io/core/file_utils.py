@@ -225,18 +225,53 @@ def _check_copyable_scheme(param_name: str, url: str, writing: bool) -> None:
         )
 
 
+def _copy_http_source(url: str, dest_path: str, dest_is_remote: bool) -> None:
+    """Stream an http(s) copy source with a plain GET of the URL exactly as given.
+
+    The URL is requested **verbatim** -- query string included, nothing
+    re-encoded -- matching the contract of :func:`resolve_file_url` for reads:
+    a URL already is its percent-encoded form (#825), and a presigned URL is
+    only valid with its signature attached. An object store gains nothing here;
+    gpio's store configuration is S3-endpoint plumbing, so HTTP(S) bypasses it.
+
+    The destination is not opened until the server has answered with a success
+    status, so a 404 cannot leave a truncated or empty output behind.
+    """
+    import httpx
+
+    with (
+        httpx.Client(follow_redirects=True) as client,
+        client.stream("GET", url) as response,
+    ):
+        response.raise_for_status()
+
+        if dest_is_remote:
+            import obstore as obs
+
+            store, key = resolve_object_store(dest_path)
+            dest_handle = obs.open_writer(store, key)
+        else:
+            dest_handle = open(dest_path, "wb")
+        try:
+            for chunk in response.iter_bytes():
+                dest_handle.write(chunk)
+        finally:
+            dest_handle.close()
+
+
 def resolve_object_store(url: str) -> tuple[object, str]:
     """Resolve a remote URL to the ``(obstore store, key)`` pair gpio should use.
 
     S3 stores are built by :func:`geoparquet_io.core.upload._setup_store_and_kwargs`
     from the ambient S3 config, so a copy honours ``--s3-endpoint``,
     ``--s3-region``, ``--s3-no-ssl`` and ``--aws-profile`` exactly as every other
-    remote write in gpio does (#810). GCS and Azure go through obstore's own
-    ``from_url``, which needs no extra dependency, and HTTP(S) reads through
-    obstore's HTTP store keyed on the URL's path.
+    remote write in gpio does (#810). GCS goes through obstore's own
+    ``from_url``, which needs no extra dependency. HTTP(S) never reaches this
+    function: it carries a full URL, not a store plus key, and is streamed
+    verbatim by :func:`_copy_http_source` instead.
 
     Args:
-        url: Remote URL, already known to be one (see ``is_remote_url``)
+        url: Remote URL for a scheme in ``_COPYABLE_STORE_SCHEMES`` (or an alias)
 
     Returns:
         Tuple of (obstore store, key within that store)
@@ -245,13 +280,7 @@ def resolve_object_store(url: str) -> tuple[object, str]:
         InvalidParameterError: If the scheme has no configured store
     """
     _check_copyable_scheme("path", url, writing=False)
-    scheme, canonical = _canonical_remote_url(url)
-
-    if scheme in _HTTP_SCHEMES:
-        from obstore.store import HTTPStore
-
-        parsed = urllib.parse.urlsplit(resolve_file_url(canonical))
-        return HTTPStore.from_url(f"{parsed.scheme}://{parsed.netloc}"), parsed.path.lstrip("/")
+    _scheme, canonical = _canonical_remote_url(url)
 
     from geoparquet_io.core.duckdb_utils import get_active_s3_config
     from geoparquet_io.core.upload import _setup_store_and_kwargs, parse_object_store_url
@@ -278,10 +307,12 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
     so the output it was asked for is a verbatim copy rather than a rewrite
     (``gpio add bbox`` on a file that already has a bbox column, #728).
 
-    A remote side is read or written through the object store
-    :func:`resolve_object_store` builds, which is the store gpio is configured to
-    use -- not a filesystem assembled from ambient credentials -- and the bytes
-    are streamed rather than held in memory.
+    A remote s3://, s3a://, gs:// or gcs:// side is read or written through the
+    object store :func:`resolve_object_store` builds, which is the store gpio is
+    configured to use -- not a filesystem assembled from ambient credentials. An
+    http(s):// source is streamed with a plain GET of the URL exactly as given
+    (:func:`_copy_http_source`). Either way the bytes are streamed rather than
+    held in memory.
 
     Args:
         source_path: Local path or remote URL to read
@@ -311,6 +342,13 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
         _check_copyable_scheme("source_path", source_path, writing=False)
     if dest_is_remote:
         _check_copyable_scheme("dest_path", dest_path, writing=True)
+
+    # An http(s) source is a full URL, not a store plus key: it is streamed with
+    # a plain GET of the URL verbatim, so a presigned query string survives and
+    # nothing is percent-encoded a second time (#825).
+    if source_is_remote and _canonical_remote_url(source_path)[0] in _HTTP_SCHEMES:
+        _copy_http_source(source_path, dest_path, dest_is_remote)
+        return
 
     import obstore as obs
 
