@@ -487,9 +487,10 @@ class TestAddH3CLI:
     """`gpio add h3` plumbing, asserted off two shared runs (#666, item 5).
 
     H3 *semantics* -- what the column holds, which resolutions are legal, what
-    the metadata survives -- are asserted once against the core functions in
-    ``tests/test_add_h3.py`` (``TestAddH3Table`` for ``add_h3_table``,
-    ``TestAddH3File`` for ``add_h3_column``). What only the CLI layer can get
+    the metadata survives -- are asserted once against the core functions
+    ``add_h3_table`` and ``add_h3_column`` in the per-index family suite:
+    ``tests/test_add_h3.py`` today, ``tests/test_spatial_index_family.py`` once
+    #830 folds the per-index files into it. What only the CLI layer can get
     wrong is whether each option reaches core at all, so this class runs the
     command twice -- once on defaults, once with every option set -- and asserts
     both outputs many times over, instead of paying a DuckDB + h3-extension run
@@ -564,21 +565,39 @@ class TestAddH3CLI:
         assert "Loading DuckDB extension: h3" in result.output
 
     @pytest.mark.parametrize(
-        ("input_file", "extra_args"),
+        ("input_file", "extra_args", "message"),
         [
-            pytest.param("nonexistent.parquet", [], id="missing-input"),
-            pytest.param(str(BUILDINGS_TEST_FILE), ["--resolution", "-1"], id="resolution-below-0"),
             pytest.param(
-                str(BUILDINGS_TEST_FILE), ["--resolution", "16"], id="resolution-above-15"
+                "nonexistent.parquet",
+                [],
+                "Cannot read file: nonexistent.parquet",
+                id="missing-input",
+            ),
+            pytest.param(
+                str(BUILDINGS_TEST_FILE),
+                ["--resolution", "-1"],
+                "-1 is not in the range 0<=x<=15",
+                id="resolution-below-0",
+            ),
+            pytest.param(
+                str(BUILDINGS_TEST_FILE),
+                ["--resolution", "16"],
+                "16 is not in the range 0<=x<=15",
+                id="resolution-above-15",
             ),
         ],
     )
-    def test_refuses_bad_input(self, input_file, extra_args, tmp_path):
-        """Each of these must fail loudly rather than write a file (#666, item 5)."""
+    def test_refuses_bad_input(self, input_file, extra_args, message, tmp_path):
+        """Each of these must fail loudly rather than write a file (#666, item 5).
+
+        The message is asserted too: a non-zero exit says only that *something*
+        went wrong, which an unrelated failure would satisfy just as well.
+        """
         output = tmp_path / "out.parquet"
         result = CliRunner().invoke(add, ["h3", input_file, str(output), *extra_args])
 
         assert result.exit_code != 0, result.output
+        assert message in result.output
         assert not output.exists()
 
     def test_core_function_rejects_an_out_of_range_resolution(

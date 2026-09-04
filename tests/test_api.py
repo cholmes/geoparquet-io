@@ -9,7 +9,7 @@ import struct
 import tempfile
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -28,10 +28,13 @@ from geoparquet_io.core import sort_quadkey as core_sort_quadkey
 from geoparquet_io.core import str_order as core_str_order
 from geoparquet_io.core.add import a5 as core_a5
 from geoparquet_io.core.add import bbox as core_bbox
+from geoparquet_io.core.add import bbox_metadata as core_bbox_metadata
 from geoparquet_io.core.add import h3 as core_h3
 from geoparquet_io.core.add import kdtree as core_kdtree
 from geoparquet_io.core.add import quadkey as core_quadkey
 from geoparquet_io.core.add import s2 as core_s2
+from geoparquet_io.core.process.aggregate import by_a5 as core_aggregate_a5
+from geoparquet_io.core.process.aggregate import by_h3 as core_aggregate_h3
 from tests.conftest import safe_unlink, skip_if_geography_available
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
@@ -315,14 +318,23 @@ class _CallRecorder:
 class FrontDoorCase:
     """One operation reachable through both `ops` and `Table`.
 
-    ``core_name`` is the attribute name of the core function on *both* `ops`
-    (which binds it at module import time) and ``core_module`` (which is where
-    the `Table` method imports it from inside the method body). Patching one
-    leaves the other alone, so each door is recorded independently.
+    ``core_name`` is the attribute name of the core function on ``core_module``
+    (where the `Table` method imports it from inside the method body) and on
+    ``ops_patch_module`` -- `ops` itself for the operations it binds at module
+    import time, or ``core_module`` again for the ones it imports inside the
+    function body. The two doors are recorded one at a time, under separate
+    patches, so a shared patch site still records each independently.
 
     ``expected`` names the knobs under core's own parameter spelling. It is
     asserted as a subset, and the two doors' full calls are asserted equal to
     each other, so a knob one door quietly renames or drops is caught either way.
+
+    ``ops_only_expected`` names knobs the `ops` function exposes and the `Table`
+    method has no way to set (``geometry_column`` on the index adders, which the
+    method leaves to core's auto-detection). They are asserted against the `ops`
+    door alone and then dropped from both sides before the doors are compared --
+    without them, an `ops` wrapper that forgets to forward its own argument looks
+    identical to the `Table` method that never had one.
     """
 
     id: str
@@ -331,18 +343,27 @@ class FrontDoorCase:
     ops_call: Callable[[pa.Table], Any]
     table_call: Callable[[Table], Any]
     expected: dict[str, Any]
+    ops_only_expected: dict[str, Any] = field(default_factory=dict)
+    #: Where the `ops` door's core call is patched, when it is not `ops` itself.
+    ops_module: Any = None
 
     @property
     def reference(self) -> Callable:
         return getattr(self.core_module, self.core_name)
 
+    @property
+    def ops_patch_module(self) -> Any:
+        return ops if self.ops_module is None else self.ops_module
+
 
 #: Every table-in/table-out operation that both front doors expose.
 #:
-#: Where a call passes ``geometry_column`` on the `ops` side it is because the
-#: `Table` method forwards the column it detected at ``read()`` time; where it
-#: does not, the method does not forward one either. The comparison is of the
-#: values the two doors deliver, so the calls are written to be the same request.
+#: Where a call passes ``geometry_column`` on the `ops` side and the `Table`
+#: method forwards the column it detected at ``read()`` time, the knob goes in
+#: ``expected`` and is compared across both doors. Where only `ops` exposes it,
+#: it goes in ``ops_only_expected`` instead: still asserted, but on the `ops`
+#: door alone. Otherwise the comparison is of the values the two doors deliver,
+#: so the calls are written to be the same request.
 FRONT_DOOR_CASES: list[FrontDoorCase] = [
     FrontDoorCase(
         id="add_bbox",
@@ -351,6 +372,16 @@ FRONT_DOOR_CASES: list[FrontDoorCase] = [
         ops_call=lambda t: ops.add_bbox(t, column_name="bounds", geometry_column="geometry"),
         table_call=lambda t: t.add_bbox(column_name="bounds"),
         expected={"bbox_column_name": "bounds", "geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_bbox_metadata",
+        core_module=core_bbox_metadata,
+        core_name="add_bbox_metadata_table",
+        ops_call=lambda t: ops.add_bbox_metadata(
+            t, bbox_column="bounds", geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_bbox_metadata(bbox_column="bounds"),
+        expected={"bbox_column": "bounds", "geometry_column": "geometry"},
     ),
     FrontDoorCase(
         id="add_quadkey",
@@ -371,33 +402,131 @@ FRONT_DOOR_CASES: list[FrontDoorCase] = [
         id="add_h3",
         core_module=core_h3,
         core_name="add_h3_table",
-        ops_call=lambda t: ops.add_h3(t, column_name="my_h3", resolution=5),
+        ops_call=lambda t: ops.add_h3(
+            t, column_name="my_h3", resolution=5, geometry_column="geometry"
+        ),
         table_call=lambda t: t.add_h3(column_name="my_h3", resolution=5),
         expected={"h3_column_name": "my_h3", "resolution": 5},
+        ops_only_expected={"geometry_column": "geometry"},
     ),
     FrontDoorCase(
         id="add_a5",
         core_module=core_a5,
         core_name="add_a5_table",
-        ops_call=lambda t: ops.add_a5(t, column_name="my_a5", resolution=7),
+        ops_call=lambda t: ops.add_a5(
+            t, column_name="my_a5", resolution=7, geometry_column="geometry"
+        ),
         table_call=lambda t: t.add_a5(column_name="my_a5", resolution=7),
         expected={"a5_column_name": "my_a5", "resolution": 7},
+        ops_only_expected={"geometry_column": "geometry"},
     ),
     FrontDoorCase(
         id="add_s2",
         core_module=core_s2,
         core_name="add_s2_table",
-        ops_call=lambda t: ops.add_s2(t, column_name="my_s2", level=10),
+        ops_call=lambda t: ops.add_s2(t, column_name="my_s2", level=10, geometry_column="geometry"),
         table_call=lambda t: t.add_s2(column_name="my_s2", level=10),
         expected={"s2_column_name": "my_s2", "level": 10},
+        ops_only_expected={"geometry_column": "geometry"},
     ),
     FrontDoorCase(
         id="add_kdtree",
         core_module=core_kdtree,
         core_name="add_kdtree_table",
-        ops_call=lambda t: ops.add_kdtree(t, column_name="my_kd", iterations=5, sample_size=1000),
+        ops_call=lambda t: ops.add_kdtree(
+            t, column_name="my_kd", iterations=5, sample_size=1000, geometry_column="geometry"
+        ),
         table_call=lambda t: t.add_kdtree(column_name="my_kd", iterations=5, sample_size=1000),
         expected={"kdtree_column_name": "my_kd", "iterations": 5, "sample_size": 1000},
+        ops_only_expected={"geometry_column": "geometry"},
+    ),
+    # The two aggregators whose doors both import core inside the function body,
+    # so `ops` has no module-level binding to patch and both are recorded at the
+    # core module instead (`aggregate_admin` is not here: `Table` delegates to
+    # `ops`, so there is only one door -- see NOT_TABLE_IN_TABLE_OUT).
+    FrontDoorCase(
+        id="aggregate_h3",
+        core_module=core_aggregate_h3,
+        core_name="aggregate_h3_table",
+        ops_module=core_aggregate_h3,
+        ops_call=lambda t: ops.aggregate_h3(
+            t,
+            resolution=6,
+            metric="sum:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            geometry_column="geometry",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        table_call=lambda t: t.aggregate_h3(
+            resolution=6,
+            metric="sum:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        expected={
+            "resolution": 6,
+            "metric": "sum:population",
+            "breakdown": "category",
+            "breakdown_limit": 5,
+            "out_geometry": "centroid",
+            "geometry_column": "geometry",
+            "where": "population > 0",
+            "metric_nodata": "-999",
+            "bucket_point": "bbox",
+            "bbox_column": "bounds",
+        },
+    ),
+    FrontDoorCase(
+        id="aggregate_a5",
+        core_module=core_aggregate_a5,
+        core_name="aggregate_a5_table",
+        ops_module=core_aggregate_a5,
+        ops_call=lambda t: ops.aggregate_a5(
+            t,
+            resolution=8,
+            metric="mean:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            geometry_column="geometry",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        table_call=lambda t: t.aggregate_a5(
+            resolution=8,
+            metric="mean:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        expected={
+            "resolution": 8,
+            "metric": "mean:population",
+            "breakdown": "category",
+            "breakdown_limit": 5,
+            "out_geometry": "centroid",
+            "geometry_column": "geometry",
+            "where": "population > 0",
+            "metric_nodata": "-999",
+            "bucket_point": "bbox",
+            "bbox_column": "bounds",
+        },
     ),
     FrontDoorCase(
         id="sort_hilbert",
@@ -500,6 +629,43 @@ FRONT_DOOR_CASES: list[FrontDoorCase] = [
 
 FRONT_DOOR_IDS = [case.id for case in FRONT_DOOR_CASES]
 
+#: The rest of the `ops`/`Table` surface, and why each entry is not a case above.
+#: `FRONT_DOOR_CASES` compares one *table-in/table-out* core call per operation;
+#: these have no such call to compare, so each names where it is covered instead.
+#: `test_every_shared_operation_has_a_case` asserts this list plus the case ids
+#: is exactly the shared surface, so a new twin lands in one place or the other.
+NOT_TABLE_IN_TABLE_OUT: dict[str, str] = {
+    # Core is file-in/file-out: both doors write the table to a temp parquet and
+    # read the result back, so there is no in-memory core call to record.
+    "add_admin_divisions": "file round trip onto add_admin_divisions_multi",
+    "add_geometry_metrics": "file round trip onto add_geometry_metrics",
+    "aggregate_admin": "Table.aggregate_admin calls ops.aggregate_admin -- one door, "
+    "and that one round-trips through a file",
+    # Not a transform of a table at all.
+    "explain_analyze": "file path in, dict out; Table's is a classmethod, not an operation",
+    "from_wfs": "constructor: fetches a service over the network, no input table",
+    # Table in, partition tree out. Both doors are run for real, and asserted to
+    # write the same tree, by TestOpsPartition.
+    "partition_by_a5": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_admin": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_h3": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_kdtree": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_quadkey": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_s2": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_string": "writes a partition tree; covered by TestOpsPartition",
+}
+
+
+def _shared_front_door_surface() -> set[str]:
+    """Every public callable `ops` and `Table` both expose under the same name."""
+    ops_names = {name for name in dir(ops) if not name.startswith("_")}
+    table_names = {name for name in dir(Table) if not name.startswith("_")}
+    return {
+        name
+        for name in ops_names & table_names
+        if callable(getattr(ops, name)) and callable(getattr(Table, name))
+    }
+
 
 class TestFrontDoorDelegation:
     """`ops.<op>` and `Table.<op>` must hand core the same call (#666, item 6).
@@ -523,7 +689,7 @@ class TestFrontDoorDelegation:
     @pytest.mark.parametrize("case", FRONT_DOOR_CASES, ids=FRONT_DOOR_IDS)
     def test_both_front_doors_hand_core_the_same_call(self, case, arrow_table, gpio_table):
         via_ops = _CallRecorder(case.reference)
-        with patch.object(ops, case.core_name, via_ops):
+        with patch.object(case.ops_patch_module, case.core_name, via_ops):
             case.ops_call(arrow_table)
 
         via_table = _CallRecorder(case.reference)
@@ -538,14 +704,30 @@ class TestFrontDoorDelegation:
             assert via_ops.delivered[name] == value, f"ops.{case.id} dropped {name}"
             assert via_table.delivered[name] == value, f"Table.{case.id} dropped {name}"
 
+        # Knobs only the `ops` door exposes: asserted there, then dropped from
+        # both sides, since the `Table` method has no way to set them.
+        for name, value in case.ops_only_expected.items():
+            assert via_ops.delivered[name] == value, f"ops.{case.id} dropped {name}"
+
         # ...and neither door slips something past the other.
-        assert via_ops.delivered == via_table.delivered
+        compared = set(case.ops_only_expected)
+        assert {k: v for k, v in via_ops.delivered.items() if k not in compared} == {
+            k: v for k, v in via_table.delivered.items() if k not in compared
+        }
 
     def test_every_shared_operation_has_a_case(self):
-        """A new `ops`/`Table` twin must be added here, not left uncompared."""
+        """A new `ops`/`Table` twin must be added here, not left uncompared.
+
+        The shared surface is enumerated, not assumed: every public callable both
+        `ops` and `Table` expose under the same name must be either a case above
+        or an entry in `NOT_TABLE_IN_TABLE_OUT` saying where it is covered
+        instead. Iterating the cases alone would let a new twin be added with no
+        comparison at all and still leave this green.
+        """
         for case in FRONT_DOOR_CASES:
-            assert hasattr(ops, case.core_name), (
-                f"{case.id}: ops no longer binds {case.core_name}; the patch site moved"
+            assert hasattr(case.ops_patch_module, case.core_name), (
+                f"{case.id}: {case.ops_patch_module.__name__} no longer binds "
+                f"{case.core_name}; the ops patch site moved"
             )
             assert hasattr(case.core_module, case.core_name), (
                 f"{case.id}: {case.core_module.__name__} no longer defines {case.core_name}"
@@ -555,14 +737,24 @@ class TestFrontDoorDelegation:
 
         assert len(FRONT_DOOR_IDS) == len(set(FRONT_DOOR_IDS)), "duplicate case id"
 
+        accounted_for = set(FRONT_DOOR_IDS) | set(NOT_TABLE_IN_TABLE_OUT)
+        shared = _shared_front_door_surface()
+        assert shared == accounted_for, (
+            "the ops/Table surface and this file have drifted apart.\n"
+            f"  uncompared twins (add a FrontDoorCase, or a NOT_TABLE_IN_TABLE_OUT "
+            f"entry with the reason): {sorted(shared - accounted_for)}\n"
+            f"  listed here but no longer a twin: {sorted(accounted_for - shared)}"
+        )
+
 
 class TestOpsEndToEnd:
     """One real run per `ops` family, so the wrappers are covered unmocked.
 
     `TestFrontDoorDelegation` patches core away, which proves the plumbing but
     would leave a wrapper that raises before it delegates -- or mangles what
-    core returns -- undetected. Partitioning's end-to-end runs live in
-    `TestOpsPartition`; conversion's in `TestOpsConversionFunctions`.
+    core returns -- undetected. One run per family: add, sort, extract and
+    reproject. Partitioning's end-to-end runs live in `TestOpsPartition`;
+    conversion's in `TestOpsConversionFunctions`.
     """
 
     @pytest.fixture
@@ -586,6 +778,11 @@ class TestOpsEndToEnd:
         result = ops.extract(arrow_table, limit=10)
         assert isinstance(result, pa.Table)
         assert result.num_rows == 10
+
+    def test_reproject_family(self, arrow_table):
+        result = ops.reproject(arrow_table, target_crs="EPSG:3857")
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 766
 
 
 class TestPipe:
@@ -1962,12 +2159,12 @@ class TestOpsConversionFunctions:
         return pq.read_table(str(PLACES_PARQUET))
 
     @pytest.mark.parametrize(
-        ("writer_name", "suffix", "call", "expected"),
-        [case[1:] for case in CONVERSION_CASES],
+        ("fmt", "writer_name", "suffix", "call", "expected"),
+        CONVERSION_CASES,
         ids=[case[0] for case in CONVERSION_CASES],
     )
     def test_options_reach_the_format_writer(
-        self, sample_table, writer_name, suffix, call, expected, tmp_path
+        self, sample_table, fmt, writer_name, suffix, call, expected, tmp_path
     ):
         output_path = str(tmp_path / f"out{suffix}")
 
@@ -1980,7 +2177,7 @@ class TestOpsConversionFunctions:
         # The input is a temp parquet the caller never sees, but it must be one.
         assert kwargs["input_path"].endswith(".parquet")
         for name, value in expected.items():
-            assert kwargs[name] == value, f"convert_to_{writer_name} dropped {name}"
+            assert kwargs[name] == value, f"convert_to_{fmt} dropped {name}"
 
     def test_conversion_runs_end_to_end(self, sample_table):
         """One unmocked run: the temp parquet is written, used, and cleaned up."""
