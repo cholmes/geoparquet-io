@@ -126,9 +126,10 @@ def describe_param(param: click.Parameter) -> dict:
 
     ``metavar`` records the *declared* override, not the rendered token. Click
     derives an argument's usage token from ``name.upper()`` when none is
-    declared, so ``(name, metavar)`` together pin the placeholder a user reads
-    in ``Usage:`` -- the one piece of help text that is an addressable part of
-    the CLI surface rather than reflowable prose.
+    declared, so ``name``, ``metavar``, ``type``, ``required`` and ``nargs``
+    together pin the placeholder a user reads in ``Usage:`` (Click's
+    ``make_metavar`` consults all of them) -- the one piece of help text that
+    is an addressable part of the CLI surface rather than reflowable prose.
     """
     return {
         "name": param.name,
