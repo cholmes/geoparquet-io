@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 from unittest import mock
 
@@ -999,22 +1000,54 @@ class _OpaqueCrs:
         return "Opaque(EPSG:9999)"
 
 
-class _OpaqueCrsType(pa.ExtensionType):
-    """An extension type exposing ``.crs`` as an object gpio cannot interpret."""
+class _ExplodingCrs:
+    """A geoarrow-shaped ``Crs`` whose PROJJSON accessor fails.
 
-    def __init__(self):
-        super().__init__(pa.binary(), "gpio.test.opaque_crs")
+    Real ``StringCrs.to_json_dict()`` calls pyproj, which raises for an
+    identifier PROJ does not know.
+    """
+
+    def to_json_dict(self):
+        raise ValueError("crs not found: EPSG:999999")
+
+
+# PyArrow may rebuild an extension type from its serialized form while a table
+# is assembled, so the payload cannot live on the instance. Keyed by the token
+# the type serializes, it survives any number of round-trips.
+_CRS_PAYLOADS: dict[bytes, object] = {}
+
+
+class _CrsCarrierType(pa.ExtensionType):
+    """An Arrow extension type exposing an arbitrary value as ``.crs``.
+
+    Lets a test hand ``extract_crs_from_table`` exactly one CRS carrier shape
+    with no dependence on import order or on what geoarrow chooses to wrap the
+    value in -- the process state that made issue #816 intermittent.
+    """
+
+    def __init__(self, token: bytes):
+        self._token = token
+        super().__init__(pa.binary(), "gpio.test.crs_carrier")
 
     def __arrow_ext_serialize__(self) -> bytes:
-        return b""
+        return self._token
 
     @classmethod
-    def __arrow_ext_deserialize__(cls, _storage_type, _serialized):
-        return cls()
+    def __arrow_ext_deserialize__(cls, _storage_type, serialized):
+        return cls(serialized)
 
     @property
     def crs(self):
-        return _OpaqueCrs()
+        return _CRS_PAYLOADS[self._token]
+
+
+def _table_with_crs_carrier(crs) -> pa.Table:
+    """A one-row table whose geometry field's type reports ``crs``."""
+    token = f"crs-{len(_CRS_PAYLOADS)}".encode()
+    _CRS_PAYLOADS[token] = crs
+    storage = pa.array([_wkb_polygon(4)], type=pa.binary())
+    geom = pa.ExtensionArray.from_storage(_CrsCarrierType(token), storage)
+    return pa.table({"id": [1], "geometry": geom})
 
 
 def _geoarrow_typed_table(crs, nrows: int = 1) -> pa.Table:
@@ -1113,17 +1146,117 @@ class TestExtractCrsFromGeoArrowType:
 
         assert crs == OGC_CRS84_PROJJSON
 
-    def test_unknown_crs_object_is_rejected_not_stringified(self):
+    def test_unknown_crs_object_is_rejected_not_stringified(self, caplog):
         """An unrecognised CRS object yields None, never its repr.
 
         The old catch-all would have returned ``"Opaque(EPSG:9999)"``, which the
         writer then split on ``:`` into a fabricated authority/code pair.
         """
-        storage = pa.array([_wkb_polygon(4)], type=pa.binary())
-        geom = pa.ExtensionArray.from_storage(_OpaqueCrsType(), storage)
-        table = pa.table({"id": [1], "geometry": geom})
+        table = _table_with_crs_carrier(_OpaqueCrs())
+
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            crs = extract_crs_from_table(table, "geometry")
+
+        assert crs is None
+        assert "_OpaqueCrs" in caplog.text
+        assert "Opaque(EPSG:9999)" not in caplog.text
+
+
+class TestCrsCarrierShapes:
+    """Every shape ``geom_type.crs`` can take, driven directly (#816).
+
+    These call ``extract_crs_from_table`` with one carrier shape each, with no
+    dependence on whether ``geoarrow.pyarrow`` happened to be imported first --
+    so each branch is exercised deterministically on every run.
+    """
+
+    def test_real_projjson_crs_object(self):
+        """A ``geoarrow.types.crs.ProjJsonCrs`` resolves to its PROJJSON."""
+        from geoarrow.types.crs import ProjJsonCrs
+
+        table = _table_with_crs_carrier(ProjJsonCrs(OGC_CRS84_PROJJSON))
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert isinstance(crs, dict)
+        assert crs["id"] == {"authority": "OGC", "code": "CRS84"}
+
+    def test_real_string_crs_object(self):
+        """A ``geoarrow.types.crs.StringCrs`` resolves through pyproj to PROJJSON."""
+        from geoarrow.types.crs import StringCrs
+
+        table = _table_with_crs_carrier(StringCrs("EPSG:3857"))
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert isinstance(crs, dict)
+        assert crs["id"] == {"authority": "EPSG", "code": 3857}
+
+    def test_pyproj_crs_object(self):
+        """``pyproj.CRS`` satisfies the same protocol and must work too."""
+        import pyproj
+
+        table = _table_with_crs_carrier(pyproj.CRS("EPSG:4326"))
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert isinstance(crs, dict)
+        assert crs["id"] == {"authority": "EPSG", "code": 4326}
+
+    def test_plain_projjson_dict_passes_through(self):
+        """A type that already holds PROJJSON is returned unchanged."""
+        table = _table_with_crs_carrier(OGC_CRS84_PROJJSON)
+
+        assert extract_crs_from_table(table, "geometry") == OGC_CRS84_PROJJSON
+
+    def test_plain_string_identifier_passes_through(self):
+        """A bare identifier string stays a string for the caller to normalise."""
+        table = _table_with_crs_carrier("EPSG:3857")
+
+        assert extract_crs_from_table(table, "geometry") == "EPSG:3857"
+
+    def test_utf8_bytes_are_decoded(self):
+        """Bytes are decoded to text rather than stringified as ``b'...'``."""
+        table = _table_with_crs_carrier(b"EPSG:3857")
+
+        crs = extract_crs_from_table(table, "geometry")
+
+        assert crs == "EPSG:3857"
+        assert not str(crs).startswith("b'")
+
+    def test_undecodable_bytes_are_rejected(self):
+        """Bytes that are not UTF-8 are not a CRS; return None, never a repr."""
+        table = _table_with_crs_carrier(b"\xff\xfe not utf-8")
 
         assert extract_crs_from_table(table, "geometry") is None
+
+    def test_failing_projjson_accessor_warns_and_returns_none(self, caplog):
+        """An accessor that raises is reported, and yields None -- not a repr."""
+        table = _table_with_crs_carrier(_ExplodingCrs())
+
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            crs = extract_crs_from_table(table, "geometry")
+
+        assert crs is None
+        assert "_ExplodingCrs" in caplog.text
+        assert "crs not found: EPSG:999999" in caplog.text
+
+    def test_carrier_failure_falls_back_to_geo_metadata(self, caplog):
+        """A rejected CRS object must not shadow the truth in the `geo` metadata."""
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {"encoding": "WKB", "geometry_types": [], "crs": OGC_CRS84_PROJJSON}
+            },
+        }
+        table = _table_with_crs_carrier(_OpaqueCrs())
+        table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
+
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            crs = extract_crs_from_table(table, "geometry")
+
+        assert crs == OGC_CRS84_PROJJSON
 
 
 class TestGeoArrowCrsSurvivesWrite:
