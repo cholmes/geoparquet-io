@@ -163,8 +163,11 @@ class IndexSpec:
     partition_res_kw: str = "resolution"
     partition_col_kw: str = ""
     partition_resolution: int = 10
-    partition_invalid_resolution: int = 31
-    partition_invalid_match: str = "must be between 0 and 30"
+    # No usable defaults: ranges differ per index (a5/s2 0-30, h3 0-15,
+    # quadkey 0-23), so a spec that joins PARTITION_FAMILY without setting
+    # these fails the spec-sanity test instead of silently testing nothing.
+    partition_invalid_resolution: int | None = None
+    partition_invalid_match: str = ""
     hive_prefix: str = ""
     # partition --auto
     auto_hive_prefix: str = ""
@@ -219,6 +222,8 @@ A5 = IndexSpec(
     partition=partition_by_a5,
     partition_res_kw="resolution",
     partition_col_kw="a5_column_name",
+    partition_invalid_resolution=31,
+    partition_invalid_match="must be between 0 and 30",
     hive_prefix="a5_cell=",
     auto_hive_prefix="a5_cell=",
     auto_conflict_resolution=15,
@@ -291,6 +296,8 @@ S2 = IndexSpec(
     partition=partition_by_s2,
     partition_res_kw="level",
     partition_col_kw="s2_column_name",
+    partition_invalid_resolution=31,
+    partition_invalid_match="must be between 0 and 30",
     hive_prefix="s2_cell=",
     calc=_calculate_a5_resolution,  # S2 shares A5's math (6 base cells, x4)
     calc_kwargs={"index_name": "S2"},
@@ -412,6 +419,28 @@ def test_add_table_custom_column_name(spec, sample_table):
     )
     assert column in result.column_names
     assert result.num_rows == sample_table.num_rows
+
+
+def test_family_specs_are_not_vacuous():
+    """A spec that joins a family with empty knobs must fail loudly, not pass.
+
+    Every other spec-table mistake surfaces as a failing parametrized case;
+    an empty resolutions tuple (quadkey's spec carries them today, outside
+    the families) or an unset partition-invalid pair would instead collect
+    zero cases and silently green.
+    """
+    for param in ADD_FAMILY:
+        spec = param.values[0]
+        assert spec.valid_resolutions, f"{spec.name}: empty valid_resolutions in ADD_FAMILY"
+        assert spec.invalid_resolutions, f"{spec.name}: empty invalid_resolutions in ADD_FAMILY"
+    for param in PARTITION_FAMILY:
+        spec = param.values[0]
+        assert spec.partition_invalid_resolution is not None, (
+            f"{spec.name}: partition_invalid_resolution unset in PARTITION_FAMILY"
+        )
+        assert spec.partition_invalid_match, (
+            f"{spec.name}: partition_invalid_match unset in PARTITION_FAMILY"
+        )
 
 
 @pytest.mark.parametrize("spec", ADD_FAMILY)
