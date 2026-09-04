@@ -261,8 +261,8 @@ def _add_vecorel_metadata_to_file(
 ) -> None:
     """Add Vecorel schema metadata to an existing file via rewrite."""
     from geoparquet_io.core.common import write_parquet_with_metadata
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+    from geoparquet_io.core.file_utils import resolve_file_url
     from geoparquet_io.core.remote import needs_httpfs
 
     metadata, _ = get_parquet_metadata(parquet_file, verbose=False)
@@ -282,7 +282,7 @@ def _add_vecorel_metadata_to_file(
     import os
     import tempfile
 
-    input_url = safe_file_url(parquet_file, verbose=False)
+    input_path = resolve_file_url(parquet_file, verbose=False)
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(parquet_file))
 
     fd, temp_out = tempfile.mkstemp(suffix=".parquet")
@@ -293,7 +293,7 @@ def _add_vecorel_metadata_to_file(
         try:
             write_parquet_with_metadata(
                 con,
-                f"SELECT * FROM '{input_url}'",
+                f"SELECT * FROM {sql_path(input_path)}",
                 temp_out,
                 original_metadata=metadata,
                 extra_kv_metadata=extra_kv,

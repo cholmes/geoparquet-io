@@ -20,9 +20,13 @@ from geoparquet_io.core.crs_utils import (
     transform_geom_sql,
 )
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_geo_metadata
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    sql_path,
+)
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, resolve_file_url
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -545,8 +549,9 @@ def _add_quadkey_file_based(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
 
-    # Get safe URL for input file
-    input_url = safe_file_url(input_parquet, verbose)
+    # RAW path: shown to the user in the dry-run header below, and escaped at
+    # the SQL boundary by sql_path (#802).
+    input_file_path = resolve_file_url(input_parquet, verbose)
 
     # Get geometry column
     geom_col = find_primary_geometry_column(input_parquet, verbose)
@@ -589,7 +594,9 @@ def _add_quadkey_file_based(
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
         display_input = (
-            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+            _sanitize_url_for_logging(input_file_path)
+            if is_remote_url(input_file_path)
+            else input_file_path
         )
         display_output = (
             _sanitize_url_for_logging(output_parquet)
@@ -639,7 +646,7 @@ def _add_quadkey_file_based(
         query = f"""
             SELECT *,
                    lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
-            FROM '{input_url}'
+            FROM {sql_path(input_file_path)}
         """
 
         if verbose:

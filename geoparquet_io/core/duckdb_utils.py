@@ -93,7 +93,7 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
-def sql_path(path: str) -> str:
+def sql_path(path: str | os.PathLike[str]) -> str:
     """Return a RAW file path as a complete, quoted SQL string literal.
 
     ``sql_path("/data/it's.parquet")`` yields ``'/data/it''s.parquet'`` --
@@ -117,13 +117,18 @@ def sql_path(path: str) -> str:
     For a non-path SQL string literal use :func:`_escape_sql_string` and supply
     your own quotes; for an identifier use :func:`quote_identifier`.
 
+    A ``PathLike`` is accepted as well as a ``str``: callers hold ``Path``
+    objects just as often, and ``str.replace`` on a ``Path`` is the completely
+    unrelated *filesystem rename*, so coercing here is what keeps every call
+    site from having to remember ``str()``.
+
     Args:
-        path: RAW, unescaped file path or URL.
+        path: RAW, unescaped file path or URL, as ``str`` or ``PathLike``.
 
     Returns:
         The path as a quoted, escaped SQL string literal.
     """
-    return f"'{_escape_sql_string(path)}'"
+    return f"'{_escape_sql_string(os.fspath(path))}'"
 
 
 def build_kv_metadata_clause(pairs: Mapping[str, str] | None) -> str | None:

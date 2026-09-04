@@ -6,7 +6,30 @@ import logging
 
 import pytest
 
-from geoparquet_io.core.common import get_dataset_bounds
+from geoparquet_io.core.common import calculate_file_bounds, get_dataset_bounds
+
+
+class TestCalculateFileBounds:
+    """Test suite for calculate_file_bounds -- ST_XMin/ST_YMin extent via spatial extension."""
+
+    def test_calculates_bounds_for_local_file(self, buildings_test_file):
+        """A RAW local path resolves through resolve_file_url and sql_path (#802)."""
+        bounds = calculate_file_bounds(buildings_test_file, verbose=False)
+
+        assert bounds is not None
+        xmin, ymin, xmax, ymax = bounds
+        assert xmin < xmax
+        assert ymin < ymax
+        # Buildings test file is in Germany, so roughly these coords.
+        assert 5 < xmin < 7
+        assert 49 < ymin < 51
+
+    def test_auto_detects_geometry_column(self, buildings_test_file):
+        """geom_column=None triggers find_primary_geometry_column."""
+        explicit = calculate_file_bounds(buildings_test_file, geom_column="geometry", verbose=False)
+        auto = calculate_file_bounds(buildings_test_file, geom_column=None, verbose=False)
+
+        assert auto == explicit
 
 
 class TestGetDatasetBounds:

@@ -433,7 +433,7 @@ class TestAdminJoinIsCrsAware:
         con = _con_with_admin()
         try:
             kwargs = {
-                "input_url": fields_5070_file,
+                "input_source": fields_5070_file,
                 "admin_subquery": "(SELECT geom, region FROM _admin)",
                 "admin_select_clause": 'b."region" AS region',
                 "input_bbox_col": None,
@@ -460,7 +460,7 @@ class TestAdminJoinIsCrsAware:
         con = _con_with_admin()
         try:
             sql = _build_enrichment_query(
-                input_url=fields_5070_file,
+                input_source=fields_5070_file,
                 admin_table_ref="_admin",
                 admin_where_clause="",
                 admin_select_clause='b."region" AS region',
@@ -494,7 +494,7 @@ class TestAdminReprojectsAdminSideWithBbox:
         from geoparquet_io.core.add.admin_divisions import _build_spatial_join_query
 
         sql = _build_spatial_join_query(
-            input_url="x.parquet",
+            input_source="x.parquet",
             admin_subquery="(SELECT geom, bbox, region FROM admin)",
             admin_select_clause='b."region" AS region',
             input_bbox_col="bbox",
@@ -528,7 +528,7 @@ class TestAdminReprojectsAdminSideWithBbox:
         from geoparquet_io.core.partition.admin_hierarchical import _build_enrichment_query
 
         sql = _build_enrichment_query(
-            input_url="x.parquet",
+            input_source="x.parquet",
             admin_table_ref="admin",
             admin_where_clause="",
             admin_select_clause='b."region" AS region',
@@ -565,7 +565,7 @@ class TestAdminReprojectsAdminSideWithBbox:
                 f"FROM '{fields_5070_file}'"
             )
             sql = _build_enrichment_query(
-                input_url="_inp",
+                input_source="_inp",
                 admin_table_ref="_admin_b",
                 admin_where_clause="",
                 admin_select_clause='b."region" AS region',

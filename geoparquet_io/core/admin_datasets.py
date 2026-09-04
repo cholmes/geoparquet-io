@@ -15,7 +15,7 @@ from pathlib import Path
 
 import duckdb
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, get_duckdb_connection, sql_path
 from geoparquet_io.core.exceptions import (
     FileNotFoundGeoParquetError,
     InvalidParameterError,
@@ -424,12 +424,12 @@ class AdminDataset(ABC):
                 read_options = self.get_read_parquet_options()
                 if read_options:
                     options_str = ", ".join([f"{k}={v}" for k, v in read_options.items()])
-                    query = f"SELECT * FROM read_parquet('{source}', {options_str})"
+                    query = f"SELECT * FROM read_parquet({sql_path(source)}, {options_str})"
                 else:
-                    query = f"SELECT * FROM read_parquet('{source}')"
+                    query = f"SELECT * FROM read_parquet({sql_path(source)})"
 
                 # Write to cache
-                con.execute(f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET)")
+                con.execute(f"COPY ({query}) TO {sql_path(cache_path)} (FORMAT PARQUET)")
             finally:
                 con.close()
 
@@ -688,21 +688,22 @@ class AdminDataset(ABC):
             con: DuckDB connection to use for queries
 
         Returns:
-            SQL table reference or file path to use in queries
+            A SQL table reference: the source path as a quoted, escaped literal
+            (:func:`sql_path`), ready to interpolate (#802).
         """
         source = self.get_source()
         if self.is_remote():
             # For remote sources, use direct remote access
             if self.verbose:
                 debug(f"Using remote dataset: {source}")
-            return f"'{source}'"
+            return sql_path(source)
         else:
             # For local sources, verify the file exists
             if not os.path.exists(source):
                 raise FileNotFoundGeoParquetError(source, "admin dataset")
             if self.verbose:
                 debug(f"Using local data source: {source}")
-            return f"'{source}'"
+            return sql_path(source)
 
 
 class CurrentAdminDataset(AdminDataset):
@@ -994,7 +995,7 @@ class OvertureAdminDataset(AdminDataset):
         return (
             f"SELECT ST_SimplifyPreserveTopology(geometry, {tol}) as geometry, "
             f"{cols} "
-            f"FROM read_parquet('{source}', hive_partitioning=1) "
+            f"FROM read_parquet({sql_path(source)}, hive_partitioning=1) "
             f"WHERE {where}"
         )
 
@@ -1055,7 +1056,8 @@ class OvertureAdminDataset(AdminDataset):
 
                     query = self._build_level_cache_query(level, source)
                     con.execute(
-                        f"COPY ({query}) TO '{cache_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                        f"COPY ({query}) TO {sql_path(cache_path)} "
+                        "(FORMAT PARQUET, COMPRESSION ZSTD)"
                     )
                     info(f"Cached {level} dataset at: {cache_path}")
             finally:

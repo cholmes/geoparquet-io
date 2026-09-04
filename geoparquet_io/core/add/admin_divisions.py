@@ -27,7 +27,7 @@ from geoparquet_io.core.duckdb_utils import (
     spatial_join_strategy,
     sql_path,
 )
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.partition.reader import require_single_file
@@ -126,21 +126,27 @@ def _build_admin_select_clause(dataset, levels, partition_columns, prefix=None):
     return ", ".join(admin_select_parts)
 
 
-def _format_input_ref(input_url, is_table_ref=False):
+def _format_input_ref(input_source, is_table_ref=False):
     """Format input reference for SQL.
 
-    A DuckDB table/CTE name (``is_table_ref=True``) is emitted bare; a file path
-    or URL is single-quoted. The caller passes the flag explicitly rather than
-    sniffing for a ``_gpio_`` prefix, so a real path beginning with ``_gpio_``
-    can never be emitted unquoted (see todo 017).
+    A DuckDB table/CTE name (``is_table_ref=True``) is emitted bare; a RAW file
+    path or URL goes through :func:`sql_path`, which quotes and escapes it. The
+    caller passes the flag explicitly rather than sniffing for a ``_gpio_``
+    prefix, so a real path beginning with ``_gpio_`` can never be emitted
+    unquoted (see todo 017).
+
+    ``input_source`` alternates between a path and a table name as the per-level
+    chain advances, so the path it carries must be RAW: escaping it earlier
+    would mean the escape survives into the branch that emits a table name
+    (#802).
     """
     if is_table_ref:
-        return input_url
-    return f"'{input_url}'"
+        return input_source
+    return sql_path(input_source)
 
 
 def _build_spatial_join_query(
-    input_url,
+    input_source,
     admin_subquery,
     admin_select_clause,
     input_bbox_col,
@@ -165,9 +171,9 @@ def _build_spatial_join_query(
     All identifiers are quoted via the shared :func:`build_spatial_join_condition`
     helper / :func:`quote_identifier`, so column names sourced from untrusted file
     metadata cannot break out of the generated SQL. ``is_table_ref`` marks
-    ``input_url`` as a DuckDB table/CTE name (per-level chaining) vs a file path.
+    ``input_source`` as a DuckDB table/CTE name (per-level chaining) vs a file path.
     """
-    input_ref = _format_input_ref(input_url, is_table_ref)
+    input_ref = _format_input_ref(input_source, is_table_ref)
 
     # CRS handling for a non-CRS84 input (#525):
     #  - If the admin side was reprojected into the input CRS (it has a bbox), the
@@ -200,7 +206,7 @@ def _build_spatial_join_query(
 
 def _add_extent_filter(
     con,
-    input_url,
+    input_source,
     input_bbox_col,
     input_geom_col,
     admin_bbox_col,
@@ -217,7 +223,7 @@ def _add_extent_filter(
     if not admin_bbox_col:
         return None
 
-    input_ref = _format_input_ref(input_url, is_table_ref)
+    input_ref = _format_input_ref(input_source, is_table_ref)
 
     if input_bbox_col and not source_crs:
         q_input_bbox = quote_identifier(input_bbox_col)
@@ -280,7 +286,7 @@ def _handle_bbox_optimization(input_parquet, input_bbox_info, add_bbox_flag, ver
 
 
 def _print_dry_run_header(
-    input_url,
+    input_path,
     admin_source,
     output_parquet,
     input_geom_col,
@@ -288,9 +294,16 @@ def _print_dry_run_header(
     input_bbox_col,
     admin_bbox_col,
 ):
-    """Print dry-run mode header."""
+    """Print dry-run mode header.
+
+    ``input_path`` is RAW: this is prose for a human, and showing the SQL-escaped
+    ``o''brien/data.parquet`` for ``o'brien/data.parquet`` is confusing to read
+    and wrong to copy-paste (#802).
+    """
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    display_input = _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+    display_input = (
+        _sanitize_url_for_logging(input_path) if is_remote_url(input_path) else input_path
+    )
     display_admin = (
         _sanitize_url_for_logging(admin_source) if is_remote_url(admin_source) else admin_source
     )
@@ -384,7 +397,10 @@ def _setup_dataset_and_columns(
     dataset.validate_levels(levels)
     partition_columns = dataset.get_partition_columns(levels)
 
-    input_url = safe_file_url(input_parquet, verbose)
+    # RAW path: it is shown in the dry-run header, and it is also chained
+    # through ``current_source``, which alternately holds a temp-table name --
+    # so the escape has to happen at the SQL boundary, not here (#802).
+    input_path = resolve_file_url(input_parquet, verbose)
 
     # Per-level datasets resolve sources per-level in add_admin_divisions_multi
     if dataset.supports_per_level_sources():
@@ -414,7 +430,7 @@ def _setup_dataset_and_columns(
     return (
         dataset,
         partition_columns,
-        input_url,
+        input_path,
         admin_source,
         input_geom_col,
         admin_geom_col,
@@ -460,7 +476,7 @@ def _build_admin_where_clauses_list(
     con,
     dataset,
     levels,
-    input_url,
+    input_source,
     input_bbox_col,
     input_geom_col,
     admin_bbox_col,
@@ -483,7 +499,7 @@ def _build_admin_where_clauses_list(
 
     extent_filter = _add_extent_filter(
         con,
-        input_url,
+        input_source,
         input_bbox_col,
         input_geom_col,
         admin_bbox_col,
@@ -529,7 +545,7 @@ def _build_query_components(
     dataset,
     levels,
     partition_columns,
-    input_url,
+    input_source,
     admin_source,
     admin_geom_col,
     admin_bbox_col,
@@ -547,16 +563,17 @@ def _build_query_components(
     # Quote the path for SQL safety
     read_options = dataset.get_read_parquet_options()
     admin_table_ref = (
-        f"read_parquet('{admin_source}', {', '.join([f'{k}={v}' for k, v in read_options.items()])})"
+        f"read_parquet({sql_path(admin_source)}, "
+        f"{', '.join([f'{k}={v}' for k, v in read_options.items()])})"
         if read_options
-        else f"'{admin_source}'"
+        else sql_path(admin_source)
     )
 
     admin_where_clauses = _build_admin_where_clauses_list(
         con,
         dataset,
         levels,
-        input_url,
+        input_source,
         input_bbox_col,
         input_geom_col,
         admin_bbox_col,
@@ -594,7 +611,7 @@ def _build_query_components(
         )
 
     query = _build_spatial_join_query(
-        input_url,
+        input_source,
         admin_subquery,
         admin_select_clause,
         input_bbox_col,
@@ -610,7 +627,7 @@ def _build_query_components(
 
 def _handle_dry_run_mode(
     dry_run,
-    input_url,
+    input_path,
     admin_source,
     output_parquet,
     input_geom_col,
@@ -628,7 +645,7 @@ def _handle_dry_run_mode(
         return False
 
     _print_dry_run_header(
-        input_url,
+        input_path,
         admin_source,
         output_parquet,
         input_geom_col,
@@ -669,7 +686,7 @@ def _execute_per_level_joins(
     dataset,
     levels,
     partition_columns,
-    input_url,
+    input_source,
     admin_geom_col,
     admin_bbox_col,
     input_geom_col,
@@ -697,9 +714,9 @@ def _execute_per_level_joins(
     temp tables. Per-level caches are non-overlapping, so each plain LEFT JOIN
     normally preserves the row count.
     """
-    current_source = input_url
+    current_source = input_source
     # Cheap (metadata-only) baseline for the row-preservation check below.
-    input_rows = None if dry_run else _count_rows(con, input_url)
+    input_rows = None if dry_run else _count_rows(con, input_source)
 
     for i, (level, col) in enumerate(zip(levels, partition_columns, strict=True)):
         level_admin_source = dataset.get_source_for_level(level, no_cache=no_cache)
@@ -824,7 +841,7 @@ def add_admin_divisions_multi(
     (
         dataset,
         partition_columns,
-        input_url,
+        input_path,
         admin_source,
         input_geom_col,
         admin_geom_col,
@@ -863,7 +880,9 @@ def add_admin_divisions_multi(
         try:
             # Get total input count (skip in dry-run)
             if not dry_run:
-                total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+                total_count = con.execute(
+                    f"SELECT COUNT(*) FROM {sql_path(input_path)}"
+                ).fetchone()[0]
                 progress(f"Processing {total_count:,} input features...")
 
             # Build Vecorel metadata if requested (applied to whichever write path runs)
@@ -882,7 +901,7 @@ def add_admin_divisions_multi(
                     dataset,
                     levels,
                     partition_columns,
-                    input_url,
+                    input_path,
                     admin_geom_col,
                     admin_bbox_col,
                     input_geom_col,
@@ -912,7 +931,7 @@ def add_admin_divisions_multi(
                     dataset,
                     levels,
                     partition_columns,
-                    input_url,
+                    input_path,
                     admin_source,
                     admin_geom_col,
                     admin_bbox_col,
@@ -927,7 +946,7 @@ def add_admin_divisions_multi(
 
                 if _handle_dry_run_mode(
                     dry_run,
-                    input_url,
+                    input_path,
                     admin_source,
                     output_parquet,
                     input_geom_col,

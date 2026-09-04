@@ -8,9 +8,13 @@ import tempfile
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    get_duckdb_connection,
+    quote_identifier,
+    sql_path,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -61,11 +65,14 @@ def _find_optimal_iterations(total_rows, target_rows, verbose=False):
 
 
 def _build_sampling_query(
-    input_url, geom_col, kdtree_column_name, iterations, sample_size, con, verbose=False
+    input_path, geom_col, kdtree_column_name, iterations, sample_size, con, verbose=False
 ):
     """
     Build a sampling-based KD-tree query that computes boundaries on a sample,
     then applies them to the full dataset using iterative CTEs.
+
+    ``input_path`` is a RAW path: ``sql_path`` escapes it at each point of
+    interpolation, so it is never escaped twice (#802).
 
     Strategy:
     1. Sample the data and compute KD-tree to get split boundaries
@@ -82,7 +89,7 @@ def _build_sampling_query(
                 ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS y,
                 '0' AS partition_id,
                 NULL::DOUBLE AS split_value
-            FROM '{input_url}' USING SAMPLE {sample_size} ROWS
+            FROM {sql_path(input_path)} USING SAMPLE {sample_size} ROWS
 
             UNION ALL
 
@@ -145,7 +152,7 @@ def _build_sampling_query(
                 ST_X(ST_Centroid({quote_identifier(geom_col)})) AS _kdtree_x,
                 ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS _kdtree_y,
                 '0' AS _kdtree_partition
-            FROM '{input_url}'
+            FROM {sql_path(input_path)}
         )
     """)
 
@@ -250,11 +257,9 @@ def add_kdtree_table(
         # Process using file-based mode
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
         try:
-            input_url = safe_file_url(temp_path, verbose=False)
-
             # Build query using sampling approach
             query = _build_sampling_query(
-                input_url, geom_col, kdtree_column_name, iterations, sample_size, con, verbose=False
+                temp_path, geom_col, kdtree_column_name, iterations, sample_size, con, verbose=False
             )
 
             result = con.execute(query).arrow().read_all()
@@ -354,12 +359,14 @@ def add_kdtree_column(
     # Check for partition input (not supported)
     require_single_file(input_parquet, "add kdtree")
 
-    # Get total row count for auto mode or validation
-    input_url = safe_file_url(input_parquet, verbose)
+    # Get total row count for auto mode or validation.
+    # RAW path: shown to the user in the dry-run header below, and escaped at
+    # each SQL boundary by sql_path (#802).
+    input_path = resolve_file_url(input_parquet, verbose)
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
 
-    total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+    total_count = con.execute(f"SELECT COUNT(*) FROM {sql_path(input_path)}").fetchone()[0]
 
     # Auto-compute iterations if requested
     if iterations is None:
@@ -413,7 +420,7 @@ def add_kdtree_column(
     # Build a query that selects all original columns plus the KD-tree partition ID
 
     # Reconnect for actual processing
-    input_url = safe_file_url(input_parquet, verbose)
+    input_path = resolve_file_url(input_parquet, verbose)
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
 
@@ -440,7 +447,7 @@ def add_kdtree_column(
                     ST_Y(ST_Centroid({quote_identifier(geom_col)})) AS y,
                     '0' AS partition_id,
                     ROW_NUMBER() OVER () AS row_id
-                FROM '{input_url}'
+                FROM {sql_path(input_path)}
 
                 UNION ALL
 
@@ -470,7 +477,7 @@ def add_kdtree_column(
             ),
             original_with_rownum AS (
                 SELECT *, ROW_NUMBER() OVER () AS row_id
-                FROM '{input_url}'
+                FROM {sql_path(input_path)}
             )
             SELECT original_with_rownum.* EXCLUDE (row_id), kdtree_final.partition_id AS {kdtree_column_name}
             FROM original_with_rownum
@@ -481,7 +488,7 @@ def add_kdtree_column(
         if verbose:
             debug(f"Step 1/2: Computing split boundaries from {sample_size:,} sample points...")
         query = _build_sampling_query(
-            input_url, geom_col, kdtree_column_name, iterations, sample_size, con, verbose
+            input_path, geom_col, kdtree_column_name, iterations, sample_size, con, verbose
         )
 
     # Prepare KD-tree metadata for GeoParquet spec
@@ -499,7 +506,7 @@ def add_kdtree_column(
     if dry_run:
         warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
         display_input = (
-            _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+            _sanitize_url_for_logging(input_path) if is_remote_url(input_path) else input_path
         )
         display_output = (
             _sanitize_url_for_logging(output_parquet)
@@ -576,7 +583,7 @@ def _add_kdtree_streaming(
             working_file = input_path
 
         # Process the file
-        input_url = safe_file_url(working_file, verbose)
+        working_path = resolve_file_url(working_file, verbose)
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(working_file))
 
         try:
@@ -594,7 +601,7 @@ def _add_kdtree_streaming(
 
             # Build query using sampling approach
             query = _build_sampling_query(
-                input_url, geom_col, kdtree_column_name, iterations, sample_size, con, verbose
+                working_path, geom_col, kdtree_column_name, iterations, sample_size, con, verbose
             )
 
             # Get metadata from input

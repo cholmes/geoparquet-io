@@ -12,7 +12,6 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.duckdb_utils import (
     SPATIAL_JOIN_BBOX_PREFILTER,
     SPATIAL_JOIN_NATIVE,
-    _escape_sql_string,
     build_spatial_join_condition,
     get_duckdb_connection,
     quote_identifier,
@@ -20,7 +19,7 @@ from geoparquet_io.core.duckdb_utils import (
     sql_path,
 )
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
 from geoparquet_io.core.remote import _sanitize_url_for_logging, is_remote_url
@@ -35,7 +34,7 @@ def find_country_code_column(con, countries_source, is_subquery=False):
 
     Args:
         con: DuckDB connection
-        countries_source: Either a file path or a subquery
+        countries_source: Either a RAW file path or a subquery
         is_subquery: Whether countries_source is a subquery (True) or file path (False)
 
     Returns:
@@ -48,7 +47,7 @@ def find_country_code_column(con, countries_source, is_subquery=False):
     if is_subquery:
         columns_query = f"SELECT * FROM {countries_source} LIMIT 0;"
     else:
-        columns_query = f"SELECT * FROM '{countries_source}' LIMIT 0;"
+        columns_query = f"SELECT * FROM {sql_path(countries_source)} LIMIT 0;"
 
     countries_columns = [col[0] for col in con.execute(columns_query).description]
 
@@ -82,7 +81,7 @@ def find_subdivision_code_column(con, countries_source, is_subquery=False):
 
     Args:
         con: DuckDB connection
-        countries_source: Either a file path or a subquery
+        countries_source: Either a RAW file path or a subquery
         is_subquery: Whether countries_source is a subquery (True) or file path (False)
 
     Returns:
@@ -92,7 +91,7 @@ def find_subdivision_code_column(con, countries_source, is_subquery=False):
     if is_subquery:
         columns_query = f"SELECT * FROM {countries_source} LIMIT 0;"
     else:
-        columns_query = f"SELECT * FROM '{countries_source}' LIMIT 0;"
+        columns_query = f"SELECT * FROM {sql_path(countries_source)} LIMIT 0;"
 
     countries_columns = [col[0] for col in con.execute(columns_query).description]
 
@@ -170,7 +169,7 @@ def _build_select_clause(country_code_col, subdivision_code_col, using_default):
 
 
 def _build_spatial_join_query(
-    input_url,
+    input_path,
     countries_source,
     select_clause,
     input_geom_col,
@@ -182,7 +181,9 @@ def _build_spatial_join_query(
 
     Identifiers are quoted via the shared :func:`build_spatial_join_condition`
     helper, so a maliciously-named geometry/bbox column from an untrusted input
-    or ``--countries-parquet`` cannot inject SQL.
+    or ``--countries-parquet`` cannot inject SQL. ``input_path`` is RAW and is
+    quoted and escaped here by :func:`sql_path` (#802); ``countries_source`` is
+    already a SQL reference (a table name or a ``sql_path`` literal).
     """
     join_condition = build_spatial_join_condition(
         input_geom_col, countries_geom_col, input_bbox_col, countries_bbox_col
@@ -191,40 +192,50 @@ def _build_spatial_join_query(
     SELECT
         a.*,
         {select_clause}
-    FROM '{input_url}' a
+    FROM {sql_path(input_path)} a
     LEFT JOIN {countries_source} b
     ON {join_condition}
 """
 
 
-def _build_filter_table_sql(table_name, source_url, bbox_col, bounds):
-    """Build SQL to create filtered countries table from bounds."""
+def _build_filter_table_sql(table_name, source_path, bbox_col, bounds):
+    """Build SQL to create filtered countries table from bounds.
+
+    ``source_path`` is the RAW countries path/URL; :func:`sql_path` quotes and
+    escapes it here (#802).
+    """
     xmin, ymin, xmax, ymax = bounds
     q_bbox = quote_identifier(bbox_col)
     if isinstance(xmin, str):  # placeholder values
         return f"""CREATE TEMP TABLE {table_name} AS
-SELECT * FROM '{source_url}'
+SELECT * FROM {sql_path(source_path)}
 WHERE {q_bbox}.xmin <= {xmax}
   AND {q_bbox}.xmax >= {xmin}
   AND {q_bbox}.ymin <= {ymax}
   AND {q_bbox}.ymax >= {ymin};"""
     return f"""CREATE TEMP TABLE {table_name} AS
-SELECT * FROM '{source_url}'
+SELECT * FROM {sql_path(source_path)}
 WHERE {q_bbox}.xmin <= {xmax:.6f}
   AND {q_bbox}.xmax >= {xmin:.6f}
   AND {q_bbox}.ymin <= {ymax:.6f}
   AND {q_bbox}.ymax >= {ymin:.6f};"""
 
 
-def _print_dry_run_bounds_info(input_bbox_col, input_url, input_geom_col):
-    """Print dry-run info for bounds calculation step."""
+def _print_dry_run_bounds_info(input_bbox_col, input_path, input_geom_col):
+    """Print dry-run info for bounds calculation step.
+
+    This one echoes *SQL*, so the path is escaped -- the printed statement has
+    to be runnable. The prose headers elsewhere show the raw path (#802).
+    """
     info("-- Step 1: Calculate bounding box of input data to filter remote countries")
     if input_bbox_col:
         q_input_bbox = quote_identifier(input_bbox_col)
-        bounds_sql = f"SELECT MIN({q_input_bbox}.xmin) as xmin, ... FROM '{input_url}';"
+        bounds_sql = f"SELECT MIN({q_input_bbox}.xmin) as xmin, ... FROM {sql_path(input_path)};"
     else:
         q_input_geom = quote_identifier(input_geom_col)
-        bounds_sql = f"SELECT MIN(ST_XMin({q_input_geom})) as xmin, ... FROM '{input_url}';"
+        bounds_sql = (
+            f"SELECT MIN(ST_XMin({q_input_geom})) as xmin, ... FROM {sql_path(input_path)};"
+        )
     progress(bounds_sql)
     progress("")
     warn("-- Calculating actual bounds...")
@@ -248,7 +259,7 @@ def _get_bounds_for_filtering(input_parquet, input_geom_col, dry_run, verbose):
 
 
 def _create_filtered_countries_table(
-    con, countries_table, default_countries_url, countries_bbox_col, bounds, dry_run, verbose
+    con, countries_table, default_countries_path, countries_bbox_col, bounds, dry_run, verbose
 ):
     """Create the filtered countries temporary table."""
     if dry_run:
@@ -256,7 +267,7 @@ def _create_filtered_countries_table(
         info("-- Step 2: Create filtered countries table")
 
     create_table_sql = _build_filter_table_sql(
-        countries_table, default_countries_url, countries_bbox_col, bounds
+        countries_table, default_countries_path, countries_bbox_col, bounds
     )
 
     if dry_run:
@@ -272,19 +283,28 @@ def _create_filtered_countries_table(
 
 
 def _print_dry_run_header(
-    input_url,
-    countries_url,
+    input_path,
+    countries_path,
     output_parquet,
     input_geom_col,
     countries_geom_col,
     input_bbox_col,
     countries_bbox_col,
 ):
-    """Print dry-run mode header information."""
+    """Print dry-run mode header information.
+
+    ``input_path`` and ``countries_path`` are RAW: this is prose for a human, so
+    showing ``o''brien/data.parquet`` for ``o'brien/data.parquet`` is a bug --
+    it is confusing to read and wrong to copy-paste (#802).
+    """
     warn("\n=== DRY RUN MODE - SQL Commands that would be executed ===\n")
-    display_input = _sanitize_url_for_logging(input_url) if is_remote_url(input_url) else input_url
+    display_input = (
+        _sanitize_url_for_logging(input_path) if is_remote_url(input_path) else input_path
+    )
     display_countries = (
-        _sanitize_url_for_logging(countries_url) if is_remote_url(countries_url) else countries_url
+        _sanitize_url_for_logging(countries_path)
+        if is_remote_url(countries_path)
+        else countries_path
     )
     display_output = (
         _sanitize_url_for_logging(output_parquet)
@@ -301,20 +321,27 @@ def _print_dry_run_header(
 
 
 def _get_countries_config(countries_parquet, using_default, verbose):
-    """Get countries URL, geometry column, and bbox column."""
+    """Get the RAW countries path, its geometry column, and its bbox column.
+
+    The path is returned unescaped. It is shown to the user in the dry-run
+    header and handed to helpers that escape their own argument, so escaping it
+    here would mean every consumer had to know it was pre-escaped -- the shape
+    that produced #718's crashes (#802). The default Overture URL was already
+    returned raw, so this also makes the two branches agree.
+    """
     if using_default:
         from geoparquet_io.core.overture import get_overture_divisions_url
 
         return get_overture_divisions_url(verbose=verbose), "geometry", "bbox"
 
-    countries_url = safe_file_url(countries_parquet, verbose)
+    countries_path = resolve_file_url(countries_parquet, verbose)
     countries_geom_col = find_primary_geometry_column(countries_parquet, verbose)
     countries_bbox_info = check_bbox_structure(countries_parquet, verbose)
-    return countries_url, countries_geom_col, countries_bbox_info["bbox_column_name"]
+    return countries_path, countries_geom_col, countries_bbox_info["bbox_column_name"]
 
 
 def _determine_code_columns(
-    con, countries_url, countries_source, countries_table, using_default, dry_run, verbose
+    con, countries_path, countries_source, countries_table, using_default, dry_run, verbose
 ):
     """Determine country and subdivision code columns."""
     if using_default:
@@ -328,20 +355,20 @@ def _determine_code_columns(
     if dry_run:
         return "admin:country_code", None
 
-    country_code_col = find_country_code_column(con, countries_url, is_subquery=False)
+    country_code_col = find_country_code_column(con, countries_path, is_subquery=False)
     if verbose:
         debug(f"Using country code column: {country_code_col}")
 
-    # `_setup_countries_source` returns the URL ALREADY wrapped in quotes, while
-    # both finders quote it themselves when is_subquery is False -- passing
-    # countries_source straight through produced `FROM ''/path''` and a parser
-    # error for every non-default --countries file. Hand over the same raw URL
-    # the country-code finder above gets, and only use the table name when the
-    # source really is the filtered temp table.
+    # `_setup_countries_source` returns a SQL reference -- a quoted literal or a
+    # temp-table name -- while both finders build the literal themselves when
+    # is_subquery is False; passing countries_source straight through produced
+    # `FROM ''/path''` and a parser error for every non-default --countries
+    # file. Hand over the same RAW path the country-code finder above gets, and
+    # only use the table name when the source really is the filtered temp table.
     is_filtered_table = countries_source == countries_table
     subdivision_code_col = find_subdivision_code_column(
         con,
-        countries_table if is_filtered_table else countries_url,
+        countries_table if is_filtered_table else countries_path,
         is_subquery=is_filtered_table,
     )
     if subdivision_code_col and verbose:
@@ -390,7 +417,7 @@ TO {sql_path(output_parquet)}
     info("-- Original metadata would also be preserved in the output file")
 
 
-def _output_has_subdivision(con, escaped_output):
+def _output_has_subdivision(con, output_parquet):
     """Report whether the written file carries a subdivision column.
 
     The countries file is not the authority: the join is ``SELECT a.*``, so an
@@ -398,14 +425,14 @@ def _output_has_subdivision(con, escaped_output):
     countries file has none. Asking the output is the only answer that is true
     in both directions (#672).
     """
-    described = con.execute(f"SELECT * FROM '{escaped_output}' LIMIT 0").description
+    described = con.execute(f"SELECT * FROM {sql_path(output_parquet)} LIMIT 0").description
     return "admin:subdivision_code" in {column[0] for column in described}
 
 
 def _print_output_stats(con, output_parquet):
     """Query the written file and print the per-column counts."""
-    escaped_output = _escape_sql_string(str(output_parquet))
-    has_subdivision = _output_has_subdivision(con, escaped_output)
+    output_path = str(output_parquet)
+    has_subdivision = _output_has_subdivision(con, output_path)
 
     subdivision_selects = (
         """,
@@ -420,7 +447,7 @@ def _print_output_stats(con, output_parquet):
         COUNT(*) as total_features,
         COUNT(CASE WHEN "admin:country_code" IS NOT NULL THEN 1 END) as features_with_country,
         COUNT(DISTINCT "admin:country_code") as unique_countries{subdivision_selects}
-    FROM '{escaped_output}';
+    FROM {sql_path(output_path)};
     """
     stats = con.execute(stats_query).fetchone()
     total, with_country, unique_countries = stats[0], stats[1], stats[2]
@@ -455,10 +482,10 @@ def _print_results_summary(con, output_parquet):
 def _setup_default_countries(
     con,
     input_parquet,
-    input_url,
+    input_path,
     input_geom_col,
     input_bbox_col,
-    default_countries_url,
+    default_countries_path,
     countries_bbox_col,
     countries_table,
     dry_run,
@@ -466,7 +493,7 @@ def _setup_default_countries(
 ):
     """Setup filtered countries table for default Overture dataset."""
     if dry_run:
-        _print_dry_run_bounds_info(input_bbox_col, input_url, input_geom_col)
+        _print_dry_run_bounds_info(input_bbox_col, input_path, input_geom_col)
 
     if verbose and not dry_run:
         debug("Calculating bounding box of input data to filter remote countries file...")
@@ -474,7 +501,7 @@ def _setup_default_countries(
     bounds = _get_bounds_for_filtering(input_parquet, input_geom_col, dry_run, verbose)
 
     _create_filtered_countries_table(
-        con, countries_table, default_countries_url, countries_bbox_col, bounds, dry_run, verbose
+        con, countries_table, default_countries_path, countries_bbox_col, bounds, dry_run, verbose
     )
 
 
@@ -536,36 +563,40 @@ def _prepare_bbox_columns(
 def _setup_countries_source(
     con,
     using_default,
-    countries_url,
+    countries_path,
     input_parquet,
-    input_url,
+    input_path,
     input_geom_col,
     input_bbox_col,
     countries_bbox_col,
     dry_run,
     verbose,
 ):
-    """Setup countries source - either filtered table or direct file reference."""
+    """Setup countries source - either filtered table or direct file reference.
+
+    Returns a SQL *reference*: a temp-table name, or the RAW countries path
+    turned into a quoted literal by :func:`sql_path` (#802).
+    """
     countries_table = "filtered_countries"
 
     if using_default:
         from geoparquet_io.core.overture import get_overture_divisions_url
 
-        default_countries_url = get_overture_divisions_url(verbose=verbose)
+        default_countries_path = get_overture_divisions_url(verbose=verbose)
         _setup_default_countries(
             con,
             input_parquet,
-            input_url,
+            input_path,
             input_geom_col,
             input_bbox_col,
-            default_countries_url,
+            default_countries_path,
             countries_bbox_col,
             countries_table,
             dry_run,
             verbose,
         )
         return countries_table
-    return f"'{countries_url}'"
+    return sql_path(countries_path)
 
 
 def _create_duckdb_connection(using_default: bool) -> "duckdb.DuckDBPyConnection":
@@ -614,10 +645,12 @@ def add_country_codes(
     row_group_rows=None,
 ):
     """Add country ISO codes to a GeoParquet file based on spatial intersection."""
-    input_url = safe_file_url(input_parquet, verbose)
+    # RAW paths throughout: they are shown to the user in the dry-run header,
+    # and every SQL interpolation escapes at its own boundary via sql_path (#802).
+    input_path = resolve_file_url(input_parquet, verbose)
     using_default = countries_parquet is None
 
-    countries_url, countries_geom_col, _ = _get_countries_config(
+    countries_path, countries_geom_col, _ = _get_countries_config(
         countries_parquet, using_default, verbose
     )
 
@@ -634,8 +667,8 @@ def add_country_codes(
 
     if dry_run:
         _print_dry_run_header(
-            input_url,
-            countries_url,
+            input_path,
+            countries_path,
             output_parquet,
             input_geom_col,
             countries_geom_col,
@@ -652,16 +685,16 @@ def add_country_codes(
     # handle keeps the input file open (breaks cleanup on Windows).
     with _create_duckdb_connection(using_default) as con:
         if not dry_run:
-            total_count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+            total_count = con.execute(f"SELECT COUNT(*) FROM {sql_path(input_path)}").fetchone()[0]
             progress(f"Processing {total_count:,} input features...")
 
         countries_table = "filtered_countries"
         countries_source = _setup_countries_source(
             con,
             using_default,
-            countries_url,
+            countries_path,
             input_parquet,
-            input_url,
+            input_path,
             input_geom_col,
             input_bbox_col,
             countries_bbox_col,
@@ -670,7 +703,7 @@ def add_country_codes(
         )
 
         country_code_col, subdivision_code_col = _determine_code_columns(
-            con, countries_url, countries_source, countries_table, using_default, dry_run, verbose
+            con, countries_path, countries_source, countries_table, using_default, dry_run, verbose
         )
 
         select_clause = _build_select_clause(country_code_col, subdivision_code_col, using_default)
@@ -679,7 +712,7 @@ def add_country_codes(
         )
 
         query = _build_spatial_join_query(
-            input_url,
+            input_path,
             countries_source,
             select_clause,
             input_geom_col,
