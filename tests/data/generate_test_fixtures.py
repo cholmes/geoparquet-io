@@ -198,7 +198,7 @@ def verify_generated_files():
     v2_file = TEST_DATA_DIR / "fields_v2_5070.parquet"
     if v2_file.exists():
         try:
-            from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
+            from tests.geo_schema_helpers import parse_geometry_type_from_schema
 
             pf = pq.ParquetFile(v2_file)
             metadata = pf.schema_arrow.metadata

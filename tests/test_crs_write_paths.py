@@ -16,8 +16,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from geoparquet_io.core.convert import convert_to_geoparquet
-from geoparquet_io.core.metadata_utils import parse_geometry_type_from_schema
 from tests.conftest import has_geoparquet_metadata, has_native_geo_types
+from tests.geo_schema_helpers import parse_geometry_type_from_schema
 
 # Helper functions
 
