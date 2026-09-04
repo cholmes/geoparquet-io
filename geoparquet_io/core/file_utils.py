@@ -2,6 +2,7 @@
 File path utilities for GeoParquet files.
 """
 
+import contextlib
 import glob as glob_module
 import os
 import urllib.parse
@@ -256,18 +257,42 @@ def _copy_http_source(url: str, dest_path: str, dest_is_remote: bool) -> None:
     ):
         response.raise_for_status()
 
-        if dest_is_remote:
-            import obstore as obs
-
-            store, key = resolve_object_store(dest_path)
-            dest_handle = obs.open_writer(store, key)
-        else:
-            dest_handle = open(dest_path, "wb")
-        try:
+        with _copy_destination(dest_path, dest_is_remote) as dest_handle:
             for chunk in response.iter_bytes():
                 dest_handle.write(chunk)
-        finally:
-            dest_handle.close()
+
+
+@contextlib.contextmanager
+def _copy_destination(dest_path: str, dest_is_remote: bool):
+    """Yield a writable handle for a copy destination, committing only on success.
+
+    Closing an obstore writer **commits** whatever it buffered. Doing that on a
+    failure path would replace a good object at the destination key with a
+    truncated one, so the writer is closed -- committed -- only when the copy
+    body ran to completion. On failure the remote writer is dropped
+    un-committed, which leaves the destination exactly as it was, and a partial
+    local file is unlinked. Cleanup exceptions are suppressed so they cannot
+    mask the copy failure itself.
+    """
+    if dest_is_remote:
+        import obstore as obs
+
+        store, key = resolve_object_store(dest_path)
+        handle = obs.open_writer(store, key)
+    else:
+        handle = open(dest_path, "wb")
+
+    committed = False
+    try:
+        yield handle
+        handle.close()
+        committed = True
+    finally:
+        if not committed and not dest_is_remote:
+            with contextlib.suppress(Exception):
+                handle.close()
+            with contextlib.suppress(OSError):
+                os.unlink(dest_path)
 
 
 def resolve_object_store(url: str) -> tuple[object, str]:
@@ -363,26 +388,21 @@ def copy_file(source_path: str, dest_path: str, verbose: bool = False) -> None:
 
     import obstore as obs
 
-    source_handle = dest_handle = None
+    if source_is_remote:
+        store, key = resolve_object_store(source_path)
+        source_handle = obs.open_reader(store, key)
+    else:
+        source_handle = open(source_path, "rb")
+
     try:
-        if source_is_remote:
-            store, key = resolve_object_store(source_path)
-            source_handle = obs.open_reader(store, key)
-        else:
-            source_handle = open(source_path, "rb")
-
-        if dest_is_remote:
-            store, key = resolve_object_store(dest_path)
-            dest_handle = obs.open_writer(store, key)
-        else:
-            dest_handle = open(dest_path, "wb")
-
-        shutil.copyfileobj(source_handle, dest_handle)
+        # _copy_destination commits the write (closes the writer) only if the
+        # stream ran to completion; a mid-copy failure leaves the destination
+        # as it was rather than committing a truncated object.
+        with _copy_destination(dest_path, dest_is_remote) as dest_handle:
+            shutil.copyfileobj(source_handle, dest_handle)
     finally:
-        # Close the writer first: that is where a flush can still fail.
-        for handle in (dest_handle, source_handle):
-            if handle is not None:
-                handle.close()
+        with contextlib.suppress(Exception):
+            source_handle.close()
 
 
 def resolve_file_url(file_path, verbose=False):

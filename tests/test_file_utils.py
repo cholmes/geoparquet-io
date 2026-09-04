@@ -628,6 +628,123 @@ class TestCopyFile:
 
         assert obs.get(store, "out.parquet").bytes().to_bytes() == payload
 
+    def test_mid_stream_failure_does_not_commit_the_destination_object(self, monkeypatch):
+        """A copy that dies mid-stream must not commit a truncated object.
+
+        Closing the obstore writer *commits* whatever was buffered, so a
+        ``finally: close()`` turned a torn connection into a truncated object at
+        the destination key. On failure the writer is dropped un-committed and
+        the destination stays absent.
+        """
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        with pytest.raises(FileNotFoundError):
+            obstore.get(store, "out.parquet")
+
+    def test_mid_stream_failure_preserves_a_pre_existing_destination_object(self, monkeypatch):
+        """A good object already at the key survives a failed overwrite attempt."""
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        good = b"the-good-object-bytes"
+        store = MemoryStore()
+        obstore.put(store, "out.parquet", good)
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", "s3://bucket/out.parquet")
+
+        assert obstore.get(store, "out.parquet").bytes().to_bytes() == good
+
+    def test_mid_stream_failure_unlinks_a_partial_local_destination(self, monkeypatch, tmp_path):
+        """A local destination is not left behind truncated when the source dies."""
+        import obstore
+        from obstore.store import MemoryStore
+
+        from geoparquet_io.core import file_utils
+
+        store = MemoryStore()
+        monkeypatch.setattr(
+            file_utils, "resolve_object_store", lambda url: (store, url.rsplit("/", 1)[-1])
+        )
+        monkeypatch.setattr(obstore, "open_reader", lambda s, key: _FailingMidStreamReader())
+        dest = tmp_path / "dest.parquet"
+
+        with pytest.raises(OSError, match="torn down"):
+            file_utils.copy_file("s3://bucket/in.parquet", str(dest))
+
+        assert not dest.exists()
+
+    def test_http_source_torn_mid_stream_unlinks_the_partial_local_destination(self, tmp_path):
+        """The http(s) branch has the same guarantee: no truncated output survives."""
+        import functools as ft
+        import http.server as hs
+        import threading as th
+
+        from geoparquet_io.core.file_utils import copy_file
+
+        class _TruncatingHandler(hs.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                self.send_response(200)
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                self.wfile.write(b"only-a-few-bytes")
+                self.wfile.flush()
+                self.connection.close()
+
+            def log_message(self, *args):  # pragma: no cover
+                pass
+
+        httpd = hs.ThreadingHTTPServer(("127.0.0.1", 0), ft.partial(_TruncatingHandler))
+        thread = th.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        dest = tmp_path / "dest.parquet"
+        try:
+            with pytest.raises(Exception):  # noqa: B017 - the transport error type varies
+                copy_file(
+                    f"http://127.0.0.1:{httpd.server_address[1]}/in.parquet",
+                    str(dest),
+                )
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        assert not dest.exists()
+
+
+class _FailingMidStreamReader:
+    """A source handle that yields one chunk, then dies like a broken connection."""
+
+    def __init__(self):
+        self._calls = 0
+
+    def read(self, size=-1):
+        if self._calls == 0:
+            self._calls += 1
+            return b"partial-bytes"
+        raise OSError("connection torn down mid-stream")
+
+    def close(self):
+        pass
+
 
 # =============================================================================
 # Tests for safe_file_url()
