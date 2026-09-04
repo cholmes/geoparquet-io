@@ -1298,3 +1298,231 @@ class TestExtractTableGeoMetadata:
         result = extract_table(table)
 
         assert _geo_of(result) == geo
+
+
+# A self-intersecting "bowtie" is invalid, and ST_MakeValid splits it into two
+# triangles: repairing it turns a Polygon into a MultiPolygon (issue #812).
+_BOWTIE_WKT = "POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))"
+_SQUARE_WKT = "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"
+
+# Deliberately over-wide: the declared bbox of these fixtures does not describe
+# their row, so an output reporting it carried the input's stats over, and an
+# output reporting the tight [0, 0, 1, 1] recomputed them from the rows written.
+_WORLD_BBOX = [-180.0, -90.0, 180.0, 90.0]
+
+
+def _wkb_of(wkt: str) -> bytes:
+    """WKB for a WKT literal, via DuckDB's spatial extension."""
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    try:
+        return con.execute("SELECT ST_AsWKB(ST_GeomFromText(?))", [wkt]).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _polygon_fixture_table(wkt: str, orientation: str | None = None) -> pa.Table:
+    """One-row GeoParquet 1.1 table declaring Polygon and a world-wide bbox."""
+    column: dict = {
+        "encoding": "WKB",
+        "geometry_types": ["Polygon"],
+        "bbox": list(_WORLD_BBOX),
+    }
+    if orientation is not None:
+        column["orientation"] = orientation
+    return _table_with_geo(
+        {"id": [1], "geometry": [_wkb_of(wkt)]},
+        {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": column},
+        },
+    )
+
+
+def _write_polygon_fixture(path: Path, wkt: str, orientation: str | None = None) -> Path:
+    """Write the fixture table of :func:`_polygon_fixture_table` to ``path``."""
+    import pyarrow.parquet as pq
+
+    pq.write_table(_polygon_fixture_table(wkt, orientation), str(path))
+    return path
+
+
+def _geo_column_of_file(path: Path) -> dict:
+    """The primary geometry column's geo metadata entry of a written file."""
+    import pyarrow.parquet as pq
+
+    geo = json.loads(pq.read_schema(str(path)).metadata[b"geo"])
+    return geo["columns"][geo["primary_column"]]
+
+
+class TestRepairInvalidatesCarriedStats:
+    """A geometry repair rewrites rows, so carried stats must be recomputed (#812).
+
+    ``--repair-geometry`` is on by default and ``ST_MakeValid`` can change a
+    geometry's type, so an unfiltered extract that carried the input's
+    ``geometry_types``/``bbox`` verbatim shipped an output declaring ``Polygon``
+    while holding a ``MultiPolygon`` — which ``gpio check spec`` then failed.
+    """
+
+    @pytest.fixture
+    def bowtie_file(self, tmp_path):
+        return _write_polygon_fixture(tmp_path / "bowtie.parquet", _BOWTIE_WKT)
+
+    @pytest.fixture
+    def square_file(self, tmp_path):
+        return _write_polygon_fixture(tmp_path / "square.parquet", _SQUARE_WKT)
+
+    def test_repair_recomputes_geometry_types_and_bbox(self, bowtie_file, tmp_path):
+        from geoparquet_io.core.validate import validate_geoparquet
+
+        assert _geo_column_of_file(bowtie_file)["geometry_types"] == ["Polygon"]
+
+        out = tmp_path / "out.parquet"
+        extract(str(bowtie_file), str(out))
+
+        col = _geo_column_of_file(out)
+        assert col["geometry_types"] == ["MultiPolygon"]
+        assert col["bbox"] == [0.0, 0.0, 1.0, 1.0]
+        result = validate_geoparquet(str(out))
+        assert result.is_valid, [c.message for c in result.checks if not c.passed]
+
+    def test_no_repair_keeps_the_carried_stats(self, bowtie_file, tmp_path):
+        """Repair off leaves the rows alone, so the carried stats still describe them."""
+        out = tmp_path / "out.parquet"
+        extract(str(bowtie_file), str(out), repair_geometry=False)
+
+        col = _geo_column_of_file(out)
+        assert col["geometry_types"] == ["Polygon"]
+        assert col["bbox"] == _WORLD_BBOX
+
+    def test_nothing_to_repair_keeps_the_carried_stats(self, square_file, tmp_path):
+        """Repair on but nothing invalid: no rewrite happened, so no rescan either."""
+        out = tmp_path / "out.parquet"
+        extract(str(square_file), str(out))
+
+        col = _geo_column_of_file(out)
+        assert col["geometry_types"] == ["Polygon"]
+        assert col["bbox"] == _WORLD_BBOX
+
+    def test_streaming_output_recomputes_stats(self, bowtie_file, monkeypatch):
+        """The stdout path strips the stale stats and backfills them from the rows."""
+        import io
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+
+        buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.buffer = buffer
+        monkeypatch.setattr("sys.stdout", mock_stdout)
+
+        extract(str(bowtie_file), "-")
+
+        buffer.seek(0)
+        col = _geo_of(ipc.open_stream(buffer).read_all())["columns"]["geometry"]
+        assert col["geometry_types"] == ["MultiPolygon"]
+        assert col["bbox"] == [0.0, 0.0, 1.0, 1.0]
+
+    def test_extract_table_repair_recomputes_stats(self):
+        """The in-memory (Python API) path carries the same metadata and must fix it too."""
+        result = extract_table(_polygon_fixture_table(_BOWTIE_WKT))
+
+        col = _geo_of(result)["columns"]["geometry"]
+        assert col["geometry_types"] == ["MultiPolygon"]
+        assert col["bbox"] == [0.0, 0.0, 1.0, 1.0]
+
+    def test_extract_table_no_repair_keeps_the_carried_stats(self):
+        result = extract_table(_polygon_fixture_table(_BOWTIE_WKT), repair_geometry=False)
+
+        col = _geo_of(result)["columns"]["geometry"]
+        assert col["geometry_types"] == ["Polygon"]
+        assert col["bbox"] == _WORLD_BBOX
+
+    def test_extract_table_nothing_to_repair_keeps_the_carried_stats(self):
+        result = extract_table(_polygon_fixture_table(_SQUARE_WKT))
+
+        col = _geo_of(result)["columns"]["geometry"]
+        assert col["geometry_types"] == ["Polygon"]
+        assert col["bbox"] == _WORLD_BBOX
+
+
+class TestRepairDropsCarriedOrientation:
+    """A geometry repair can rewind rings, so a carried ``orientation`` must go.
+
+    ``ST_MakeValid`` gives the repaired bowtie clockwise exterior rings, so a
+    carried ``orientation: "counterclockwise"`` declaration would be factually
+    false in the output. Orientation is optional per spec and gpio does not
+    re-orient, so absence is the honest value — dropped only when the repair
+    actually rewrote a row, on the same condition that recomputes bbox and
+    geometry_types.
+    """
+
+    def test_repair_drops_the_carried_orientation(self, tmp_path):
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out))
+
+        assert "orientation" not in _geo_column_of_file(out)
+
+    def test_no_repair_keeps_the_carried_orientation(self, tmp_path):
+        """Repair off leaves the rows alone, so the declaration still holds."""
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out), repair_geometry=False)
+
+        assert _geo_column_of_file(out)["orientation"] == "counterclockwise"
+
+    def test_nothing_to_repair_keeps_the_carried_orientation(self, tmp_path):
+        """Repair on but nothing invalid: no ring was rewound."""
+        src = _write_polygon_fixture(
+            tmp_path / "square.parquet", _SQUARE_WKT, orientation="counterclockwise"
+        )
+
+        out = tmp_path / "out.parquet"
+        extract(str(src), str(out))
+
+        assert _geo_column_of_file(out)["orientation"] == "counterclockwise"
+
+    def test_streaming_repair_drops_the_carried_orientation(self, tmp_path, monkeypatch):
+        import io
+        from unittest import mock
+
+        import pyarrow.ipc as ipc
+
+        src = _write_polygon_fixture(
+            tmp_path / "bowtie.parquet", _BOWTIE_WKT, orientation="counterclockwise"
+        )
+
+        buffer = io.BytesIO()
+        mock_stdout = mock.MagicMock()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.buffer = buffer
+        monkeypatch.setattr("sys.stdout", mock_stdout)
+
+        extract(str(src), "-")
+
+        buffer.seek(0)
+        col = _geo_of(ipc.open_stream(buffer).read_all())["columns"]["geometry"]
+        assert "orientation" not in col
+
+    def test_extract_table_repair_drops_the_carried_orientation(self):
+        result = extract_table(_polygon_fixture_table(_BOWTIE_WKT, orientation="counterclockwise"))
+
+        assert "orientation" not in _geo_of(result)["columns"]["geometry"]
+
+    def test_extract_table_no_repair_keeps_the_carried_orientation(self):
+        result = extract_table(
+            _polygon_fixture_table(_BOWTIE_WKT, orientation="counterclockwise"),
+            repair_geometry=False,
+        )
+
+        col = _geo_of(result)["columns"]["geometry"]
+        assert col["orientation"] == "counterclockwise"

@@ -2528,3 +2528,26 @@ class TestOpsPartition:
 
         with pytest.raises(InvalidParameterError, match="auto"):
             getattr(ops, function)(arrow_table, tmp_path / function, auto=True, **kwargs)
+
+
+class TestTableExtractRepairsStats:
+    """``Table.extract`` repairs geometry by default, so it must not carry stale stats."""
+
+    def test_repaired_geometry_types_reach_the_written_file(self, tmp_path):
+        """A repaired bowtie is a MultiPolygon all the way to the written file (#812)."""
+        import json
+
+        from tests.test_extract import _polygon_fixture_table
+
+        # A self-intersecting bowtie declared (correctly, for the input) as a Polygon.
+        source = _polygon_fixture_table("POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))")
+
+        result = Table(source).extract()
+
+        geo = json.loads(result.to_arrow().schema.metadata[b"geo"])
+        assert geo["columns"]["geometry"]["geometry_types"] == ["MultiPolygon"]
+
+        out = tmp_path / "out.parquet"
+        result.write(out)
+        written = json.loads(pq.read_schema(out).metadata[b"geo"])
+        assert written["columns"]["geometry"]["geometry_types"] == ["MultiPolygon"]
