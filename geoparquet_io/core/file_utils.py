@@ -184,10 +184,15 @@ def handle_output_overwrite(
 # Schemes copy_file can resolve to a configured object store. The aliases map onto
 # the canonical scheme gpio's upload path speaks; every other scheme is_remote_url()
 # accepts is refused by name, rather than dying inside a filesystem library on a
-# dependency gpio does not ship (#810).
-_COPYABLE_STORE_SCHEMES = ("s3", "gs", "az")
+# dependency gpio does not ship (#810). Azure is refused explicitly:
+# obs.store.from_url("az://account/container") cannot be configured to work (it
+# misreads the account segment as the container).
+# TODO(the Azure support issue): support az:// copies once a working Azure store
+# construction exists, and re-advertise az:// in the messages below.
+_COPYABLE_STORE_SCHEMES = ("s3", "gs")
 _COPY_SCHEME_ALIASES = {"s3a": "s3", "gcs": "gs"}
 _HTTP_SCHEMES = ("http", "https")
+_AZURE_SCHEMES = ("az", "abfs", "abfss", "azure")
 
 # _setup_store_and_kwargs() folds this into the upload kwargs it returns alongside
 # the store. A streamed copy does not use those kwargs, so this only satisfies the
@@ -212,16 +217,22 @@ def _check_copyable_scheme(param_name: str, url: str, writing: bool) -> None:
             raise InvalidParameterError(
                 param_name,
                 f"'{url}' is an HTTP(S) URL, which is read-only. Write to a local "
-                "path or to an s3://, gs:// or az:// URL instead.",
+                "path or to an s3:// or gs:// URL instead.",
             )
         return
+
+    if scheme in _AZURE_SCHEMES:
+        raise InvalidParameterError(
+            param_name,
+            f"cannot copy '{url}': Azure Blob Storage copies are not supported yet. "
+            "Copy the file with another tool (e.g. azcopy) for now.",
+        )
 
     if scheme not in _COPYABLE_STORE_SCHEMES:
         raise InvalidParameterError(
             param_name,
-            f"cannot copy '{scheme}://' URLs. gpio copies s3://, gs:// and az:// "
-            "URLs, and reads http:// and https:// ones. For Azure Blob Storage "
-            "use az://account/container/key.",
+            f"cannot copy '{scheme}://' URLs. gpio copies s3:// and gs:// "
+            "URLs, and reads http:// and https:// ones.",
         )
 
 

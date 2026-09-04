@@ -455,22 +455,49 @@ class TestCopyFile:
         assert store_kwargs["access_key_id"] == "AKIA-TEST"
         assert store_kwargs["secret_access_key"] == "secret-test"
 
-    def test_gcs_and_azure_urls_resolve_to_their_own_stores(self):
-        """gs:// and az:// are real destinations now, not an fsspec ImportError (#810)."""
+    def test_gcs_urls_resolve_to_their_own_store(self):
+        """gs:// is a real destination now, not an fsspec ImportError (#810)."""
         from unittest.mock import patch
 
         from geoparquet_io.core.file_utils import resolve_object_store
 
         with patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url:
             _, gs_key = resolve_object_store("gs://bucket/path/file.parquet")
-            _, az_key = resolve_object_store("az://account/container/file.parquet")
 
         assert gs_key == "path/file.parquet"
-        assert az_key == "file.parquet"
-        assert [call.args[0] for call in mock_from_url.call_args_list] == [
-            "gs://bucket",
-            "az://account/container",
-        ]
+        assert [call.args[0] for call in mock_from_url.call_args_list] == ["gs://bucket"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "az://account/container/file.parquet",
+            "abfs://container@account.dfs.core.windows.net/in.parquet",
+            "azure://account/container/file.parquet",
+        ],
+    )
+    @pytest.mark.parametrize("side", ["source", "dest"])
+    def test_azure_copy_is_refused_with_a_clear_unsupported_message(self, url, side):
+        """An Azure URL fails with 'not supported yet', not an obstore panic.
+
+        ``obs.store.from_url('az://account/container')`` cannot work: without env
+        config it demands an account, with it the account segment is misread as
+        the container. Until Azure support lands, say so up front -- and build no
+        store at all.
+        """
+        from unittest.mock import patch
+
+        from geoparquet_io.core.file_utils import copy_file
+
+        args = (url, "out.parquet") if side == "source" else ("in.parquet", url)
+        with (
+            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
+            patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url,
+            pytest.raises(InvalidParameterError, match="not supported yet"),
+        ):
+            copy_file(*args)
+
+        mock_s3store.assert_not_called()
+        mock_from_url.assert_not_called()
 
     def test_http_source_copy_requests_path_and_query_verbatim(
         self, recording_http_server, tmp_path
@@ -526,37 +553,24 @@ class TestCopyFile:
         assert not dest.exists()
 
     def test_unsupported_scheme_fails_before_any_store_is_built(self):
-        """abfs:// reached fsspec and died on a missing adlfs; reject it up front (#810)."""
-        from unittest.mock import patch
+        """A scheme with no store dies by name up front, and does not advertise az:// (#810)."""
+        from geoparquet_io.core.file_utils import _check_copyable_scheme
 
-        from geoparquet_io.core.file_utils import copy_file
-
-        with (
-            patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
-            patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url,
-            pytest.raises(GeoParquetError) as exc,
-        ):
-            copy_file("abfs://container@account.dfs.core.windows.net/in.parquet", "out.parquet")
+        with pytest.raises(GeoParquetError) as exc:
+            _check_copyable_scheme("source_path", "ftp://example.com/in.parquet", writing=False)
 
         message = str(exc.value)
-        assert "abfs://" in message
-        assert "az://" in message
-        mock_s3store.assert_not_called()
-        mock_from_url.assert_not_called()
+        assert "ftp://" in message
+        assert "az://" not in message, "az:// copies do not work; the error must not suggest them"
 
     def test_http_destination_is_rejected_as_read_only(self):
         """HTTP(S) can be copied from, never to; say so instead of failing mid-stream."""
-        from unittest.mock import patch
-
         from geoparquet_io.core.file_utils import copy_file
 
-        with (
-            patch("obstore.store.HTTPStore") as mock_http,
-            pytest.raises(GeoParquetError, match="read-only"),
-        ):
+        with pytest.raises(GeoParquetError, match="read-only") as exc:
             copy_file("local.parquet", "https://example.com/out.parquet")
 
-        mock_http.from_url.assert_not_called()
+        assert "az://" not in str(exc.value), "the error must not suggest az://; it is unsupported"
 
     def test_remote_to_remote_copy_streams_bytes_through_obstore(self, monkeypatch):
         """A remote->remote copy moves the real bytes, with no network and no whole-file buffer."""
