@@ -16,7 +16,11 @@ from geoparquet_io.core.logging_config import (
     success,
     warn,
 )
-from geoparquet_io.core.partition.common import partition_by_column, preview_partition
+from geoparquet_io.core.partition.common import (
+    partition_by_column,
+    preview_partition,
+    raise_if_no_rows,
+)
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
 
@@ -185,6 +189,10 @@ def partition_by_kdtree(
         actual_input = stdin_temp_file
 
     try:
+        # Nothing to partition: stop before rewriting the whole input just
+        # to add an index column to it (#823).
+        raise_if_no_rows(actual_input)
+
         # Check if KD-tree column exists and get row count for dataset size validation
         from geoparquet_io.core.duckdb_metadata import get_column_names, get_row_count
 

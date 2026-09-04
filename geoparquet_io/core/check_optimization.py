@@ -135,11 +135,18 @@ def _check_compression(parquet_file, verbose=False):
     Returns:
         dict with 'passed' (bool) and 'detail' (str)
     """
-    from geoparquet_io.core.check_parquet_structure import check_compression
+    from geoparquet_io.core.check_parquet_structure import (
+        _NO_COMPRESSION_INFO,
+        check_compression,
+    )
 
     result = check_compression(parquet_file, verbose=False, return_results=True, quiet=True)
     if result is None:
         return {"passed": False, "detail": "No geometry column found"}
+
+    if result.get("geometry_column") and result.get("current_compression") is None:
+        # No row groups, so no codec to report -- don't claim ZSTD (#823).
+        return {"passed": True, "detail": _NO_COMPRESSION_INFO}
 
     if result.get("passed"):
         return {

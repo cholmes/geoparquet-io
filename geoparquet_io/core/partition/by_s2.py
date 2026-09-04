@@ -33,6 +33,7 @@ from geoparquet_io.core.partition.common import (
     calculate_partition_stats,
     partition_by_column,
     preview_partition,
+    raise_if_no_rows,
 )
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file
 
@@ -245,6 +246,10 @@ def partition_by_s2(
 
     # Wrap all operations in try/finally to ensure stdin temp file cleanup
     try:
+        # Nothing to partition: stop before rewriting the whole input just
+        # to add an index column to it (#823).
+        raise_if_no_rows(actual_input)
+
         # Calculate auto level if requested
         if auto:
             level = calculate_auto_resolution(
