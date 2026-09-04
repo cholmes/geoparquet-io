@@ -2500,9 +2500,15 @@ def _schema_crs_for_consistency(schema_info: list, geom_col: str) -> Any:
     as the geo metadata), ``None`` for ``srid:0`` (unknown, the pair for an
     explicit ``"crs": null``), else the parsed CRS value.
 
-    A bare ``<authority>:<code>`` (``crs=EPSG:32633``) is resolved to PROJJSON
-    here, because the geo-metadata side of the comparison is always PROJJSON and
-    a string would never compare equal to it (#814).
+    A bare ``<authority>:<code>`` (``crs=EPSG:32633``) and an ``srid:<id>``
+    reference (which the Parquet spec defines as EPSG:<id>) are resolved to
+    PROJJSON here, because the geo-metadata side of the comparison is always
+    PROJJSON and a string would never compare equal to it (#814).
+
+    A ``projjson:<key>`` reference names a key in the file's own metadata, which
+    this function never sees, so it is deliberately left as the raw string: it
+    compares unequal and the check reports a mismatch rather than guessing.
+    Conservative, but never a silent false PASS.
     """
     from geoparquet_io.core.duckdb_metadata import (
         parse_geometry_logical_type,
@@ -2516,8 +2522,15 @@ def _schema_crs_for_consistency(schema_info: list, geom_col: str) -> Any:
         if not (parsed and "crs" in parsed):
             return CRS_ABSENT
         crs = parsed["crs"]
-        if isinstance(crs, str) and crs.strip().lower() == _PARQUET_UNKNOWN_CRS:
-            return None
+        if isinstance(crs, str):
+            token = crs.strip()
+            if token.lower() == _PARQUET_UNKNOWN_CRS:
+                return None
+            if token.lower().startswith("srid:"):
+                # srid:<id> is EPSG:<id> per the Parquet spec; keep the raw
+                # string (fail-closed) when the code doesn't resolve.
+                resolved = resolve_authority_code_crs(f"EPSG:{token[len('srid:') :]}")
+                return _parse_crs_value(resolved if isinstance(resolved, dict) else crs)
         return _parse_crs_value(resolve_authority_code_crs(crs))
     return CRS_ABSENT
 

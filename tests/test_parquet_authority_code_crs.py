@@ -36,6 +36,7 @@ from geoparquet_io.core.validate import (
 )
 
 EPSG3857_PROJJSON = PyprojCRS.from_epsg(3857).to_json_dict()
+EPSG5070_PROJJSON = PyprojCRS.from_epsg(5070).to_json_dict()
 EPSG32633_PROJJSON = PyprojCRS.from_epsg(32633).to_json_dict()
 CRS84_ID = {
     "type": "GeographicCRS",
@@ -134,6 +135,12 @@ class TestResolveCompactForm:
         assert isinstance(result, dict)
         assert result.get("id", {}).get("code") == 5070
 
+    def test_uppercase_srid_still_takes_the_srid_path(self):
+        """The parser carries ``SRID:5070`` through, so the resolver must match it too."""
+        result = resolve_crs_reference("any_file.parquet", "SRID:5070")
+        assert isinstance(result, dict)
+        assert result.get("id", {}).get("code") == 5070
+
     @pytest.mark.parametrize("value", ["unknown:format", "EPSG:99999999", "not-a-crs"])
     def test_an_unresolvable_value_is_returned_unchanged(self, value):
         assert resolve_crs_reference("any_file.parquet", value) == value
@@ -182,6 +189,63 @@ class TestV2CrsConsistencyVerdicts:
             _geo_meta({"crs": None}), _schema("GeometryType(crs=srid:0)"), "geometry"
         )
         assert check.status is CheckStatus.PASSED
+
+
+class TestSridReferenceInConsistency:
+    """Per the Parquet spec, ``srid:<id>`` in the geo context is EPSG:<id>.
+
+    It must resolve like the compact form does, so a file whose metadata carries
+    the identical CRS as PROJJSON does not false-fail; ``projjson:<key>`` names
+    file metadata this check cannot read, so it stays a conservative mismatch.
+    """
+
+    def test_matching_srid_reference_passes(self):
+        """Was FAILED: the raw ``srid:5070`` string never equals its own PROJJSON."""
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": EPSG5070_PROJJSON}),
+            _schema("GeometryType(crs=srid:5070)"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.PASSED
+
+    def test_mismatching_srid_reference_fails(self):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": PyprojCRS.from_epsg(4326).to_json_dict()}),
+            _schema("GeometryType(crs=srid:5070)"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.FAILED
+
+    def test_uppercase_srid_reference_behaves_like_lowercase(self):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": EPSG5070_PROJJSON}),
+            _schema("GeometryType(crs=SRID:5070)"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.PASSED
+
+    def test_uppercase_srid_zero_still_means_unknown(self):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": None}), _schema("GeometryType(crs=SRID:0)"), "geometry"
+        )
+        assert check.status is CheckStatus.PASSED
+
+    def test_unresolvable_srid_reference_still_fails_closed(self):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": EPSG5070_PROJJSON}),
+            _schema("GeometryType(crs=srid:99999999)"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.FAILED
+
+    def test_projjson_reference_is_a_conservative_mismatch(self):
+        """The named key cannot be read here, so report a mismatch, never a guess."""
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": EPSG5070_PROJJSON}),
+            _schema("GeometryType(crs=projjson:my_crs)"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.FAILED
 
 
 # =============================================================================

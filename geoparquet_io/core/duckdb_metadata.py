@@ -871,8 +871,9 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
     if isinstance(crs_value, dict):
         return crs_value
 
-    # Handle projjson:key_name reference to file metadata
-    if isinstance(crs_value, str) and crs_value.startswith("projjson:"):
+    # Handle projjson:key_name reference to file metadata. The prefixes are
+    # matched case-insensitively, like the parser's guard that carried them here.
+    if isinstance(crs_value, str) and crs_value.lower().startswith("projjson:"):
         key_name = crs_value[9:]  # Skip "projjson:"
         try:
             import pyarrow.parquet as pq
@@ -890,7 +891,7 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
         return crs_value  # Return the reference string if resolution failed
 
     # Handle srid:XXXX format - convert to PROJJSON using pyproj
-    if isinstance(crs_value, str) and crs_value.startswith("srid:"):
+    if isinstance(crs_value, str) and crs_value.lower().startswith("srid:"):
         srid = crs_value[5:]  # Skip "srid:"
         try:
             from pyproj import CRS
