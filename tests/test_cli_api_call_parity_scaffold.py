@@ -43,7 +43,7 @@ canonical name, repr(CLI value), repr(API value))`` with a written
 justification, following `collect_divergences()` in
 `tests/test_cli_api_default_parity.py`. The two reprs are part of the key on
 purpose: an allowlist recording only "these differ" would stay green if
-`Table.add_kdtree` changed `iterations` from 9 to 4 -- still a divergence, but a
+`ops.sort_str` changed `tile_size` from 50000 to 40000 -- still a divergence, but a
 different one nobody reviewed.
 
 A per-key allowlist is used rather than `xfail` on the parametrized case because
@@ -343,17 +343,27 @@ CASES: list[ParityCase] = [
             lambda c: ["add", "kdtree", c.input_file, c.output_file],
         ),
         ops=_ops(
-            "add_kdtree_table", core_kdtree.add_kdtree_table, lambda c: ops.add_kdtree(c.table)
+            "add_kdtree_table",
+            core_kdtree.add_kdtree_table,
+            lambda c: ops.add_kdtree(c.table, auto=True),
         ),
         table=_table(
             core_kdtree,
             "add_kdtree_table",
             core_kdtree.add_kdtree_table,
-            lambda c: c.gpio_table.add_kdtree(),
+            lambda c: c.gpio_table.add_kdtree(auto=True),
+        ),
+        notes=(
+            "`auto=True` is supplied on the API side because that is what the bare CLI "
+            "call selects: `gpio add kdtree in out` with no flags falls back to auto mode "
+            "(iterations=None, auto_target_rows=('rows', 120000)). The API no longer "
+            "guesses 512 partitions when neither is named -- it refuses, like the "
+            "resolution-bearing indices after #800 (#813).",
         ),
         normalize={
             "column_name": ("kdtree_column_name", "kdtree_column_name"),
             "iterations": ("iterations", "iterations"),
+            "auto_target_rows": ("auto_target_rows", "auto_target_rows"),
             "sample_size": ("sample_size", "sample_size"),
         },
     ),
@@ -605,7 +615,7 @@ CASES_BY_ID = {case.id: case for case in CASES}
 # Keys are (case id, front end, canonical name, repr(CLI value), repr(API value)),
 # following `collect_divergences()` in tests/test_cli_api_default_parity.py. The two
 # reprs are load-bearing: an allowlist that recorded only "these differ" would stay
-# green if `Table.add_kdtree` changed `iterations` from 9 to 4 -- still a divergence,
+# green if `ops.sort_str` changed `tile_size` from 50000 to 40000 -- still a divergence,
 # but a *different* one that nobody reviewed. Pinning the pair means any change to
 # either side has to come back through this table.
 KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
@@ -651,27 +661,6 @@ KNOWN_PARITY_GAPS: dict[tuple[str, str, str, str, str], str] = {
         "The file core resolves row_group_rows=None to the sort default of 50,000 rows "
         "(DEFAULT_SORT_ROW_GROUP_ROWS); the fluent API spells that same effective default "
         "explicitly as tile_size=50000."
-    ),
-    (
-        "add kdtree",
-        "ops",
-        "iterations",
-        "None",
-        "9",
-    ): (
-        "The CLI has no --iterations: with no flags it selects auto mode (iterations=None, "
-        "auto_target_rows=('rows', 120000)) so core sizes the tree from the row count. The API "
-        "has no auto mode at all and pins iterations=9, i.e. 512 partitions whatever the input."
-    ),
-    (
-        "add kdtree",
-        "table",
-        "iterations",
-        "None",
-        "9",
-    ): (
-        "Same as ('add kdtree', 'ops', 'iterations'): Table.add_kdtree also pins iterations=9 "
-        "while the CLI defaults to auto-sizing from the row count."
     ),
 }
 
@@ -821,8 +810,8 @@ def test_known_parity_gap_still_diverges_the_same_way(gap, parity_ctx):
 
     Two ways this earns its keep. A gap fixed in the code would otherwise sit in
     the allowlist forever, silently re-permitting the divergence later. And a gap
-    whose values merely *shifted* -- `Table.add_kdtree` going from `iterations=9`
-    to `4` -- is a different divergence that nobody reviewed, so pinning only
+    whose values merely *shifted* -- `ops.sort_str` going from `tile_size=50000`
+    to `40000` -- is a different divergence that nobody reviewed, so pinning only
     "these differ" would let it through unnoticed.
     """
     case_id, side, canonical, cli_repr, api_repr = gap

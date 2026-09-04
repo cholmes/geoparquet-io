@@ -233,8 +233,32 @@ _KEEP_TRISTATE = (
     "Intentional. CLI flag False and API None both mean 'follow hive' at runtime; the API spells "
     "it as a tri-state so it can also express an explicit drop, which a bare Click flag cannot."
 )
+_KDTREE_AUTO_SPELLING = (
+    "Intentional. The KD-tree commands spell auto mode as `--auto N` -- one int option carrying "
+    "the target row count, unset meaning 'not asked for'. The API splits that into the `auto` "
+    "bool and `target_rows` the other index methods already take (#800), so `auto=True` reads "
+    "the same across every partition method. `auto=True` and `--auto` deliver the identical "
+    "auto_target_rows=('rows', 120000) to core, which is what "
+    "tests/test_cli_api_call_parity_scaffold.py's 'add kdtree' case compares."
+)
 
 KNOWN_DIVERGENCES: dict[tuple[str, str, str, str, str], str] = {
+    ("add kdtree", "ops.add_kdtree", "auto", "'<unset>'", "False"): _KDTREE_AUTO_SPELLING,
+    ("add kdtree", "Table.add_kdtree", "auto", "'<unset>'", "False"): _KDTREE_AUTO_SPELLING,
+    (
+        "partition kdtree",
+        "ops.partition_by_kdtree",
+        "auto",
+        "'<unset>'",
+        "False",
+    ): _KDTREE_AUTO_SPELLING,
+    (
+        "partition kdtree",
+        "Table.partition_by_kdtree",
+        "auto",
+        "'<unset>'",
+        "False",
+    ): _KDTREE_AUTO_SPELLING,
     (
         "sort hilbert",
         "ops.sort_hilbert",

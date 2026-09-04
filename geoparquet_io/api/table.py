@@ -17,6 +17,11 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.add.kdtree import (
+    DEFAULT_KDTREE_TARGET_ROWS,
+    ITERATIONS_CONFLICT,
+    ITERATIONS_MISSING,
+)
 from geoparquet_io.core.check_parquet_structure import CheckProfile
 from geoparquet_io.core.common import write_geoparquet_table
 from geoparquet_io.core.duckdb_utils import quote_identifier
@@ -1779,19 +1784,40 @@ class Table:
     def add_kdtree(
         self,
         column_name: str = "kdtree_cell",
-        iterations: int = 9,
+        iterations: int | None = None,
         sample_size: int = 100000,
+        *,
+        auto: bool = False,
+        target_rows: int = DEFAULT_KDTREE_TARGET_ROWS,
     ) -> Table:
         """
         Add a KD-tree cell column based on geometry location.
 
+        Like ``gpio add kdtree``, this refuses to guess: pass ``iterations``, or
+        pass ``auto=True`` to size the tree from the row count.
+
         Args:
             column_name: Name for the KD-tree column (default: 'kdtree_cell')
-            iterations: Number of recursive splits 1-20 (default: 9)
+            iterations: Number of recursive splits 1-20, giving ``2 ** iterations``
+                cells. Required unless ``auto=True``. Mirrors ``--partitions``,
+                which the CLI spells as the partition count itself.
             sample_size: Number of points to sample for boundaries (default: 100000)
+            auto: Size the tree from the row count (default: False). Mirrors the
+                CLI's default auto mode; mutually exclusive with ``iterations``.
+            target_rows: Target rows per cell when ``auto=True`` (default: 120000).
+                Mirrors ``--auto N``.
 
         Returns:
             New Table with KD-tree column added
+
+        Raises:
+            InvalidParameterError: If both ``iterations`` and ``auto`` were given,
+                or neither was
+
+        Example:
+            >>> table = gpio.read('data.parquet')
+            >>> sized = table.add_kdtree(iterations=6)  # 64 cells
+            >>> auto = table.add_kdtree(auto=True)  # sized from the row count
         """
         from geoparquet_io.core.add.kdtree import add_kdtree_table
 
@@ -1800,6 +1826,7 @@ class Table:
             kdtree_column_name=column_name,
             iterations=iterations,
             sample_size=sample_size,
+            auto_target_rows=("rows", target_rows) if auto else None,
         )
         return self._wrap(result, self._geometry_column)
 
@@ -3091,7 +3118,9 @@ class Table:
         self,
         output_dir: str | Path,
         *,
-        iterations: int = 9,
+        iterations: int | None = None,
+        auto: bool = False,
+        target_rows: int = DEFAULT_KDTREE_TARGET_ROWS,
         hive: bool = False,
         keep_kdtree_column: bool | None = None,
         overwrite: bool = False,
@@ -3104,9 +3133,18 @@ class Table:
         Recursively splits the data spatially using KD-tree algorithm,
         creating balanced partitions based on geometry distribution.
 
+        Like ``gpio partition kdtree``, this refuses to guess: pass
+        ``iterations``, or pass ``auto=True`` to size the tree from the row count.
+
         Args:
             output_dir: Output directory for partition files
-            iterations: Number of KD-tree splits (creates 2^iterations partitions)
+            iterations: Number of KD-tree splits (creates 2^iterations partitions).
+                Required unless ``auto=True``. Mirrors ``--partitions``, which the
+                CLI spells as the partition count itself.
+            auto: Size the tree from the row count (default: False). Mirrors the
+                CLI's default auto mode; mutually exclusive with ``iterations``.
+            target_rows: Target rows per partition when ``auto=True``
+                (default: 120000). Mirrors ``--auto N``.
             hive: Use Hive-style partitioning (default: False, matches CLI --hive)
             keep_kdtree_column: Keep the generated ``kdtree_cell`` column in the output
                 files. None (default) follows ``hive``: kept for Hive-style
@@ -3121,11 +3159,23 @@ class Table:
         Returns:
             dict with partition statistics
 
+        Raises:
+            InvalidParameterError: If both ``iterations`` and ``auto`` were given,
+                or neither was
+
         Example:
             >>> table = gpio.read('data.parquet')
             >>> stats = table.partition_by_kdtree('output/', iterations=6)
+            >>> auto = table.partition_by_kdtree('output/', auto=True)
         """
         from geoparquet_io.core.partition.by_kdtree import partition_by_kdtree
+
+        _require_auto_or_resolution(
+            auto,
+            {"iterations": iterations},
+            conflict=ITERATIONS_CONFLICT,
+            missing=ITERATIONS_MISSING,
+        )
 
         return _run_partition_with_temp_file(
             self._table,
@@ -3135,6 +3185,7 @@ class Table:
             temp_prefix="gpio_part_kd",
             core_kwargs={
                 "iterations": iterations,
+                "auto_target_rows": ("rows", target_rows) if auto else None,
                 "hive": hive,
                 "keep_kdtree_column": keep_kdtree_column,
                 "overwrite": overwrite,

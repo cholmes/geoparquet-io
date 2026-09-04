@@ -196,6 +196,23 @@ class TestPartitionKDTree:
         assert result.exit_code != 0
         assert "power of 2" in result.output.lower()
 
+    def test_partition_kdtree_auto_is_not_overridden_by_the_old_default(
+        self, buildings_test_file, cli_runner
+    ):
+        """Auto mode must size the tree, not fall through to 512 partitions (#813).
+
+        `partition_by_kdtree` used to answer an unset `iterations` with a hardcoded
+        9 *before* handing the file to `add_kdtree_column`, so `--auto` -- which is
+        what a bare `gpio partition kdtree` selects -- never reached the code that
+        sizes the tree from the row count. Every auto run produced 512 partitions
+        whatever the input, which is exactly the guess the Python API was blamed for.
+        """
+        result = cli_runner.invoke(partition, ["kdtree", buildings_test_file, "--preview"])
+
+        assert result.exit_code == 0, result.output
+        assert "Auto-selected 2 partitions" in result.output
+        assert "512" not in result.output
+
 
 @pytest.mark.slow
 class TestPartitionKDTreeOperations:

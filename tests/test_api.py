@@ -235,7 +235,7 @@ class TestTable:
 
     def test_add_kdtree(self, sample_table):
         """Test add_kdtree() method."""
-        result = sample_table.add_kdtree()
+        result = sample_table.add_kdtree(auto=True)
         assert isinstance(result, Table)
         assert "kdtree_cell" in result.column_names
         assert result.num_rows == 766
@@ -1396,6 +1396,178 @@ class TestPartitionAutoResolution:
                 getattr(sample_table, method)(tmp_path / "out", **kwargs)
 
         write.assert_not_called()
+
+
+class TestKdtreeAutoMode:
+    """``auto=True`` sizes the KD-tree from the row count, exactly as the CLI does.
+
+    ``gpio add kdtree`` and ``gpio partition kdtree`` with no flags select auto
+    mode (``iterations=None``, ``auto_target_rows=('rows', 120000)``) and let core
+    size the tree from the row count. The API pinned ``iterations=9`` -- 512
+    partitions whatever the input -- so the same file through the two front doors
+    produced different output (#813). The API now mirrors what #800 did for the
+    resolution-bearing indices: name ``iterations``, or ask for ``auto=True``, and
+    a call that gives neither is refused rather than guessed at.
+    """
+
+    #: What `gpio {add,partition} kdtree` fall back to when neither --partitions
+    #: nor --auto is given (see `cli/main.py`).
+    CLI_AUTO_TARGET_ROWS = 120000
+
+    @pytest.fixture
+    def sample_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @staticmethod
+    def _run_cli(args):
+        from click.testing import CliRunner
+
+        from geoparquet_io.cli.main import cli
+
+        result = CliRunner().invoke(cli, [str(a) for a in args])
+        assert result.exit_code == 0, result.output
+        return result
+
+    @staticmethod
+    def _cells(path):
+        return pq.read_table(path).column("kdtree_cell").to_pylist()
+
+    @staticmethod
+    def _partition_names(output_dir):
+        files = sorted(Path(output_dir).rglob("*.parquet"))
+        assert files, f"no parquet files written to {output_dir}"
+        return sorted(f.name for f in files)
+
+    @property
+    def _auto_iterations(self):
+        """What core's auto mode picks for the 766-row sample at the CLI target."""
+        from geoparquet_io.core.add.kdtree import _find_optimal_iterations
+
+        return _find_optimal_iterations(766, self.CLI_AUTO_TARGET_ROWS)
+
+    def test_the_fixture_can_tell_auto_apart_from_the_old_default(self):
+        """Precondition: if auto picked 9 too, none of the tests below prove anything."""
+        assert self._auto_iterations != 9
+
+    # -- auto=True reproduces what the CLI writes ---------------------------
+
+    def test_add_kdtree_auto_matches_the_cli(self, sample_table, tmp_path):
+        cli_out = tmp_path / "cli.parquet"
+        self._run_cli(["add", "kdtree", PLACES_PARQUET, cli_out])
+
+        api_out = tmp_path / "api.parquet"
+        sample_table.add_kdtree(auto=True).write(api_out)
+
+        assert self._cells(api_out) == self._cells(cli_out)
+
+    def test_ops_add_kdtree_auto_matches_the_cli(self, tmp_path):
+        cli_out = tmp_path / "cli.parquet"
+        self._run_cli(["add", "kdtree", PLACES_PARQUET, cli_out])
+
+        result = ops.add_kdtree(pq.read_table(PLACES_PARQUET), auto=True)
+
+        assert result.column("kdtree_cell").to_pylist() == self._cells(cli_out)
+
+    def test_add_kdtree_auto_sizes_the_tree_from_the_row_count(self, sample_table):
+        result = sample_table.add_kdtree(auto=True)
+
+        cells = set(result.to_arrow().column("kdtree_cell").to_pylist())
+        assert len(cells) == 2**self._auto_iterations
+
+    def test_add_kdtree_target_rows_is_forwarded(self, sample_table):
+        default_target = sample_table.add_kdtree(auto=True)
+        small_target = sample_table.add_kdtree(auto=True, target_rows=100)
+
+        assert len(set(small_target.to_arrow().column("kdtree_cell").to_pylist())) > len(
+            set(default_target.to_arrow().column("kdtree_cell").to_pylist())
+        )
+
+    def test_partition_by_kdtree_auto_matches_the_cli(self, sample_table, tmp_path):
+        self._run_cli(["partition", "kdtree", PLACES_PARQUET, tmp_path / "cli"])
+        sample_table.partition_by_kdtree(tmp_path / "api", auto=True)
+
+        assert self._partition_names(tmp_path / "api") == self._partition_names(tmp_path / "cli")
+
+    def test_partition_by_kdtree_auto_sizes_the_tree_from_the_row_count(
+        self, sample_table, tmp_path
+    ):
+        sample_table.partition_by_kdtree(tmp_path / "api", auto=True)
+
+        assert len(self._partition_names(tmp_path / "api")) == 2**self._auto_iterations
+
+    def test_ops_partition_by_kdtree_accepts_auto(self, tmp_path):
+        ops.partition_by_kdtree(pq.read_table(PLACES_PARQUET), tmp_path / "api", auto=True)
+
+        assert len(self._partition_names(tmp_path / "api")) == 2**self._auto_iterations
+
+    # -- with neither iterations nor auto, refuse rather than guess ----------
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda t, d: t.add_kdtree(), id="Table.add_kdtree"),
+            pytest.param(lambda t, d: ops.add_kdtree(t.to_arrow()), id="ops.add_kdtree"),
+            pytest.param(lambda t, d: t.partition_by_kdtree(d), id="Table.partition_by_kdtree"),
+            pytest.param(
+                lambda t, d: ops.partition_by_kdtree(t.to_arrow(), d),
+                id="ops.partition_by_kdtree",
+            ),
+        ],
+    )
+    def test_refuses_to_guess_an_iteration_count(self, sample_table, tmp_path, call):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            call(sample_table, tmp_path / "out")
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda t, d: t.add_kdtree(iterations=3, auto=True), id="Table.add_kdtree"),
+            pytest.param(
+                lambda t, d: ops.add_kdtree(t.to_arrow(), iterations=3, auto=True),
+                id="ops.add_kdtree",
+            ),
+            pytest.param(
+                lambda t, d: t.partition_by_kdtree(d, iterations=3, auto=True),
+                id="Table.partition_by_kdtree",
+            ),
+            pytest.param(
+                lambda t, d: ops.partition_by_kdtree(t.to_arrow(), d, iterations=3, auto=True),
+                id="ops.partition_by_kdtree",
+            ),
+        ],
+    )
+    def test_auto_and_an_explicit_iteration_count_are_mutually_exclusive(
+        self, sample_table, tmp_path, call
+    ):
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            call(sample_table, tmp_path / "out")
+
+    @pytest.mark.parametrize("kwargs", [{}, {"iterations": 3, "auto": True}])
+    def test_an_invalid_partition_call_never_serializes_the_table(
+        self, sample_table, tmp_path, kwargs
+    ):
+        """The gate belongs in front of the temp-file write, not behind it (#800)."""
+        from geoparquet_io.api import table as table_module
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with patch.object(table_module, "write_geoparquet_table") as write:
+            with pytest.raises(InvalidParameterError, match="auto"):
+                sample_table.partition_by_kdtree(tmp_path / "out", **kwargs)
+
+        write.assert_not_called()
+
+    # -- an explicit iteration count still works ----------------------------
+
+    def test_an_explicit_iteration_count_is_still_honoured(self, sample_table):
+        result = sample_table.add_kdtree(iterations=3)
+
+        assert len(set(result.to_arrow().column("kdtree_cell").to_pylist())) == 8
 
 
 class TestPublicExceptionExports:

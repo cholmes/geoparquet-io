@@ -332,15 +332,27 @@ Add balanced spatial partition IDs using KD-tree:
     ```python
     import geoparquet_io as gpio
 
-    # Add kdtree column with default settings (9 iterations = 512 partitions)
-    gpio.read('input.parquet').add_kdtree().write('output.parquet')
+    # Auto mode: size the tree from the row count, like the bare CLI call
+    gpio.read('input.parquet').add_kdtree(auto=True).write('output.parquet')
 
-    # Custom column name and iterations
+    # A different target, still auto
+    gpio.read('input.parquet').add_kdtree(
+        auto=True, target_rows=50000
+    ).write('output.parquet')
+
+    # Custom column name and an explicit iteration count
     gpio.read('input.parquet').add_kdtree(
         column_name='partition_id',
         iterations=5  # 2^5 = 32 partitions
     ).write('output.parquet')
     ```
+
+!!! warning "Breaking change for the Python API: the implicit `iterations=9` is gone"
+    `Table.add_kdtree()` and `ops.add_kdtree()` used to fall back to
+    `iterations=9` — 512 partitions whatever the input — where the bare CLI call
+    sizes the tree from the row count. Such a call now raises
+    `InvalidParameterError`. Pass `auto=True` to get what the CLI gives you, or
+    pass `iterations=9` to keep the output you had.
 
 **Auto mode** (default):
 - Targets ~120k rows per partition

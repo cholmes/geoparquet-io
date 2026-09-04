@@ -38,6 +38,100 @@ from geoparquet_io.core.streaming import (
     should_stream_output,
 )
 
+#: Rows per partition that `gpio add kdtree` / `gpio partition kdtree` aim for
+#: when neither `--partitions` nor `--auto` is given, and the default the Python
+#: API's ``target_rows`` carries so `auto=True` reproduces the CLI exactly.
+DEFAULT_KDTREE_TARGET_ROWS = 120000
+
+#: Wording shared by every KD-tree front door, so the same mistake reads the same
+#: way whether it was made through the CLI, `ops` or `Table`.
+ITERATIONS_CONFLICT = "cannot specify both iterations and auto"
+ITERATIONS_MISSING = "must specify either iterations or auto"
+
+
+def _file_size_mb(path: str) -> float:
+    """Size of ``path`` in MB, or 0.0 when it cannot be stat'd (e.g. a URL)."""
+    try:
+        return os.path.getsize(path) / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def require_iterations_or_auto(
+    iterations: int | None, auto_target_rows: int | tuple | None
+) -> None:
+    """Refuse to guess a tree size, the way the CLI refuses to guess a resolution.
+
+    An unset ``iterations`` used to mean "512 partitions" in the Python API and
+    "size it from the row count" on the command line, so the same file through
+    the two front doors came out partitioned differently (#813). Neither is
+    guessed now: name one or the other.
+
+    Args:
+        iterations: Explicit number of recursive splits, or None
+        auto_target_rows: Auto-mode target (``N`` rows, or a ``(mode, value)``
+            pair), or None
+
+    Raises:
+        InvalidParameterError: If both were given, or neither was
+    """
+    if iterations is not None and auto_target_rows is not None:
+        raise InvalidParameterError("auto", ITERATIONS_CONFLICT)
+    if iterations is None and auto_target_rows is None:
+        raise InvalidParameterError("iterations", ITERATIONS_MISSING)
+
+
+def resolve_auto_iterations(
+    total_count: int,
+    auto_target_rows: int | tuple,
+    file_size_mb: float,
+    verbose: bool = False,
+    announce: bool = True,
+) -> int:
+    """Size a KD-tree from a row (or MB) target, and say what was picked.
+
+    One implementation for every caller: the file command, the partition command
+    and the in-memory table function all have to land on the same iteration count
+    for the same data, which is the whole point of #813.
+
+    Args:
+        total_count: Rows in the input
+        auto_target_rows: ``N`` rows, or a ``(mode, value)`` pair where mode is
+            ``"rows"`` or ``"mb"``
+        file_size_mb: Size of the input on disk, used by the ``"mb"`` mode and by
+            the per-partition estimate in the message
+        verbose: Whether the caller is in verbose mode
+        announce: Whether to report the choice to the user
+
+    Returns:
+        The number of recursive splits to run (partitions are ``2 ** result``)
+    """
+    if isinstance(auto_target_rows, tuple):
+        mode, value = auto_target_rows
+        if mode == "mb":
+            # Rows that fit in the target size: (total_rows * target_mb) / file_mb
+            target_rows = int((total_count * value) / file_size_mb)
+            target_desc = f"{value:,.1f} MB"
+        else:
+            target_rows = value
+            target_desc = f"{value:,} rows"
+    else:
+        target_rows = auto_target_rows
+        target_desc = f"{auto_target_rows:,} rows"
+
+    iterations = _find_optimal_iterations(total_count, target_rows, verbose)
+
+    if announce:
+        partition_count = 2**iterations
+        avg_rows = total_count / partition_count
+        avg_mb = file_size_mb / partition_count
+        info(
+            f"Auto-selected {partition_count} partitions (avg ~{avg_rows:,.0f} rows, "
+            f"~{avg_mb:,.1f} MB/partition, target: {target_desc})"
+        )
+
+    return iterations
+
 
 def _find_optimal_iterations(total_rows, target_rows, verbose=False):
     """
@@ -219,33 +313,42 @@ def _build_sampling_query(
 def add_kdtree_table(
     table: pa.Table,
     kdtree_column_name: str = "kdtree_cell",
-    iterations: int = 9,
+    iterations: int | None = None,
     sample_size: int = 100000,
     geometry_column: str | None = None,
+    auto_target_rows: int | tuple | None = None,
 ) -> pa.Table:
     """
     Add a KD-tree cell ID column to an Arrow Table.
 
-    This is the table-centric version for the Python API.
+    This is the table-centric version for the Python API. Like the file command
+    it will not guess a tree size: pass ``iterations``, or pass
+    ``auto_target_rows`` to size the tree from the row count.
 
     Args:
         table: Input PyArrow Table
         kdtree_column_name: Name for the KD-tree column (default: 'kdtree_cell')
         iterations: Number of recursive splits (1-20). Determines partition count: 2^iterations.
+            Required unless ``auto_target_rows`` is given.
         sample_size: Number of points to sample for computing boundaries
         geometry_column: Geometry column name (auto-detected if None)
+        auto_target_rows: Auto-size the tree to this many rows per partition,
+            as ``N`` or a ``(mode, value)`` pair. Mutually exclusive with
+            ``iterations``.
 
     Returns:
         New table with KD-tree column added
+
+    Raises:
+        InvalidParameterError: If both ``iterations`` and ``auto_target_rows``
+            were given, or neither was
     """
+    require_iterations_or_auto(iterations, auto_target_rows)
+
     # Find geometry column
     geom_col = geometry_column or find_geometry_column_from_table(table)
     if not geom_col:
         geom_col = "geometry"
-
-    # Validate iterations
-    if not 1 <= iterations <= 20:
-        raise ValueError(f"Iterations must be between 1 and 20, got {iterations}")
 
     # Write table to temp file for processing (kdtree needs file access)
     temp_fd, temp_path = tempfile.mkstemp(suffix=".parquet")
@@ -253,6 +356,19 @@ def add_kdtree_table(
 
     try:
         pq.write_table(table, temp_path)
+
+        if iterations is None:
+            # The temp copy's size stands in for the input's: an in-memory table
+            # has no file, and the figure only feeds the report and the "mb" target.
+            iterations = resolve_auto_iterations(
+                table.num_rows,
+                auto_target_rows,
+                _file_size_mb(temp_path),
+            )
+
+        # Validate iterations
+        if not 1 <= iterations <= 20:
+            raise InvalidParameterError("iterations", f"must be between 1 and 20, got {iterations}")
 
         # Process using file-based mode
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
@@ -280,7 +396,7 @@ def add_kdtree_column(
     input_parquet: str,
     output_parquet: str | None = None,
     kdtree_column_name: str = "kdtree_cell",
-    iterations: int = 9,
+    iterations: int | None = None,
     dry_run: bool = False,
     verbose: bool = False,
     compression: str = "ZSTD",
@@ -315,7 +431,8 @@ def add_kdtree_column(
         output_parquet: Path to output file, "-" for stdout, or None for auto-detect
         kdtree_column_name: Name for the KD-tree column (default: 'kdtree_cell')
         iterations: Number of recursive splits (1-20). Determines partition count: 2^iterations.
-                   If None, will be auto-computed based on auto_target_rows.
+                   Required unless auto_target_rows is given, in which case it is
+                   auto-computed from the row count.
         dry_run: Whether to print SQL commands without executing them
         verbose: Whether to print verbose output
         compression: Compression type (ZSTD, GZIP, BROTLI, LZ4, SNAPPY, UNCOMPRESSED)
@@ -330,6 +447,8 @@ def add_kdtree_column(
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
     """
     configure_verbose(verbose)
+
+    require_iterations_or_auto(iterations, auto_target_rows)
 
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -349,6 +468,7 @@ def add_kdtree_column(
             profile,
             geoparquet_version,
             memory_limit=memory_limit,
+            auto_target_rows=auto_target_rows,
         )
         return
 
@@ -370,39 +490,13 @@ def add_kdtree_column(
 
     # Auto-compute iterations if requested
     if iterations is None:
-        if auto_target_rows is None:
-            raise InvalidParameterError(
-                "iterations", "Either iterations or auto_target_rows must be specified"
-            )
-
-        # Get file size for MB calculations
-        import os
-
-        file_size_mb = os.path.getsize(input_parquet) / (1024 * 1024)
-
-        # Handle MB-based or row-based targets
-        if isinstance(auto_target_rows, tuple):
-            mode, value = auto_target_rows
-            if mode == "mb":
-                # Calculate target rows: (total_rows * target_mb) / file_size_mb
-                target_rows = int((total_count * value) / file_size_mb)
-                target_desc = f"{value:,.1f} MB"
-            else:
-                target_rows = value
-                target_desc = f"{value:,} rows"
-        else:
-            target_rows = auto_target_rows
-            target_desc = f"{auto_target_rows:,} rows"
-
-        iterations = _find_optimal_iterations(total_count, target_rows, verbose)
-        partition_count = 2**iterations
-
-        if verbose or not dry_run:
-            avg_rows = total_count / partition_count
-            avg_mb = file_size_mb / partition_count
-            info(
-                f"Auto-selected {partition_count} partitions (avg ~{avg_rows:,.0f} rows, ~{avg_mb:,.1f} MB/partition, target: {target_desc})"
-            )
+        iterations = resolve_auto_iterations(
+            total_count,
+            auto_target_rows,
+            _file_size_mb(input_parquet),
+            verbose=verbose,
+            announce=verbose or not dry_run,
+        )
 
     # Validate iterations
     if not 1 <= iterations <= 20:
@@ -557,7 +651,7 @@ def _add_kdtree_streaming(
     input_path: str,
     output_path: str | None,
     kdtree_column_name: str,
-    iterations: int,
+    iterations: int | None,
     verbose: bool,
     compression: str,
     compression_level: int | None,
@@ -567,6 +661,7 @@ def _add_kdtree_streaming(
     profile: str | None,
     geoparquet_version: str | None,
     memory_limit: str | None,
+    auto_target_rows: int | tuple | None = None,
 ) -> None:
     """Handle streaming input/output for add_kdtree."""
     # Suppress verbose when streaming to stdout
@@ -589,6 +684,21 @@ def _add_kdtree_streaming(
         try:
             # Find geometry column
             geom_col = find_primary_geometry_column(working_file, verbose)
+
+            if iterations is None:
+                # Auto mode: size the tree from the row count, as the file path
+                # does. The byte size is only used for the report here -- a
+                # streaming input may be a URL with no size to stat.
+                total_count = con.execute(
+                    f"SELECT COUNT(*) FROM {sql_path(working_path)}"
+                ).fetchone()[0]
+                iterations = resolve_auto_iterations(
+                    total_count,
+                    auto_target_rows,
+                    _file_size_mb(working_file),
+                    verbose=verbose,
+                    announce=verbose,
+                )
 
             # Validate iterations
             if not 1 <= iterations <= 20:

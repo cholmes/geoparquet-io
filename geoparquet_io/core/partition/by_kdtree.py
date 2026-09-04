@@ -6,7 +6,7 @@ import os
 import tempfile
 import uuid
 
-from geoparquet_io.core.add.kdtree import add_kdtree_column
+from geoparquet_io.core.add.kdtree import add_kdtree_column, require_iterations_or_auto
 from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
 from geoparquet_io.core.logging_config import (
     configure_verbose,
@@ -31,7 +31,7 @@ def _cleanup_temp_file(temp_file: str | None, verbose: bool = False) -> None:
 def _add_kdtree_column_to_temp(
     input_file: str,
     kdtree_column_name: str,
-    iterations: int,
+    iterations: int | None,
     verbose: bool,
     force: bool,
     sample_size: int,
@@ -39,12 +39,14 @@ def _add_kdtree_column_to_temp(
 ) -> str:
     """Add KD-tree column to input and return path to temp file.
 
+    ``iterations`` is None in auto mode; `add_kdtree_column` then sizes the tree
+    from the row count and reports the partition count it settled on.
+
     Raises:
         PartitionError: If column addition fails
     """
-    partition_count = 2**iterations
-    if verbose:
-        debug(f"Adding KD-tree column '{kdtree_column_name}' with {partition_count} partitions...")
+    if verbose and iterations is not None:
+        debug(f"Adding KD-tree column '{kdtree_column_name}' with {2**iterations} partitions...")
 
     temp_dir = tempfile.gettempdir()
     temp_file = os.path.join(
@@ -146,7 +148,8 @@ def partition_by_kdtree(
         input_parquet: Input GeoParquet file (local, remote URL, or "-" for stdin)
         output_folder: Output directory
         kdtree_column_name: Name of KD-tree column (default: 'kdtree_cell')
-        iterations: Number of recursive splits (1-20, default: 9)
+        iterations: Number of recursive splits (1-20). Required unless
+            auto_target_rows is given, which sizes the tree from the row count.
         hive: Use Hive-style partitioning
         overwrite: Overwrite existing files
         preview: Show preview of partitions without creating files
@@ -193,16 +196,18 @@ def partition_by_kdtree(
 
         column_exists = kdtree_column_name in column_names
 
-        # Set default iterations if not provided
-        if iterations is None:
-            iterations = 9
+        # Auto mode leaves `iterations` None on purpose: `add_kdtree_column` sizes
+        # the tree from the row count below. Defaulting it to 9 here (as this did
+        # until #813) silently overrode `--auto` with 512 partitions whatever the
+        # input -- the same guess the Python API used to make.
+        require_iterations_or_auto(iterations, auto_target_rows)
 
         # Note: With approximate mode (default), large datasets are handled efficiently
         if not column_exists and verbose and total_rows > 10_000_000:
             info(f"Processing {total_rows:,} rows - this may take several minutes...")
 
         # If column doesn't exist, add it
-        partition_count = 2**iterations
+        partition_count = 2**iterations if iterations is not None else None
         working_input = actual_input
         temp_file = None
 
@@ -228,10 +233,10 @@ def partition_by_kdtree(
                 _cleanup_temp_file(temp_file)
             return
 
-        # Build description for user feedback
-        progress(
-            f"Partitioning into {partition_count} KD-tree cells (column: '{kdtree_column_name}')"
-        )
+        # Build description for user feedback. In auto mode the count is not known
+        # here -- `add_kdtree_column` reported the one it picked.
+        cell_count = "auto-selected" if partition_count is None else partition_count
+        progress(f"Partitioning into {cell_count} KD-tree cells (column: '{kdtree_column_name}')")
 
         try:
             num_partitions = partition_by_column(
