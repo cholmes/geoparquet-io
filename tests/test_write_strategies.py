@@ -10,6 +10,7 @@ Tests the Strategy Pattern for GeoParquet writes including:
 import json
 import logging
 import struct
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -19,6 +20,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+from geoparquet_io.core.validate import validate_geoparquet
 from geoparquet_io.core.write_strategies import (
     WriteStrategy,
     WriteStrategyFactory,
@@ -619,6 +623,36 @@ class TestWriteStrategiesNoGeometry:
             verbose=False,
         )
 
+        self._assert_valid_plain_parquet(output_file)
+
+    def test_disk_rewrite_query_no_geometry_verbose(
+        self, duckdb_connection, non_geo_query, output_file, caplog
+    ):
+        """The verbose row count on the plain-Parquet path opens the file it just wrote.
+
+        Same shape as the geo path's temp-file peek: the handle has to be closed
+        before the work directory is torn down, which on Windows is the
+        difference between a cleaned-up temp dir and a leaked one.
+        """
+        strategy = WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE)
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            strategy.write_from_query(
+                con=duckdb_connection,
+                query=non_geo_query,
+                output_path=output_file,
+                geometry_column=None,
+                original_metadata=None,
+                geoparquet_version="1.1",
+                compression="ZSTD",
+                compression_level=15,
+                row_group_size_mb=None,
+                row_group_rows=None,
+                input_crs=None,
+                verbose=True,
+            )
+
+        assert "Wrote 3 rows" in caplog.text
         self._assert_valid_plain_parquet(output_file)
 
     def test_compression_options_honored_no_geometry(self, non_geo_table, output_file):
@@ -1305,3 +1339,331 @@ class TestDuckDBArrowExtensionTypeMapping:
     def test_unmarked_binary_registers_as_blob(self):
         """No marker means no promotion -- the baseline the wrapper is written for."""
         assert self._duckdb_type_for(None, pa.binary(), [self.WKB_POINT]) == "BLOB"
+
+
+# ---------------------------------------------------------------------------
+# Native Parquet GEOMETRY logical types (#764)
+# ---------------------------------------------------------------------------
+
+ALL_STRATEGIES = ["duckdb-kv", "in-memory", "streaming", "disk-rewrite"]
+NATIVE_VERSIONS = ["2.0", "parquet-geo-only"]
+
+
+def _geometry_carriers(path: str) -> dict[str, str]:
+    """Physical carrier per geometry column: "native" or the Parquet physical type.
+
+    Read without the spatial extension so the answer is the file's own schema,
+    not something DuckDB reconstructed.
+    """
+    con = get_duckdb_connection(load_spatial=False)
+    try:
+        rows = con.execute(
+            f"SELECT name, type, logical_type FROM parquet_schema({sql_path(path)})"
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        name: "native" if (logical and "Geometry" in str(logical)) else str(typ).lower()
+        for name, typ, logical in rows
+        if name in ("geometry", "geom2")
+    }
+
+
+def _failed_checks(path: str) -> list[str]:
+    """Validator failures, minus the one Windows fails for a platform reason.
+
+    On win32 ``native_geo_stats_contains_data_*`` reports every geometry as
+    outside its own column's geospatial statistics, for any native GEOMETRY
+    column written by any code path (#721, #748). Excused by name and only on
+    win32, exactly as ``tests/test_secondary_geometry_carriers.py`` does it, so
+    every other check stays enforced everywhere.
+    """
+    failed = sorted(
+        {c.name for c in validate_geoparquet(path).checks if c.status.value == "failed"}
+    )
+    if sys.platform == "win32":
+        failed = [f for f in failed if not f.startswith("native_geo_stats_contains_data")]
+    return failed
+
+
+def _write_via_query(source: str, out: str, version: str, strategy: str, **kwargs) -> None:
+    con = get_duckdb_connection(load_spatial=True)
+    try:
+        metadata, _ = get_parquet_metadata(source)
+        write_parquet_with_metadata(
+            con,
+            f"SELECT * FROM read_parquet({sql_path(source)})",
+            out,
+            original_metadata=metadata,
+            geoparquet_version=version,
+            write_strategy=strategy,
+            input_file=source,
+            **kwargs,
+        )
+    finally:
+        con.close()
+
+
+class TestNativeGeometryTypeAcrossStrategies:
+    """Every strategy gives a 2.0 / parquet-geo-only geometry column a native type.
+
+    Regression suite for #764. Three strategies branch on the target version and
+    build a native Parquet GEOMETRY logical type; ``disk-rewrite`` did not, so
+    its 2.0 output declared a version whose spec requires that type and carried
+    plain BYTE_ARRAY WKB -- two failures from gpio's own ``check spec``. Under
+    parquet-geo-only it was worse: the logical type is a column's only geometry
+    identity there, and the ``geo`` block the strategy wrote anyway carried
+    ``"version": null``, which DuckDB refuses to open at all.
+    """
+
+    @pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+    @pytest.mark.parametrize("version", NATIVE_VERSIONS)
+    def test_primary_column_is_native_and_valid(self, strategy, version, tmp_path):
+        """The issue's reproducer: one geometry column, one ordinary file."""
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / f"{strategy}_{version}.parquet")
+
+        _write_via_query(source, out, version, strategy)
+
+        carriers = _geometry_carriers(out)
+        assert carriers == {"geometry": "native"}, (
+            f"{strategy} wrote a {carriers['geometry']} primary column in a {version} file"
+        )
+        assert _failed_checks(out) == []
+
+    @pytest.mark.parametrize("strategy", ALL_STRATEGIES)
+    def test_secondary_column_is_native_under_parquet_geo_only(self, strategy, tmp_path):
+        """parquet-geo-only writes no ``geo`` block, so every column needs the type (#706).
+
+        The 2.0 half of this lives in ``tests/test_secondary_geometry_carriers.py``;
+        parquet-geo-only has nothing to name the secondary by afterwards, which is
+        why the names must reach the write as ``geometry_info``.
+        """
+        source = str(tmp_path / "two_geom.parquet")
+        wkb = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(4)]
+        geo = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {
+                "geometry": {"encoding": "WKB", "geometry_types": ["Point"]},
+                "geom2": {"encoding": "WKB", "geometry_types": ["Point"]},
+            },
+        }
+        table = pa.table({"id": [1, 2], "geometry": wkb[:2], "geom2": wkb[2:]})
+        pq.write_table(table.replace_schema_metadata({b"geo": json.dumps(geo).encode()}), source)
+        out = str(tmp_path / f"{strategy}_geo_only.parquet")
+
+        _write_via_query(
+            source,
+            out,
+            "parquet-geo-only",
+            strategy,
+            geometry_info={
+                "primary": "geometry",
+                "secondary": ["geom2"],
+                "metadata": {"geom2": geo["columns"]["geom2"]},
+            },
+        )
+
+        assert _geometry_carriers(out) == {"geometry": "native", "geom2": "native"}
+        assert _failed_checks(out) == []
+
+    @pytest.mark.parametrize("version", NATIVE_VERSIONS)
+    def test_disk_rewrite_table_entry_point_is_native(self, version, tmp_path):
+        """``write_from_table`` (the ``Table.write()`` path) takes the same branch."""
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / f"table_{version}.parquet")
+
+        WriteStrategyFactory.get_strategy(WriteStrategy.DISK_REWRITE).write_from_table(
+            table=pq.read_table(source),
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version=version,
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+        )
+
+        assert _geometry_carriers(out) == {"geometry": "native"}
+        assert _failed_checks(out) == []
+
+    def test_disk_rewrite_parquet_geo_only_writes_no_geo_key(self, tmp_path):
+        """parquet-geo-only means no ``geo`` block, not one with ``"version": null``."""
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / "geo_only.parquet")
+
+        _write_via_query(source, out, "parquet-geo-only", "disk-rewrite")
+
+        assert b"geo" not in (pq.read_schema(out).metadata or {})
+        # DuckDB's own reader refused the file this used to write, with
+        # "Geoparquet metadata does not have a version".
+        con = duckdb.connect()
+        try:
+            count = con.execute(f"SELECT count(*) FROM read_parquet({sql_path(out)})").fetchone()
+        finally:
+            con.close()
+        assert count[0] == 3
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1"])
+    def test_disk_rewrite_v1x_output_is_unchanged(self, version, tmp_path):
+        """The version branch must not leak the native type into 1.x output."""
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / f"v{version}.parquet")
+
+        _write_via_query(source, out, version, "disk-rewrite")
+
+        assert _geometry_carriers(out) == {"geometry": "byte_array"}
+        assert _failed_checks(out) == []
+        assert json.loads(pq.read_schema(out).metadata[b"geo"])["version"] == f"{version}.0"
+
+    def test_disk_rewrite_native_type_carries_the_declared_crs(self, tmp_path):
+        """A projected CRS reaches the logical type, which is where 2.0 keeps it.
+
+        Asserted on the file's own logical type rather than on the Arrow field:
+        ``WkbType.__eq__`` ignores the CRS, so comparing PyArrow types cannot
+        tell a CRS84 column from an EPSG:3857 one. ``v2_crs_consistency`` is the
+        check that notices, and it is in ``_failed_checks`` below.
+        """
+        import pyproj
+
+        crs = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
+        geo_meta = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "geometry_types": ["Point"], "crs": crs}},
+        }
+        points = [struct.pack("<BI2d", 1, 1, float(i) * 1000, float(i) * 1000) for i in range(3)]
+        table = pa.table({"id": [0, 1, 2], "geometry": points})
+        source = str(tmp_path / "src_3857.parquet")
+        pq.write_table(
+            table.replace_schema_metadata({b"geo": json.dumps(geo_meta).encode()}), source
+        )
+        out = str(tmp_path / "disk_rewrite_crs.parquet")
+
+        _write_via_query(source, out, "2.0", "disk-rewrite")
+
+        con = get_duckdb_connection(load_spatial=False)
+        try:
+            logical = con.execute(
+                f"SELECT logical_type FROM parquet_schema({sql_path(out)}) WHERE name = 'geometry'"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert "Pseudo-Mercator" in str(logical)
+        assert json.loads(pq.read_schema(out).metadata[b"geo"])["columns"]["geometry"]["crs"] == crs
+        assert _failed_checks(out) == []
+
+    @pytest.mark.parametrize("strategy", ["disk-rewrite", "streaming"])
+    def test_verbose_write_names_the_native_columns(self, strategy, tmp_path, caplog):
+        """The verbose branch of the native path is code too, and says which columns.
+
+        Both strategies build the native type from the same helper, and both log
+        what they are about to write; an f-string that only runs under
+        ``--verbose`` is exactly the kind of line that ships broken otherwise.
+        """
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / f"verbose_{strategy}.parquet")
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            _write_via_query(source, out, "2.0", strategy, verbose=True)
+
+        assert "native parquet geometry type" in caplog.text.lower()
+        assert "'geometry'" in caplog.text
+        assert _geometry_carriers(out) == {"geometry": "native"}
+
+    def test_verbose_write_leaves_no_open_parquet_handle(self, tmp_path, monkeypatch):
+        """disk-rewrite deletes its temp file, so nothing may still hold it open.
+
+        The verbose row-count peek at the DuckDB temp file kept a
+        ``pq.ParquetFile`` alive in the enclosing frame until ``write_from_query``
+        returned -- past the ``os.unlink`` of that very file. POSIX unlinks an
+        open file happily; Windows raises ``PermissionError: [WinError 32]``, so
+        every ``--verbose`` disk-rewrite write died there.
+
+        Asserted as the invariant rather than as the platform error, so this
+        fails on every OS: when the write returns, every ParquetFile it opened
+        is closed.
+        """
+        opened = []
+        real_parquet_file = pq.ParquetFile
+
+        def tracking_parquet_file(source, *args, **kwargs):
+            handle = real_parquet_file(source, *args, **kwargs)
+            # Only the strategy's own scratch directory: those are the files it
+            # deletes, and the only ones whose handles have to be closed by the
+            # time it returns.
+            if "gpio_disk_rewrite_" in str(source):
+                opened.append(handle)
+            return handle
+
+        monkeypatch.setattr(pq, "ParquetFile", tracking_parquet_file)
+
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / "handles.parquet")
+
+        _write_via_query(source, out, "2.0", "disk-rewrite", verbose=True)
+
+        assert opened, "no temp-file ParquetFile opened -- test no longer exercises the path"
+        assert [h.closed for h in opened] == [True] * len(opened)
+
+    def test_disk_rewrite_native_type_survives_row_group_coarsening(self, tmp_path):
+        """The rewrite is per row group, so a resized write must stay native throughout."""
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 25)
+        out = str(tmp_path / "coarsened.parquet")
+
+        _write_via_query(source, out, "2.0", "disk-rewrite", row_group_rows=10)
+
+        pf = pq.ParquetFile(out)
+        shape = [pf.metadata.row_group(i).num_rows for i in range(pf.metadata.num_row_groups)]
+        assert shape == [10, 10, 5]
+        assert _geometry_carriers(out) == {"geometry": "native"}
+        assert pq.read_table(out).column("id").to_pylist() == list(range(25))
+        assert _failed_checks(out) == []
+
+
+class TestNativeWkbTypeHelpers:
+    """The two pieces every native-type write path shares."""
+
+    WKB_POINT = struct.pack("<BI2d", 1, 1, 1.0, 2.0)
+
+    def test_native_wkb_type_omits_a_default_crs(self):
+        """A default CRS is carried by omission, the way the geo block omits the key."""
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+
+        assert native_wkb_type(None).crs == ga.wkb().crs
+        assert native_wkb_type({"id": {"authority": "OGC", "code": "CRS84"}}).crs == ga.wkb().crs
+
+    def test_native_wkb_type_carries_a_projected_crs(self):
+        """The CRS the geo block declares is what the logical type must carry."""
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+
+        crs = {"id": {"authority": "EPSG", "code": 3857}}
+
+        assert json.loads(native_wkb_type(crs).crs.to_json())["id"]["code"] == 3857
+
+    def test_to_geoarrow_column_keeps_an_already_matching_array(self):
+        """The common path: plain WKB binary already matches ``geoarrow.wkb``."""
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+        from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_column
+
+        converted = to_geoarrow_column(
+            pa.array([self.WKB_POINT], type=pa.binary()), native_wkb_type(None)
+        )
+
+        assert converted.type.extension_name == "geoarrow.wkb"
+        assert converted.storage.to_pylist() == [self.WKB_POINT]
+
+    def test_to_geoarrow_column_retypes_when_the_storage_differs(self):
+        """A target whose storage differs takes the rebuild path, bytes intact."""
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_column
+
+        converted = to_geoarrow_column(pa.array([self.WKB_POINT], type=pa.binary()), ga.large_wkb())
+
+        assert converted.type.storage_type == pa.large_binary()
+        assert converted.storage.to_pylist() == [self.WKB_POINT]

@@ -19,7 +19,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.duckdb_utils import quote_identifier
-from geoparquet_io.core.geoarrow_encoding import WKB_EXTENSION_NAMES, arrow_extension_name
+from geoparquet_io.core.geoarrow_encoding import (
+    WKB_EXTENSION_NAMES,
+    arrow_extension_name,
+    native_wkb_type,
+)
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.write_strategies.base import BaseWriteStrategy
 
@@ -93,6 +97,30 @@ def _to_plain_wkb_array(array: pa.Array | pa.ChunkedArray) -> pa.Array | pa.Chun
             f"(Arrow's 2 GB limit for 32-bit binary offsets): {e}. "
             "Write smaller row groups (--row-group-rows) or simplify very large geometries."
         ) from e
+
+
+def to_geoarrow_column(column: pa.Array, target_type) -> pa.Array:
+    """Encode one WKB column as the given geoarrow extension type.
+
+    Module level, and shared with the disk-rewrite strategy, which converts the
+    same columns one row group at a time (#764).
+
+    Note that ``WkbType.__eq__`` ignores the CRS, so the equality shortcut can
+    return an array whose type carries a different CRS than ``target_type``.
+    Both callers build their output batch/table against an explicit schema, so
+    the schema's field type -- and its CRS -- is what gets written.
+    """
+    import geoarrow.pyarrow as ga
+
+    geoarrow_arr = ga.as_wkb(column)
+    if geoarrow_arr.type == target_type:
+        return geoarrow_arr
+    # from_buffers cannot carry a slice offset, so rebuild from the storage
+    # array — ga.as_wkb returns a fresh, offset-free array, but a sliced input
+    # (see the >2 GB split path) must not silently take the parent's rows.
+    return pa.ExtensionArray.from_storage(
+        target_type, _wkb_storage(geoarrow_arr).cast(target_type.storage_type)
+    )
 
 
 def _coerce_column(array: pa.Array, target_type: pa.DataType) -> pa.Array:
@@ -781,8 +809,6 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geometry_columns: set[str] | None = None,
     ) -> pa.Schema:
         """Build the output schema for streaming write."""
-        from geoparquet_io.core.crs_utils import is_default_crs
-
         schema_metadata = dict(schema.metadata or {})
 
         geo_columns = set(geometry_columns or ())
@@ -790,16 +816,6 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         geo_columns.update((geo_meta or {}).get("columns", {}))
 
         if use_native_geometry:
-            import geoarrow.pyarrow as ga
-
-            def native_type(crs):
-                geoarrow_type = ga.wkb()
-                if crs and not is_default_crs(crs):
-                    geoarrow_type = geoarrow_type.with_crs(crs)
-                    if verbose:
-                        debug("Built geoarrow type with CRS")
-                return geoarrow_type
-
             # EVERY geometry column becomes native, not just the primary: 2.0
             # validation requires a native Parquet GEOMETRY type for each column in
             # geo["columns"], and under parquet-geo-only (which writes no geo
@@ -812,8 +828,11 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
                 for name in geo_columns
             }
             column_crs[geometry_column] = input_crs
+            if verbose:
+                with_crs = sorted(name for name, crs in column_crs.items() if crs)
+                debug(f"Native Parquet GEOMETRY type for {sorted(geo_columns)}, CRS on {with_crs}")
             new_fields = [
-                pa.field(field.name, native_type(column_crs[field.name]))
+                pa.field(field.name, native_wkb_type(column_crs[field.name]))
                 if field.name in geo_columns
                 else field
                 for field in schema
@@ -868,27 +887,13 @@ class ArrowStreamingStrategy(BaseWriteStrategy):
         fails validation deterministically (#688 review).
         """
         new_columns = [
-            self._to_geoarrow_column(batch.column(i), field.type)
+            to_geoarrow_column(batch.column(i), field.type)
             if isinstance(field.type, pa.ExtensionType)
             else _coerce_column(batch.column(i), field.type)
             for i, field in enumerate(schema_with_geoarrow)
         ]
 
         return pa.RecordBatch.from_arrays(new_columns, schema=schema_with_geoarrow)
-
-    def _to_geoarrow_column(self, column: pa.Array, target_type) -> pa.Array:
-        """Encode one WKB column as the given geoarrow extension type."""
-        import geoarrow.pyarrow as ga
-
-        geoarrow_arr = ga.as_wkb(column)
-        if geoarrow_arr.type == target_type:
-            return geoarrow_arr
-        # from_buffers cannot carry a slice offset, so rebuild from the storage
-        # array — ga.as_wkb returns a fresh, offset-free array, but a sliced input
-        # (see the >2 GB split path) must not silently take the parent's rows.
-        return pa.ExtensionArray.from_storage(
-            target_type, _wkb_storage(geoarrow_arr).cast(target_type.storage_type)
-        )
 
     def _convert_batch_to_native_geoarrow(
         self,

@@ -39,12 +39,6 @@ from geoparquet_io.core.write_strategies.base import resolve_geometry_columns
 
 STRATEGIES = ["duckdb-kv", "in-memory", "streaming", "disk-rewrite"]
 
-# disk-rewrite never emits a native Parquet GEOMETRY type at 2.0 -- for the
-# PRIMARY column as well, on an ordinary single-geometry file. That is a
-# strategy-wide gap, not a secondary-column one, so it is tracked in #764 and
-# excluded here rather than silently expected.
-NATIVE_CAPABLE_STRATEGIES = ["duckdb-kv", "in-memory", "streaming"]
-
 
 def _wkb_point(x: float, y: float) -> bytes:
     return struct.pack("<BI2d", 1, 1, x, y)
@@ -175,7 +169,7 @@ class TestSecondaryCarrierMatchesTheTargetVersion:
 
         assert _failed_checks(out) == []
 
-    @pytest.mark.parametrize("strategy", NATIVE_CAPABLE_STRATEGIES)
+    @pytest.mark.parametrize("strategy", STRATEGIES)
     def test_v20_writes_native_for_both_columns(self, strategy, two_geometry_source, tmp_path):
         """2.0 requires a native Parquet GEOMETRY type for every declared column."""
         out = str(tmp_path / f"{strategy}_20.parquet")
@@ -466,9 +460,6 @@ def test_secondary_carrier_is_independent_of_geoarrow_import(
     Runs in subprocesses because geoarrow's extension registration is
     process-global and cannot be undone once done.
     """
-    if strategy == "disk-rewrite" and version == "2.0":
-        pytest.skip("disk-rewrite never emits native types at 2.0 (#764)")
-
     outputs = {}
     for label in ("clean", "import"):
         out = tmp_path / f"{strategy}_{version}_{label}.parquet"
