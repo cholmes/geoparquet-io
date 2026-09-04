@@ -4,10 +4,14 @@ Tests for the Python API (fluent Table class and ops module).
 
 from __future__ import annotations
 
+import inspect
 import struct
 import tempfile
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pyarrow as pa
@@ -15,6 +19,22 @@ import pyarrow.parquet as pq
 import pytest
 
 from geoparquet_io.api import Table, convert, ops, pipe, read
+from geoparquet_io.core import extract as core_extract
+from geoparquet_io.core import format_writers as core_format_writers
+from geoparquet_io.core import hilbert_order as core_hilbert
+from geoparquet_io.core import reproject as core_reproject
+from geoparquet_io.core import sort_by_column as core_sort_column
+from geoparquet_io.core import sort_quadkey as core_sort_quadkey
+from geoparquet_io.core import str_order as core_str_order
+from geoparquet_io.core.add import a5 as core_a5
+from geoparquet_io.core.add import bbox as core_bbox
+from geoparquet_io.core.add import bbox_metadata as core_bbox_metadata
+from geoparquet_io.core.add import h3 as core_h3
+from geoparquet_io.core.add import kdtree as core_kdtree
+from geoparquet_io.core.add import quadkey as core_quadkey
+from geoparquet_io.core.add import s2 as core_s2
+from geoparquet_io.core.process.aggregate import by_a5 as core_aggregate_a5
+from geoparquet_io.core.process.aggregate import by_h3 as core_aggregate_h3
 from tests.conftest import safe_unlink, skip_if_geography_available
 
 TEST_DATA_DIR = Path(__file__).parent / "data"
@@ -95,11 +115,6 @@ class TestTable:
         assert isinstance(result, Table)
         assert "bbox" in result.column_names
         assert result.num_rows == 766
-
-    def test_add_bbox_custom_name(self, sample_table):
-        """Test add_bbox() with custom column name."""
-        result = sample_table.add_bbox(column_name="bounds")
-        assert "bounds" in result.column_names
 
     def test_add_quadkey(self, sample_table):
         """Test add_quadkey() method."""
@@ -211,35 +226,11 @@ class TestTable:
         assert "h3_cell" in result.column_names
         assert result.num_rows == 766
 
-    def test_add_h3_custom_resolution(self, sample_table):
-        """Test add_h3() with custom resolution."""
-        result = sample_table.add_h3(resolution=5)
-        assert "h3_cell" in result.column_names
-        assert result.num_rows == 766
-
-    def test_add_h3_custom_column_name(self, sample_table):
-        """Test add_h3() with custom column name."""
-        result = sample_table.add_h3(column_name="my_h3")
-        assert "my_h3" in result.column_names
-        assert result.num_rows == 766
-
     def test_add_s2(self, sample_table):
         """Test add_s2() method."""
         result = sample_table.add_s2()
         assert isinstance(result, Table)
         assert "s2_cell" in result.column_names
-        assert result.num_rows == 766
-
-    def test_add_s2_custom_level(self, sample_table):
-        """Test add_s2() with custom level."""
-        result = sample_table.add_s2(level=10)
-        assert "s2_cell" in result.column_names
-        assert result.num_rows == 766
-
-    def test_add_s2_custom_column_name(self, sample_table):
-        """Test add_s2() with custom column name."""
-        result = sample_table.add_s2(column_name="my_s2")
-        assert "my_s2" in result.column_names
         assert result.num_rows == 766
 
     def test_add_kdtree(self, sample_table):
@@ -249,21 +240,9 @@ class TestTable:
         assert "kdtree_cell" in result.column_names
         assert result.num_rows == 766
 
-    def test_add_kdtree_custom_params(self, sample_table):
-        """Test add_kdtree() with custom parameters."""
-        result = sample_table.add_kdtree(iterations=5, sample_size=1000)
-        assert "kdtree_cell" in result.column_names
-        assert result.num_rows == 766
-
     def test_sort_column(self, sample_table):
         """Test sort_column() method."""
         result = sample_table.sort_column("name")
-        assert isinstance(result, Table)
-        assert result.num_rows == 766
-
-    def test_sort_column_descending(self, sample_table):
-        """Test sort_column() in descending order."""
-        result = sample_table.sort_column("name", descending=True)
         assert isinstance(result, Table)
         assert result.num_rows == 766
 
@@ -291,45 +270,531 @@ class TestTable:
         assert result.num_rows == 766
 
 
-class TestOps:
-    """Tests for the ops module (pure functions)."""
+# ---------------------------------------------------------------------------
+# Front-door delegation
+#
+# `Table.add_h3(resolution=5)` and `ops.add_h3(table, resolution=5)` are two
+# doors onto one core function, `add_h3_table`. Neither door has behaviour of
+# its own: all either can get wrong is *which arguments it hands down*. Running
+# the real operation once per door per option costs a DuckDB round trip and
+# still only proves the option was not dropped, so the plumbing is asserted here
+# on the call itself and the operation once per family by `TestOpsEndToEnd`.
+#
+# Division of labour with the two existing parity harnesses:
+# `test_cli_api_default_parity.py` diffs *declared signature defaults* by
+# introspection; `test_cli_api_call_parity_scaffold.py` invokes all three front
+# ends **with nothing but defaults** and diffs what core receives. This table
+# drives that comparison with **every option set to a non-default value** --
+# the half neither of the others can see, since a door that ignores its
+# `resolution` argument entirely still passes a defaults-only comparison.
+# ---------------------------------------------------------------------------
+
+
+class _CallRecorder:
+    """Stand-in for a core ``*_table`` function that records what it was handed.
+
+    Calls are normalized through ``reference``'s signature with
+    ``apply_defaults()``, so what is compared is the *effective* value core sees:
+    a value passed positionally by one door and by keyword (or left to core's
+    default) by the other still compares equal.
+
+    Returns its first positional argument -- the real core functions return a
+    table that both doors immediately re-wrap, so returning ``None`` would blow
+    up before anything could be inspected. That return doubles as a sentinel:
+    the delegation test asserts each door hands it back, so a wrapper that
+    calls core but drops the result cannot pass.
+    """
+
+    def __init__(self, reference: Callable):
+        self._signature = inspect.signature(reference)
+        self.delivered: dict[str, Any] | None = None
+
+    def __call__(self, *args, **kwargs):
+        bound = self._signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        self.delivered = {k: v for k, v in bound.arguments.items() if k != "table"}
+        return args[0]
+
+
+@dataclass(frozen=True)
+class FrontDoorCase:
+    """One operation reachable through both `ops` and `Table`.
+
+    ``core_name`` is the attribute name of the core function on ``core_module``
+    (where the `Table` method imports it from inside the method body) and on
+    ``ops_patch_module`` -- `ops` itself for the operations it binds at module
+    import time, or ``core_module`` again for the ones it imports inside the
+    function body. The two doors are recorded one at a time, under separate
+    patches, so a shared patch site still records each independently.
+
+    ``expected`` names the knobs under core's own parameter spelling. It is
+    asserted as a subset, and the two doors' full calls are asserted equal to
+    each other, so a knob one door quietly renames or drops is caught either way.
+
+    ``ops_only_expected`` names knobs the `ops` function exposes and the `Table`
+    method has no way to set (``geometry_column`` on the index adders, which the
+    method leaves to core's auto-detection). They are asserted against the `ops`
+    door alone and then dropped from both sides before the doors are compared --
+    without them, an `ops` wrapper that forgets to forward its own argument looks
+    identical to the `Table` method that never had one.
+    """
+
+    id: str
+    core_module: Any
+    core_name: str
+    ops_call: Callable[[pa.Table], Any]
+    table_call: Callable[[Table], Any]
+    expected: dict[str, Any]
+    ops_only_expected: dict[str, Any] = field(default_factory=dict)
+    #: Where the `ops` door's core call is patched, when it is not `ops` itself.
+    ops_module: Any = None
+
+    @property
+    def reference(self) -> Callable:
+        return getattr(self.core_module, self.core_name)
+
+    @property
+    def ops_patch_module(self) -> Any:
+        return ops if self.ops_module is None else self.ops_module
+
+
+#: Every table-in/table-out operation that both front doors expose.
+#:
+#: Where a call passes ``geometry_column`` on the `ops` side and the `Table`
+#: method forwards the column it detected at ``read()`` time, the knob goes in
+#: ``expected`` and is compared across both doors. Where only `ops` exposes it,
+#: it goes in ``ops_only_expected`` instead: still asserted, but on the `ops`
+#: door alone. Otherwise the comparison is of the values the two doors deliver,
+#: so the calls are written to be the same request.
+FRONT_DOOR_CASES: list[FrontDoorCase] = [
+    FrontDoorCase(
+        id="add_bbox",
+        core_module=core_bbox,
+        core_name="add_bbox_table",
+        ops_call=lambda t: ops.add_bbox(t, column_name="bounds", geometry_column="geometry"),
+        table_call=lambda t: t.add_bbox(column_name="bounds"),
+        expected={"bbox_column_name": "bounds", "geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_bbox_metadata",
+        core_module=core_bbox_metadata,
+        core_name="add_bbox_metadata_table",
+        ops_call=lambda t: ops.add_bbox_metadata(
+            t, bbox_column="bounds", geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_bbox_metadata(bbox_column="bounds"),
+        expected={"bbox_column": "bounds", "geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_quadkey",
+        core_module=core_quadkey,
+        core_name="add_quadkey_table",
+        ops_call=lambda t: ops.add_quadkey(
+            t, column_name="qk", resolution=11, use_centroid=True, geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_quadkey(column_name="qk", resolution=11, use_centroid=True),
+        expected={
+            "quadkey_column_name": "qk",
+            "resolution": 11,
+            "use_centroid": True,
+            "geometry_column": "geometry",
+        },
+    ),
+    FrontDoorCase(
+        id="add_h3",
+        core_module=core_h3,
+        core_name="add_h3_table",
+        ops_call=lambda t: ops.add_h3(
+            t, column_name="my_h3", resolution=5, geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_h3(column_name="my_h3", resolution=5),
+        expected={"h3_column_name": "my_h3", "resolution": 5},
+        ops_only_expected={"geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_a5",
+        core_module=core_a5,
+        core_name="add_a5_table",
+        ops_call=lambda t: ops.add_a5(
+            t, column_name="my_a5", resolution=7, geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_a5(column_name="my_a5", resolution=7),
+        expected={"a5_column_name": "my_a5", "resolution": 7},
+        ops_only_expected={"geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_s2",
+        core_module=core_s2,
+        core_name="add_s2_table",
+        ops_call=lambda t: ops.add_s2(t, column_name="my_s2", level=10, geometry_column="geometry"),
+        table_call=lambda t: t.add_s2(column_name="my_s2", level=10),
+        expected={"s2_column_name": "my_s2", "level": 10},
+        ops_only_expected={"geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="add_kdtree",
+        core_module=core_kdtree,
+        core_name="add_kdtree_table",
+        ops_call=lambda t: ops.add_kdtree(
+            t, column_name="my_kd", iterations=5, sample_size=1000, geometry_column="geometry"
+        ),
+        table_call=lambda t: t.add_kdtree(column_name="my_kd", iterations=5, sample_size=1000),
+        expected={"kdtree_column_name": "my_kd", "iterations": 5, "sample_size": 1000},
+        ops_only_expected={"geometry_column": "geometry"},
+    ),
+    # The two aggregators whose doors both import core inside the function body,
+    # so `ops` has no module-level binding to patch and both are recorded at the
+    # core module instead (`aggregate_admin` is not here: `Table` delegates to
+    # `ops`, so there is only one door -- see NOT_TABLE_IN_TABLE_OUT).
+    FrontDoorCase(
+        id="aggregate_h3",
+        core_module=core_aggregate_h3,
+        core_name="aggregate_h3_table",
+        ops_module=core_aggregate_h3,
+        ops_call=lambda t: ops.aggregate_h3(
+            t,
+            resolution=6,
+            metric="sum:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            geometry_column="geometry",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        table_call=lambda t: t.aggregate_h3(
+            resolution=6,
+            metric="sum:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        expected={
+            "resolution": 6,
+            "metric": "sum:population",
+            "breakdown": "category",
+            "breakdown_limit": 5,
+            "out_geometry": "centroid",
+            "geometry_column": "geometry",
+            "where": "population > 0",
+            "metric_nodata": "-999",
+            "bucket_point": "bbox",
+            "bbox_column": "bounds",
+        },
+    ),
+    FrontDoorCase(
+        id="aggregate_a5",
+        core_module=core_aggregate_a5,
+        core_name="aggregate_a5_table",
+        ops_module=core_aggregate_a5,
+        ops_call=lambda t: ops.aggregate_a5(
+            t,
+            resolution=8,
+            metric="mean:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            geometry_column="geometry",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        table_call=lambda t: t.aggregate_a5(
+            resolution=8,
+            metric="mean:population",
+            breakdown="category",
+            breakdown_limit=5,
+            out_geometry="centroid",
+            where="population > 0",
+            metric_nodata="-999",
+            bucket_point="bbox",
+            bbox_column="bounds",
+        ),
+        expected={
+            "resolution": 8,
+            "metric": "mean:population",
+            "breakdown": "category",
+            "breakdown_limit": 5,
+            "out_geometry": "centroid",
+            "geometry_column": "geometry",
+            "where": "population > 0",
+            "metric_nodata": "-999",
+            "bucket_point": "bbox",
+            "bbox_column": "bounds",
+        },
+    ),
+    FrontDoorCase(
+        id="sort_hilbert",
+        core_module=core_hilbert,
+        core_name="hilbert_order_table",
+        ops_call=lambda t: ops.sort_hilbert(t, geometry_column="geometry"),
+        table_call=lambda t: t.sort_hilbert(),
+        expected={"geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="sort_str",
+        core_module=core_str_order,
+        core_name="str_order_table",
+        ops_call=lambda t: ops.sort_str(t, tile_size=100, geometry_column="geometry"),
+        table_call=lambda t: t.sort_str(tile_size=100),
+        expected={"tile_size": 100, "geometry_column": "geometry"},
+    ),
+    FrontDoorCase(
+        id="sort_column",
+        core_module=core_sort_column,
+        core_name="sort_by_column_table",
+        # The one knob the two doors spell differently: `ops.sort_column(column=)`
+        # against `Table.sort_column(column_name=)`. Both must still land on
+        # core's `columns`.
+        ops_call=lambda t: ops.sort_column(t, column="name", descending=True),
+        table_call=lambda t: t.sort_column(column_name="name", descending=True),
+        expected={"columns": "name", "descending": True},
+    ),
+    FrontDoorCase(
+        id="sort_quadkey",
+        core_module=core_sort_quadkey,
+        core_name="sort_by_quadkey_table",
+        ops_call=lambda t: ops.sort_quadkey(
+            t, column_name="qk", resolution=10, use_centroid=True, remove_column=True
+        ),
+        table_call=lambda t: t.sort_quadkey(
+            column_name="qk", resolution=10, use_centroid=True, remove_column=True
+        ),
+        expected={
+            "quadkey_column_name": "qk",
+            "resolution": 10,
+            "use_centroid": True,
+            "remove_quadkey_column": True,
+        },
+    ),
+    FrontDoorCase(
+        id="extract",
+        core_module=core_extract,
+        core_name="extract_table",
+        ops_call=lambda t: ops.extract(
+            t,
+            columns=["name"],
+            exclude_columns=["address"],
+            bbox=(0.0, 0.0, 1.0, 1.0),
+            where="name IS NOT NULL",
+            limit=10,
+            geometry_column="geometry",
+            repair_geometry=False,
+        ),
+        table_call=lambda t: t.extract(
+            columns=["name"],
+            exclude_columns=["address"],
+            bbox=(0.0, 0.0, 1.0, 1.0),
+            where="name IS NOT NULL",
+            limit=10,
+            repair_geometry=False,
+        ),
+        expected={
+            "columns": ["name"],
+            "exclude_columns": ["address"],
+            "bbox": (0.0, 0.0, 1.0, 1.0),
+            "where": "name IS NOT NULL",
+            "limit": 10,
+            "geometry_column": "geometry",
+            "repair_geometry": False,
+        },
+    ),
+    FrontDoorCase(
+        id="reproject",
+        core_module=core_reproject,
+        core_name="reproject_table",
+        ops_call=lambda t: ops.reproject(
+            t,
+            target_crs="EPSG:3857",
+            source_crs="EPSG:4326",
+            geometry_column="geometry",
+            assume_crs84=True,
+        ),
+        table_call=lambda t: t.reproject(
+            target_crs="EPSG:3857", source_crs="EPSG:4326", assume_crs84=True
+        ),
+        expected={
+            "target_crs": "EPSG:3857",
+            "source_crs": "EPSG:4326",
+            "geometry_column": "geometry",
+            "assume_crs84": True,
+        },
+    ),
+]
+
+FRONT_DOOR_IDS = [case.id for case in FRONT_DOOR_CASES]
+
+#: The rest of the `ops`/`Table` surface, and why each entry is not a case above.
+#: `FRONT_DOOR_CASES` compares one *table-in/table-out* core call per operation;
+#: these have no such call to compare, so each names where it is covered instead.
+#: `test_every_shared_operation_has_a_case` asserts this list plus the case ids
+#: is exactly the shared surface, so a new twin lands in one place or the other.
+NOT_TABLE_IN_TABLE_OUT: dict[str, str] = {
+    # Core is file-in/file-out: both doors write the table to a temp parquet and
+    # read the result back, so there is no in-memory core call to record.
+    "add_admin_divisions": "file round trip onto add_admin_divisions_multi",
+    "add_geometry_metrics": "file round trip onto add_geometry_metrics",
+    "aggregate_admin": "Table.aggregate_admin calls ops.aggregate_admin -- one door, "
+    "and that one round-trips through a file",
+    # Not a transform of a table at all.
+    "explain_analyze": "file path in, dict out; Table's is a classmethod, not an operation",
+    "from_wfs": "constructor: fetches a service over the network, no input table",
+    # Table in, partition tree out. Both doors are run for real, and asserted to
+    # write the same tree, by TestOpsPartition.
+    "partition_by_a5": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_admin": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_h3": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_kdtree": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_quadkey": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_s2": "writes a partition tree; covered by TestOpsPartition",
+    "partition_by_string": "writes a partition tree; covered by TestOpsPartition",
+}
+
+
+def _shared_front_door_surface() -> set[str]:
+    """Every public callable `ops` and `Table` both expose under the same name."""
+    ops_names = {name for name in dir(ops) if not name.startswith("_")}
+    table_names = {name for name in dir(Table) if not name.startswith("_")}
+    return {
+        name
+        for name in ops_names & table_names
+        if callable(getattr(ops, name)) and callable(getattr(Table, name))
+    }
+
+
+class TestFrontDoorDelegation:
+    """`ops.<op>` and `Table.<op>` must hand core the same call (#666, item 6).
+
+    Replaces the per-function `TestOps` mirrors of `TestTable`, which asserted
+    the same delegation by running the real operation a second time.
+    """
 
     @pytest.fixture
     def arrow_table(self):
-        """Get an Arrow table from test data."""
         if not PLACES_PARQUET.exists():
             pytest.skip("Test data not available")
         return pq.read_table(PLACES_PARQUET)
 
-    def test_add_bbox(self, arrow_table):
-        """Test ops.add_bbox()."""
+    @pytest.fixture
+    def gpio_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return read(PLACES_PARQUET)
+
+    @pytest.mark.parametrize("case", FRONT_DOOR_CASES, ids=FRONT_DOOR_IDS)
+    def test_both_front_doors_hand_core_the_same_call(self, case, arrow_table, gpio_table):
+        via_ops = _CallRecorder(case.reference)
+        with patch.object(case.ops_patch_module, case.core_name, via_ops):
+            ops_result = case.ops_call(arrow_table)
+
+        via_table = _CallRecorder(case.reference)
+        with patch.object(case.core_module, case.core_name, via_table):
+            table_result = case.table_call(gpio_table)
+
+        assert via_ops.delivered is not None, f"ops.{case.id} never called core"
+        assert via_table.delivered is not None, f"Table.{case.id} never called core"
+
+        # Each door must also *return* core's result, not just make the call.
+        # The recorder hands back its input table as a sentinel: the `ops`
+        # wrapper returns core's table as-is, and the `Table` method wraps it
+        # in a new Table -- so a wrapper that computes but drops the result
+        # (the classic missing-`return` refactor bug) fails here.
+        assert ops_result is arrow_table, f"ops.{case.id} did not return core's result"
+        assert isinstance(table_result, Table), f"Table.{case.id} did not return a Table"
+        assert table_result is not gpio_table, f"Table.{case.id} returned self, not a new Table"
+        assert table_result.table is gpio_table.table, f"Table.{case.id} did not wrap core's result"
+
+        # Every named knob arrives, under core's own spelling...
+        for name, value in case.expected.items():
+            assert via_ops.delivered[name] == value, f"ops.{case.id} dropped {name}"
+            assert via_table.delivered[name] == value, f"Table.{case.id} dropped {name}"
+
+        # Knobs only the `ops` door exposes: asserted there, then dropped from
+        # both sides, since the `Table` method has no way to set them.
+        for name, value in case.ops_only_expected.items():
+            assert via_ops.delivered[name] == value, f"ops.{case.id} dropped {name}"
+
+        # ...and neither door slips something past the other.
+        compared = set(case.ops_only_expected)
+        assert {k: v for k, v in via_ops.delivered.items() if k not in compared} == {
+            k: v for k, v in via_table.delivered.items() if k not in compared
+        }
+
+    def test_every_shared_operation_has_a_case(self):
+        """A new `ops`/`Table` twin must be added here, not left uncompared.
+
+        The shared surface is enumerated, not assumed: every public callable both
+        `ops` and `Table` expose under the same name must be either a case above
+        or an entry in `NOT_TABLE_IN_TABLE_OUT` saying where it is covered
+        instead. Iterating the cases alone would let a new twin be added with no
+        comparison at all and still leave this green.
+        """
+        for case in FRONT_DOOR_CASES:
+            assert hasattr(case.ops_patch_module, case.core_name), (
+                f"{case.id}: {case.ops_patch_module.__name__} no longer binds "
+                f"{case.core_name}; the ops patch site moved"
+            )
+            assert hasattr(case.core_module, case.core_name), (
+                f"{case.id}: {case.core_module.__name__} no longer defines {case.core_name}"
+            )
+            assert hasattr(Table, case.id), f"{case.id}: Table has no such method"
+            assert hasattr(ops, case.id), f"{case.id}: ops has no such function"
+
+        assert len(FRONT_DOOR_IDS) == len(set(FRONT_DOOR_IDS)), "duplicate case id"
+
+        accounted_for = set(FRONT_DOOR_IDS) | set(NOT_TABLE_IN_TABLE_OUT)
+        shared = _shared_front_door_surface()
+        assert shared == accounted_for, (
+            "the ops/Table surface and this file have drifted apart.\n"
+            f"  uncompared twins (add a FrontDoorCase, or a NOT_TABLE_IN_TABLE_OUT "
+            f"entry with the reason): {sorted(shared - accounted_for)}\n"
+            f"  listed here but no longer a twin: {sorted(accounted_for - shared)}"
+        )
+
+
+class TestOpsEndToEnd:
+    """One real run per `ops` family, so the wrappers are covered unmocked.
+
+    `TestFrontDoorDelegation` patches core away, which proves the plumbing but
+    would leave a wrapper that raises before it delegates -- or mangles what
+    core returns -- undetected. One run per family: add, sort, extract and
+    reproject. Partitioning's end-to-end runs live in `TestOpsPartition`;
+    conversion's in `TestOpsConversionFunctions`.
+    """
+
+    @pytest.fixture
+    def arrow_table(self):
+        if not PLACES_PARQUET.exists():
+            pytest.skip("Test data not available")
+        return pq.read_table(PLACES_PARQUET)
+
+    def test_add_family(self, arrow_table):
         result = ops.add_bbox(arrow_table)
         assert isinstance(result, pa.Table)
         assert "bbox" in result.column_names
+        assert result.num_rows == 766
 
-    def test_add_quadkey(self, arrow_table):
-        """Test ops.add_quadkey()."""
-        result = ops.add_quadkey(arrow_table, resolution=10)
-        assert isinstance(result, pa.Table)
-        assert "quadkey" in result.column_names
-
-    def test_sort_hilbert(self, arrow_table):
-        """Test ops.sort_hilbert()."""
+    def test_sort_family(self, arrow_table):
         result = ops.sort_hilbert(arrow_table)
         assert isinstance(result, pa.Table)
         assert result.num_rows == 766
 
-    def test_sort_str(self, arrow_table):
-        """Test ops.sort_str()."""
-        result = ops.sort_str(arrow_table, tile_size=100)
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 766
-
-    def test_extract(self, arrow_table):
-        """Test ops.extract()."""
+    def test_extract_family(self, arrow_table):
         result = ops.extract(arrow_table, limit=10)
         assert isinstance(result, pa.Table)
         assert result.num_rows == 10
+
+    def test_reproject_family(self, arrow_table):
+        result = ops.reproject(arrow_table, target_crs="EPSG:3857")
+        assert isinstance(result, pa.Table)
+        assert result.num_rows == 766
 
 
 class TestPipe:
@@ -606,53 +1071,6 @@ class TestWriteReturnsPath:
         assert isinstance(result, Path)
         assert result.exists()
         assert str(result) == output_file
-
-
-class TestOpsNewFunctions:
-    """Tests for the new ops module functions."""
-
-    @pytest.fixture
-    def arrow_table(self):
-        """Get an Arrow table from test data."""
-        if not PLACES_PARQUET.exists():
-            pytest.skip("Test data not available")
-        return pq.read_table(PLACES_PARQUET)
-
-    def test_add_h3(self, arrow_table):
-        """Test ops.add_h3()."""
-        result = ops.add_h3(arrow_table, resolution=7)
-        assert isinstance(result, pa.Table)
-        assert "h3_cell" in result.column_names
-
-    def test_add_s2(self, arrow_table):
-        """Test ops.add_s2()."""
-        result = ops.add_s2(arrow_table, level=13)
-        assert isinstance(result, pa.Table)
-        assert "s2_cell" in result.column_names
-
-    def test_add_kdtree(self, arrow_table):
-        """Test ops.add_kdtree()."""
-        result = ops.add_kdtree(arrow_table, iterations=5)
-        assert isinstance(result, pa.Table)
-        assert "kdtree_cell" in result.column_names
-
-    def test_sort_column(self, arrow_table):
-        """Test ops.sort_column()."""
-        result = ops.sort_column(arrow_table, column="name")
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 766
-
-    def test_sort_quadkey(self, arrow_table):
-        """Test ops.sort_quadkey()."""
-        result = ops.sort_quadkey(arrow_table, resolution=10)
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 766
-
-    def test_reproject(self, arrow_table):
-        """Test ops.reproject()."""
-        result = ops.reproject(arrow_table, target_crs="EPSG:3857")
-        assert isinstance(result, pa.Table)
-        assert result.num_rows == 766
 
 
 class TestTablePartitionByA5:
@@ -1700,8 +2118,50 @@ class TestTableWriteFormats:
             safe_unlink(output_path)
 
 
+#: ``ops.convert_to_<format>`` against the ``core.format_writers`` function it
+#: must reach, and the format-specific options that must survive the trip.
+#: The writers themselves are exercised for real by `TestTableWriteFormats`
+#: (the `Table.write` door) and by `TestOpsConversionFunctions` below, which
+#: keeps one unmocked run.
+CONVERSION_CASES = [
+    (
+        "geopackage",
+        "write_geopackage",
+        ".gpkg",
+        lambda t, p: ops.convert_to_geopackage(t, p, overwrite=True, layer_name="test_layer"),
+        {"overwrite": True, "layer_name": "test_layer"},
+    ),
+    (
+        "flatgeobuf",
+        "write_flatgeobuf",
+        ".fgb",
+        lambda t, p: ops.convert_to_flatgeobuf(t, p),
+        {},
+    ),
+    (
+        "csv",
+        "write_csv",
+        ".csv",
+        lambda t, p: ops.convert_to_csv(t, p, include_wkt=False, include_bbox=False),
+        {"include_wkt": False, "include_bbox": False},
+    ),
+    (
+        "shapefile",
+        "write_shapefile",
+        ".shp",
+        lambda t, p: ops.convert_to_shapefile(t, p, overwrite=True, encoding="LATIN1"),
+        {"overwrite": True, "encoding": "LATIN1"},
+    ),
+]
+
+
 class TestOpsConversionFunctions:
-    """Tests for ops.convert_to_*() functions."""
+    """`ops.convert_to_*()` writes a temp parquet and hands it to a format writer.
+
+    The four functions differ only in which writer they name and which options
+    they forward, so the options are asserted on the call (#666, item 6) and one
+    format is run unmocked to prove the temp-file round trip itself works.
+    """
 
     @pytest.fixture
     def sample_table(self):
@@ -1710,60 +2170,42 @@ class TestOpsConversionFunctions:
             pytest.skip("Test data not available")
         return pq.read_table(str(PLACES_PARQUET))
 
-    def test_convert_to_geopackage(self, sample_table):
-        """Test ops.convert_to_geopackage()."""
+    @pytest.mark.parametrize(
+        ("fmt", "writer_name", "suffix", "call", "expected"),
+        CONVERSION_CASES,
+        ids=[case[0] for case in CONVERSION_CASES],
+    )
+    def test_options_reach_the_format_writer(
+        self, sample_table, fmt, writer_name, suffix, call, expected, tmp_path
+    ):
+        output_path = str(tmp_path / f"out{suffix}")
+
+        with patch.object(core_format_writers, writer_name) as writer:
+            result = call(sample_table, output_path)
+
+        assert result == output_path
+        kwargs = writer.call_args.kwargs
+        assert kwargs["output_path"] == output_path
+        # The input is a temp parquet the caller never sees, but it must be one.
+        assert kwargs["input_path"].endswith(".parquet")
+        for name, value in expected.items():
+            assert kwargs[name] == value, f"convert_to_{fmt} dropped {name}"
+
+    def test_conversion_runs_end_to_end(self, sample_table):
+        """One unmocked run: the temp parquet is written, used, and cleaned up."""
         output_path = Path(tempfile.gettempdir()) / f"test_{uuid.uuid4()}.gpkg"
         try:
             result = ops.convert_to_geopackage(sample_table, str(output_path))
             assert result == str(output_path)
             assert output_path.exists()
+            assert output_path.stat().st_size > 0
         finally:
             safe_unlink(output_path)
 
-    def test_convert_to_flatgeobuf(self, sample_table):
-        """Test ops.convert_to_flatgeobuf()."""
-        output_path = Path(tempfile.gettempdir()) / f"test_{uuid.uuid4()}.fgb"
-        try:
-            result = ops.convert_to_flatgeobuf(sample_table, str(output_path))
-            assert result == str(output_path)
-            assert output_path.exists()
-        finally:
-            safe_unlink(output_path)
-
-    def test_convert_to_csv(self, sample_table):
-        """Test ops.convert_to_csv()."""
-        output_path = Path(tempfile.gettempdir()) / f"test_{uuid.uuid4()}.csv"
-        try:
-            result = ops.convert_to_csv(sample_table, str(output_path))
-            assert result == str(output_path)
-            assert output_path.exists()
-        finally:
-            safe_unlink(output_path)
-
-    def test_convert_to_shapefile(self, sample_table):
-        """Test ops.convert_to_shapefile()."""
-        output_path = Path(tempfile.gettempdir()) / f"test_{uuid.uuid4()}.shp"
-        try:
-            result = ops.convert_to_shapefile(sample_table, str(output_path))
-            assert result == str(output_path)
-            assert output_path.exists()
-        finally:
-            for ext in [".shp", ".shx", ".dbf", ".prj", ".cpg"]:
-                safe_unlink(output_path.with_suffix(ext))
-
-    def test_convert_with_options(self, sample_table):
-        """Test ops conversion functions with format-specific options."""
-        output_path = Path(tempfile.gettempdir()) / f"test_{uuid.uuid4()}.gpkg"
-        try:
-            ops.convert_to_geopackage(
-                sample_table,
-                str(output_path),
-                layer_name="test_layer",
-                overwrite=True,
-            )
-            assert output_path.exists()
-        finally:
-            safe_unlink(output_path)
+    def test_a_non_arrow_table_is_refused(self, tmp_path):
+        """The shared helper's type guard, which no real conversion reaches."""
+        with pytest.raises(TypeError, match="Expected pa.Table"):
+            ops.convert_to_csv("not a table", str(tmp_path / "out.csv"))
 
 
 class TestReadPartitionS3:

@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from geoparquet_io.cli.main import add
+from tests.conftest import BUILDINGS_TEST_FILE
 
 
 def _read_geo_metadata(parquet_file):
@@ -24,29 +25,6 @@ def _read_geo_metadata(parquet_file):
 
 class TestAddCommands:
     """Test suite for add commands."""
-
-    def test_add_bbox_to_buildings(self, buildings_test_file, temp_output_file):
-        """Test adding bbox column to buildings file (which doesn't have bbox)."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["bbox", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-        # Verify bbox column was added
-        conn = duckdb.connect()
-        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-        column_names = [col[0] for col in columns]
-        assert "bbox" in column_names
-
-        # Verify row count matches
-        input_count = conn.execute(f'SELECT COUNT(*) FROM "{buildings_test_file}"').fetchone()[0]
-        output_count = conn.execute(f'SELECT COUNT(*) FROM "{temp_output_file}"').fetchone()[0]
-        assert input_count == output_count
-
-        # Verify bbox structure
-        bbox_col = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-        bbox_info = [col for col in bbox_col if col[0] == "bbox"][0]
-        assert "STRUCT" in bbox_info[1]
 
     def test_add_bbox_to_places_copies_existing(self, places_with_covering_file, temp_output_file):
         """Existing bbox column: copy the input to OUTPUT_FILE and say so (#728).
@@ -352,77 +330,12 @@ class TestAddCommands:
         assert "bbox" in column_names  # Original kept
         assert "bounds" in column_names  # New one added
 
-    def test_add_bbox_with_custom_name(self, buildings_test_file, temp_output_file):
-        """Test adding bbox column with custom name."""
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["bbox", buildings_test_file, temp_output_file, "--bbox-name", "bounds"]
-        )
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-        # Verify custom bbox column name was used
-        conn = duckdb.connect()
-        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-        column_names = [col[0] for col in columns]
-        assert "bounds" in column_names
-
-    def test_add_bbox_with_verbose(self, buildings_test_file, temp_output_file):
-        """Test adding bbox column with verbose flag."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["bbox", buildings_test_file, temp_output_file, "--verbose"])
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-    def test_add_bbox_preserves_columns(self, buildings_test_file, temp_output_file):
-        """Test that add bbox preserves all original columns."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["bbox", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-
-        # Verify columns are preserved
-        conn = duckdb.connect()
-        input_columns = conn.execute(f'DESCRIBE SELECT * FROM "{buildings_test_file}"').fetchall()
-        output_columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-
-        input_col_names = {col[0] for col in input_columns}
-        output_col_names = {col[0] for col in output_columns}
-
-        # All input columns should be in output
-        assert input_col_names.issubset(output_col_names)
-        # Output should have bbox column added
-        assert "bbox" in output_col_names
-
     def test_add_bbox_nonexistent_file(self, temp_output_file):
         """Test add bbox on nonexistent file."""
         runner = CliRunner()
         result = runner.invoke(add, ["bbox", "nonexistent.parquet", temp_output_file])
         # Should fail with non-zero exit code
         assert result.exit_code != 0
-
-    def test_add_bbox_with_metadata_always_added(self, buildings_test_file, temp_output_file):
-        """Test that bbox metadata is automatically added."""
-        import json
-
-        import pyarrow.parquet as pq
-
-        runner = CliRunner()
-        result = runner.invoke(add, ["bbox", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-        # Verify bbox metadata was added automatically
-        pf = pq.ParquetFile(temp_output_file)
-        metadata = pf.schema_arrow.metadata
-        assert b"geo" in metadata
-
-        geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-
-        # Verify bbox covering metadata exists
-        assert "columns" in geo_meta
-        assert "geometry" in geo_meta["columns"]
-        assert "covering" in geo_meta["columns"]["geometry"]
-        assert "bbox" in geo_meta["columns"]["geometry"]["covering"]
 
     def test_add_bbox_metadata_on_v10_file_with_bbox_errors(self, temp_output_dir):
         """add bbox-metadata refuses a 1.0 file, whose version cannot carry covering.
@@ -461,205 +374,253 @@ class TestAddCommands:
         assert result.exit_code != 0
         assert "No valid bbox column found" in result.output
 
-    # H3 tests
-    def test_add_h3_to_buildings(self, buildings_test_file, temp_output_file):
-        """Test adding H3 column to buildings file."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["h3", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-        # Verify h3_cell column was added
-        conn = duckdb.connect()
-        conn.execute("INSTALL spatial; LOAD spatial;")
-        conn.execute("INSTALL h3 FROM community; LOAD h3;")
-
-        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-        column_names = [col[0] for col in columns]
-        assert "h3_cell" in column_names
-
-        # Verify row count is preserved
-        input_count = conn.execute(f'SELECT COUNT(*) FROM "{buildings_test_file}"').fetchone()[0]
-        output_count = conn.execute(f'SELECT COUNT(*) FROM "{temp_output_file}"').fetchone()[0]
-        assert input_count == output_count
-
-        # Verify H3 column is VARCHAR
-        h3_col = [col for col in columns if col[0] == "h3_cell"][0]
-        assert "VARCHAR" in h3_col[1]
-
-        # Verify H3 cells are valid
-        valid_count = conn.execute(
-            f'SELECT COUNT(*) FROM "{temp_output_file}" '
-            f"WHERE h3_is_valid_cell(h3_string_to_h3(h3_cell))"
-        ).fetchone()[0]
-        assert valid_count == output_count
-
-    def test_add_h3_default_resolution(self, buildings_test_file, temp_output_file):
-        """Test that H3 uses resolution 9 by default."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["h3", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-
-        # Verify all cells are resolution 9
-        conn = duckdb.connect()
-        conn.execute("INSTALL spatial; LOAD spatial;")
-        conn.execute("INSTALL h3 FROM community; LOAD h3;")
-
-        resolutions = conn.execute(
-            f'SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_cell)) FROM "{temp_output_file}"'
-        ).fetchall()
-        assert len(resolutions) == 1
-        assert resolutions[0][0] == 9
-
-    def test_add_h3_custom_resolution(self, buildings_test_file, temp_output_file):
-        """Test adding H3 column with custom resolution."""
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["h3", buildings_test_file, temp_output_file, "--resolution", "13"]
-        )
-        assert result.exit_code == 0
-
-        # Verify all cells are resolution 13
-        conn = duckdb.connect()
-        conn.execute("INSTALL spatial; LOAD spatial;")
-        conn.execute("INSTALL h3 FROM community; LOAD h3;")
-
-        resolutions = conn.execute(
-            f'SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_cell)) FROM "{temp_output_file}"'
-        ).fetchall()
-        assert len(resolutions) == 1
-        assert resolutions[0][0] == 13
-
-    def test_add_h3_with_custom_name(self, buildings_test_file, temp_output_file):
-        """Test adding H3 column with custom name."""
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["h3", buildings_test_file, temp_output_file, "--h3-name", "h3_building"]
-        )
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-        # Verify custom H3 column name was used
-        conn = duckdb.connect()
-        columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-        column_names = [col[0] for col in columns]
-        assert "h3_building" in column_names
-
-    def test_add_h3_with_verbose(self, buildings_test_file, temp_output_file):
-        """Test adding H3 column with verbose flag."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["h3", buildings_test_file, temp_output_file, "--verbose"])
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-        assert "Loading DuckDB extension: h3" in result.output
-
-    def test_add_h3_preserves_columns(self, buildings_test_file, temp_output_file):
-        """Test that add H3 preserves all original columns."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["h3", buildings_test_file, temp_output_file])
-        assert result.exit_code == 0
-
-        # Verify columns are preserved
-        conn = duckdb.connect()
-        input_columns = conn.execute(f'DESCRIBE SELECT * FROM "{buildings_test_file}"').fetchall()
-        output_columns = conn.execute(f'DESCRIBE SELECT * FROM "{temp_output_file}"').fetchall()
-
-        input_col_names = {col[0] for col in input_columns}
-        output_col_names = {col[0] for col in output_columns}
-
-        # All input columns should be in output
-        assert input_col_names.issubset(output_col_names)
-        # Output should have h3_cell column added
-        assert "h3_cell" in output_col_names
-
-    def test_add_h3_nonexistent_file(self, temp_output_file):
-        """Test add H3 on nonexistent file."""
-        runner = CliRunner()
-        result = runner.invoke(add, ["h3", "nonexistent.parquet", temp_output_file])
-        # Should fail with non-zero exit code
-        assert result.exit_code != 0
-
-    def test_add_h3_metadata(self, buildings_test_file, temp_output_file):
-        """Test that H3 metadata is added to GeoParquet file."""
-        import json
-
-        import pyarrow.parquet as pq
-
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["h3", buildings_test_file, temp_output_file, "--resolution", "13"]
-        )
-        assert result.exit_code == 0
-
-        # Read metadata
-        pf = pq.ParquetFile(temp_output_file)
-        metadata = pf.schema_arrow.metadata
-        assert b"geo" in metadata
-
-        geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
-
-        # Verify H3 covering metadata exists
-        assert "columns" in geo_meta
-        assert "geometry" in geo_meta["columns"]
-        assert "covering" in geo_meta["columns"]["geometry"]
-        assert "h3" in geo_meta["columns"]["geometry"]["covering"]
-
-        # Verify H3 metadata content
-        h3_meta = geo_meta["columns"]["geometry"]["covering"]["h3"]
-        assert h3_meta["column"] == "h3_cell"
-        assert h3_meta["resolution"] == 13
-
-    def test_add_h3_invalid_resolution_too_low(self, buildings_test_file, temp_output_file):
-        """Test adding H3 with invalid resolution (too low)."""
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["h3", buildings_test_file, temp_output_file, "--resolution", "-1"]
-        )
-        # Should fail with error about invalid resolution
-        assert result.exit_code != 0
-
-    def test_add_h3_invalid_resolution_too_high(self, buildings_test_file, temp_output_file):
-        """Test adding H3 with invalid resolution (too high)."""
-        runner = CliRunner()
-        result = runner.invoke(
-            add, ["h3", buildings_test_file, temp_output_file, "--resolution", "16"]
-        )
-        # Should fail with error about invalid resolution
-        assert result.exit_code != 0
-
-    def test_add_h3_core_function_invalid_resolution(self, buildings_test_file, temp_output_file):
-        """Test core add_h3_column function with invalid resolution (covers line 51)."""
-        from geoparquet_io.core.add.h3 import add_h3_column
-        from geoparquet_io.core.exceptions import InvalidParameterError
-
-        # Test resolution too high (bypassing CLI validation)
-        with pytest.raises(InvalidParameterError) as exc_info:
-            add_h3_column(
-                input_parquet=buildings_test_file,
-                output_parquet=temp_output_file,
-                h3_resolution=16,
-                h3_column_name="h3_cell",
-                verbose=False,
-            )
-        assert "must be between 0 and 15" in str(exc_info.value)
-
-        # Test resolution too low
-        with pytest.raises(InvalidParameterError) as exc_info:
-            add_h3_column(
-                input_parquet=buildings_test_file,
-                output_parquet=temp_output_file,
-                h3_resolution=-1,
-                h3_column_name="h3_cell",
-                verbose=False,
-            )
-        assert "must be between 0 and 15" in str(exc_info.value)
-
     # Note: add admin-divisions tests are skipped because they require a countries file
     # and network access. These should be tested separately with appropriate test data.
     @pytest.mark.skip(reason="Requires countries file and network access")
     def test_add_admin_divisions(self, places_test_file, temp_output_file):
         """Test adding admin divisions (skipped - requires countries file)."""
         pass
+
+
+@pytest.fixture(scope="module")
+def bbox_default_run(tmp_path_factory):
+    """One `gpio add bbox IN OUT` run with no options, shared by every assertion."""
+    output = tmp_path_factory.mktemp("add_bbox_default") / "output.parquet"
+    result = CliRunner().invoke(add, ["bbox", str(BUILDINGS_TEST_FILE), str(output)])
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    return output
+
+
+@pytest.fixture(scope="module")
+def bbox_optioned_run(tmp_path_factory):
+    """The same command with ``--bbox-name`` and ``--verbose`` set."""
+    output = tmp_path_factory.mktemp("add_bbox_options") / "output.parquet"
+    result = CliRunner().invoke(
+        add,
+        ["bbox", str(BUILDINGS_TEST_FILE), str(output), "--bbox-name", "bounds", "--verbose"],
+    )
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    return output
+
+
+@pytest.fixture(scope="module")
+def h3_default_run(tmp_path_factory):
+    """One `gpio add h3 IN OUT` run with no options, shared by every assertion."""
+    output = tmp_path_factory.mktemp("add_h3_default") / "output.parquet"
+    result = CliRunner().invoke(add, ["h3", str(BUILDINGS_TEST_FILE), str(output)])
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    return output
+
+
+@pytest.fixture(scope="module")
+def h3_optioned_run(tmp_path_factory):
+    """The same command with every option this subcommand has set at once.
+
+    One run rather than one per option: each option is read back off the output
+    separately below, so a dropped option still fails on its own assertion.
+    """
+    output = tmp_path_factory.mktemp("add_h3_options") / "output.parquet"
+    result = CliRunner().invoke(
+        add,
+        [
+            "h3",
+            str(BUILDINGS_TEST_FILE),
+            str(output),
+            "--resolution",
+            "13",
+            "--h3-name",
+            "h3_building",
+            "--verbose",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    return output, result
+
+
+class TestAddBboxCLI:
+    """`gpio add bbox` on an input with no bbox column, asserted off two shared runs.
+
+    The interesting `add bbox` behaviour -- the #728 copy path, ``--force``,
+    the streaming forms, ``--dry-run`` -- stays in ``TestAddCommands``, where
+    each case is a genuinely different outcome. What lived here instead was six
+    runs of the *same* plain invocation, one per property being read back
+    (#666, item 5).
+    """
+
+    def test_adds_a_bbox_struct_keeping_every_row_and_column(self, bbox_default_run):
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{bbox_default_run}"').fetchall()
+        column_names = {col[0] for col in columns}
+        assert "bbox" in column_names
+
+        bbox_info = next(col for col in columns if col[0] == "bbox")
+        assert "STRUCT" in bbox_info[1]
+
+        input_columns = conn.execute(f'DESCRIBE SELECT * FROM "{BUILDINGS_TEST_FILE}"').fetchall()
+        assert {col[0] for col in input_columns}.issubset(column_names)
+
+        input_count = conn.execute(f'SELECT COUNT(*) FROM "{BUILDINGS_TEST_FILE}"').fetchone()[0]
+        output_count = conn.execute(f'SELECT COUNT(*) FROM "{bbox_default_run}"').fetchone()[0]
+        assert input_count == output_count
+
+    def test_covering_metadata_is_written_without_being_asked_for(self, bbox_default_run):
+        covering = _read_geo_metadata(bbox_default_run)["columns"]["geometry"]["covering"]
+        assert covering["bbox"]["xmin"][0] == "bbox"
+
+    def test_bbox_name_option_reaches_core(self, bbox_optioned_run):
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{bbox_optioned_run}"').fetchall()
+        column_names = {col[0] for col in columns}
+        assert "bounds" in column_names
+        assert "bbox" not in column_names
+
+        # The covering must point at the column that was actually written.
+        covering = _read_geo_metadata(bbox_optioned_run)["columns"]["geometry"]["covering"]
+        assert covering["bbox"]["xmin"][0] == "bounds"
+
+
+class TestAddH3CLI:
+    """`gpio add h3` plumbing, asserted off two shared runs (#666, item 5).
+
+    H3 *semantics* -- what the column holds, which resolutions are legal, what
+    the metadata survives -- are asserted once against the core functions
+    ``add_h3_table`` and ``add_h3_column`` in the per-index family suite:
+    ``tests/test_add_h3.py`` today, ``tests/test_spatial_index_family.py`` once
+    #830 folds the per-index files into it. What only the CLI layer can get
+    wrong is whether each option reaches core at all, so this class runs the
+    command twice -- once on defaults, once with every option set -- and asserts
+    both outputs many times over, instead of paying a DuckDB + h3-extension run
+    per assertion.
+    """
+
+    @staticmethod
+    def _h3_connection():
+        conn = duckdb.connect()
+        conn.execute("INSTALL spatial; LOAD spatial;")
+        conn.execute("INSTALL h3 FROM community; LOAD h3;")
+        return conn
+
+    def test_writes_valid_cells_and_keeps_every_row_and_column(self, h3_default_run):
+        """The default run produces real H3, not just a column of the right name."""
+        conn = self._h3_connection()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{h3_default_run}"').fetchall()
+        column_names = {col[0] for col in columns}
+        assert "h3_cell" in column_names
+
+        # The generated column is a VARCHAR of valid cells...
+        h3_col = next(col for col in columns if col[0] == "h3_cell")
+        assert "VARCHAR" in h3_col[1]
+
+        output_count = conn.execute(f'SELECT COUNT(*) FROM "{h3_default_run}"').fetchone()[0]
+        valid_count = conn.execute(
+            f'SELECT COUNT(*) FROM "{h3_default_run}" '
+            f"WHERE h3_is_valid_cell(h3_string_to_h3(h3_cell))"
+        ).fetchone()[0]
+        assert valid_count == output_count
+
+        # ...added to, not in place of, the input's rows and columns.
+        input_columns = conn.execute(f'DESCRIBE SELECT * FROM "{BUILDINGS_TEST_FILE}"').fetchall()
+        assert {col[0] for col in input_columns}.issubset(column_names)
+        input_count = conn.execute(f'SELECT COUNT(*) FROM "{BUILDINGS_TEST_FILE}"').fetchone()[0]
+        assert input_count == output_count
+
+    def test_default_resolution_is_9(self, h3_default_run):
+        conn = self._h3_connection()
+        resolutions = conn.execute(
+            f'SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_cell)) FROM "{h3_default_run}"'
+        ).fetchall()
+        assert resolutions == [(9,)]
+
+    def test_default_run_records_covering_metadata(self, h3_default_run):
+        covering = _read_geo_metadata(h3_default_run)["columns"]["geometry"]["covering"]
+        assert covering["h3"] == {"column": "h3_cell", "resolution": 9}
+
+    def test_resolution_option_reaches_core(self, h3_optioned_run):
+        output, _ = h3_optioned_run
+        conn = self._h3_connection()
+        resolutions = conn.execute(
+            f'SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_building)) FROM "{output}"'
+        ).fetchall()
+        assert resolutions == [(13,)]
+
+    def test_column_name_option_reaches_core(self, h3_optioned_run):
+        output, _ = h3_optioned_run
+        conn = duckdb.connect()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{output}"').fetchall()
+        column_names = {col[0] for col in columns}
+        assert "h3_building" in column_names
+        assert "h3_cell" not in column_names
+
+        # The covering must name the column that was actually written, at the
+        # resolution that was actually asked for.
+        covering = _read_geo_metadata(output)["columns"]["geometry"]["covering"]
+        assert covering["h3"] == {"column": "h3_building", "resolution": 13}
+
+    def test_verbose_option_reaches_the_extension_loader(self, h3_optioned_run):
+        _, result = h3_optioned_run
+        assert "Loading DuckDB extension: h3" in result.output
+
+    @pytest.mark.parametrize(
+        ("input_file", "extra_args", "message"),
+        [
+            pytest.param(
+                "nonexistent.parquet",
+                [],
+                "Cannot read file: nonexistent.parquet",
+                id="missing-input",
+            ),
+            pytest.param(
+                str(BUILDINGS_TEST_FILE),
+                ["--resolution", "-1"],
+                "-1 is not in the range 0<=x<=15",
+                id="resolution-below-0",
+            ),
+            pytest.param(
+                str(BUILDINGS_TEST_FILE),
+                ["--resolution", "16"],
+                "16 is not in the range 0<=x<=15",
+                id="resolution-above-15",
+            ),
+        ],
+    )
+    def test_refuses_bad_input(self, input_file, extra_args, message, tmp_path):
+        """Each of these must fail loudly rather than write a file (#666, item 5).
+
+        The message is asserted too: a non-zero exit says only that *something*
+        went wrong, which an unrelated failure would satisfy just as well.
+        """
+        output = tmp_path / "out.parquet"
+        result = CliRunner().invoke(add, ["h3", input_file, str(output), *extra_args])
+
+        assert result.exit_code != 0, result.output
+        assert message in result.output
+        assert not output.exists()
+
+    def test_core_function_rejects_an_out_of_range_resolution(
+        self, buildings_test_file, temp_output_file
+    ):
+        """``add_h3_column`` validates for itself, not only behind Click.
+
+        The file-centric core function is reachable from the Python API, so its
+        own guard has to hold when the CLI's ``IntRange`` is not in the way.
+        """
+        from geoparquet_io.core.add.h3 import add_h3_column
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        for resolution in (16, -1):
+            with pytest.raises(InvalidParameterError) as exc_info:
+                add_h3_column(
+                    input_parquet=buildings_test_file,
+                    output_parquet=temp_output_file,
+                    h3_resolution=resolution,
+                    h3_column_name="h3_cell",
+                    verbose=False,
+                )
+            assert "must be between 0 and 15" in str(exc_info.value)
 
 
 class TestRemoteWriteSupport:
