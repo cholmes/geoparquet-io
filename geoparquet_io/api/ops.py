@@ -1270,6 +1270,19 @@ def _sub_partition(
 
     min_size_bytes = _parse_min_size(min_size)
 
+    if preview:
+        # The CLI's --preview branch plans and stops before any resolution is
+        # needed, so a preview without resolution/auto must succeed here too.
+        return {
+            "preview": True,
+            "candidates": core_sub_partition.plan_sub_partition(
+                str(directory), partition_type, min_size_bytes
+            ),
+            "processed": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
     argument = _SUB_PARTITION_RESOLUTION_ARG.get(partition_type, "resolution")
     if not auto and (resolution if resolution is not None else level) is None:
         raise InvalidParameterError(
@@ -1281,14 +1294,6 @@ def _sub_partition(
     candidates = core_sub_partition.plan_sub_partition(
         str(directory), partition_type, min_size_bytes
     )
-    if preview:
-        return {
-            "preview": True,
-            "candidates": candidates,
-            "processed": 0,
-            "skipped": 0,
-            "errors": [],
-        }
 
     result = core_sub_partition.sub_partition_directory(
         directory=str(directory),

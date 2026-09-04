@@ -992,6 +992,30 @@ class TestApiDirectorySubPartition:
         assert "output_dir" in str(exc.value)
         assert os.path.exists(large)
 
+    def test_preview_needs_no_resolution_exactly_like_the_cli(self, temp_partition_dir):
+        """`gpio partition h3 <dir> --min-size ... --preview` plans without a
+        resolution -- the CLI's preview branch never reaches the resolution
+        check -- so the API's preview must plan too, and return the same shape
+        it would with one. A real run without a resolution still refuses.
+        """
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+        threshold = os.path.getsize(large) - 100
+
+        planned = ops.sub_partition_by_h3(temp_partition_dir, min_size=threshold, preview=True)
+
+        assert planned["preview"] is True
+        assert planned["processed"] == 0
+        assert [c["path"] for c in planned["candidates"]] == [large]
+        assert planned == ops.sub_partition_by_h3(
+            temp_partition_dir, min_size=threshold, resolution=4, preview=True
+        )
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            ops.sub_partition_by_h3(temp_partition_dir, min_size=threshold)
+
     def test_a_missing_resolution_is_refused_rather_than_guessed(self, temp_partition_dir):
         from geoparquet_io.api import ops
         from geoparquet_io.core.exceptions import InvalidParameterError
