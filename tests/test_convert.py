@@ -277,105 +277,105 @@ class TestConvertCore:
         assert "not found" in str(exc_info.value).lower()
 
 
+@pytest.fixture(scope="module")
+def best_practices_file(tmp_path_factory):
+    """Convert the test shapefile once with default options for read-only checks.
+
+    Every test in TestConvertBestPractices previously re-ran this identical
+    default conversion just to assert one property of the output. The output is
+    only read in assertions, so a single module-scoped conversion is safe
+    (issue #666 item 2).
+    """
+    from tests.conftest import TEST_DATA_DIR
+
+    output = tmp_path_factory.mktemp("convert_best_practices") / "converted.parquet"
+    convert_to_geoparquet(str(TEST_DATA_DIR / "buildings_test.shp"), str(output))
+    return str(output)
+
+
 class TestConvertBestPractices:
-    """Test that convert applies all best practices."""
+    """Test that convert applies all best practices (one shared conversion)."""
 
-    def test_zstd_compression_applied(self, shapefile_input, temp_output_file):
+    def test_zstd_compression_applied(self, best_practices_file):
         """Verify ZSTD compression is applied by default."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
-        compression_info = get_compression_info(temp_output_file)
-        geom_col = find_primary_geometry_column(temp_output_file)
+        compression_info = get_compression_info(best_practices_file)
+        geom_col = find_primary_geometry_column(best_practices_file)
         geom_compression = compression_info.get(geom_col)
         assert geom_compression == "ZSTD", (
             f"Expected ZSTD compression on geometry column '{geom_col}'"
         )
 
-    def test_bbox_column_exists(self, shapefile_input, temp_output_file):
+    def test_bbox_column_exists(self, best_practices_file):
         """Verify bbox column is added."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
-        bbox_info = check_bbox_structure(temp_output_file, verbose=False)
+        bbox_info = check_bbox_structure(best_practices_file, verbose=False)
         assert bbox_info["has_bbox_column"], "Expected bbox column to exist"
         assert bbox_info["bbox_column_name"] == "bbox"
 
-    def test_bbox_metadata_present(self, shapefile_input, temp_output_file):
+    def test_bbox_metadata_present(self, best_practices_file):
         """Verify bbox covering metadata is added."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
-        bbox_info = check_bbox_structure(temp_output_file, verbose=False)
+        bbox_info = check_bbox_structure(best_practices_file, verbose=False)
         assert bbox_info["has_bbox_metadata"], "Expected bbox covering in metadata"
         assert bbox_info["status"] == "optimal"
 
-    def test_geoparquet_version(self, shapefile_input, temp_output_file):
+    def test_geoparquet_version(self, best_practices_file):
         """Verify GeoParquet 1.1.0+ metadata is created."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
-        metadata, _ = get_parquet_metadata(temp_output_file, verbose=False)
+        metadata, _ = get_parquet_metadata(best_practices_file, verbose=False)
         geo_meta = parse_geo_metadata(metadata, verbose=False)
 
         assert geo_meta is not None, "Expected GeoParquet metadata to exist"
         version = geo_meta.get("version")
         assert version >= "1.1.0", f"Expected version >= 1.1.0, got {version}"
 
-    def test_row_group_size(self, shapefile_input, temp_output_file):
+    def test_row_group_size(self, best_practices_file):
         """Verify row groups are properly sized."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
-        stats = get_row_group_stats(temp_output_file)
+        stats = get_row_group_stats(best_practices_file)
         # For small test files, we might only have 1 row group
         # The key is that row_group_rows parameter was set to 100k
         assert stats["num_groups"] >= 1
 
-    def test_hilbert_ordering_applied(self, shapefile_input, temp_output_file):
+    def test_hilbert_ordering_applied(self, best_practices_file):
         """Verify Hilbert ordering is applied by default."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
         # Check spatial order - should have good locality (low ratio)
         # Note: With small test files, this might not show perfect ordering
         # For now, just verify the file was created and has geometry
         # The spatial ordering check has its own encoding issues with converted files
-        assert os.path.exists(temp_output_file)
+        assert os.path.exists(best_practices_file)
 
         # Verify we can read the file
         con = duckdb.connect()
-        count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{temp_output_file}')").fetchone()[
-            0
-        ]
+        count = con.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{best_practices_file}')"
+        ).fetchone()[0]
         assert count > 0
         con.close()
 
-    def test_geometry_column_preserved(self, shapefile_input, temp_output_file):
+    def test_geometry_column_preserved(self, best_practices_file):
         """Verify geometry column is preserved."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
         # Use DuckDB to check schema
         con = duckdb.connect()
         con.execute("INSTALL spatial;")
         con.execute("LOAD spatial;")
 
         # Get actual geometry column name (DuckDB uses "geom" for shapefile conversion)
-        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_col = find_primary_geometry_column(best_practices_file)
         result = con.execute(
-            f"SELECT ST_AsText(\"{geom_col}\") FROM '{temp_output_file}' LIMIT 1"
+            f"SELECT ST_AsText(\"{geom_col}\") FROM '{best_practices_file}' LIMIT 1"
         ).fetchone()
         assert result is not None
         con.close()
 
-    def test_attribute_columns_preserved(self, shapefile_input, temp_output_file):
+    def test_attribute_columns_preserved(self, best_practices_file):
         """Verify attribute columns are preserved from input."""
-        convert_to_geoparquet(shapefile_input, temp_output_file)
-
         # Use DuckDB to check schema
         con = duckdb.connect()
         con.execute("INSTALL spatial;")
         con.execute("LOAD spatial;")
 
-        result = con.execute(f"DESCRIBE SELECT * FROM '{temp_output_file}'").fetchall()
+        result = con.execute(f"DESCRIBE SELECT * FROM '{best_practices_file}'").fetchall()
         column_names = [row[0] for row in result]
 
         # Should have geometry (detected dynamically) and bbox at minimum
-        geom_col = find_primary_geometry_column(temp_output_file)
+        geom_col = find_primary_geometry_column(best_practices_file)
         assert geom_col in column_names, f"Expected geometry column '{geom_col}' in {column_names}"
         assert "bbox" in column_names
 
@@ -385,55 +385,18 @@ class TestConvertBestPractices:
 
 
 class TestConvertCLI:
-    """Test CLI interface for convert command."""
+    """CLI plumbing tests for convert (core conversion behavior is tested above).
 
-    def test_cli_basic_shapefile(self, shapefile_input, temp_output_file):
-        """Test CLI basic usage with shapefile."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", shapefile_input, temp_output_file])
+    Consolidated from eight per-flag tests that each ran a full conversion
+    (issue #666 item 2). What the dropped tests asserted survives elsewhere:
+    GeoJSON and GeoPackage CLI/API conversions are exercised in the fast suite
+    by test_geoparquet_versions.py::TestVersionCLI (CLI convert on GeoJSON) and
+    test_convert_layer.py (GeoPackage), --skip-hilbert CLI plumbing by every
+    TestVersionCLI case, and the remaining flags by the single run below.
+    """
 
-        assert result.exit_code == 0, f"Command failed: {result.output}"
-        assert os.path.exists(temp_output_file)
-        assert "Converting" in result.output
-        assert "Done" in result.output
-
-    def test_cli_basic_geojson(self, geojson_input, temp_output_file):
-        """Test CLI with GeoJSON input."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", geojson_input, temp_output_file])
-
-        assert result.exit_code == 0, f"Command failed: {result.output}"
-        assert os.path.exists(temp_output_file)
-
-    def test_cli_basic_geopackage(self, geopackage_input, temp_output_file):
-        """Test CLI with GeoPackage input."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", geopackage_input, temp_output_file])
-
-        assert result.exit_code == 0, f"Command failed: {result.output}"
-        assert os.path.exists(temp_output_file)
-
-    def test_cli_verbose_output(self, shapefile_input, temp_output_file):
-        """Test verbose flag shows progress."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", shapefile_input, temp_output_file, "--verbose"])
-
-        assert result.exit_code == 0
-        assert "Detecting geometry column" in result.output
-        assert "Dataset bounds" in result.output
-
-    def test_cli_skip_hilbert(self, shapefile_input, temp_output_file):
-        """Test --skip-hilbert flag."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli, ["convert", shapefile_input, temp_output_file, "--skip-hilbert"]
-        )
-
-        assert result.exit_code == 0
-        assert os.path.exists(temp_output_file)
-
-    def test_cli_custom_compression(self, shapefile_input, temp_output_file):
-        """Test custom compression options."""
+    def test_cli_plumbing_full_options(self, shapefile_input, temp_output_file):
+        """One CLI run proving options reach core and expected messages print."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -441,6 +404,7 @@ class TestConvertCLI:
                 "convert",
                 shapefile_input,
                 temp_output_file,
+                "--verbose",
                 "--compression",
                 "ZSTD",
                 "--compression-level",
@@ -448,10 +412,17 @@ class TestConvertCLI:
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Command failed: {result.output}"
         assert os.path.exists(temp_output_file)
-
-        # Verify ZSTD compression was applied (use dynamic geometry column detection)
+        # --verbose plumbing
+        assert "Detecting geometry column" in result.output
+        assert "Dataset bounds" in result.output
+        # User-facing messages: converting, time, output file, validation
+        assert "Converting" in result.output
+        assert "Done in" in result.output
+        assert "Output:" in result.output
+        assert "validation" in result.output.lower()
+        # --compression/--compression-level plumbing
         compression_info = get_compression_info(temp_output_file)
         geom_col = find_primary_geometry_column(temp_output_file)
         assert compression_info.get(geom_col) == "ZSTD", f"Expected ZSTD for '{geom_col}'"
@@ -463,18 +434,6 @@ class TestConvertCLI:
 
         assert result.exit_code != 0
         assert "not found" in result.output.lower() or "does not exist" in result.output.lower()
-
-    def test_cli_output_messages(self, shapefile_input, temp_output_file):
-        """Test that CLI outputs expected messages."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", shapefile_input, temp_output_file])
-
-        assert result.exit_code == 0
-        # Should show: converting, time, output file, size, validation
-        assert "Converting" in result.output
-        assert "Done in" in result.output
-        assert "Output:" in result.output
-        assert "validation" in result.output.lower()
 
 
 class TestConvertEdgeCases:
