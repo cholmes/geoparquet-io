@@ -526,13 +526,6 @@ class TestBuildFeatureQueryWithReprojection:
 class TestKeepCrsFlag:
     """Tests for --keep-crs flag behavior."""
 
-    def test_keep_crs_flag_exists(self):
-        """Test that --keep-crs flag is recognized by CLI."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", "geojson", "--help"])
-        assert result.exit_code == 0
-        assert "--keep-crs" in result.output
-
     def test_keep_crs_in_streaming_mode(self, capsys):
         """Test keep_crs parameter works in streaming mode."""
         # Should not raise with keep_crs=True

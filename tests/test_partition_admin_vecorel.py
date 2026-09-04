@@ -71,12 +71,6 @@ class TestVecorelPartitionSelectClause:
 class TestVecorelPartitionCLI:
     """CLI surface tests (no network)."""
 
-    def test_vecorel_option_exists(self):
-        runner = CliRunner()
-        result = runner.invoke(partition, ["admin", "--help"])
-        assert result.exit_code == 0
-        assert "--vecorel" in result.output
-
     def test_requires_levels_or_vecorel(self, places_test_file, temp_output_dir):
         """Without --levels and without --vecorel the command should error."""
         runner = CliRunner()

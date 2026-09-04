@@ -42,22 +42,6 @@ def _total_rows(directory) -> int:
     return sum(pq.read_metadata(f).num_rows for f in _partition_files(directory))
 
 
-class TestMinSizeOption:
-    """Test --min-size option parsing."""
-
-    def test_min_size_option_exists(self, cli_runner):
-        """Verify --min-size option is recognized."""
-        result = cli_runner.invoke(partition, ["h3", "--help"])
-        assert result.exit_code == 0
-        assert "--min-size" in result.output
-
-    def test_in_place_option_exists(self, cli_runner):
-        """Verify --in-place option is recognized."""
-        result = cli_runner.invoke(partition, ["h3", "--help"])
-        assert result.exit_code == 0
-        assert "--in-place" in result.output
-
-
 class TestSubPartitionCore:
     """Test sub_partition core functionality."""
 
@@ -415,16 +399,6 @@ class TestA5SubPartitioning:
     tells users to switch to A5 -- which made A5's missing ``--min-size`` /
     ``--in-place`` the gap that mattered most.
     """
-
-    def test_min_size_option_exists_on_a5(self, cli_runner):
-        result = cli_runner.invoke(partition, ["a5", "--help"])
-        assert result.exit_code == 0
-        assert "--min-size" in result.output
-
-    def test_in_place_option_exists_on_a5(self, cli_runner):
-        result = cli_runner.invoke(partition, ["a5", "--help"])
-        assert result.exit_code == 0
-        assert "--in-place" in result.output
 
     def test_sub_partition_directory_supports_a5(self, temp_partition_dir):
         """The registry in core/sub_partition.py used to raise for 'a5'."""

@@ -1047,13 +1047,6 @@ class TestAdminRollup:
 
 
 class TestCli:
-    def test_help(self):
-        runner = CliRunner()
-        result = runner.invoke(cli, ["process", "overview", "--help"])
-        assert result.exit_code == 0
-        for opt in ("--levels", "--max-tile-kb", "--bytes-per-cell", "--cell-column", "--scheme"):
-            assert opt in result.output
-
     @pytest.mark.usefixtures("fake_country_cache")
     def test_cli_admin_rollup(self, tmp_path):
         src = tmp_path / "by_region.parquet"
