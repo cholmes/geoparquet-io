@@ -242,3 +242,180 @@ class TestExtractBboxFromRowGroupStats:
         result = extract_bbox_from_row_group_stats(buildings_test_file, "geometry")
         # Should return None when no bbox column exists
         assert result is None
+
+
+class TestFormatGeoparquetMetadata:
+    """format_geoparquet_metadata: terminal and JSON rendering of the geo key."""
+
+    def test_terminal_output_places(self, places_test_file, capsys):
+        from geoparquet_io.core.metadata_utils import format_geoparquet_metadata
+
+        format_geoparquet_metadata(places_test_file, json_output=False)
+        out = capsys.readouterr().out
+        assert "GeoParquet Metadata" in out
+        assert "Version: 1.0.0" in out
+        assert "Primary Column: geometry" in out
+        assert "Encoding: WKB" in out
+        # Absent optional keys are rendered with their spec defaults.
+        assert "OGC:CRS84 (default value)" in out
+        assert "Covering: Not present" in out
+
+    def test_json_output_places(self, places_test_file, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_geoparquet_metadata
+
+        format_geoparquet_metadata(places_test_file, json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["version"] == "1.0.0"
+        assert data["primary_column"] == "geometry"
+        assert data["columns"]["geometry"]["encoding"] == "WKB"
+
+    def test_terminal_no_geo_metadata(self, capsys):
+        from geoparquet_io.core.metadata_utils import format_geoparquet_metadata
+
+        # crs-projjson.parquet is plain Parquet with no 'geo' key.
+        format_geoparquet_metadata("tests/data/crs-projjson.parquet", json_output=False)
+        out = capsys.readouterr().out
+        assert "No GeoParquet metadata found" in out
+
+    def test_json_no_geo_metadata(self, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_geoparquet_metadata
+
+        format_geoparquet_metadata("tests/data/crs-projjson.parquet", json_output=True)
+        assert json.loads(capsys.readouterr().out) is None
+
+
+class TestFormatParquetGeoMetadata:
+    """format_parquet_geo_metadata: Parquet-spec geospatial metadata section."""
+
+    def test_terminal_no_native_geo_columns(self, places_test_file, capsys):
+        from geoparquet_io.core.metadata_utils import format_parquet_geo_metadata
+
+        # places is GeoParquet 1.0 WKB: no native Parquet geo logical types.
+        format_parquet_geo_metadata(places_test_file, json_output=False)
+        out = capsys.readouterr().out
+        assert "Parquet Geo Metadata" in out
+        assert "No geospatial columns detected" in out
+
+    def test_terminal_native_geometry_column(self, capsys):
+        from geoparquet_io.core.metadata_utils import format_parquet_geo_metadata
+
+        # GeoParquet 2.0 fixture with a native Geometry column and PROJJSON CRS.
+        format_parquet_geo_metadata("tests/data/fields_gpq2_5070_brotli.parquet", json_output=False)
+        out = capsys.readouterr().out
+        assert "Type: Geometry" in out
+        assert "Row Group Statistics:" in out
+
+    def test_json_native_geometry_column(self, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_parquet_geo_metadata
+
+        format_parquet_geo_metadata("tests/data/fields_gpq2_5070_brotli.parquet", json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["total_row_groups"] == 1
+        cols = data["geospatial_columns"]
+        assert "geometry" in cols
+        stats = cols["geometry"]["row_group_stats"]
+        assert len(stats) == 1
+        assert stats[0]["xmin"] < stats[0]["xmax"]
+
+
+class TestFormatParquetMetadataEnhanced:
+    """format_parquet_metadata_enhanced: full Parquet file metadata section."""
+
+    def test_terminal_output(self, places_test_file, capsys):
+        from geoparquet_io.core.metadata_utils import format_parquet_metadata_enhanced
+
+        format_parquet_metadata_enhanced(
+            places_test_file, json_output=False, primary_geom_col="geometry"
+        )
+        out = capsys.readouterr().out
+        assert "Parquet File Metadata" in out
+        assert "Total Rows: 766" in out
+        assert "Row Groups: 1" in out
+        assert "Schema:" in out
+
+    def test_json_output(self, places_test_file, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_parquet_metadata_enhanced
+
+        format_parquet_metadata_enhanced(places_test_file, json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["num_rows"] == 766
+        assert data["num_row_groups"] == 1
+        assert data["num_columns"] == 10
+        assert len(data["row_groups"]) == 1
+
+    def test_json_output_all_row_groups(self, places_test_file, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_parquet_metadata_enhanced
+
+        format_parquet_metadata_enhanced(places_test_file, json_output=True, row_groups_limit=None)
+        data = json.loads(capsys.readouterr().out)
+        assert len(data["row_groups"]) == data["num_row_groups"]
+
+
+class TestFormatAllMetadata:
+    """format_all_metadata: the three sections in one pass."""
+
+    def test_terminal_output(self, places_test_file, capsys):
+        from geoparquet_io.core.metadata_utils import format_all_metadata
+
+        format_all_metadata(places_test_file, json_output=False)
+        out = capsys.readouterr().out
+        assert "Parquet File Metadata" in out
+        assert "Parquet Geo Metadata" in out
+        assert "GeoParquet Metadata" in out
+
+    def test_json_output(self, places_test_file, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_all_metadata
+
+        format_all_metadata(places_test_file, json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["geoparquet_metadata"]["version"] == "1.0.0"
+
+
+class TestFormatRowGroupGeoStats:
+    """format_row_group_geo_stats: per-row-group bbox statistics."""
+
+    def test_json_from_bbox_column(self, places_test_file, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_row_group_geo_stats
+
+        format_row_group_geo_stats(places_test_file, json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        stats = data["row_group_geo_stats"]
+        assert len(stats) == 1
+        assert stats[0]["num_rows"] == 766
+        # The places extent (northern Ghana/Togo).
+        assert -2 < stats[0]["xmin"] < 0
+        assert 9 < stats[0]["ymin"] < 10
+
+    def test_json_from_native_geo_stats(self, capsys):
+        import json
+
+        from geoparquet_io.core.metadata_utils import format_row_group_geo_stats
+
+        format_row_group_geo_stats("tests/data/fields_gpq2_5070_brotli.parquet", json_output=True)
+        data = json.loads(capsys.readouterr().out)
+        stats = data["row_group_geo_stats"]
+        assert len(stats) == 1
+        assert stats[0]["num_rows"] == 100
+        assert stats[0]["xmin"] < stats[0]["xmax"]
+
+    def test_terminal_output(self, places_test_file, capsys):
+        from geoparquet_io.core.metadata_utils import format_row_group_geo_stats
+
+        format_row_group_geo_stats(places_test_file)
+        out = capsys.readouterr().out
+        assert "Per-Row-Group geo_bbox Statistics" in out
+        assert "766" in out

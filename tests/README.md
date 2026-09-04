@@ -69,7 +69,7 @@ pytest tests/test_check.py::TestCheckCommands::test_check_all_places
 
 ## Coverage
 
-Current test coverage is approximately 67%, covering:
+Current test coverage is approximately 83% (the CI floor is 80%), covering:
 - CLI command interfaces
 - Core functionality for all major operations
 - Error handling for invalid inputs

@@ -175,10 +175,10 @@ uv run pytest --cov=geoparquet_io --cov-report=term-missing --cov-fail-under=0  
 ```
 
 `--cov-fail-under=0` is needed on partial runs: `[tool.coverage.report].fail_under`
-re-arms the 67% floor whenever you opt into `--cov`, and a subset never clears it.
+re-arms the 80% floor whenever you opt into `--cov`, and a subset never clears it.
 
 Local runs are uninstrumented: `addopts` carries no `--cov`, so a single-file run
-is fast and a partial run can't fail a whole-suite gate. The 67% floor and the 90%
+is fast and a partial run can't fail a whole-suite gate. The 80% floor (a trailing ratchet: measured full-fast-suite coverage minus two points) and the 90%
 diff-cover gate on changed lines are enforced in CI (the ubuntu/3.11 job in
 `.github/workflows/tests.yml`), which passes the coverage flags explicitly.
 
