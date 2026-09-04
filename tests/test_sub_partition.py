@@ -775,3 +775,366 @@ class TestH3ExtensionPreflight:
 
         assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
         assert calls == ["h3"], f"preflight ran {len(calls)} times for 3 files"
+
+
+class TestApiDirectorySubPartition:
+    """Directory sub-partitioning was reachable only from the CLI (#811).
+
+    ``ops.partition_by_*`` takes a single table, so ``--min-size`` /
+    ``--in-place`` -- the mode that turns oversized admin or string partitions
+    into spatially indexed subdirectories -- had no Python front door at all.
+    ``ops.sub_partition_by_<index>`` is that door: a function over a *directory*,
+    one per index, mirroring the CLI command it is spelled after.
+    """
+
+    @staticmethod
+    def _seed(directory) -> tuple[str, str]:
+        """One file over the threshold and one under it."""
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        large = os.path.join(directory, "large.parquet")
+        shutil.copy(buildings, large)
+        small = os.path.join(directory, "small.parquet")
+        pq.write_table(pa.table({"id": [1]}), small)
+        return large, small
+
+    def test_large_files_are_split_and_small_ones_are_left_alone(self, temp_partition_dir):
+        from geoparquet_io.api import ops
+
+        large, small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_a5(
+            temp_partition_dir,
+            min_size=f"{os.path.getsize(large) - 100}B",
+            resolution=A5_SPLITTING_RESOLUTION,
+            in_place=True,
+            force=True,
+        )
+
+        assert result["errors"] == []
+        assert result["processed"] == 1
+        assert not os.path.exists(large), "the sub-partitioned original survived in_place=True"
+        assert os.path.exists(small), "a file under the threshold was touched"
+
+        subdir = os.path.join(temp_partition_dir, "large_a5")
+        assert len(_partition_files(subdir)) > 1
+        assert _total_rows(subdir) == BUILDINGS_ROWS
+
+    def test_min_size_accepts_a_byte_count(self, temp_partition_dir):
+        """A Python caller has a number to hand, not the CLI's '100MB' string."""
+        from geoparquet_io.api import ops
+
+        large, _small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_a5(
+            temp_partition_dir,
+            min_size=os.path.getsize(large) - 100,
+            resolution=A5_SPLITTING_RESOLUTION,
+            force=True,
+        )
+
+        assert result["processed"] == 1
+        assert os.path.exists(large), "originals are kept without in_place=True"
+        assert _total_rows(os.path.join(temp_partition_dir, "large_a5")) == BUILDINGS_ROWS
+
+    def test_quadkey_partitions_by_its_own_index(self, temp_partition_dir):
+        """auto=True is what a quadkey directory run takes, exactly as on the CLI.
+
+        The quadkey partitioner needs both a column resolution and a partition
+        resolution, and directory mode forwards only one -- so a lone
+        ``resolution`` fails there through either front door (see
+        ``test_a_lone_quadkey_resolution_fails_the_same_way_as_the_cli``).
+        """
+        from geoparquet_io.api import ops
+
+        large, _small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_quadkey(
+            temp_partition_dir,
+            min_size=os.path.getsize(large) - 100,
+            auto=True,
+            in_place=True,
+            force=True,
+        )
+
+        assert result["errors"] == []
+        assert result["processed"] == 1
+        assert _total_rows(os.path.join(temp_partition_dir, "large_quadkey")) == BUILDINGS_ROWS
+
+    def test_a_lone_quadkey_resolution_fails_the_same_way_as_the_cli(
+        self, cli_runner, temp_partition_dir
+    ):
+        """Pin the CLI's own limitation rather than quietly diverging from it.
+
+        `gpio partition quadkey <dir> --min-size ... --resolution 6` reports a
+        per-file failure and exits non-zero; the API must not paper over that by
+        inventing a partition resolution of its own.
+        """
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import PartitionError
+
+        large, _small = self._seed(temp_partition_dir)
+        threshold = f"{os.path.getsize(large) - 100}B"
+
+        cli = cli_runner.invoke(
+            partition,
+            [
+                "quadkey",
+                temp_partition_dir,
+                "--min-size",
+                threshold,
+                "--resolution",
+                "6",
+                "--force",
+            ],
+        )
+        assert cli.exit_code != 0
+        assert "partition-resolution" in cli.output
+
+        with pytest.raises(PartitionError) as exc:
+            ops.sub_partition_by_quadkey(
+                temp_partition_dir, min_size=threshold, resolution=6, force=True
+            )
+
+        assert "partition-resolution" in str(exc.value)
+
+    def test_preview_lists_candidates_and_writes_nothing(self, temp_partition_dir):
+        """The CLI's --preview: say what would happen, change nothing (#790)."""
+        from geoparquet_io.api import ops
+
+        large, small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_a5(
+            temp_partition_dir,
+            min_size=os.path.getsize(large) - 100,
+            resolution=A5_SPLITTING_RESOLUTION,
+            preview=True,
+            in_place=True,
+            force=True,
+        )
+
+        assert result["preview"] is True
+        assert result["processed"] == 0
+        assert [c["path"] for c in result["candidates"]] == [large]
+        assert result["candidates"][0]["size_bytes"] == os.path.getsize(large)
+        assert result["candidates"][0]["output_dir"] == os.path.join(temp_partition_dir, "large_a5")
+
+        assert os.path.exists(large), "preview deleted the original"
+        assert os.path.exists(small)
+        assert not os.path.exists(os.path.join(temp_partition_dir, "large_a5"))
+
+    def test_preview_reports_no_candidates_without_failing(self, temp_partition_dir):
+        from geoparquet_io.api import ops
+
+        self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_a5(
+            temp_partition_dir,
+            min_size="100MB",
+            resolution=A5_SPLITTING_RESOLUTION,
+            preview=True,
+        )
+
+        assert result["candidates"] == []
+        assert result["processed"] == 0
+
+    def test_a_custom_index_column_name_is_rejected(self, temp_partition_dir):
+        """Directory mode writes the default column name; asking for another is an error."""
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+
+        with pytest.raises(InvalidParameterError) as exc:
+            ops.sub_partition_by_a5(
+                temp_partition_dir,
+                min_size=os.path.getsize(large) - 100,
+                resolution=A5_SPLITTING_RESOLUTION,
+                column_name="my_cell",
+            )
+
+        assert "column_name" in str(exc.value)
+        assert os.path.exists(large), "a rejected call still partitioned something"
+        assert not os.path.exists(os.path.join(temp_partition_dir, "large_a5"))
+
+    def test_the_default_index_column_name_is_accepted(self, temp_partition_dir):
+        """Passing the name it would have used anyway is not an error."""
+        from geoparquet_io.api import ops
+
+        large, _small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_a5(
+            temp_partition_dir,
+            min_size=os.path.getsize(large) - 100,
+            resolution=A5_SPLITTING_RESOLUTION,
+            column_name="a5_cell",
+            preview=True,
+        )
+
+        assert [c["path"] for c in result["candidates"]] == [large]
+
+    def test_an_output_directory_is_rejected(self, temp_partition_dir):
+        """Each file gets a sibling <file>_<index>/; one shared output is not a thing."""
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+
+        with pytest.raises(InvalidParameterError) as exc:
+            ops.sub_partition_by_h3(
+                temp_partition_dir,
+                min_size=os.path.getsize(large) - 100,
+                resolution=4,
+                output_dir=os.path.join(temp_partition_dir, "out"),
+            )
+
+        assert "output_dir" in str(exc.value)
+        assert os.path.exists(large)
+
+    def test_preview_needs_no_resolution_exactly_like_the_cli(self, temp_partition_dir):
+        """`gpio partition h3 <dir> --min-size ... --preview` plans without a
+        resolution -- the CLI's preview branch never reaches the resolution
+        check -- so the API's preview must plan too, and return the same shape
+        it would with one. A real run without a resolution still refuses.
+        """
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+        threshold = os.path.getsize(large) - 100
+
+        planned = ops.sub_partition_by_h3(temp_partition_dir, min_size=threshold, preview=True)
+
+        assert planned["preview"] is True
+        assert planned["processed"] == 0
+        assert [c["path"] for c in planned["candidates"]] == [large]
+        assert planned == ops.sub_partition_by_h3(
+            temp_partition_dir, min_size=threshold, resolution=4, preview=True
+        )
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            ops.sub_partition_by_h3(temp_partition_dir, min_size=threshold)
+
+    def test_a_missing_resolution_is_refused_rather_than_guessed(self, temp_partition_dir):
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+
+        with pytest.raises(InvalidParameterError, match="auto"):
+            ops.sub_partition_by_a5(temp_partition_dir, min_size=os.path.getsize(large) - 100)
+
+    def test_a_non_directory_input_is_refused(self, temp_partition_dir):
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        large, _small = self._seed(temp_partition_dir)
+
+        with pytest.raises(InvalidParameterError, match="directory"):
+            ops.sub_partition_by_a5(large, min_size="1B", resolution=A5_SPLITTING_RESOLUTION)
+
+    def test_an_unparseable_min_size_is_refused(self, temp_partition_dir):
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        self._seed(temp_partition_dir)
+
+        with pytest.raises(InvalidParameterError, match="min_size"):
+            ops.sub_partition_by_a5(
+                temp_partition_dir, min_size="one hundred megabytes", resolution=4
+            )
+
+    def test_in_place_keeps_the_original_when_rows_are_lost(self, temp_partition_dir):
+        """The row-count guard is the API's too, and a lost row is not a silent success."""
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import PartitionError
+
+        large = _seed_with_a_null_geometry_row(temp_partition_dir)
+
+        with pytest.raises(PartitionError) as exc:
+            ops.sub_partition_by_a5(
+                temp_partition_dir,
+                min_size=os.path.getsize(large) - 100,
+                resolution=A5_SPLITTING_RESOLUTION,
+                in_place=True,
+                force=True,
+            )
+
+        assert "keeping original" in str(exc.value)
+        assert os.path.exists(large), "original deleted despite losing rows"
+        assert exc.value.result["processed"] == 0
+        assert len(exc.value.result["errors"]) == 1
+
+    def test_s2_refuses_without_the_geography_extension(self, temp_partition_dir):
+        """S2 cannot run in this release (#737): wired, and refusing for that reason."""
+        from geoparquet_io.api import ops
+        from geoparquet_io.core.exceptions import ExtensionUnavailableError
+        from tests.conftest import skip_if_geography_available
+
+        skip_if_geography_available()
+
+        large, _small = self._seed(temp_partition_dir)
+
+        with pytest.raises(ExtensionUnavailableError) as exc:
+            ops.sub_partition_by_s2(
+                temp_partition_dir, min_size=os.path.getsize(large) - 100, level=10
+            )
+
+        assert exc.value.name == "geography"
+        assert os.path.exists(large)
+
+
+class TestSubPartitionFrontDoorParity:
+    """`gpio partition <index> <dir> --min-size` and its `ops` twin are one operation.
+
+    Both front doors reach `core.sub_partition.sub_partition_directory`; patch it
+    and compare the calls, so a knob wired into one door and not the other fails
+    here rather than in a user's script (#811).
+    """
+
+    CASES = [
+        ("a5", "sub_partition_by_a5", ["--resolution", "12"], {"resolution": 12}),
+        ("h3", "sub_partition_by_h3", ["--resolution", "4"], {"resolution": 4}),
+        ("s2", "sub_partition_by_s2", ["--level", "10"], {"level": 10}),
+        ("quadkey", "sub_partition_by_quadkey", ["--resolution", "6"], {"resolution": 6}),
+    ]
+
+    @pytest.mark.parametrize(
+        ("index", "function", "cli_args", "api_kwargs"),
+        CASES,
+        ids=[case[0] for case in CASES],
+    )
+    def test_both_front_doors_hand_core_the_same_call(
+        self, cli_runner, temp_partition_dir, index, function, cli_args, api_kwargs
+    ):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from geoparquet_io.api import ops
+        from geoparquet_io.core import sub_partition as core_sub_partition
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(temp_partition_dir, "test.parquet")
+        shutil.copy(buildings, test_file)
+        threshold = f"{os.path.getsize(test_file) - 100}B"
+
+        clean = {"processed": 1, "skipped": 0, "errors": []}
+
+        with patch.object(
+            core_sub_partition, "sub_partition_directory", return_value=clean
+        ) as fake:
+            result = cli_runner.invoke(
+                partition,
+                [index, temp_partition_dir, "--min-size", threshold, *cli_args],
+            )
+            assert result.exit_code == 0, f"CLI failed: {result.output}"
+            cli_call = fake.call_args.kwargs
+
+        with patch.object(
+            core_sub_partition, "sub_partition_directory", return_value=clean
+        ) as fake:
+            getattr(ops, function)(temp_partition_dir, min_size=threshold, **api_kwargs)
+            api_call = fake.call_args.kwargs
+
+        assert api_call == cli_call

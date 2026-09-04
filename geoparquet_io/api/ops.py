@@ -1183,6 +1183,517 @@ def partition_by_admin(
     )
 
 
+# --------------------------------------------------------------------------
+# Sub-partitioning a directory
+#
+# `gpio partition <index>` is two operations behind one command: partition a
+# file, or walk a *directory* and split every file over --min-size into a
+# sibling `<file>_<index>/`. The second is what you reach for after partitioning
+# by country or by a string column has left a handful of oversized files.
+#
+# It had no Python front door at all (#811). It cannot be a `Table` method --
+# the unit of work is a directory of files on disk, not an in-memory table --
+# and it does not fit `ops.partition_by_*` either, which take one table. So it
+# is its own family of `ops` functions over a path, one per index, named after
+# the CLI command each mirrors.
+# --------------------------------------------------------------------------
+
+_SUB_PARTITION_RESOLUTION_ARG = {"s2": "level"}
+
+
+def _parse_min_size(min_size: str | int) -> int:
+    """Bytes from either the CLI's '100MB' spelling or a plain byte count."""
+    from geoparquet_io.core.common import parse_size_string
+    from geoparquet_io.core.exceptions import InvalidParameterError
+
+    if isinstance(min_size, bool) or not isinstance(min_size, (str, int)):
+        raise InvalidParameterError(
+            "min_size", f"expected a size string or byte count, got {min_size!r}"
+        )
+    if isinstance(min_size, int):
+        if min_size < 0:
+            raise InvalidParameterError("min_size", f"byte count cannot be negative: {min_size}")
+        return min_size
+    try:
+        return parse_size_string(min_size)
+    except ValueError as exc:
+        raise InvalidParameterError("min_size", str(exc)) from None
+
+
+def _sub_partition(
+    directory: str | Path,
+    partition_type: str,
+    *,
+    min_size: str | int,
+    resolution: int | None = None,
+    level: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    in_place: bool = False,
+    preview: bool = False,
+    hive: bool = False,
+    overwrite: bool = False,
+    force: bool = False,
+    skip_analysis: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+    column_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
+    """Shared body of the four `sub_partition_by_*` functions.
+
+    Validates what the CLI validates -- and refuses what it refuses -- then hands
+    the run to `core.sub_partition.sub_partition_directory`, which is the same
+    function `gpio partition <index> <dir> --min-size` reaches.
+    """
+    # `Path` is a TYPE_CHECKING-only import in this module, so the runtime one is
+    # aliased rather than shadowing the annotation name.
+    from pathlib import Path as _Path
+
+    from geoparquet_io.core import sub_partition as core_sub_partition
+    from geoparquet_io.core.exceptions import InvalidParameterError, PartitionError
+
+    if not _Path(directory).is_dir():
+        raise InvalidParameterError(
+            "directory",
+            f"not a directory: {directory}. Sub-partitioning walks a directory of "
+            f"parquet files; use ops.partition_by_{partition_type}() to partition "
+            "a single table.",
+        )
+
+    offending = core_sub_partition.offending_single_file_only_options(
+        partition_type,
+        column_name,
+        output_dir,
+        column_label="column_name",
+        output_label="output_dir",
+    )
+    if offending:
+        raise InvalidParameterError(
+            offending[0],
+            core_sub_partition.single_file_only_option_message(partition_type, offending),
+        )
+
+    min_size_bytes = _parse_min_size(min_size)
+
+    if preview:
+        # The CLI's --preview branch plans and stops before any resolution is
+        # needed, so a preview without resolution/auto must succeed here too.
+        return {
+            "preview": True,
+            "candidates": core_sub_partition.plan_sub_partition(
+                str(directory), partition_type, min_size_bytes
+            ),
+            "processed": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+
+    argument = _SUB_PARTITION_RESOLUTION_ARG.get(partition_type, "resolution")
+    if not auto and (resolution if resolution is not None else level) is None:
+        raise InvalidParameterError(
+            argument,
+            f"pass {argument}=<int> or auto=True -- gpio does not guess a "
+            f"{partition_type} {argument}",
+        )
+
+    candidates = core_sub_partition.plan_sub_partition(
+        str(directory), partition_type, min_size_bytes
+    )
+
+    result = core_sub_partition.sub_partition_directory(
+        directory=str(directory),
+        partition_type=partition_type,
+        min_size_bytes=min_size_bytes,
+        resolution=resolution,
+        level=level,
+        in_place=in_place,
+        hive=hive,
+        overwrite=overwrite,
+        verbose=verbose,
+        force=force,
+        skip_analysis=skip_analysis,
+        compression=compression.upper(),
+        compression_level=compression_level or 15,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+    )
+
+    run = {"preview": False, "candidates": candidates, **result}
+    if run["errors"]:
+        # Per-file failures are collected rather than raised, so without this a
+        # caller who never inspected `errors` would read a partial run as a
+        # complete one -- the API's version of the exit-0 bug in #778.
+        failed = len(run["errors"])
+        detail = "\n".join(f"  {err['file']}: {err['error']}" for err in run["errors"])
+        raise PartitionError(
+            f"{failed} of {failed + run['processed']} file(s) failed to sub-partition "
+            f"by {partition_type}:\n{detail}",
+            result=run,
+        )
+    return run
+
+
+def sub_partition_by_h3(
+    directory: str | Path,
+    *,
+    min_size: str | int,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    in_place: bool = False,
+    preview: bool = False,
+    hive: bool = False,
+    overwrite: bool = False,
+    force: bool = False,
+    skip_analysis: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+    column_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
+    """
+    Split every file in a directory over ``min_size`` into H3 sub-partitions.
+
+    Function form of `gpio partition h3 <dir>/ --min-size ...`. Each file over
+    the threshold is partitioned into a sibling ``<file>_h3/`` directory; files
+    under it are left alone. Pass a ``resolution``, or ``auto=True``.
+
+    Args:
+        directory: Directory of parquet files, searched recursively
+        min_size: Size threshold -- ``'100MB'`` or a byte count
+        resolution: H3 resolution level 0-15. Required unless ``auto=True``
+        auto: Size the resolution from each file (default: False)
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        in_place: Delete each original once its sub-partitions hold every row it
+            had (default: False)
+        preview: List the candidate files and stop, writing and deleting nothing
+        hive: Use Hive-style ``h3_cell=value/`` directories (default: False)
+        overwrite: Overwrite existing output directories
+        force: Partition even when the analysis warns
+        skip_analysis: Skip the partition strategy analysis
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None uses the ZSTD default of 15
+        verbose: Log each file as it is processed
+        column_name: Rejected unless it is the default ``h3_cell``: directory
+            mode writes one sibling directory per file with the default column
+            name. Partition a single file to control it
+        output_dir: Rejected for the same reason -- output directories are
+            derived per file, not shared
+
+    Returns:
+        dict with ``processed``, ``skipped``, ``errors``, the ``candidates`` the
+        threshold selected, and ``preview``
+
+    Raises:
+        InvalidParameterError: For a path that is not a directory, an
+            unparsable ``min_size``, a missing resolution, or an argument
+            directory mode cannot honour
+        PartitionError: If any file failed to sub-partition. Its ``result``
+            attribute carries the run dict, including the files that succeeded
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.sub_partition_by_h3('by_country/', min_size='100MB', resolution=7,
+        ...                         in_place=True)
+    """
+    return _sub_partition(
+        directory,
+        "h3",
+        min_size=min_size,
+        resolution=resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        in_place=in_place,
+        preview=preview,
+        hive=hive,
+        overwrite=overwrite,
+        force=force,
+        skip_analysis=skip_analysis,
+        compression=compression,
+        compression_level=compression_level,
+        verbose=verbose,
+        column_name=column_name,
+        output_dir=output_dir,
+    )
+
+
+def sub_partition_by_a5(
+    directory: str | Path,
+    *,
+    min_size: str | int,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    in_place: bool = False,
+    preview: bool = False,
+    hive: bool = False,
+    overwrite: bool = False,
+    force: bool = False,
+    skip_analysis: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+    column_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
+    """
+    Split every file in a directory over ``min_size`` into A5 sub-partitions.
+
+    Function form of `gpio partition a5 <dir>/ --min-size ...`. Each file over
+    the threshold is partitioned into a sibling ``<file>_a5/`` directory; files
+    under it are left alone. Pass a ``resolution``, or ``auto=True``.
+
+    Args:
+        directory: Directory of parquet files, searched recursively
+        min_size: Size threshold -- ``'100MB'`` or a byte count
+        resolution: A5 resolution level 0-30. Required unless ``auto=True``
+        auto: Size the resolution from each file (default: False)
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        in_place: Delete each original once its sub-partitions hold every row it
+            had (default: False)
+        preview: List the candidate files and stop, writing and deleting nothing
+        hive: Use Hive-style ``a5_cell=value/`` directories (default: False)
+        overwrite: Overwrite existing output directories
+        force: Partition even when the analysis warns
+        skip_analysis: Skip the partition strategy analysis
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None uses the ZSTD default of 15
+        verbose: Log each file as it is processed
+        column_name: Rejected unless it is the default ``a5_cell`` (see
+            `sub_partition_by_h3`)
+        output_dir: Rejected -- output directories are derived per file
+
+    Returns:
+        dict with ``processed``, ``skipped``, ``errors``, ``candidates`` and
+        ``preview``
+
+    Raises:
+        InvalidParameterError: For a path that is not a directory, an
+            unparsable ``min_size``, a missing resolution, or an argument
+            directory mode cannot honour
+        PartitionError: If any file failed to sub-partition; ``result`` carries
+            the run dict
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.sub_partition_by_a5('by_country/', min_size='100MB', resolution=10,
+        ...                         in_place=True)
+    """
+    return _sub_partition(
+        directory,
+        "a5",
+        min_size=min_size,
+        resolution=resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        in_place=in_place,
+        preview=preview,
+        hive=hive,
+        overwrite=overwrite,
+        force=force,
+        skip_analysis=skip_analysis,
+        compression=compression,
+        compression_level=compression_level,
+        verbose=verbose,
+        column_name=column_name,
+        output_dir=output_dir,
+    )
+
+
+def sub_partition_by_quadkey(
+    directory: str | Path,
+    *,
+    min_size: str | int,
+    resolution: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    in_place: bool = False,
+    preview: bool = False,
+    hive: bool = False,
+    overwrite: bool = False,
+    force: bool = False,
+    skip_analysis: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+    column_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
+    """
+    Split every file in a directory over ``min_size`` into quadkey sub-partitions.
+
+    Function form of `gpio partition quadkey <dir>/ --min-size ...`. Each file
+    over the threshold is partitioned into a sibling ``<file>_quadkey/``
+    directory; files under it are left alone.
+
+    **Use ``auto=True``.** The quadkey partitioner needs a column resolution
+    *and* a partition resolution, and directory mode -- on the CLI as here --
+    forwards only one, so a lone ``resolution`` is reported as a per-file
+    failure. ``auto=True`` sizes both from the data. ``resolution`` is accepted
+    for symmetry with the other three indexes and forwarded unchanged rather
+    than papered over.
+
+    Args:
+        directory: Directory of parquet files, searched recursively
+        min_size: Size threshold -- ``'100MB'`` or a byte count
+        resolution: Quadkey resolution 0-23. See above: directory mode wants
+            ``auto=True``
+        auto: Size the resolution from each file (default: False)
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        in_place: Delete each original once its sub-partitions hold every row it
+            had (default: False)
+        preview: List the candidate files and stop, writing and deleting nothing
+        hive: Use Hive-style ``quadkey=value/`` directories (default: False)
+        overwrite: Overwrite existing output directories
+        force: Partition even when the analysis warns
+        skip_analysis: Skip the partition strategy analysis
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None uses the ZSTD default of 15
+        verbose: Log each file as it is processed
+        column_name: Rejected unless it is the default ``quadkey`` (see
+            `sub_partition_by_h3`)
+        output_dir: Rejected -- output directories are derived per file
+
+    Returns:
+        dict with ``processed``, ``skipped``, ``errors``, ``candidates`` and
+        ``preview``
+
+    Raises:
+        InvalidParameterError: For a path that is not a directory, an
+            unparsable ``min_size``, a missing resolution, or an argument
+            directory mode cannot honour
+        PartitionError: If any file failed to sub-partition; ``result`` carries
+            the run dict
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.sub_partition_by_quadkey('by_country/', min_size='100MB', auto=True,
+        ...                              in_place=True)
+    """
+    return _sub_partition(
+        directory,
+        "quadkey",
+        min_size=min_size,
+        resolution=resolution,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        in_place=in_place,
+        preview=preview,
+        hive=hive,
+        overwrite=overwrite,
+        force=force,
+        skip_analysis=skip_analysis,
+        compression=compression,
+        compression_level=compression_level,
+        verbose=verbose,
+        column_name=column_name,
+        output_dir=output_dir,
+    )
+
+
+def sub_partition_by_s2(
+    directory: str | Path,
+    *,
+    min_size: str | int,
+    level: int | None = None,
+    auto: bool = False,
+    target_rows: int = 100000,
+    max_partitions: int = 10000,
+    in_place: bool = False,
+    preview: bool = False,
+    hive: bool = False,
+    overwrite: bool = False,
+    force: bool = False,
+    skip_analysis: bool = False,
+    compression: str = "ZSTD",
+    compression_level: int | None = None,
+    verbose: bool = False,
+    column_name: str | None = None,
+    output_dir: str | Path | None = None,
+) -> dict:
+    """
+    Split every file in a directory over ``min_size`` into S2 sub-partitions.
+
+    Function form of `gpio partition s2 <dir>/ --min-size ...`.
+
+    **Unavailable in this release**: S2 needs the ``geography`` DuckDB community
+    extension, which is not published for the DuckDB version gpio requires
+    (#737). The call raises `ExtensionUnavailableError` once, before any file is
+    touched. Use `sub_partition_by_a5` instead.
+
+    Args:
+        directory: Directory of parquet files, searched recursively
+        min_size: Size threshold -- ``'100MB'`` or a byte count
+        level: S2 level 0-30. Required unless ``auto=True``
+        auto: Size the level from each file (default: False)
+        target_rows: Target rows per partition when ``auto=True`` (default: 100000)
+        max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
+        in_place: Delete each original once its sub-partitions hold every row it
+            had (default: False)
+        preview: List the candidate files and stop, writing and deleting nothing
+        hive: Use Hive-style ``s2_cell=value/`` directories (default: False)
+        overwrite: Overwrite existing output directories
+        force: Partition even when the analysis warns
+        skip_analysis: Skip the partition strategy analysis
+        compression: Compression codec (default: ZSTD)
+        compression_level: Compression level. None uses the ZSTD default of 15
+        verbose: Log each file as it is processed
+        column_name: Rejected unless it is the default ``s2_cell`` (see
+            `sub_partition_by_h3`)
+        output_dir: Rejected -- output directories are derived per file
+
+    Returns:
+        dict with ``processed``, ``skipped``, ``errors``, ``candidates`` and
+        ``preview``
+
+    Raises:
+        ExtensionUnavailableError: Always, in this release -- see above
+        InvalidParameterError: For a path that is not a directory, an
+            unparsable ``min_size``, a missing level, or an argument directory
+            mode cannot honour
+        PartitionError: If any file failed to sub-partition; ``result`` carries
+            the run dict
+
+    Example:
+        >>> from geoparquet_io.api import ops
+        >>> ops.sub_partition_by_s2('by_country/', min_size='100MB', level=10)
+    """
+    return _sub_partition(
+        directory,
+        "s2",
+        min_size=min_size,
+        level=level,
+        auto=auto,
+        target_rows=target_rows,
+        max_partitions=max_partitions,
+        in_place=in_place,
+        preview=preview,
+        hive=hive,
+        overwrite=overwrite,
+        force=force,
+        skip_analysis=skip_analysis,
+        compression=compression,
+        compression_level=compression_level,
+        verbose=verbose,
+        column_name=column_name,
+        output_dir=output_dir,
+    )
+
+
 def read_bigquery(
     table_id: str,
     *,

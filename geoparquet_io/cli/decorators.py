@@ -701,42 +701,27 @@ class SingleFileCommand(GlobAwareCommand):
     supports_glob = False
 
 
-# Options that only make sense for a single-file partition run. In directory
-# --min-size mode each file gets its own sibling output directory and the index
-# column is created with its default name, so accepting these silently dropped
-# them (#790).
-_SUB_PARTITION_COLUMN_OPTIONS: dict[str, tuple[str, str]] = {
-    "h3": ("--h3-name", "h3_cell"),
-    "s2": ("--s2-name", "s2_cell"),
-    "a5": ("--a5-name", "a5_cell"),
-    "quadkey": ("--quadkey-column", "quadkey"),
-}
-
-
 def _reject_single_file_only_options(
     partition_type: str,
     column_name: str | None,
     output_folder: str | None,
 ) -> None:
-    """Fail loudly on options a directory --min-size run cannot honour."""
-    ignored = []
+    """Fail loudly on options a directory --min-size run cannot honour (#790).
 
-    option, default = _SUB_PARTITION_COLUMN_OPTIONS.get(partition_type, (None, None))
-    if option and column_name is not None and column_name != default:
-        ignored.append(option)
-    if output_folder:
-        ignored.append("OUTPUT_FOLDER")
+    The rule and its wording live in core, so `ops.sub_partition_by_*` refuses
+    the same arguments for the same stated reason (#811); only the spelling of
+    the argument names differs between the two front doors.
+    """
+    from geoparquet_io.core.sub_partition import (
+        offending_single_file_only_options,
+        single_file_only_option_message,
+    )
 
+    ignored = offending_single_file_only_options(partition_type, column_name, output_folder)
     if not ignored:
         return
 
-    verb = "does" if len(ignored) == 1 else "do"
-    raise click.UsageError(
-        f"{' and '.join(ignored)} {verb} not apply to directory input with --min-size.\n\n"
-        f"Each file over the threshold is partitioned into a sibling <file>_{partition_type}/\n"
-        "directory, using the default index column name. Run the command on a single\n"
-        "file if you need to control those."
-    )
+    raise click.UsageError(single_file_only_option_message(partition_type, ignored))
 
 
 def handle_directory_sub_partition(
@@ -809,7 +794,7 @@ def handle_directory_sub_partition(
 
     from geoparquet_io.core.common import parse_size_string
     from geoparquet_io.core.logging_config import info, progress, warn
-    from geoparquet_io.core.sub_partition import find_large_files, sub_partition_directory
+    from geoparquet_io.core.sub_partition import plan_sub_partition, sub_partition_directory
 
     try:
         min_size_bytes = parse_size_string(min_size)
@@ -819,17 +804,15 @@ def handle_directory_sub_partition(
     if preview:
         # --preview used to be accepted, ignored, and the originals deleted
         # anyway under --in-place (#790). Show the plan and change nothing.
-        candidates = find_large_files(input_parquet, min_size_bytes)
+        candidates = plan_sub_partition(input_parquet, partition_type, min_size_bytes)
         if not candidates:
             info(f"No files found exceeding {min_size} in {input_parquet}")
             return True
 
         progress(f"Would sub-partition {len(candidates)} file(s) by {partition_type}:")
         for candidate in candidates:
-            size_mb = os.path.getsize(candidate) / (1024 * 1024)
-            stem = os.path.splitext(os.path.basename(candidate))[0]
-            destination = os.path.join(os.path.dirname(candidate), f"{stem}_{partition_type}")
-            info(f"  {candidate} ({size_mb:.1f}MB) -> {destination}/")
+            size_mb = candidate["size_bytes"] / (1024 * 1024)
+            info(f"  {candidate['path']} ({size_mb:.1f}MB) -> {candidate['output_dir']}/")
         info("Preview only: no files were partitioned or removed.")
         return True
 

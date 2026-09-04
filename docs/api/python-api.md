@@ -1541,6 +1541,51 @@ stats = ops.partition_by_admin(table, 'output/', levels=['country'])
 print(f"Created {stats['file_count']} files")
 ```
 
+### Sub-partitioning a directory
+
+`gpio partition <index> <dir>/ --min-size` is the other half of the partition
+commands: it walks a *directory*, splits every file over a size threshold into a
+sibling `<file>_<index>/` directory, and with `--in-place` removes each original
+once its sub-partitions hold every row it had. That is the step you reach for
+when partitioning by country or by a string column has left a few oversized
+files.
+
+Its unit of work is a directory on disk, not an in-memory table, so it is not a
+`Table` method. It is an `ops` function over a path — one per index, named after
+the command it mirrors:
+
+```python
+from geoparquet_io.api import ops
+
+# Split every file over 100MB into H3 sub-partitions, removing the originals
+result = ops.sub_partition_by_h3(
+    'by_country/', min_size='100MB', resolution=7, in_place=True
+)
+print(f"{result['processed']} file(s) sub-partitioned")
+
+# Or see what would happen, writing and deleting nothing
+plan = ops.sub_partition_by_a5('by_country/', min_size='100MB', auto=True, preview=True)
+for candidate in plan['candidates']:
+    print(f"{candidate['path']} -> {candidate['output_dir']}/")
+```
+
+The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
+(the files the threshold selected, with sizes and destinations) and `preview`.
+
+- `min_size` takes the CLI's `'100MB'` spelling or a plain byte count.
+- A file whose sub-partitions do not hold all of its rows keeps its original —
+  rows with a NULL or empty geometry get a NULL index cell and are dropped by
+  partitioning — and is reported in `errors`.
+- Any per-file failure raises `PartitionError` once the run finishes, so a
+  partial run is never read as a complete one. `exc.result` carries the run dict,
+  including the files that succeeded.
+- `column_name=` and `output_dir=` are refused: in directory mode each file gets
+  its own sibling directory and the default index column name. Partition a single
+  file with `ops.partition_by_<index>` if you need to control those.
+- `ops.sub_partition_by_s2` is wired but **unavailable in this release** — it
+  raises `ExtensionUnavailableError` before touching a file, like every other S2
+  entry point. Use `ops.sub_partition_by_a5`.
+
 ### Available Functions
 
 | Function | Description |
@@ -1578,6 +1623,10 @@ print(f"Created {stats['file_count']} files")
 | `ops.partition_by_kdtree(table, output_dir, iterations=9, hive=False, keep_kdtree_column=None, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by KD-tree cell |
 | `ops.partition_by_string(table, output_dir, column, chars=None, hive=False, overwrite=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by string column value |
 | `ops.partition_by_admin(table, output_dir, dataset='gaul', levels=None, hive=False, overwrite=False, vecorel=False, compression='ZSTD', compression_level=None, geometry_column=None)` | Partition into a directory by administrative boundaries |
+| `ops.sub_partition_by_h3(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, hive=False, overwrite=False, force=False, skip_analysis=False, compression='ZSTD', compression_level=None, ...)` | Split every file in a directory over `min_size` into H3 sub-partitions |
+| `ops.sub_partition_by_a5(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into A5 sub-partitions |
+| `ops.sub_partition_by_quadkey(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into quadkey sub-partitions (use `auto=True`) |
+| `ops.sub_partition_by_s2(directory, min_size, level=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into S2 sub-partitions — **unavailable in this release**, use `ops.sub_partition_by_a5` |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

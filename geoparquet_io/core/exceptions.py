@@ -103,9 +103,19 @@ class GeometryError(GeoParquetError):
 
 
 class PartitionError(GeoParquetError):
-    """Raised when partitioning operations fail."""
+    """Raised when partitioning operations fail.
 
-    pass
+    Attributes:
+        result: The run this failure came out of, when there is one. A directory
+            sub-partition run (`ops.sub_partition_by_*`) processes many files and
+            raises only at the end, so the caller needs what succeeded as well as
+            what failed (#811). ``None`` for a single-file partition failure,
+            which has no partial run to report.
+    """
+
+    def __init__(self, message: str, result: dict | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 class ValidationError(GeoParquetError):
