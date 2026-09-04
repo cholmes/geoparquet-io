@@ -188,13 +188,18 @@ Filter features by a rectangular bounding box. The bbox is specified as `xmin,ym
       inputs, not just the first file whose footer was read. (Carrying the first
       file's `bbox` would under-cover the merge, and conformant readers skip
       data outside a declared bbox.)
+    - **A geometry repair** (`--repair-geometry`, on by default) that actually
+      fixed a row — `ST_MakeValid` can change a geometry's type, so a repaired
+      self-intersecting `Polygon` comes back a `MultiPolygon` and the input's
+      `geometry_types` would under-declare the output. A repair pass that found
+      nothing invalid changes no row and keeps the carried stats.
     - **`--exclude-cols`** — metadata that references a dropped column is
       pruned: excluding the `bbox` column drops the `covering` entry, and
       excluding the geometry column writes plain Parquet with no `geo` metadata
       at all.
 
-    An unfiltered, single-file column-only extract preserves the input's
-    `bbox`/`geometry_types` unchanged.
+    An unfiltered, unrepaired, single-file column-only extract preserves the
+    input's `bbox`/`geometry_types` unchanged.
 
     Recomputing costs one extra aggregate pass over the (already filtered)
     query — on the order of 30% of a plain copy for a few million rows. Use

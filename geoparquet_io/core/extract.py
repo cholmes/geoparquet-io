@@ -39,7 +39,11 @@ from geoparquet_io.core.file_utils import (
     is_partition_path,
     safe_file_url,
 )
-from geoparquet_io.core.geo_metadata import prune_geo_metadata_to_columns, strip_derived_stats
+from geoparquet_io.core.geo_metadata import (
+    backfill_derived_stats,
+    prune_geo_metadata_to_columns,
+    strip_derived_stats,
+)
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
     find_primary_geometry_column,
@@ -786,17 +790,40 @@ def extract_table(
             )
 
         # Repair invalid geometry (issue #506) before materializing the result.
+        geometry_repaired = False
         if keeps_geometry:
-            query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
+            query, geometry_repaired = _repair_geometry_in_query(
+                con, query, geom_col, repair_geometry
+            )
 
         result = con.execute(query).arrow().read_all()
         if table.schema.metadata:
-            result = result.replace_schema_metadata(
-                _carry_metadata_to_columns(table.schema.metadata, result.column_names)
-            )
+            metadata = _carry_metadata_to_columns(table.schema.metadata, result.column_names)
+            if geometry_repaired:
+                # The repair rewrote rows, so the carried stats no longer
+                # describe them (#812): drop them and recompute from the result,
+                # which is what the file path asks the writer to do.
+                metadata = backfill_derived_stats(strip_derived_stats(metadata), result)
+            result = result.replace_schema_metadata(metadata)
         return result
     finally:
         con.close()
+
+
+def _repair_geometry_in_query(
+    con, query: str, geometry_column: str, repair: bool
+) -> tuple[str, bool]:
+    """Run the geometry repair pass, reporting whether it rewrote the query.
+
+    :func:`repair_query_geometry` returns ``query`` unchanged when repair is off,
+    when the column is not repairable in place, and when it counted zero invalid
+    rows; it returns a rewritten query only when at least one row will actually
+    be repaired. That distinction is what decides whether the input's derived
+    stats survive into the output: a pass that changed nothing keeps them, so a
+    file with no invalid geometry is never rescanned for nothing.
+    """
+    repaired_query = repair_query_geometry(con, query, geometry_column, repair=repair)
+    return repaired_query, repaired_query != query
 
 
 def _carry_metadata_to_columns(metadata: dict, columns: list[str]) -> dict | None:
@@ -818,22 +845,29 @@ def _output_stats_are_stale(
     spatial_filter: str | None,
     where: str | None,
     limit: int | None,
+    geometry_repaired: bool = False,
 ) -> bool:
     """True when the input's carried bbox/geometry_types cannot describe the output.
 
-    Two independent reasons:
+    Three independent reasons:
 
     * A row filter (``--bbox``/``--geometry``/``--where``/``--limit``) keeps only
       part of the input, so the carried stats over-cover the result.
     * A glob/directory input merges several files, but ``get_parquet_metadata``
       reads the footer of the FIRST file only — carrying its stats would
       UNDER-cover the merged output, which makes conformant readers skip data.
+    * The repair pass (``--repair-geometry``, on by default) rewrote at least one
+      row: ``ST_MakeValid`` can change a geometry's type (a bowtie ``Polygon``
+      comes back a ``MultiPolygon``) and its extent, so the carried
+      ``geometry_types`` UNDER-declares what the output holds and ``gpio check
+      spec`` fails the file gpio just wrote (#812). A repair pass that found
+      nothing to fix is not a reason: it left every row as it was.
 
-    A single-file, unfiltered column projection keeps its stats.
+    A single-file, unfiltered, unrepaired column projection keeps its stats.
     """
     if spatial_filter or where or limit is not None:
         return True
-    return is_partition_path(input_path)
+    return geometry_repaired or is_partition_path(input_path)
 
 
 def _extract_streaming(
@@ -895,12 +929,13 @@ def _extract_streaming(
         query = _build_query_for_source(source, selected_columns, spatial_filter, where, limit)
 
         # Repair invalid geometry (issue #506) before streaming the write.
-        query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
+        query, geometry_repaired = _repair_geometry_in_query(con, query, geom_col, repair_geometry)
 
         if verbose:
             debug(f"Streaming extraction query: {query}")
 
-        if _output_stats_are_stale(input_path, spatial_filter, where, limit):
+        # write_output backfills whatever is stripped here from the rows it writes.
+        if _output_stats_are_stale(input_path, spatial_filter, where, limit, geometry_repaired):
             metadata = strip_derived_stats(metadata)
 
         # Write output
@@ -1041,14 +1076,18 @@ def _execute_extraction(
             # silently drop all geo/kv metadata: warn so it is visible.
             warn(f"Could not read input metadata for preservation; skipping: {e}")
 
-        invalidate_derived_stats = _output_stats_are_stale(
-            input_parquet, spatial_filter, where, limit
-        )
-
         # Repair invalid geometry (issue #506). Auto-detects GEOMETRY vs WKB
         # encoding and rewrites the query to repair in place before the write.
+        # Runs before the staleness decision, which depends on its outcome.
+        geometry_repaired = False
         if geometry_col:
-            query = repair_query_geometry(con, query, geometry_col, repair=repair_geometry)
+            query, geometry_repaired = _repair_geometry_in_query(
+                con, query, geometry_col, repair_geometry
+            )
+
+        invalidate_derived_stats = _output_stats_are_stale(
+            input_parquet, spatial_filter, where, limit, geometry_repaired
+        )
 
         # Write output
         write_parquet_with_metadata(
