@@ -87,19 +87,18 @@ def _native_geometry_schema(schema: pa.Schema, native_crs: dict[str, dict | None
     return pa.schema(fields, metadata=schema.metadata)
 
 
-def _to_native_geometry(column, target_type):
+def _to_native_geometry(column: pa.ChunkedArray, target_type) -> pa.ChunkedArray:
     """Encode one WKB column as ``target_type``, chunk by chunk.
 
     ``to_geoarrow_column`` (shared with the streaming strategy) takes a single
     array; a row group read back through PyArrow -- and anything the row-group
-    coarsening concatenates -- arrives as a ChunkedArray.
+    coarsening concatenates -- arrives as a ChunkedArray. Passing ``target_type``
+    on is what keeps a zero-chunk column (an empty row group) typed, and what
+    restores the CRS on chunks whose own type dropped it.
     """
-    if not isinstance(column, pa.ChunkedArray):
-        return to_geoarrow_column(column, target_type)
-    chunks = [to_geoarrow_column(chunk, target_type) for chunk in column.chunks]
-    if not chunks:
-        return pa.chunked_array([], type=target_type)
-    return pa.chunked_array(chunks, type=chunks[0].type)
+    return pa.chunked_array(
+        [to_geoarrow_column(chunk, target_type) for chunk in column.chunks], type=target_type
+    )
 
 
 def _conform_row_group(table: pa.Table, schema: pa.Schema, native_crs: dict[str, dict | None]):

@@ -1525,6 +1525,24 @@ class TestNativeGeometryTypeAcrossStrategies:
         assert json.loads(pq.read_schema(out).metadata[b"geo"])["columns"]["geometry"]["crs"] == crs
         assert _failed_checks(out) == []
 
+    @pytest.mark.parametrize("strategy", ["disk-rewrite", "streaming"])
+    def test_verbose_write_names_the_native_columns(self, strategy, tmp_path, caplog):
+        """The verbose branch of the native path is code too, and says which columns.
+
+        Both strategies build the native type from the same helper, and both log
+        what they are about to write; an f-string that only runs under
+        ``--verbose`` is exactly the kind of line that ships broken otherwise.
+        """
+        source = _write_points_geoparquet(tmp_path / "src.parquet", 3)
+        out = str(tmp_path / f"verbose_{strategy}.parquet")
+
+        with caplog.at_level(logging.DEBUG, logger="geoparquet_io"):
+            _write_via_query(source, out, "2.0", strategy, verbose=True)
+
+        assert "native parquet geometry type" in caplog.text.lower()
+        assert "'geometry'" in caplog.text
+        assert _geometry_carriers(out) == {"geometry": "native"}
+
     def test_disk_rewrite_native_type_survives_row_group_coarsening(self, tmp_path):
         """The rewrite is per row group, so a resized write must stay native throughout."""
         source = _write_points_geoparquet(tmp_path / "src.parquet", 25)
@@ -1538,3 +1556,49 @@ class TestNativeGeometryTypeAcrossStrategies:
         assert _geometry_carriers(out) == {"geometry": "native"}
         assert pq.read_table(out).column("id").to_pylist() == list(range(25))
         assert _failed_checks(out) == []
+
+
+class TestNativeWkbTypeHelpers:
+    """The two pieces every native-type write path shares."""
+
+    WKB_POINT = struct.pack("<BI2d", 1, 1, 1.0, 2.0)
+
+    def test_native_wkb_type_omits_a_default_crs(self):
+        """A default CRS is carried by omission, the way the geo block omits the key."""
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+
+        assert native_wkb_type(None).crs == ga.wkb().crs
+        assert native_wkb_type({"id": {"authority": "OGC", "code": "CRS84"}}).crs == ga.wkb().crs
+
+    def test_native_wkb_type_carries_a_projected_crs(self):
+        """The CRS the geo block declares is what the logical type must carry."""
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+
+        crs = {"id": {"authority": "EPSG", "code": 3857}}
+
+        assert json.loads(native_wkb_type(crs).crs.to_json())["id"]["code"] == 3857
+
+    def test_to_geoarrow_column_keeps_an_already_matching_array(self):
+        """The common path: plain WKB binary already matches ``geoarrow.wkb``."""
+        from geoparquet_io.core.geoarrow_encoding import native_wkb_type
+        from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_column
+
+        converted = to_geoarrow_column(
+            pa.array([self.WKB_POINT], type=pa.binary()), native_wkb_type(None)
+        )
+
+        assert converted.type.extension_name == "geoarrow.wkb"
+        assert converted.storage.to_pylist() == [self.WKB_POINT]
+
+    def test_to_geoarrow_column_retypes_when_the_storage_differs(self):
+        """A target whose storage differs takes the rebuild path, bytes intact."""
+        import geoarrow.pyarrow as ga
+
+        from geoparquet_io.core.write_strategies.arrow_streaming import to_geoarrow_column
+
+        converted = to_geoarrow_column(pa.array([self.WKB_POINT], type=pa.binary()), ga.large_wkb())
+
+        assert converted.type.storage_type == pa.large_binary()
+        assert converted.storage.to_pylist() == [self.WKB_POINT]
