@@ -4341,11 +4341,12 @@ def add_bbox(
     recomputes instead, since a copy cannot honour them. Use --force to recompute and
     replace an existing bbox column.
 
-    Reads local paths, s3://, gs:// and https:// URLs, and writes local
-    paths, s3:// and gs:// URLs; Azure (az://) is not supported yet. Remote
-    work -- the copy included -- goes through the object store gpio is
-    configured to use, so --s3-endpoint, --s3-region, --s3-no-ssl and
-    --aws-profile apply.
+    Reads local paths, s3://, gs://, az:// and https:// URLs, and writes local
+    paths, s3://, gs:// and az:// URLs. Azure URLs name the storage account
+    first: az://<account>/<container>/<path>, with credentials from
+    AZURE_STORAGE_ACCOUNT_KEY or AZURE_STORAGE_SAS_TOKEN. Remote work -- the
+    copy included -- goes through the object store gpio is configured to use,
+    so --s3-endpoint, --s3-region, --s3-no-ssl and --aws-profile apply.
 
     Examples:
 
@@ -6327,10 +6328,19 @@ def publish_upload(
     Supports S3, GCS, Azure, and HTTP destinations. Automatically handles
     multipart uploads and preserves directory structure.
 
+    Azure destinations name the storage account first:
+    az://<account>/<container>/<path>. The account comes from the URL; the
+    credential comes from the environment (AZURE_STORAGE_ACCOUNT_KEY,
+    AZURE_STORAGE_SAS_TOKEN, or the AZURE_STORAGE_CLIENT_* client-secret vars).
+
     \b
     Examples:
       # Single file to S3
       gpio publish upload data.parquet s3://bucket/path/data.parquet --aws-profile source-coop
+
+      \b
+      # Single file to Azure Blob Storage (account first, then container)
+      gpio publish upload data.parquet az://myaccount/mycontainer/data.parquet
 
       \b
       # Directory to GCS (preserves structure, uploads files in parallel)

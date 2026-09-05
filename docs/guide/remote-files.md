@@ -99,9 +99,11 @@ export AZURE_STORAGE_SAS_TOKEN=mytoken
 
 <!-- doctest: skip="needs cloud credentials" -->
 ```bash
-# Then use Azure URLs
-gpio add bbox az://container/input.parquet az://container/output.parquet
+# Then use Azure URLs: account first, then container, then the key
+gpio publish upload data.parquet az://myaccount/mycontainer/data.parquet
 ```
+
+Everything gpio writes to Azure — `gpio publish upload` and the object-store copies behind commands such as `gpio add bbox` — addresses it as `az://<account>/<container>/<path>`. The account comes from the URL, so `AZURE_STORAGE_ACCOUNT_NAME` is optional there, and the container is never guessed from the wrong segment ([#864](https://github.com/geoparquet/geoparquet-io/issues/864)). The `abfs://`, `abfss://` and `azure://` spellings order those parts differently and are refused by name.
 
 **Note:** Azure support for reads is currently limited. For full Azure support, process files locally.
 

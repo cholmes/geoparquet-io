@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 # Use importlib to get the actual module (avoids namespace collision with cli group)
@@ -378,8 +379,8 @@ class TestS3EndpointConfiguration:
             assert kwargs["max_concurrency"] == 24
             assert kwargs["chunk_size"] == 16 * 1024 * 1024
 
-    def test_setup_store_for_non_s3_uses_from_url(self):
-        """Test _setup_store_and_kwargs uses from_url for non-S3 URLs."""
+    def test_setup_store_for_gcs_uses_from_url(self):
+        """GCS keeps obstore's own from_url; only S3 and Azure are built by hand."""
         with patch("geoparquet_io.core.upload.S3Store") as mock_s3store:
             with patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url:
                 _setup_store_and_kwargs(
@@ -392,6 +393,123 @@ class TestS3EndpointConfiguration:
                 # Should use from_url for non-S3 URLs
                 mock_from_url.assert_called_once_with("gs://my-bucket")
                 mock_s3store.assert_not_called()
+
+
+class TestAzureStoreConstruction:
+    """Azure stores are built explicitly, not through ``obs.store.from_url`` (#864).
+
+    obstore's ``az://`` convention is ``az://<container>/<path>`` with the account
+    taken from the environment, so handing it gpio's ``az://<account>/<container>``
+    URL either refuses to build ("Account must be specified"), panics in Rust once
+    ``AZURE_STORAGE_ACCOUNT_NAME`` is set, or silently reads the account segment as
+    the container. These tests construct real ``AzureStore`` objects -- construction
+    needs no network and no credentials -- so the obstore contract is exercised, not
+    a mock of it.
+    """
+
+    AZURE_ENV_VARS = (
+        "AZURE_STORAGE_ACCOUNT_NAME",
+        "AZURE_STORAGE_ACCOUNT_KEY",
+        "AZURE_STORAGE_ACCESS_KEY",
+        "AZURE_STORAGE_MASTER_KEY",
+        "AZURE_STORAGE_SAS_TOKEN",
+        "AZURE_STORAGE_SAS_KEY",
+        "AZURE_CONTAINER_NAME",
+    )
+
+    def _clear_azure_env(self, monkeypatch):
+        for name in self.AZURE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+    def test_azure_store_is_built_from_the_url_with_no_env_and_no_credentials(self, monkeypatch):
+        """``az://account/container/prefix`` builds an AzureStore with those parts."""
+        from obstore.store import AzureStore
+
+        from geoparquet_io.core.upload import _build_azure_store
+
+        self._clear_azure_env(monkeypatch)
+
+        store = _build_azure_store("az://myaccount/mycontainer/some/prefix")
+
+        assert isinstance(store, AzureStore)
+        assert store.config["account_name"] == "myaccount"
+        assert store.config["container_name"] == "mycontainer"
+        assert store.prefix == "some/prefix"
+
+    def test_azure_store_without_a_prefix_has_no_prefix(self, monkeypatch):
+        """The bucket URL gpio hands the store carries no prefix; keys do."""
+        from geoparquet_io.core.upload import _build_azure_store
+
+        self._clear_azure_env(monkeypatch)
+
+        store = _build_azure_store("az://myaccount/mycontainer")
+
+        assert store.config["account_name"] == "myaccount"
+        assert store.config["container_name"] == "mycontainer"
+        assert store.prefix is None
+
+    def test_account_in_the_url_wins_over_the_environment(self, monkeypatch):
+        """The URL is the authority for the account; env only fills what it omits."""
+        from geoparquet_io.core.upload import _build_azure_store
+
+        self._clear_azure_env(monkeypatch)
+        monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_NAME", "envaccount")
+
+        store = _build_azure_store("az://urlaccount/mycontainer")
+
+        assert store.config["account_name"] == "urlaccount"
+
+    def test_azure_url_without_a_container_is_rejected(self, monkeypatch):
+        """``az://account`` alone names no container; say so instead of guessing."""
+        from geoparquet_io.core.upload import _build_azure_store
+
+        self._clear_azure_env(monkeypatch)
+
+        with pytest.raises(ValueError, match=r"az://<account>/<container>"):
+            _build_azure_store("az://myaccount")
+
+        with pytest.raises(ValueError, match=r"az://<account>/<container>"):
+            parse_object_store_url("az://myaccount")
+
+    def test_setup_store_builds_an_azure_store_instead_of_calling_from_url(self, monkeypatch):
+        """The upload path routes az:// through the explicit builder."""
+        from obstore.store import AzureStore
+
+        self._clear_azure_env(monkeypatch)
+
+        with patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url:
+            store, kwargs = _setup_store_and_kwargs(
+                bucket_url="az://myaccount/mycontainer",
+                profile=None,
+                chunk_concurrency=12,
+                chunk_size=None,
+            )
+
+        mock_from_url.assert_not_called()
+        assert isinstance(store, AzureStore)
+        assert store.config["account_name"] == "myaccount"
+        assert store.config["container_name"] == "mycontainer"
+        assert kwargs["max_concurrency"] == 12
+
+    def test_upload_to_azure_puts_the_key_into_the_accounts_container(self, monkeypatch, tmp_path):
+        """``publish upload`` reaches obstore with an AzureStore and a bare key."""
+        from obstore.store import AzureStore
+
+        from geoparquet_io.core.upload import upload
+
+        self._clear_azure_env(monkeypatch)
+        source = tmp_path / "data.parquet"
+        source.write_bytes(b"parquet-bytes")
+
+        with patch("geoparquet_io.core.upload.obs.put") as mock_put:
+            upload(source, "az://myaccount/mycontainer/dataset/data.parquet")
+
+        store = mock_put.call_args.args[0]
+        assert isinstance(store, AzureStore)
+        assert store.config["account_name"] == "myaccount"
+        assert store.config["container_name"] == "mycontainer"
+        assert store.prefix is None
+        assert mock_put.call_args.args[1] == "dataset/data.parquet"
 
 
 class TestUploadCLIS3Options:

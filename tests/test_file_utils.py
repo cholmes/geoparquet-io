@@ -467,22 +467,44 @@ class TestCopyFile:
         assert gs_key == "path/file.parquet"
         assert [call.args[0] for call in mock_from_url.call_args_list] == ["gs://bucket"]
 
+    def test_azure_urls_resolve_to_an_azure_store(self, monkeypatch):
+        """az:// copies build a real AzureStore from the URL's own account (#864).
+
+        ``obs.store.from_url('az://account/container')`` could never serve this:
+        without env config it demands an account, with it the account segment is
+        misread as the container. The store is built explicitly instead, and this
+        test constructs the real thing -- no network, no credentials needed.
+        """
+        from obstore.store import AzureStore
+
+        from geoparquet_io.core.file_utils import resolve_object_store
+
+        for name in ("AZURE_STORAGE_ACCOUNT_NAME", "AZURE_CONTAINER_NAME"):
+            monkeypatch.delenv(name, raising=False)
+
+        store, key = resolve_object_store("az://myaccount/mycontainer/path/file.parquet")
+
+        assert isinstance(store, AzureStore)
+        assert store.config["account_name"] == "myaccount"
+        assert store.config["container_name"] == "mycontainer"
+        assert key == "path/file.parquet"
+
     @pytest.mark.parametrize(
         "url",
         [
-            "az://account/container/file.parquet",
             "abfs://container@account.dfs.core.windows.net/in.parquet",
+            "abfss://container@account.dfs.core.windows.net/in.parquet",
             "azure://account/container/file.parquet",
         ],
     )
     @pytest.mark.parametrize("side", ["source", "dest"])
-    def test_azure_copy_is_refused_with_a_clear_unsupported_message(self, url, side):
-        """An Azure URL fails with 'not supported yet', not an obstore panic.
+    def test_other_azure_url_forms_are_refused_by_name(self, url, side):
+        """Only the ``az://<account>/<container>`` form is served; the rest say so.
 
-        ``obs.store.from_url('az://account/container')`` cannot work: without env
-        config it demands an account, with it the account segment is misread as
-        the container. Until Azure support lands, say so up front -- and build no
-        store at all.
+        ``abfs[s]://`` and ``azure://`` carry the account and container in a
+        different order (or in a host name), so they cannot be parsed as gpio's
+        account-first form. Name the supported spelling instead of guessing, and
+        build no store at all.
         """
         from unittest.mock import patch
 
@@ -492,7 +514,7 @@ class TestCopyFile:
         with (
             patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
             patch("geoparquet_io.core.upload.obs.store.from_url") as mock_from_url,
-            pytest.raises(InvalidParameterError, match="not supported yet"),
+            pytest.raises(InvalidParameterError, match=r"az://<account>/<container>"),
         ):
             copy_file(*args)
 
@@ -553,7 +575,7 @@ class TestCopyFile:
         assert not dest.exists()
 
     def test_unsupported_scheme_fails_before_any_store_is_built(self):
-        """A scheme with no store dies by name up front, and does not advertise az:// (#810)."""
+        """A scheme with no store dies by name up front, and lists the ones that work (#810)."""
         from geoparquet_io.core.file_utils import _check_copyable_scheme
 
         with pytest.raises(GeoParquetError) as exc:
@@ -561,7 +583,8 @@ class TestCopyFile:
 
         message = str(exc.value)
         assert "ftp://" in message
-        assert "az://" not in message, "az:// copies do not work; the error must not suggest them"
+        for scheme in ("s3://", "gs://", "az://"):
+            assert scheme in message, f"the error must name {scheme} as a supported scheme"
 
     def test_http_destination_is_rejected_as_read_only(self):
         """HTTP(S) can be copied from, never to; say so instead of failing mid-stream."""
@@ -570,7 +593,7 @@ class TestCopyFile:
         with pytest.raises(GeoParquetError, match="read-only") as exc:
             copy_file("local.parquet", "https://example.com/out.parquet")
 
-        assert "az://" not in str(exc.value), "the error must not suggest az://; it is unsupported"
+        assert "az://" in str(exc.value), "az:// is a writable destination; offer it"
 
     def test_remote_to_remote_copy_streams_bytes_through_obstore(self, monkeypatch):
         """A remote->remote copy moves the real bytes, with no network and no whole-file buffer."""
