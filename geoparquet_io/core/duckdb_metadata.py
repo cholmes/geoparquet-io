@@ -701,23 +701,40 @@ def resolve_authority_code_crs(crs_value: Any) -> Any:
     return crs_value if projjson is None else json.loads(projjson)
 
 
+#: The DuckDB spellings of "this geo logical type declares no CRS at all".
+#:
+#: DuckDB renders a CRS-less type as ``crs=`` and a null one as ``crs=<null>``.
+#: These two are the *only* values that may become None here: the Parquet spec
+#: defines "no CRS" as OGC:CRS84, so anything else mapped to None would become a
+#: CRS84 claim the file never made (#866).
+_NO_CRS_TOKENS = frozenset({"", "<null>"})
+
+#: DuckDB's own parameter after ``crs=`` on a ``GEOGRAPHY`` logical type.
+#:
+#: The Parquet ``crs`` field is free-form and may itself contain commas (WKT
+#: does), so the value ends here rather than at the first comma.
+_ALGORITHM_PARAM = ", algorithm="
+
+
 def _parse_crs_property(params: str) -> Any:
     """The ``crs=`` property of a geo logical type's parameters, or None if it has none.
 
-    The property has four shapes, and this returns each one as the value it
-    means:
+    Returns the property as the value it means:
 
     - ``crs=`` / ``crs=<null>`` -- the type declares no CRS: None
     - ``crs={...}`` -- inline PROJJSON: the parsed dict
-    - ``crs=srid:XXXX`` / ``crs=projjson:key`` -- a reference: the string, for
-      :func:`resolve_crs_reference` to look up
-    - ``crs=EPSG:32633`` -- a bare authority code: the string, likewise
+    - anything else -- the literal string, for :func:`resolve_crs_reference` to
+      resolve. That covers the spec's named forms (``srid:XXXX``,
+      ``projjson:key``, a bare authority code like ``EPSG:32633``) *and* the
+      free-form values the Parquet spec also permits (``4326``, ``WGS 84``,
+      raw WKT). An unresolvable value stays a string all the way through, so
+      the CRS checks compare it as-is and fail closed.
 
     Returning None for "declares no CRS" is what keeps the ``crs`` key out of
     :func:`parse_geometry_logical_type`'s result; callers read that absence as
     the Parquet spec's OGC:CRS84 default, so no *unrecognized* value may reach
     it -- that would turn a CRS the file names into a CRS84 claim it never made
-    (#814).
+    (#814, #866).
     """
     crs_start = params.find("crs=")
     if crs_start == -1:
@@ -744,13 +761,10 @@ def _parse_crs_property(params: str) -> Any:
         except json.JSONDecodeError:
             return crs_json_str
 
-    # Every other form is a single token, ending at the next parameter.
-    token = crs_value.split(",", 1)[0].strip()
-    if token.lower().startswith(_PREFIXED_CRS_FORMS):
-        return token
-    if _authority_code_crs(token) is not None:
-        return token
-    return None
+    # Every other form is one free-form value, ending at DuckDB's own trailing
+    # algorithm parameter when there is one.
+    token = crs_value.split(_ALGORITHM_PARAM, 1)[0].strip()
+    return None if token.lower() in _NO_CRS_TOKENS else token
 
 
 def parse_geometry_logical_type(logical_type: str) -> dict | None:
@@ -764,6 +778,14 @@ def parse_geometry_logical_type(logical_type: str) -> dict | None:
     - GeometryType(crs=EPSG:32633)
 
     Returns dict with keys: geo_type, geometry_type, coordinate_dimension, crs, algorithm
+
+    The ``crs`` key tells three states apart, and callers must keep them apart:
+    *absent* means the type declares no CRS (the Parquet spec's OGC:CRS84
+    default), a dict is resolved inline PROJJSON, and a **string** is a CRS the
+    type does name but this function does not resolve -- a reference form for
+    :func:`resolve_crs_reference`, or a free-form value (``4326``, ``WGS 84``,
+    WKT) that nothing can resolve. A string is never the default: reading one as
+    CRS84 invents a claim the file never made (#866).
     """
     if not logical_type:
         return None

@@ -12,6 +12,12 @@ That made ``_check_v2_crs_consistency`` wrong in both directions: a real mismatc
 match (both naming EPSG:3857) failed. The two prefix forms have the same
 ``a:b`` shape as the compact one, so the assertions below also pin that
 ``srid:``/``projjson:`` keep winning over the new branch.
+
+#866 is the same bug one step out: the Parquet spec's ``crs`` field is *free
+form*, so ``crs=4326``, ``crs=WGS 84`` or a raw WKT string are all legal values
+gpio cannot resolve. Those still fell off the end of the parser as "no crs key",
+i.e. as a positive OGC:CRS84 claim. They now come through as unresolved strings
+and fail closed, exactly like the unknown authority ``FOO:BAR`` already did.
 """
 
 import json
@@ -292,12 +298,13 @@ def _write_compact_crs_file(tmp_path, name: str, parquet_crs: str, metadata_crs)
 
     wkb = [bytes(w) for w in shapely.to_wkb(shapely.points([[500000.0, 5000000.0]]))]
     array = ga.wkb().with_crs(parquet_crs).wrap_array(pa.array(wkb, type=pa.binary()))
+    col_meta: dict = {"encoding": "WKB", "geometry_types": ["Point"]}
+    if metadata_crs != "ABSENT":  # "ABSENT" omits the key, i.e. the CRS84 default
+        col_meta["crs"] = metadata_crs
     geo = {
         "version": "2.0.0",
         "primary_column": "geometry",
-        "columns": {
-            "geometry": {"encoding": "WKB", "geometry_types": ["Point"], "crs": metadata_crs}
-        },
+        "columns": {"geometry": col_meta},
     }
     table = pa.table({"geometry": array})
     table = table.replace_schema_metadata({b"geo": json.dumps(geo).encode("utf-8")})
@@ -339,3 +346,174 @@ class TestCompactCrsFileValidatesEndToEnd:
         crs = extract_crs_from_parquet(str(out))
         assert isinstance(crs, dict)
         assert crs["id"] == {"authority": "EPSG", "code": 32633}
+
+
+# =============================================================================
+# #866: a free-form crs the parser cannot resolve must never read as CRS84
+# =============================================================================
+
+#: Legal Parquet ``crs`` values gpio cannot resolve to a CRS.
+#:
+#: The Parquet geospatial spec leaves the field free form, so each of these is a
+#: value a writer may legitimately emit; none of them is "this type declares no
+#: CRS", which is the *only* thing the OGC:CRS84 default may be read from.
+FREEFORM_CRS_VALUES = [
+    "4326",  # a bare EPSG code, no authority
+    "WGS 84",  # a CRS name
+    "EPSG:",  # an authority with an empty code
+    "EPSG:abc",  # an authority with a code PROJ does not carry
+    'GEOGCS["WGS 84",DATUM["WGS_1984"]]',  # WKT1 — note the embedded comma
+    'PROJCRS["WGS 84 / UTM zone 33N"]',  # WKT2
+]
+
+
+class TestParserCarriesFreeformCrsThrough:
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_the_literal_value_arrives_under_the_crs_key(self, value):
+        """Was: no ``crs`` key at all, which callers read as the CRS84 default."""
+        result = parse_geometry_logical_type(f"GeometryType(crs={value})")
+        assert result is not None
+        assert result["crs"] == value
+
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_a_freeform_crs_is_distinguishable_from_declaring_no_crs(self, value):
+        declared = parse_geometry_logical_type(f"GeometryType(crs={value})")
+        absent = parse_geometry_logical_type("GeometryType(crs=)")
+        assert declared is not None and absent is not None
+        assert "crs" in declared and "crs" not in absent
+
+    def test_a_freeform_crs_survives_a_trailing_algorithm_parameter(self):
+        """The value ends at DuckDB's own ``, algorithm=``, not at the first comma."""
+        result = parse_geometry_logical_type(
+            'GeographyType(crs=GEOGCS["WGS 84",DATUM["WGS_1984"]], algorithm=spherical)'
+        )
+        assert result is not None
+        assert result["crs"] == 'GEOGCS["WGS 84",DATUM["WGS_1984"]]'
+        assert result["algorithm"] == "spherical"
+
+    def test_a_freeform_crs_alongside_positional_params(self):
+        result = parse_geometry_logical_type("GeometryType(Point, XY, crs=WGS 84)")
+        assert result is not None
+        assert result["crs"] == "WGS 84"
+        assert result["geometry_type"] == "Point"
+        assert result["coordinate_dimension"] == "XY"
+
+
+class TestFreeformCrsFailsClosedInConsistency:
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_an_absent_metadata_crs_is_a_mismatch_not_a_shared_crs84_claim(self, value):
+        """Was PASSED "both are OGC:CRS84" — a claim neither carrier ever made."""
+        check = _check_v2_crs_consistency(
+            _geo_meta({}), _schema(f"GeometryType(crs={value})"), "geometry"
+        )
+        assert check.status is CheckStatus.FAILED
+        assert value in (check.details or "")
+
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_a_named_metadata_crs_is_a_mismatch_showing_the_literal(self, value):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": EPSG3857_PROJJSON}),
+            _schema(f"GeometryType(crs={value})"),
+            "geometry",
+        )
+        assert check.status is CheckStatus.FAILED
+        assert value in (check.details or "")
+        assert "unrecognized" in (check.details or "")
+
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_an_explicit_crs84_metadata_crs_is_still_a_mismatch(self, value):
+        check = _check_v2_crs_consistency(
+            _geo_meta({"crs": CRS84_ID}), _schema(f"GeometryType(crs={value})"), "geometry"
+        )
+        assert check.status is CheckStatus.FAILED
+
+
+class TestFreeformCrsIsReportedAsAnUnrecognizedForm:
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_native_crs_format_warns_with_the_literal(self, value):
+        check = _check_native_crs_format(_schema(f"GeometryType(crs={value})"), "geometry")
+        assert check.status is CheckStatus.WARNING
+        assert value in (check.details or "")
+
+    @pytest.mark.parametrize("value", FREEFORM_CRS_VALUES)
+    def test_parquet_geo_only_crs_warns_with_the_literal(self, value):
+        """``4326`` must not slip through the is-geographic heuristic as a pass."""
+        check = _check_parquet_geo_only_crs(
+            _schema(f"GeometryType(crs={value})"), "geometry", "any_file.parquet"
+        )
+        assert check.status is CheckStatus.WARNING
+        assert value in (check.details or "")
+
+
+class TestRecognizedFormsAreUnchangedByTheFreeformBranch:
+    """The four resolvable shapes and the no-CRS shape keep their #851 behavior."""
+
+    @pytest.mark.parametrize(
+        "logical_type",
+        [
+            "GeometryType(crs=<null>)",
+            "GeometryType(crs=)",
+            "GeographyType(crs=, algorithm=spherical)",
+            "GeographyType(crs=<null>, algorithm=spherical)",
+            "GeographyType(algorithm=spherical)",
+        ],
+    )
+    def test_no_crs_declared_still_leaves_no_crs_key(self, logical_type):
+        result = parse_geometry_logical_type(logical_type)
+        assert result is not None
+        assert "crs" not in result
+
+    @pytest.mark.parametrize(
+        "logical_type,expected",
+        [
+            ("GeometryType(crs=srid:5070)", "srid:5070"),
+            ("GeometryType(crs=srid:0)", "srid:0"),
+            ("GeometryType(crs=projjson:my_crs)", "projjson:my_crs"),
+            ("GeometryType(crs=EPSG:32633)", "EPSG:32633"),
+        ],
+    )
+    def test_the_reference_forms_still_parse_to_themselves(self, logical_type, expected):
+        result = parse_geometry_logical_type(logical_type)
+        assert result is not None
+        assert result["crs"] == expected
+
+    def test_inline_projjson_still_parses_to_a_dict(self):
+        result = parse_geometry_logical_type(
+            'GeometryType(crs={"type": "ProjectedCRS", '
+            '"id": {"authority": "EPSG", "code": 5070}}, algorithm=planar)'
+        )
+        assert result is not None
+        assert result["crs"]["id"]["code"] == 5070
+        assert result["algorithm"] == "planar"
+
+
+class TestFreeformCrsFileValidatesEndToEnd:
+    """A real file, because the parser and the checks must agree on a live schema."""
+
+    def test_a_freeform_crs_against_a_named_metadata_crs_fails(self, tmp_path):
+        path = _write_compact_crs_file(
+            tmp_path, "freeform_mismatch.parquet", "WGS 84", EPSG3857_PROJJSON
+        )
+        result = validate_geoparquet(path, validate_data=False)
+        check = next(c for c in result.checks if c.name == "v2_crs_consistency_geometry")
+        assert check.status is CheckStatus.FAILED
+        assert "Schema: WGS 84 (unrecognized" in (check.details or "")
+
+    def test_a_freeform_crs_against_an_absent_metadata_crs_fails(self, tmp_path):
+        """The #866 headline: this reported PASSED "both are OGC:CRS84"."""
+        path = _write_compact_crs_file(tmp_path, "freeform_absent.parquet", "WGS 84", "ABSENT")
+        result = validate_geoparquet(path, validate_data=False)
+        check = next(c for c in result.checks if c.name == "v2_crs_consistency_geometry")
+        assert check.status is CheckStatus.FAILED
+        assert "WGS 84" in (check.details or "")
+
+    def test_inspect_reports_the_freeform_crs_as_a_mismatch_naming_the_literal(self, tmp_path):
+        """``gpio inspect`` must render the string, not swallow it or show a dict."""
+        from geoparquet_io.core.inspect_utils import _format_crs_for_display, extract_geo_info
+
+        path = _write_compact_crs_file(
+            tmp_path, "freeform_inspect.parquet", "WGS 84", EPSG3857_PROJJSON
+        )
+        info = extract_geo_info(path)
+        assert any("WGS 84" in w for w in info["warnings"])
+        assert _format_crs_for_display("WGS 84") == "WGS 84"

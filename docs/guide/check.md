@@ -292,7 +292,12 @@ Validates file structure and metadata against the GeoParquet specification:
   reference names a metadata key this check cannot look up, so it is compared
   conservatively: it reports a mismatch rather than guessing. A type whose CRS
   gpio cannot read would otherwise look like one that names no CRS, which the
-  Parquet spec defines as OGC:CRS84 — a claim the file never made.
+  Parquet spec defines as OGC:CRS84 — a claim the file never made. The Parquet
+  `crs` property is free-form, so an unrecognized value (`4326`, `WGS 84`, raw
+  WKT, an authority code PROJ does not carry) is treated the same way: it is
+  carried through verbatim, `native_crs_format` warns with the literal, and
+  `v2_crs_consistency` compares it as-is, so it fails closed and names the value
+  it could not read rather than reading it as the default.
 - **Datum-aware epoch validation** — a coordinate `epoch` on a datum ensemble
   (e.g. EPSG:4326, or the OGC:CRS84 default when `crs` is omitted) fails; on a
   specific static frame (e.g. GDA2020) it warns; on a dynamic frame (e.g. ITRF)
