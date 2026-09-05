@@ -19,6 +19,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from geoparquet_io.core.crs_utils import geoarrow_crs_to_projjson
 from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.exceptions import GeoParquetError
 
@@ -214,6 +215,17 @@ def _pyarrow_get_schema_info(parquet_file: str) -> list[dict] | None:
         del pf
 
 
+def _format_geometry_type_crs(crs) -> str:
+    """Render a CRS into DuckDB's ``GeometryType(crs=...)`` logical-type string.
+
+    A string stays verbatim (a reference such as ``projjson:key_name``,
+    ``srid:5070`` or a bare ``EPSG:32633``); PROJJSON is inlined as JSON.
+    """
+    if isinstance(crs, str):
+        return f"GeometryType(crs={crs})"
+    return f"GeometryType(crs={json.dumps(crs)})"
+
+
 def _get_pyarrow_logical_type(field) -> str | None:
     """Extract logical type string from PyArrow field, including geo types.
 
@@ -245,13 +257,14 @@ def _get_pyarrow_logical_type(field) -> str | None:
         ext_name = field.type.extension_name
         if ext_name in geoarrow_extensions:
             # Case 1: geoarrow-pyarrow is imported - CRS is in field.type.crs
-            # This takes priority because geoarrow-pyarrow consumes the metadata
-            if hasattr(field.type, "crs") and field.type.crs is not None:
-                crs_obj = field.type.crs
-                # geoarrow-pyarrow provides .to_json_dict() for PROJJSON
-                if hasattr(crs_obj, "to_json_dict"):
-                    crs_dict = crs_obj.to_json_dict()
-                    return f"GeometryType(crs={json.dumps(crs_dict)})"
+            # This takes priority because geoarrow-pyarrow consumes the metadata.
+            # `geoarrow_crs_to_projjson` is the one reader for that attribute
+            # (issue #863): it tries to_json_dict() then to_json(), passes plain
+            # dicts/strings/bytes through, and warns instead of raising or
+            # silently dropping a CRS it cannot read.
+            resolved = geoarrow_crs_to_projjson(getattr(field.type, "crs", None))
+            if resolved is not None:
+                return _format_geometry_type_crs(resolved)
 
             # Case 2: Try extension_metadata (older geoarrow or direct Arrow)
             if hasattr(field.type, "extension_metadata") and field.type.extension_metadata:
@@ -259,13 +272,7 @@ def _get_pyarrow_logical_type(field) -> str | None:
                     ext_meta = json.loads(field.type.extension_metadata)
                     crs = ext_meta.get("crs")
                     if crs:
-                        # Format CRS like DuckDB does
-                        if isinstance(crs, str):
-                            # Reference string like "projjson:key_name" or "srid:5070"
-                            return f"GeometryType(crs={crs})"
-                        elif isinstance(crs, dict):
-                            # Inline PROJJSON
-                            return f"GeometryType(crs={json.dumps(crs)})"
+                        return _format_geometry_type_crs(crs)
                 except (json.JSONDecodeError, TypeError):
                     pass
             return "GeometryType()"
@@ -298,13 +305,7 @@ def _get_pyarrow_logical_type(field) -> str | None:
                         ext_meta = json.loads(ext_meta_str)
                         crs = ext_meta.get("crs")
                         if crs:
-                            # Format CRS like DuckDB does
-                            if isinstance(crs, str):
-                                # Reference string like "projjson:key_name" or "srid:5070"
-                                return f"GeometryType(crs={crs})"
-                            elif isinstance(crs, dict):
-                                # Inline PROJJSON
-                                return f"GeometryType(crs={json.dumps(crs)})"
+                            return _format_geometry_type_crs(crs)
                     except (json.JSONDecodeError, TypeError):
                         pass
                 return "GeometryType()"
