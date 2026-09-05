@@ -2,6 +2,7 @@
 Parquet geospatial_types statistics (GeoParquet 2.0)."""
 
 import json
+from pathlib import Path
 
 import geoarrow.pyarrow as ga
 import pyarrow as pa
@@ -115,6 +116,8 @@ class TestGeometryTypesMatchStats:
         check = _check_geometry_types_match_stats(path, "geometry", [])
         assert check.status == CheckStatus.SKIPPED
 
+    @pytest.mark.corpus
+    @pytest.mark.skipif(not Path(CORPUS).exists(), reason="run: git submodule update --init")
     def test_corpus_file_declaring_linestring_for_zm_data_fails(self):
         path = f"{CORPUS}/zm/linestring-xyzm-native-geometry.parquet"
         geo = json.loads(pq.read_metadata(path).metadata[b"geo"])
@@ -124,6 +127,8 @@ class TestGeometryTypesMatchStats:
         assert check.status == CheckStatus.FAILED
         assert "LineString ZM" in check.message
 
+    @pytest.mark.corpus
+    @pytest.mark.skipif(not Path(CORPUS).exists(), reason="run: git submodule update --init")
     def test_corpus_polygon_and_multipolygon_passes(self):
         path = f"{CORPUS}/geometry_types/polygon-and-multipolygon.parquet"
         check = _check_geometry_types_match_stats(path, "geometry", ["Polygon", "MultiPolygon"])
