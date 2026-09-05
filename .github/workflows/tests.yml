@@ -151,7 +151,7 @@ jobs:
           # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
           # with a transient network error, which broke otherwise-green builds.
           # Retry with backoff before giving up.
-          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community'); con.execute('INSTALL geography FROM community')"
           for attempt in 1 2 3 4 5; do
             if uv run python -c "$install"; then
               echo "DuckDB extensions installed (attempt $attempt)."
@@ -305,7 +305,7 @@ jobs:
           # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
           # with a transient network error, which broke otherwise-green builds.
           # Retry with backoff before giving up.
-          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community'); con.execute('INSTALL geography FROM community')"
           for attempt in 1 2 3 4 5; do
             if uv run python -c "$install"; then
               echo "DuckDB extensions installed (attempt $attempt)."
@@ -417,7 +417,7 @@ jobs:
           # DuckDB extension downloads (extensions.duckdb.org) occasionally fail
           # with a transient network error, which broke otherwise-green builds.
           # Retry with backoff before giving up.
-          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community')"
+          install="import duckdb; con = duckdb.connect(); con.execute('INSTALL spatial'); con.execute('INSTALL httpfs'); con.execute('INSTALL h3 FROM community'); con.execute('INSTALL geography FROM community')"
           for attempt in 1 2 3 4 5; do
             if uv run python -c "$install"; then
               echo "DuckDB extensions installed (attempt $attempt)."

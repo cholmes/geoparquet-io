@@ -925,10 +925,6 @@ def partition_by_s2(
     Function form of `Table.partition_by_s2`, mirroring `gpio partition s2`.
     Pass a ``level``, or ``auto=True`` to size one from the data.
 
-    **Unavailable in this release**: S2 needs the ``geography`` DuckDB community
-    extension, which is not published for the DuckDB version gpio requires
-    (#737). The call raises with an explanation. Use `partition_by_a5` instead.
-
     Args:
         table: Input PyArrow Table with a geometry column
         output_dir: Output directory path
@@ -1665,11 +1661,6 @@ def sub_partition_by_s2(
     Split every file in a directory over ``min_size`` into S2 sub-partitions.
 
     Function form of `gpio partition s2 <dir>/ --min-size ...`.
-
-    **Unavailable in this release**: S2 needs the ``geography`` DuckDB community
-    extension, which is not published for the DuckDB version gpio requires
-    (#737). The call raises `ExtensionUnavailableError` once, before any file is
-    touched. Use `sub_partition_by_a5` instead.
 
     Args:
         directory: Directory of parquet files, searched recursively

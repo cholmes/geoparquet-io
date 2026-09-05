@@ -4656,10 +4656,6 @@ def add_s2(
     Level determines cell size - higher values mean smaller cells with more precision.
 
     Supports both local and remote (S3, GCS, Azure) inputs and outputs.
-
-    NOTE: currently unavailable. S2 needs the DuckDB 'geography' community
-    extension, which is not published for the DuckDB version gpio requires. Use
-    `gpio add a5` meanwhile; S2 returns once the extension is republished.
     """
     with _activate_s3(ctx):
         # Validate output early - provides helpful error if no output and not piping
@@ -5438,10 +5434,6 @@ def partition_s2(
     Auto-resolution mode: Use --auto to automatically calculate the optimal S2 level
     based on your target partition size. Specify --target-rows (default: 100K) to control
     partition granularity.
-
-    NOTE: currently unavailable. S2 needs the DuckDB 'geography' community
-    extension, which is not published for the DuckDB version gpio requires. Use
-    `gpio partition a5` meanwhile; S2 returns once the extension is republished.
 
     Examples:
 

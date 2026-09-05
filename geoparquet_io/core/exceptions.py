@@ -167,10 +167,10 @@ def is_unpublished_extension_error(exc: BaseException | str | None) -> bool:
 # cannot say.
 _UNPUBLISHED_EXTENSION_HINTS = {
     "geography": (
-        "The upstream build fix is merged (paleolimbot/duckdb-geography#34), so "
-        "S2 returns on its own once the extension is republished -- no gpio "
-        "change needed. For a hierarchical cell index that works today, use "
-        "`gpio add a5` or `gpio partition a5`."
+        "'geography' is published for the newest DuckDB in gpio's supported "
+        "range but not for every older patch release in it, so upgrading DuckDB "
+        "is usually the fix. For a hierarchical cell index that works meanwhile, "
+        "use `gpio add a5` or `gpio partition a5`."
     ),
 }
 

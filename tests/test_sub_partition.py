@@ -389,15 +389,15 @@ class TestSubPartitionFailuresAreReported:
 
         assert result.exit_code != 0, f"unavailable extension exited 0: {result.output}"
         assert len(calls) == 1, f"preflight ran {len(calls)} times for 3 files"
-        assert result.output.count("paleolimbot/duckdb-geography#34") == 1
+        assert result.output.count("gpio partition a5") == 1
 
 
 class TestA5SubPartitioning:
     """A5 was the one hierarchical index that could not sub-partition (#733).
 
-    S2 is unavailable in this release, so ``gpio partition s2``'s own error
-    tells users to switch to A5 -- which made A5's missing ``--min-size`` /
-    ``--in-place`` the gap that mattered most.
+    When ``gpio partition s2`` cannot load the ``geography`` extension its own
+    error tells users to switch to A5 -- which made A5's missing ``--min-size``
+    / ``--in-place`` the gap that mattered most.
     """
 
     def test_sub_partition_directory_supports_a5(self, temp_partition_dir):

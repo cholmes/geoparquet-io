@@ -70,9 +70,6 @@ gpio.read('input.parquet') \
     .write('with_a5.parquet')
 
 # Add S2 spherical cells
-# NOTE: unavailable in this release — the 'geography' DuckDB extension is not
-# published for DuckDB 1.5.2+, which gpio requires. add_s2() raises until it is
-# republished upstream; use add_a5() above in the meantime.
 gpio.read('input.parquet') \
     .add_s2(level=13) \
     .write('with_s2.parquet')

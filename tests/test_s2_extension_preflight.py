@@ -1,10 +1,15 @@
 """S2 commands check for the 'geography' extension before doing any work (#737).
 
-The `geography` community extension is built per DuckDB release and is not
-published beyond DuckDB 1.5.1 yet, while gpio now requires DuckDB >= 1.5.2 (the
-release that dropped the TRY()-over-blob segfault). Every S2 entry point must
-therefore fail immediately, with an actionable message, rather than reading the
-input and failing somewhere deep in the pipeline.
+The `geography` community extension is published again for the newest DuckDB in
+gpio's supported range (1.5.5, what uv.lock resolves), so S2 works out of the
+box — but not for every older patch release. The guard still matters: a
+community extension is downloaded on first use, so an offline machine, a proxy,
+or a hand-pinned DuckDB the registry has no artifact for can still leave it
+unloadable.
+When that happens every S2 entry point must fail immediately, with an actionable
+message, rather than reading the input and failing deep in the pipeline. These
+tests mock the extension load to fail, so they exercise the guard regardless of
+whether the extension is installable here.
 """
 
 from pathlib import Path
