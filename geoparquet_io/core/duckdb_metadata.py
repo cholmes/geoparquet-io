@@ -754,7 +754,11 @@ def _parse_crs_property(params: str) -> Any:
                     end_pos = i + 1
                     break
         if end_pos == 0:
-            return None
+            # Unbalanced braces: malformed, but still a CRS the type *declares*.
+            # Carry the raw value through as a string so it fails closed
+            # downstream, exactly like unparsable-JSON below -- mapping it to
+            # None would read as the OGC:CRS84 default (#866).
+            return crs_value
         crs_json_str = crs_value[:end_pos]
         try:
             return json.loads(crs_json_str)
