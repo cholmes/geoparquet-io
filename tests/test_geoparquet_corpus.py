@@ -20,13 +20,11 @@ assumed to be gpio bugs. Confirmed gpio bugs are tracked in GitHub issues and
 appear here as KNOWN_VALIDATION_BUGS entries or xfail marks referencing the
 issue; they turn into hard failures/XPASS as fixes land.
 
-One corpus bug was found (CORPUS_BUG_FILES): the data/zm/ fixtures declare
-geometry_types ["LineString"] without the " Z"/" M"/" ZM" suffix the spec
-mandates for 3D/measured data ("a ' Z' suffix gets added", "It is expected
-that this field is strictly correct") — the very violation bad_data/
-zm-declared-xy-actual-xyz.parquet exists to test. Reported upstream; once a
-fixed corpus pin lands, test_validates_clean fails loudly on each stale entry
-so CORPUS_BUG_FILES gets cleaned up instead of masking future regressions.
+Corpus bugs go in CORPUS_BUG_FILES while they reproduce; once a fixed corpus
+pin lands, test_validates_clean fails loudly on each stale entry so the map
+gets cleaned up instead of masking future regressions. (The data/zm/
+geometry_types suffix bug found in July 2026 was fixed upstream in
+geoparquet-testing 87891e7 and its entries removed with the pin bump.)
 """
 
 import json
@@ -87,17 +85,7 @@ def test_corpus_tier_minimum_files(tier, minimum):
 # Fixtures that themselves violate the spec (upstream geoparquet-testing bugs).
 # test_validates_clean xfails while an entry still reproduces and fails hard
 # once it stops reproducing, forcing removal of stale entries after a pin bump.
-CORPUS_BUG_FILES = {
-    "data/zm/linestring-xyz-native-geometry.parquet": (
-        "corpus bug: declares ['LineString'] for XYZ data; spec requires 'LineString Z'"
-    ),
-    "data/zm/linestring-xym-native-geometry.parquet": (
-        "corpus bug: declares ['LineString'] for XYM data; spec requires 'LineString M'"
-    ),
-    "data/zm/linestring-xyzm-native-geometry.parquet": (
-        "corpus bug: declares ['LineString'] for XYZM data; spec requires 'LineString ZM'"
-    ),
-}
+CORPUS_BUG_FILES: dict[str, str] = {}
 
 
 def _corpus_files(*subdirs):
@@ -193,10 +181,6 @@ class TestValidFilesSpotChecks:
             ("linestring-xym-native-geometry.parquet", "XYM"),
             ("linestring-xyzm-native-geometry.parquet", "XYZM"),
         ],
-    )
-    @pytest.mark.xfail(
-        strict=False,
-        reason="corpus bug: gen_zm.py writes unsuffixed geometry_types (see CORPUS_BUG_FILES)",
     )
     def test_zm_dimensions_parsed(self, name, expected_dim):
         """Spec: 'a \" Z\" suffix gets added' and geometry_types is 'strictly correct'."""
