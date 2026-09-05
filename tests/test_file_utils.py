@@ -546,8 +546,11 @@ class TestCopyFile:
         with (
             patch("geoparquet_io.core.upload.S3Store") as mock_s3store,
             patch(
-                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-                return_value=("AKIA-TEST", "secret-test", "eu-central-1"),
+                "geoparquet_io.core.upload.resolve_aws_credentials",
+                return_value={
+                    "access_key_id": "AKIA-TEST",
+                    "secret_access_key": "secret-test",
+                },
             ) as mock_creds,
             s3_config_scope(config),
         ):

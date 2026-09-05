@@ -300,24 +300,22 @@ class TestCredentialChecking:
             assert hint == ""
 
     def test_check_credentials_without_env_vars(self):
-        """Test credential checking fails without environment variables or default profile."""
+        """Test credential checking fails when the whole chain comes up empty."""
         with patch.dict("os.environ", {}, clear=True):
-            # Also mock the default profile fallback to return no credentials
             with patch(
-                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-                return_value=(None, None, None),
+                "geoparquet_io.core.upload.resolve_aws_credentials",
+                return_value=None,
             ):
                 ok, hint = check_credentials("s3://bucket/path")
                 assert ok is False
                 assert "S3 credentials not found" in hint
 
     def test_check_credentials_with_default_profile_fallback(self):
-        """Test credential checking falls back to default profile in ~/.aws/credentials."""
+        """Test credential checking passes on anything the chain resolves."""
         with patch.dict("os.environ", {}, clear=True):
-            # Mock the default profile to return valid credentials
             with patch(
-                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-                return_value=("access_key", "secret_key", "us-west-2"),
+                "geoparquet_io.core.upload.resolve_aws_credentials",
+                return_value={"access_key_id": "key", "secret_access_key": "secret"},
             ):
                 ok, hint = check_credentials("s3://bucket/path")
                 assert ok is True
@@ -331,7 +329,18 @@ class TestCredentialChecking:
 
 
 class TestS3EndpointConfiguration:
-    """Test suite for S3 endpoint configuration."""
+    """Test suite for S3 endpoint configuration.
+
+    resolve_aws_credentials is patched out: these tests are about store
+    construction, and the real resolver walks botocore's full chain, which
+    would execute ambient config (an assume-role or credential_process
+    profile) from a unit test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_credentials(self):
+        with patch("geoparquet_io.core.upload.resolve_aws_credentials", return_value=None):
+            yield
 
     def test_setup_store_with_custom_endpoint(self):
         """Test _setup_store_and_kwargs uses S3Store for custom endpoint."""
@@ -698,8 +707,8 @@ class TestCredentialValidationFunctions:
         """Test S3 credential check fails with helpful hint when no credentials."""
         with patch.dict(os.environ, {}, clear=True):
             with patch(
-                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-                return_value=(None, None, None),
+                "geoparquet_io.core.upload.resolve_aws_credentials",
+                return_value=None,
             ):
                 found, hint = _check_s3_credentials()
                 assert found is False
@@ -710,18 +719,19 @@ class TestCredentialValidationFunctions:
     def test_check_s3_credentials_with_profile_found(self):
         """Test S3 credential check with valid profile."""
         with patch(
-            "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-            return_value=("access_key", "secret_key", "us-west-2"),
-        ):
+            "geoparquet_io.core.upload.resolve_aws_credentials",
+            return_value={"access_key_id": "access_key", "secret_access_key": "secret_key"},
+        ) as mock_resolve:
             found, hint = _check_s3_credentials(profile="myprofile")
             assert found is True
             assert hint == ""
+            mock_resolve.assert_called_once_with("myprofile")
 
     def test_check_s3_credentials_with_profile_not_found(self):
         """Test S3 credential check fails with profile-specific hint."""
         with patch(
-            "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-            return_value=(None, None, None),
+            "geoparquet_io.core.upload.resolve_aws_credentials",
+            return_value=None,
         ):
             found, hint = _check_s3_credentials(profile="myprofile")
             assert found is False
@@ -730,11 +740,14 @@ class TestCredentialValidationFunctions:
             assert "[myprofile]" in hint
 
     def test_check_s3_credentials_falls_back_to_default_profile(self):
-        """Test S3 credential check falls back to default profile."""
+        """Test S3 credential check passes on the chain's default-profile result."""
         with patch.dict(os.environ, {}, clear=True):
             with patch(
-                "geoparquet_io.core.upload._load_aws_credentials_from_profile",
-                return_value=("default_key", "default_secret", None),
+                "geoparquet_io.core.upload.resolve_aws_credentials",
+                return_value={
+                    "access_key_id": "default_key",
+                    "secret_access_key": "default_secret",
+                },
             ):
                 found, hint = _check_s3_credentials()
                 assert found is True
