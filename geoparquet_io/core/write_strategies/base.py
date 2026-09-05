@@ -49,6 +49,74 @@ def resolve_geometry_columns(
     return columns
 
 
+def native_geometry_crs(
+    geoparquet_version: str,
+    geo_meta: dict | None,
+    geometry_column: str,
+    geometry_info: dict | None = None,
+) -> dict[str, dict | None]:
+    """Geometry columns needing a native Parquet GEOMETRY type, each with its CRS.
+
+    Empty below 2.0, where geometry is plain BYTE_ARRAY WKB and the CRS lives in
+    the ``geo`` block alone.
+
+    EVERY declared geometry column, not just the primary: 2.0 validation applies
+    the same requirement to each column in ``geo["columns"]``, and under
+    parquet-geo-only -- which writes no ``geo`` block at all -- the logical type
+    is a column's only geometry identity (#706).
+
+    Each CRS is read back out of the metadata just built for the file, so the
+    type and the block cannot disagree (``v2_crs_consistency``). A column the
+    block gives no ``crs`` is the spec default, and carries none in its type.
+
+    ``geo_meta`` is therefore the *output's* block, after ``apply_output_crs``
+    has resolved a requested ``input_crs`` against what the source declared --
+    never the source's own. Callers that write no block (parquet-geo-only) still
+    build one and key the types off it, because the alternative is what #848 was:
+    the primary column typed from an ``input_crs`` that is ``None`` on every
+    write except a reprojection, and so left bare beside a block declaring
+    EPSG:3857.
+
+    One definition, shared by every strategy: the streaming writer's output
+    schema, the disk-rewrite writer's, and the in-memory path in
+    ``common._apply_geoparquet_metadata``.
+    """
+    if geoparquet_version not in ("2.0", "parquet-geo-only"):
+        return {}
+
+    column_metadata = (geo_meta or {}).get("columns") or {}
+    return {
+        column: (column_metadata.get(column) or {}).get("crs")
+        for column in resolve_geometry_columns(geometry_column, geometry_info, geo_meta)
+    }
+
+
+def merge_secondary_geometry_metadata(geo_meta: dict, geometry_info: dict | None) -> None:
+    """Give every secondary geometry column an entry in ``geo["columns"]``.
+
+    Each secondary keeps the metadata the input declared for it -- crucially its
+    own ``crs``, which is what the native Parquet GEOMETRY type is then built
+    from -- and gains the ``encoding`` the spec requires when the input named
+    none. Existing keys win, so a caller that has already resolved something for
+    the column is not overwritten.
+
+    Mutates ``geo_meta`` in place. Shared by the three write paths that build a
+    block from ``geometry_info``: this module's ``build_geo_metadata``, the
+    streaming strategy's, and ``common._apply_geoparquet_metadata``.
+    """
+    if not geometry_info:
+        return
+
+    column_metadata = geometry_info.get("metadata") or {}
+    for sec_col in geometry_info.get("secondary") or ():
+        sec_meta = geo_meta.setdefault("columns", {}).setdefault(sec_col, {})
+        for key, value in column_metadata.get(sec_col, {}).items():
+            if key not in sec_meta:
+                sec_meta[key] = value
+        if "encoding" not in sec_meta:
+            sec_meta["encoding"] = "WKB"
+
+
 def build_geo_metadata(
     geometry_column: str,
     geoparquet_version: str,
@@ -136,27 +204,7 @@ def build_geo_metadata(
                 col_meta[key] = value
 
     # Handle secondary geometry columns from geometry_info
-    if geometry_info:
-        secondary_columns = geometry_info.get("secondary", [])
-        column_metadata = geometry_info.get("metadata", {})
-
-        for sec_col in secondary_columns:
-            if sec_col not in geo_meta["columns"]:
-                geo_meta["columns"][sec_col] = {}
-
-            sec_meta = geo_meta["columns"][sec_col]
-
-            # Copy metadata from input for secondary columns
-            if sec_col in column_metadata:
-                input_sec_meta = column_metadata[sec_col]
-                for key, value in input_sec_meta.items():
-                    # Preserve input metadata (crs, encoding, geometry_types, etc.)
-                    if key not in sec_meta:
-                        sec_meta[key] = value
-
-            # Ensure encoding is set (required by spec)
-            if "encoding" not in sec_meta:
-                sec_meta["encoding"] = "WKB"
+    merge_secondary_geometry_metadata(geo_meta, geometry_info)
 
     # 'covering' is 1.1-only: drop whatever the source file or custom_metadata carried
     return strip_unsupported_covering(geo_meta, geoparquet_version)
