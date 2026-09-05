@@ -884,17 +884,18 @@ def format_row_group_geo_stats(
 def _get_num_rows_per_row_group(parquet_file: str, file_meta: dict) -> dict[int, int]:
     """Get num_rows per row group from file metadata.
 
-    Takes a RAW path: ``_safe_url`` is the single SQL-escaping point.
+    Takes a RAW path: ``sql_path`` is the single SQL-escaping point.
 
     Returns a mapping of row_group_id to row count.
     """
-    from geoparquet_io.core.duckdb_metadata import _get_connection_for_file, _safe_url
+    from geoparquet_io.core.duckdb_metadata import _get_connection_for_file, _metadata_path
+    from geoparquet_io.core.duckdb_utils import sql_path
 
     connection, should_close = _get_connection_for_file(parquet_file)
     try:
         result = connection.execute(f"""
             SELECT row_group_id, row_group_num_rows
-            FROM parquet_metadata('{_safe_url(parquet_file)}')
+            FROM parquet_metadata({sql_path(_metadata_path(parquet_file))})
             GROUP BY row_group_id, row_group_num_rows
             ORDER BY row_group_id
         """).fetchall()

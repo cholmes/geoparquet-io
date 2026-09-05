@@ -2,16 +2,16 @@
 
 ``file_utils.safe_file_url()`` escapes a path for interpolation into SQL
 (``'`` -> ``''``) *and* validates that the raw path exists.
-``duckdb_metadata._safe_url()`` delegates to it, so every public
-``duckdb_metadata`` getter escapes its own ``parquet_file`` argument.
+Every public ``duckdb_metadata`` getter used to escape its own ``parquet_file``
+argument through it.
 
 Callers that passed their already-escaped ``safe_url`` into those getters
 therefore escaped twice: the getter re-escaped ``o''brien`` to ``o''''brien``,
 and ``safe_file_url``'s existence check then failed on the *escaped* string,
 raising ``FileNotFoundGeoParquetError`` for a file that is plainly there.
 
-The contract is now: ``safe_file_url``/``_safe_url`` is the single escape
-point, and every ``duckdb_metadata`` getter takes a RAW path.
+The contract is now: every ``duckdb_metadata`` getter takes a RAW path and
+escapes it exactly once, at the SQL boundary, through ``sql_path`` (#802).
 
 Issue #718 found three more paths of the same family:
 

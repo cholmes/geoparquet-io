@@ -23,8 +23,8 @@ from geoparquet_io.core.crs_utils import (
     is_crs84_identifier,
     is_default_crs,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.metadata_utils import (
     extract_bbox_from_row_group_stats,
 )
@@ -649,7 +649,7 @@ def get_preview_data(
         get_row_count,
     )
 
-    safe_url = safe_file_url(parquet_file, verbose=False)
+    raw_url = resolve_file_url(parquet_file, verbose=False)
     total_rows = get_row_count(parquet_file)
 
     # Create DuckDB connection
@@ -668,7 +668,7 @@ def get_preview_data(
 
         # Get all column names and DuckDB types from the parquet file
         schema_result = con.execute(
-            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('{safe_url}'))"
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet({sql_path(raw_url)}))"
         ).fetchall()
         all_columns = [row[0] for row in schema_result]
         col_types = {row[0]: row[1] for row in schema_result}
@@ -695,7 +695,7 @@ def get_preview_data(
             start_row = max(0, total_rows - tail)
             num_rows = min(tail, total_rows)
             query = (
-                f"SELECT {select_clause} FROM read_parquet('{safe_url}') "
+                f"SELECT {select_clause} FROM read_parquet({sql_path(raw_url)}) "
                 f"OFFSET {start_row} LIMIT {num_rows}"
             )
             mode = "tail"
@@ -703,7 +703,9 @@ def get_preview_data(
             # Read from start (default if head is None, use 10)
             num_rows = head if head is not None else 10
             num_rows = min(num_rows, total_rows)
-            query = f"SELECT {select_clause} FROM read_parquet('{safe_url}') LIMIT {num_rows}"
+            query = (
+                f"SELECT {select_clause} FROM read_parquet({sql_path(raw_url)}) LIMIT {num_rows}"
+            )
             mode = "head"
 
         # Execute query and convert to PyArrow table
@@ -778,7 +780,7 @@ def get_column_statistics(
     Returns:
         dict: Statistics per column
     """
-    safe_url = safe_file_url(parquet_file, verbose=False)
+    raw_url = resolve_file_url(parquet_file, verbose=False)
     con = get_duckdb_connection(load_httpfs=needs_httpfs(parquet_file))
 
     try:
@@ -794,7 +796,7 @@ def get_column_statistics(
                 query = f"""
                     SELECT
                         COUNT(*) FILTER (WHERE {quote_identifier(col_name)} IS NULL) as null_count
-                    FROM '{safe_url}'
+                    FROM {sql_path(raw_url)}
                 """
                 result = con.execute(query).fetchone()
                 stats[col_name] = {
@@ -811,7 +813,7 @@ def get_column_statistics(
                         MIN({quote_identifier(col_name)}) as min_val,
                         MAX({quote_identifier(col_name)}) as max_val,
                         APPROX_COUNT_DISTINCT({quote_identifier(col_name)}) as unique_count
-                    FROM '{safe_url}'
+                    FROM {sql_path(raw_url)}
                 """
                 try:
                     result = con.execute(query).fetchone()

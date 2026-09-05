@@ -20,7 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.crs_utils import geoarrow_crs_to_projjson
-from geoparquet_io.core.duckdb_utils import _escape_sql_string
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, sql_path
 from geoparquet_io.core.exceptions import GeoParquetError
 
 # =============================================================================
@@ -354,16 +354,21 @@ def _get_connection_for_file(parquet_file: str, existing_con=None, load_spatial=
         ), True
 
 
-def _safe_url(parquet_file: str) -> str:
-    """Get safe URL for DuckDB queries.
+def _metadata_path(parquet_file: str) -> str:
+    """Resolve the RAW path DuckDB should read for a metadata query.
 
     For partitioned datasets (directories or glob patterns), returns
     path to the first file for metadata operations that require a single file.
+
+    The result is **RAW**, not escaped: every caller hands it to
+    :func:`~geoparquet_io.core.duckdb_utils.sql_path`, which quotes and escapes
+    it in one step at the SQL boundary. Escaping here as well would double the
+    doubling (#802).
     """
     from geoparquet_io.core.file_utils import (
         get_first_parquet_file,
         is_partition_path,
-        safe_file_url,
+        resolve_file_url,
     )
 
     # For partitions, use first file for metadata operations
@@ -372,7 +377,7 @@ def _safe_url(parquet_file: str) -> str:
         if first_file:
             parquet_file = first_file
 
-    return safe_file_url(parquet_file, verbose=False)
+    return resolve_file_url(parquet_file, verbose=False)
 
 
 def get_kv_metadata(parquet_file: str, con=None) -> dict[bytes, bytes]:
@@ -393,14 +398,14 @@ def get_kv_metadata(parquet_file: str, con=None) -> dict[bytes, bytes]:
         return _pyarrow_get_kv_metadata(resolved_path)
 
     # Slow path: use DuckDB for remote files or when connection is provided
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
         # Get raw bytes to avoid DuckDB's VARCHAR escaping
         result = connection.execute(f"""
             SELECT key, value
-            FROM parquet_kv_metadata('{safe_url}')
+            FROM parquet_kv_metadata({sql_path(metadata_path)})
         """).fetchall()
 
         # Convert to dict with bytes keys for backward compatibility
@@ -445,14 +450,14 @@ def get_geo_metadata(parquet_file: str, con=None) -> dict | None:
         return _pyarrow_get_geo_metadata(resolved_path)
 
     # Slow path: use DuckDB for remote files or when connection is provided
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
         # Get raw bytes and decode manually to avoid DuckDB's VARCHAR escaping
         result = connection.execute(f"""
             SELECT value
-            FROM parquet_kv_metadata('{safe_url}')
+            FROM parquet_kv_metadata({sql_path(metadata_path)})
             WHERE key::VARCHAR = 'geo'
         """).fetchone()
 
@@ -497,12 +502,12 @@ def get_file_metadata(parquet_file: str, con=None) -> dict:
         return _pyarrow_get_file_metadata(resolved_path)
 
     # Slow path: use DuckDB for remote files or when connection is provided
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
         result = connection.execute(f"""
-            SELECT * FROM parquet_file_metadata('{safe_url}')
+            SELECT * FROM parquet_file_metadata({sql_path(metadata_path)})
         """).fetchone()
 
         columns = [desc[0] for desc in connection.description]
@@ -530,12 +535,12 @@ def get_schema_info(parquet_file: str, con=None) -> list[dict]:
         # Fall through to DuckDB if PyArrow couldn't handle the file
 
     # Slow path: use DuckDB for remote files or when connection is provided
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
         result = connection.execute(f"""
-            SELECT * FROM parquet_schema('{safe_url}')
+            SELECT * FROM parquet_schema({sql_path(metadata_path)})
         """).fetchall()
 
         columns = [desc[0] for desc in connection.description]
@@ -562,12 +567,12 @@ def get_usable_columns(parquet_file: str, con=None) -> list[dict]:
 
     Returns list of dicts with 'name' and 'type' keys.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
         result = connection.execute(f"""
-            DESCRIBE SELECT * FROM read_parquet('{safe_url}')
+            DESCRIBE SELECT * FROM read_parquet({sql_path(metadata_path)})
         """).fetchall()
 
         # DESCRIBE returns: (column_name, column_type, null, key, default, extra)
@@ -583,12 +588,12 @@ def get_row_group_metadata(parquet_file: str, con=None) -> list[dict]:
 
     Returns list of dicts with row_group_id, path_in_schema, stats_min, stats_max, etc.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
         result = connection.execute(f"""
-            SELECT * FROM parquet_metadata('{safe_url}')
+            SELECT * FROM parquet_metadata({sql_path(metadata_path)})
         """).fetchall()
 
         columns = [desc[0] for desc in connection.description]
@@ -616,7 +621,7 @@ def get_compression_stats(parquet_file: str, con=None) -> list[dict]:
         - uncompressed_bytes: Total uncompressed size in bytes
         - ratio: Compression ratio (uncompressed / compressed), rounded to 2 decimals
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
@@ -631,7 +636,7 @@ def get_compression_stats(parquet_file: str, con=None) -> list[dict]:
                     / NULLIF(SUM(total_compressed_size), 0),
                     2
                 ) AS ratio
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
             GROUP BY path_in_schema
             ORDER BY compressed_bytes DESC
         """).fetchall()
@@ -982,7 +987,7 @@ def get_bbox_from_row_group_stats(
     Queries parquet_metadata() for bbox columns (format: 'bbox, xmin' etc).
     Returns [xmin, ymin, xmax, ymax] or None if not available.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
@@ -1000,7 +1005,7 @@ def get_bbox_from_row_group_stats(
                     FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmax') as xmax,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
                     FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymax') as ymax
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
         """).fetchone()
 
         if result and all(v is not None for v in result):
@@ -1019,7 +1024,7 @@ def get_per_row_group_bbox_stats(
 
     Returns list of dicts with row_group_id, xmin, ymin, xmax, ymax.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
@@ -1037,7 +1042,7 @@ def get_per_row_group_bbox_stats(
                     FILTER (WHERE path_in_schema = '{escaped_bbox_col}, xmax') as xmax,
                 MAX(TRY_CAST(stats_max AS DOUBLE))
                     FILTER (WHERE path_in_schema = '{escaped_bbox_col}, ymax') as ymax
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
             GROUP BY row_group_id
             ORDER BY row_group_id
         """).fetchall()
@@ -1064,13 +1069,13 @@ def get_compression_info(parquet_file: str, column_name: str | None = None, con=
 
     Returns dict mapping column path to compression algorithm.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
         query = f"""
             SELECT DISTINCT path_in_schema, compression
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
         """
         if column_name:
             query += f" WHERE path_in_schema = '{_escape_sql_string(column_name)}'"
@@ -1088,7 +1093,7 @@ def get_row_group_stats_summary(parquet_file: str, con=None) -> dict:
 
     Returns dict with num_groups, total_rows, avg_rows_per_group, total_size, avg_group_size.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
@@ -1101,7 +1106,7 @@ def get_row_group_stats_summary(parquet_file: str, con=None) -> dict:
         result = connection.execute(f"""
             SELECT
                 SUM(total_compressed_size) as total_size
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
         """).fetchone()
 
         total_size = result[0] if result and result[0] else 0
@@ -1133,7 +1138,7 @@ def get_bloom_filter_info(parquet_file: str, con=None) -> list[dict]:
         - bloom_filter_coverage_pct: Percentage of row groups with bloom filters
         - total_bloom_filter_bytes: Total size of bloom filter data in bytes
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con, load_spatial=False)
 
     try:
@@ -1146,7 +1151,7 @@ def get_bloom_filter_info(parquet_file: str, con=None) -> list[dict]:
                     100.0 * COUNT(bloom_filter_offset) / COUNT(*), 1
                 ) AS bloom_filter_coverage_pct,
                 COALESCE(SUM(bloom_filter_length), 0) AS total_bloom_filter_bytes
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
             GROUP BY path_in_schema
             ORDER BY row_groups_with_bloom_filter DESC, path_in_schema
         """).fetchall()
@@ -1243,7 +1248,7 @@ def get_native_geo_stats_by_row_group(
         unreachable or corrupt file as the failure it is instead of diagnosing
         it as a missing geometry column.
     """
-    safe_url = _safe_url(parquet_file)
+    metadata_path = _metadata_path(parquet_file)
     connection, should_close = _get_connection_for_file(parquet_file, con)
 
     try:
@@ -1252,7 +1257,7 @@ def get_native_geo_stats_by_row_group(
         escaped_geom_col = _escape_sql_string(geometry_column)
         rows = connection.execute(f"""
             SELECT row_group_id, geo_bbox, geo_types
-            FROM parquet_metadata('{safe_url}')
+            FROM parquet_metadata({sql_path(metadata_path)})
             WHERE path_in_schema = '{escaped_geom_col}'
             ORDER BY row_group_id
         """).fetchall()

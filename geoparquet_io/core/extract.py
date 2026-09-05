@@ -27,6 +27,7 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     get_duckdb_connection_for_s3,
     quote_identifier,
+    sql_path,
     validate_where_clause,
 )
 from geoparquet_io.core.exceptions import (
@@ -37,7 +38,7 @@ from geoparquet_io.core.exceptions import (
 from geoparquet_io.core.file_utils import (
     handle_output_overwrite,
     is_partition_path,
-    safe_file_url,
+    resolve_file_url,
 )
 from geoparquet_io.core.geo_metadata import (
     backfill_derived_stats,
@@ -169,14 +170,14 @@ def _get_data_bounds(input_parquet: str, geometry_col: str) -> tuple | None:
     """Get actual data bounds from file."""
     try:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
-        safe_url = safe_file_url(input_parquet, verbose=False)
+        raw_url = resolve_file_url(input_parquet, verbose=False)
         result = con.execute(f"""
             SELECT
                 MIN(ST_XMin({quote_identifier(geometry_col)})) as xmin,
                 MIN(ST_YMin({quote_identifier(geometry_col)})) as ymin,
                 MAX(ST_XMax({quote_identifier(geometry_col)})) as xmax,
                 MAX(ST_YMax({quote_identifier(geometry_col)})) as ymax
-            FROM read_parquet('{safe_url}')
+            FROM read_parquet({sql_path(raw_url)})
         """).fetchone()
         con.close()
         if result and all(v is not None for v in result):
@@ -449,8 +450,8 @@ def get_schema_columns(input_parquet: str) -> list[str]:
     else:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
     try:
-        safe_url = safe_file_url(file_to_check, verbose=False)
-        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_url}')").fetchall()
+        raw_url = resolve_file_url(file_to_check, verbose=False)
+        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet({sql_path(raw_url)})").fetchall()
         return [row[0] for row in result]
     finally:
         con.close()
@@ -1013,7 +1014,7 @@ def _print_dry_run_output(
 
     duckdb_compression = compression.lower() if compression != "UNCOMPRESSED" else "uncompressed"
     display_query = f"""COPY ({query})
-TO '{output_parquet}'
+TO {sql_path(output_parquet)}
 (FORMAT PARQUET, COMPRESSION '{duckdb_compression}');"""
 
     info("-- Main query:")
@@ -1025,7 +1026,6 @@ def _execute_extraction(
     input_parquet: str,
     output_parquet: str,
     query: str,
-    safe_url: str,
     spatial_filter: str | None,
     where: str | None,
     limit: int | None,
@@ -1326,8 +1326,6 @@ def _extract_impl(
         allow_schema_diff=allow_schema_diff,
         hive_input=hive_input,
     )
-    safe_url = safe_file_url(input_parquet, verbose)
-
     if dry_run:
         _print_dry_run_output(
             input_parquet,
@@ -1348,7 +1346,6 @@ def _extract_impl(
             input_parquet,
             output_parquet,
             query,
-            safe_url,
             spatial_filter,
             where,
             limit,
