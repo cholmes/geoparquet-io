@@ -1578,6 +1578,24 @@ def _check_covering_bbox_paths(col_meta: dict, col_name: str) -> ValidationCheck
                 category="geoparquet_1_1",
             )
 
+    wrong_field = [k for k in required_keys if bbox_covering[k][1] != k]
+    if wrong_field:
+        return ValidationCheck(
+            name=f"covering_bbox_paths_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f"covering bbox path field must equal its key: {wrong_field}",
+            category="geoparquet_1_1",
+        )
+
+    columns = sorted({str(bbox_covering[k][0]) for k in required_keys})
+    if len(columns) > 1:
+        return ValidationCheck(
+            name=f"covering_bbox_paths_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f"covering bbox paths must name a single column (found: {columns})",
+            category="geoparquet_1_1",
+        )
+
     return ValidationCheck(
         name=f"covering_bbox_paths_{col_name}",
         status=CheckStatus.PASSED,
@@ -1631,10 +1649,17 @@ def _check_covering_bbox_column_exists(
     )
 
 
+_BBOX_FIELDS = {
+    4: ["xmin", "ymin", "xmax", "ymax"],
+    6: ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"],
+}
+
+
 def _check_covering_bbox_structure(
     col_meta: dict, col_name: str, schema_info: list
 ) -> ValidationCheck:
-    """Check 1.1-4/5: covering bbox column must be a struct with xmin/ymin/xmax/ymax."""
+    """Check 1.1-4/5: covering bbox column is a struct of xmin/ymin/xmax/ymax or
+    xmin/ymin/zmin/xmax/ymax/zmax, in that order."""
     covering = col_meta.get("covering")
 
     if covering is None or "bbox" not in covering:
@@ -1656,41 +1681,26 @@ def _check_covering_bbox_structure(
             category="geoparquet_1_1",
         )
 
-    # Find the bbox column and check its structure
-    required_fields = {"xmin", "ymin", "xmax", "ymax"}
-    found_fields = set()
-
+    found_fields = []
     for i, col in enumerate(schema_info):
         if col.get("name") == bbox_col_name:
             num_children = col.get("num_children") or 0
-            if num_children < 4:
-                return ValidationCheck(
-                    name=f"covering_bbox_structure_{col_name}",
-                    status=CheckStatus.FAILED,
-                    message=f"bbox column must have at least 4 children (has {num_children})",
-                    category="geoparquet_1_1",
-                )
-
-            # Get child field names
-            for j in range(1, num_children + 1):
-                if i + j < len(schema_info):
-                    child_name = schema_info[i + j].get("name", "")
-                    found_fields.add(child_name)
+            found_fields = [c.get("name") for c in schema_info[i + 1 : i + 1 + num_children]]
             break
 
-    missing = required_fields - found_fields
-    if missing:
+    if found_fields != _BBOX_FIELDS.get(len(found_fields)):
         return ValidationCheck(
             name=f"covering_bbox_structure_{col_name}",
             status=CheckStatus.FAILED,
-            message=f"bbox column missing required fields: {missing}",
+            message=f"bbox column fields must be {_BBOX_FIELDS[4]} or {_BBOX_FIELDS[6]}, "
+            f"in that order (found: {found_fields})",
             category="geoparquet_1_1",
         )
 
     return ValidationCheck(
         name=f"covering_bbox_structure_{col_name}",
         status=CheckStatus.PASSED,
-        message="bbox column has valid structure with xmin/ymin/xmax/ymax",
+        message=f"bbox column has valid structure with {'/'.join(found_fields)}",
         category="geoparquet_1_1",
     )
 
@@ -1727,7 +1737,7 @@ def _check_covering_bbox_field_types(
     for i, col in enumerate(schema_info):
         if col.get("name") == bbox_col_name:
             num_children = col.get("num_children") or 0
-            for j in range(1, min(num_children + 1, 5)):  # Check first 4 children
+            for j in range(1, num_children + 1):
                 if i + j < len(schema_info):
                     # Same trap as _check_geometry_byte_array: a group child's
                     # type is an explicit None, so `or ""` is the guard here too.
