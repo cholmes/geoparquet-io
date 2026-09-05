@@ -441,11 +441,28 @@ FRONT_DOOR_CASES: list[FrontDoorCase] = [
         id="add_kdtree",
         core_module=core_kdtree,
         core_name="add_kdtree_table",
+        # `iterations` and `auto` are mutually exclusive in core, but core is
+        # mocked out here, so one call can exercise both knobs. `auto=True` (not
+        # the default False, which would forward nothing) proves the wrappers
+        # translate `auto`/`target_rows` into core's `auto_target_rows` pair.
         ops_call=lambda t: ops.add_kdtree(
-            t, column_name="my_kd", iterations=5, sample_size=1000, geometry_column="geometry"
+            t,
+            column_name="my_kd",
+            iterations=5,
+            sample_size=1000,
+            geometry_column="geometry",
+            auto=True,
+            target_rows=50000,
         ),
-        table_call=lambda t: t.add_kdtree(column_name="my_kd", iterations=5, sample_size=1000),
-        expected={"kdtree_column_name": "my_kd", "iterations": 5, "sample_size": 1000},
+        table_call=lambda t: t.add_kdtree(
+            column_name="my_kd", iterations=5, sample_size=1000, auto=True, target_rows=50000
+        ),
+        expected={
+            "kdtree_column_name": "my_kd",
+            "iterations": 5,
+            "sample_size": 1000,
+            "auto_target_rows": ("rows", 50000),
+        },
         ops_only_expected={"geometry_column": "geometry"},
     ),
     # The two aggregators whose doors both import core inside the function body,
@@ -664,21 +681,51 @@ NOT_TABLE_IN_TABLE_OUT: dict[str, str] = {
 }
 
 
+#: Every public callable `dir(ops)` shows that `ops` did not itself define: the
+#: ``core.*_table`` functions it imports at module scope as delegation patch
+#: sites. Pinned because `_ops_public_surface` filters them out on
+#: ``__module__`` -- a filter that would just as silently swallow a *deliberate*
+#: public re-export (``from core.x import y as add_foo``), hiding it from every
+#: surface guard in this file. `test_core_leaks_through_ops_are_pinned` asserts
+#: the filtered-out set is exactly this list, so a new foreign-``__module__``
+#: public callable in `ops` must be classified here or given a real wrapper.
+OPS_CORE_PATCH_SITE_LEAKS: frozenset[str] = frozenset(
+    {
+        "add_a5_table",
+        "add_bbox_metadata_table",
+        "add_bbox_table",
+        "add_h3_table",
+        "add_kdtree_table",
+        "add_quadkey_table",
+        "add_s2_table",
+        "extract_table",
+        "hilbert_order_table",
+        "reproject_table",
+        "sort_by_column_table",
+        "sort_by_quadkey_table",
+        "str_order_table",
+    }
+)
+
+
+def _ops_dir_public_surface() -> set[str]:
+    """Every public callable ``dir(ops)`` shows, wherever it was defined."""
+    return {name for name in dir(ops) if not name.startswith("_") and callable(getattr(ops, name))}
+
+
 def _ops_public_surface() -> set[str]:
     """Every public callable `ops` itself defines.
 
     Filtered on ``__module__``: `ops` also imports a dozen ``core.*_table``
     functions at module scope so the delegation tests have a patch site, and
     those are core's surface leaking through ``dir()``, not the front door's.
+    The filtered-out remainder is pinned as `OPS_CORE_PATCH_SITE_LEAKS`.
     """
-    names: set[str] = set()
-    for name in dir(ops):
-        if name.startswith("_"):
-            continue
-        attribute = getattr(ops, name)
-        if callable(attribute) and getattr(attribute, "__module__", None) == ops.__name__:
-            names.add(name)
-    return names
+    return {
+        name
+        for name in _ops_dir_public_surface()
+        if getattr(getattr(ops, name), "__module__", None) == ops.__name__
+    }
 
 
 def _table_public_surface() -> set[str]:
@@ -719,6 +766,13 @@ OPS_ONLY_SURFACE: dict[str, str] = {
     "table to hand back (`from_wfs`, which returns one, is a shared name)",
     "get_row_group_geo_stats": "inspection helper: reads row-group stats off a path",
     "read_bigquery": "`Table.from_bigquery` <-> `ops.read_bigquery`, differently spelled twin",
+    # Directory sub-partitioning (#853) is deliberately `Table`-twin-less: the
+    # unit of work is a directory of files on disk, splitting each oversized one
+    # into a sibling tree -- there is no in-memory table on either end to wrap.
+    "sub_partition_by_a5": "acts on a directory on disk, not a table",
+    "sub_partition_by_h3": "acts on a directory on disk, not a table",
+    "sub_partition_by_quadkey": "acts on a directory on disk, not a table",
+    "sub_partition_by_s2": "acts on a directory on disk, not a table",
 }
 
 #: The public `Table` methods with no same-named `ops` function, same contract.
@@ -751,8 +805,12 @@ def _wrapper_knobs(wrapper: Callable) -> set[str]:
     return set(inspect.signature(wrapper).parameters) - {"self", "table"}
 
 
-def _recording(wrapper: Callable, supplied: set[str]) -> Callable:
-    """``wrapper``, recording into ``supplied`` which parameters a call names."""
+def _recording(wrapper: Callable, supplied: dict[str, Any]) -> Callable:
+    """``wrapper``, recording into ``supplied`` what a call names, and to what.
+
+    Bound without ``apply_defaults()``: only the parameters the call actually
+    names are recorded, with the values it passed for them.
+    """
     signature = inspect.signature(wrapper)
 
     @functools.wraps(wrapper)
@@ -761,6 +819,31 @@ def _recording(wrapper: Callable, supplied: set[str]) -> Callable:
         return wrapper(*args, **kwargs)
 
     return recorder
+
+
+def _assert_nothing_supplied_at_its_default(
+    wrapper: Callable, supplied: dict[str, Any], door: str
+) -> None:
+    """Each value a case supplies must differ from the wrapper's own default.
+
+    Naming a knob is not exercising it: a case that passes ``auto=False`` when
+    ``auto`` defaults to False satisfies the completeness check below while the
+    delegation comparison sees exactly what a dropped knob would produce -- so
+    both doors could ignore the knob and stay green.
+    """
+    parameters = inspect.signature(wrapper).parameters
+    at_default = sorted(
+        name
+        for name, value in supplied.items()
+        if name not in {"self", "table"}
+        and parameters[name].default is not inspect.Parameter.empty
+        and value == parameters[name].default
+    )
+    assert not at_default, (
+        f"{door} is passed its own default for {at_default}, which exercises "
+        f"nothing: the delegation comparison cannot tell that call from a dropped "
+        f"knob. Pass a non-default value."
+    )
 
 
 class TestFrontDoorDelegation:
@@ -837,7 +920,7 @@ class TestFrontDoorDelegation:
         not what its lambda appears to.
         """
         ops_wrapper = getattr(ops, case.id)
-        ops_supplied: set[str] = set()
+        ops_supplied: dict[str, Any] = {}
         with (
             patch.object(case.ops_patch_module, case.core_name, _CallRecorder(case.reference)),
             patch.object(ops, case.id, _recording(ops_wrapper, ops_supplied)),
@@ -845,20 +928,45 @@ class TestFrontDoorDelegation:
             case.ops_call(arrow_table)
 
         table_wrapper = getattr(Table, case.id)
-        table_supplied: set[str] = set()
+        table_supplied: dict[str, Any] = {}
         with (
             patch.object(case.core_module, case.core_name, _CallRecorder(case.reference)),
             patch.object(Table, case.id, _recording(table_wrapper, table_supplied)),
         ):
             case.table_call(gpio_table)
 
-        assert _wrapper_knobs(ops_wrapper) <= ops_supplied, (
+        assert _wrapper_knobs(ops_wrapper) <= set(ops_supplied), (
             f"ops.{case.id} takes options this case never sets, so both doors could "
-            f"drop them and stay green: {sorted(_wrapper_knobs(ops_wrapper) - ops_supplied)}"
+            f"drop them and stay green: {sorted(_wrapper_knobs(ops_wrapper) - set(ops_supplied))}"
         )
-        assert _wrapper_knobs(table_wrapper) <= table_supplied, (
+        assert _wrapper_knobs(table_wrapper) <= set(table_supplied), (
             f"Table.{case.id} takes options this case never sets, so both doors could "
-            f"drop them and stay green: {sorted(_wrapper_knobs(table_wrapper) - table_supplied)}"
+            f"drop them and stay green: "
+            f"{sorted(_wrapper_knobs(table_wrapper) - set(table_supplied))}"
+        )
+
+        # ...and setting a knob to its own default is as good as not setting it.
+        _assert_nothing_supplied_at_its_default(ops_wrapper, ops_supplied, f"ops.{case.id}")
+        _assert_nothing_supplied_at_its_default(table_wrapper, table_supplied, f"Table.{case.id}")
+
+    def test_core_leaks_through_ops_are_pinned(self):
+        """The ``__module__`` filter may hide only the known patch-site imports.
+
+        `_ops_public_surface` drops every public callable whose ``__module__``
+        is not `ops` -- which hides the ``core.*_table`` patch sites, but would
+        also hide a public *re-export* (``from core.x import y as add_foo``)
+        from every guard in this file: not a shared name, not a one-sided name,
+        just invisible. Pinning the filtered-out set makes any new
+        foreign-``__module__`` public callable a decision: wrap it in a real
+        `ops` function, or classify it here as a patch-site leak.
+        """
+        leaked = _ops_dir_public_surface() - _ops_public_surface()
+        assert leaked == OPS_CORE_PATCH_SITE_LEAKS, (
+            "`ops` exposes public callables defined elsewhere that the surface guards "
+            "cannot see.\n"
+            f"  new (write a real `ops` wrapper, or add to OPS_CORE_PATCH_SITE_LEAKS if it "
+            f"is only a patch site): {sorted(leaked - OPS_CORE_PATCH_SITE_LEAKS)}\n"
+            f"  pinned but gone: {sorted(OPS_CORE_PATCH_SITE_LEAKS - leaked)}"
         )
 
     def test_one_sided_public_names_are_acknowledged(self):
@@ -877,13 +985,15 @@ class TestFrontDoorDelegation:
             "the `ops`-only surface has drifted.\n"
             f"  unlisted (give `Table` a twin, or add an OPS_ONLY_SURFACE entry with the "
             f"reason): {sorted(ops_public - table_public - set(OPS_ONLY_SURFACE))}\n"
-            f"  listed but no longer ops-only: {sorted(set(OPS_ONLY_SURFACE) - ops_public)}"
+            f"  listed but no longer ops-only (gone, or grew a twin): "
+            f"{sorted(set(OPS_ONLY_SURFACE) - (ops_public - table_public))}"
         )
         assert table_public - ops_public == set(TABLE_ONLY_SURFACE), (
             "the `Table`-only surface has drifted.\n"
             f"  unlisted (give `ops` a twin, or add a TABLE_ONLY_SURFACE entry with the "
             f"reason): {sorted(table_public - ops_public - set(TABLE_ONLY_SURFACE))}\n"
-            f"  listed but no longer Table-only: {sorted(set(TABLE_ONLY_SURFACE) - table_public)}"
+            f"  listed but no longer Table-only (gone, or grew a twin): "
+            f"{sorted(set(TABLE_ONLY_SURFACE) - (table_public - ops_public))}"
         )
 
     def test_every_shared_operation_has_a_case(self):
