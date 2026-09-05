@@ -138,3 +138,22 @@ class TestGeometryTypesMatchStats:
         result = validate_geoparquet(path, validate_data=False)
         (check,) = [c for c in result.checks if c.name == "geometry_types_match_stats_geometry"]
         assert check.status == CheckStatus.FAILED
+
+
+class TestGeometryTypesMatchStatsEdges:
+    def test_wkb_integer_codes_are_mapped(self):
+        from geoparquet_io.core.validate import _stats_geometry_type_name
+
+        assert _stats_geometry_type_name(1001) == "Point Z"
+        assert _stats_geometry_type_name("multipolygon_zm") == "MultiPolygon ZM"
+
+    def test_remote_file_is_skipped(self):
+        check = _check_geometry_types_match_stats("s3://bucket/file.parquet", "geometry", ["Point"])
+        assert check.status == CheckStatus.SKIPPED
+
+    def test_unreadable_file_fails(self, tmp_path):
+        check = _check_geometry_types_match_stats(
+            str(tmp_path / "missing.parquet"), "geometry", ["Point"]
+        )
+        assert check.status == CheckStatus.FAILED
+        assert "could not read" in check.message
