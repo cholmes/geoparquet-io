@@ -67,8 +67,10 @@ class TestCoreExceptions:
     def test_geography_hint_offers_a5_and_never_a_forbidden_downgrade(self):
         """The 404 branch must be actionable without violating the pin (#778).
 
-        'geography' is published across gpio's DuckDB range again, so a 404 now
-        points at this machine, not at the registry. Either way the hint must
+        'geography' is published again for the newest DuckDB in gpio's supported
+        range (1.5.5, what uv.lock resolves), but not for every older patch
+        release — so a 404 can still mean the registry has no build for a
+        hand-pinned older DuckDB. Either way the hint must
         not tell a user to install duckdb 1.5.1: pyproject requires >=1.5.2, so
         that leaves `uv pip check` failing and any `uv sync` silently reverting
         it. `gpio add a5` is the substitute that works without S2.

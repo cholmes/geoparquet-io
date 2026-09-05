@@ -1585,9 +1585,10 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 - `column_name=` and `output_dir=` are refused: in directory mode each file gets
   its own sibling directory and the default index column name. Partition a single
   file with `ops.partition_by_<index>` if you need to control those.
-- `ops.sub_partition_by_s2` is wired but **unavailable in this release** — it
-  raises `ExtensionUnavailableError` before touching a file, like every other S2
-  entry point. Use `ops.sub_partition_by_a5`.
+- `ops.sub_partition_by_s2` uses the `geography` DuckDB community extension,
+  which gpio installs on first use; where that extension cannot load it raises
+  `ExtensionUnavailableError` before touching a file, like every other S2
+  entry point.
 
 ### Available Functions
 
@@ -1629,7 +1630,7 @@ The return value is a dict with `processed`, `skipped`, `errors`, `candidates`
 | `ops.sub_partition_by_h3(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, hive=False, overwrite=False, force=False, skip_analysis=False, compression='ZSTD', compression_level=None, ...)` | Split every file in a directory over `min_size` into H3 sub-partitions |
 | `ops.sub_partition_by_a5(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into A5 sub-partitions |
 | `ops.sub_partition_by_quadkey(directory, min_size, resolution=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into quadkey sub-partitions (use `auto=True`) |
-| `ops.sub_partition_by_s2(directory, min_size, level=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into S2 sub-partitions — **unavailable in this release**, use `ops.sub_partition_by_a5` |
+| `ops.sub_partition_by_s2(directory, min_size, level=None, auto=False, in_place=False, preview=False, ...)` | Split every file in a directory over `min_size` into S2 sub-partitions |
 | `ops.get_row_group_geo_stats(parquet_file)` | Per-row-group geo bbox statistics |
 | `ops.compression_stats(path)` | Per-column compression ratios |
 | `ops.explain_analyze(file_path, query=None)` | DuckDB EXPLAIN ANALYZE query plan |

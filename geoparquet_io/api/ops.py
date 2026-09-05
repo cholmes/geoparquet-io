@@ -1662,11 +1662,6 @@ def sub_partition_by_s2(
 
     Function form of `gpio partition s2 <dir>/ --min-size ...`.
 
-    **Unavailable in this release**: S2 needs the ``geography`` DuckDB community
-    extension, which is not published for the DuckDB version gpio requires
-    (#737). The call raises `ExtensionUnavailableError` once, before any file is
-    touched. Use `sub_partition_by_a5` instead.
-
     Args:
         directory: Directory of parquet files, searched recursively
         min_size: Size threshold -- ``'100MB'`` or a byte count
