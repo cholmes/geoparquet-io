@@ -972,6 +972,71 @@ _GEOARROW_EXTENSION_NAMES = frozenset(
 )
 
 
+def geoarrow_crs_to_projjson(crs: object) -> dict | str | None:
+    """Return an Arrow extension type's ``.crs`` as PROJJSON, or ``None``.
+
+    The single reader for "what is on ``field.type.crs``" — ``streaming``,
+    ``duckdb_metadata`` and :func:`_crs_from_extension_type` all delegate here so
+    the same object cannot resolve three different ways depending on which read
+    path touched it (issue #863).
+
+    ``geom_type.crs`` is whatever the extension type chose to hold. Once
+    ``geoarrow.pyarrow`` is imported, PyArrow resolves ``geoarrow.wkb`` fields
+    into real extension types and this is a ``geoarrow.types.crs.Crs`` object
+    (``ProjJsonCrs``, ``StringCrs``, or a ``pyproj.CRS``) — never a plain value.
+
+    Those objects must be read through their PROJJSON accessor. ``str()`` on one
+    returns its *repr* (``"ProjJsonCrs(OGC:CRS84)"``), which downstream code then
+    split on ``:`` into the fabricated identifier
+    ``{"id": {"authority": "PROJJSONCRS(OGC", "code": "CRS84)"}}`` — invalid
+    GeoParquet that gpio's own validator rejects (issue #816).
+
+    Unknown objects are rejected (``None`` + a warning) rather than stringified: a
+    repr is never a CRS, and inventing one writes a file that lies about its
+    coordinates. ``None`` lets the caller fall back to the ``geo`` metadata, which
+    is where the truth usually is; raising would fail an otherwise-fine read over
+    a metadata detail this function documents as optional. Every rejection warns,
+    so a CRS is never dropped silently.
+    """
+    if crs is None:
+        return None
+
+    # Already a usable representation: PROJJSON dict, or a string identifier
+    # such as "EPSG:3857" that callers normalise themselves. An *empty* dict or
+    # string is not a CRS — returning it would shadow the real `geo` metadata on
+    # the caller's ``is not None`` check, so it is rejected like any other
+    # unreadable value.
+    if isinstance(crs, dict | str):
+        return crs or None
+    if isinstance(crs, bytes | bytearray):
+        try:
+            decoded = crs.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            warn(f"Ignoring geometry CRS: {len(crs)} bytes that are not valid UTF-8 ({exc})")
+            return None
+        return decoded or None
+
+    # The geoarrow ``Crs`` protocol (and pyproj.CRS) expose PROJJSON directly:
+    # ``to_json_dict()`` returns a Mapping, ``to_json()`` the same as a string.
+    for accessor, parse in (("to_json_dict", dict), ("to_json", json.loads)):
+        method = getattr(crs, accessor, None)
+        if not callable(method):
+            continue
+        try:
+            resolved = parse(method())
+        except Exception as exc:  # pyproj lookup failure, malformed PROJJSON, ...
+            warn(f"Could not read PROJJSON from CRS object {type(crs).__name__}: {exc}")
+            return None
+        # An empty PROJJSON object is not a CRS; let the caller fall back.
+        return resolved if isinstance(resolved, dict) and resolved else None
+
+    warn(
+        f"Ignoring geometry CRS of unsupported type {type(crs).__name__}: it exposes no "
+        "PROJJSON accessor, and its text form is not a coordinate reference system."
+    )
+    return None
+
+
 def _crs_from_extension_type(field_type):
     """Extract a ``crs`` (PROJJSON dict/str) from a registered GeoArrow type.
 
@@ -983,12 +1048,9 @@ def _crs_from_extension_type(field_type):
     """
     if getattr(field_type, "extension_name", None) not in _GEOARROW_EXTENSION_NAMES:
         return None
-    crs_obj = getattr(field_type, "crs", None)
-    if crs_obj is not None and hasattr(crs_obj, "to_json_dict"):
-        try:
-            return crs_obj.to_json_dict()
-        except Exception:
-            pass
+    resolved = geoarrow_crs_to_projjson(getattr(field_type, "crs", None))
+    if resolved is not None:
+        return resolved
     ext_meta = getattr(field_type, "extension_metadata", None)
     if ext_meta:
         try:
