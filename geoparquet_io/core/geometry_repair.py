@@ -60,8 +60,8 @@ def _layered_invalid_count_sql(source_sql: str, parsed_expr: str) -> str:
     one WHERE clause segfaults DuckDB <= 1.5.1's spatial extension when the
     column contains NULLs: its TRY() applies the selection vector twice under
     conditional execution, reading uninitialized vector memory (issues #642 and
-    #737; fixed in DuckDB 1.5.2 — duckdb/duckdb-spatial#858 — which pyproject
-    now requires). Verified on issue #642's reproduction: projecting the parsed
+    #737; fixed in DuckDB 1.5.2 — duckdb/duckdb-spatial#858 — well below the
+    pyproject floor). Verified on issue #642's reproduction: projecting the parsed
     geometry first, filtering NULLs in a middle layer, and running
     ``ST_IsValid`` outermost is logically identical and crash-free.
 

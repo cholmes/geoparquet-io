@@ -48,7 +48,7 @@ uv sync --all-extras
 
 - **Python**: 3.10+
 - **PyArrow**: 12.0.0+
-- **DuckDB**: 1.5.0+
+- **DuckDB**: 1.5.5+
 
 All dependencies are installed automatically.
 

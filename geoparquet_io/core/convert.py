@@ -1123,7 +1123,7 @@ def _convert_csv_path(
     # the optimizer, causing repeated re-evaluation when downstream metadata
     # queries (ST_GeometryType, ST_XMin, etc.) wrap the query. Materializing
     # parses CSV once and eliminates the unsafe TRY() re-evaluation.
-    # pyproject now floors DuckDB at 1.5.2, which does not have that bug, so
+    # pyproject now floors DuckDB at 1.5.5, which does not have that bug, so
     # this full materialization is pure overhead on every supported version.
     # Left in place deliberately: removing it needs its own benchmarking.
     if skip_invalid and geom_info["type"] == "wkt":
