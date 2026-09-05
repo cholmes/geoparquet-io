@@ -1980,7 +1980,10 @@ class TestGMLResponseParsing:
             pytest.param(b"<html><body>Error</body></html>", False, id="html-error-page"),
             pytest.param(b"not xml at all", False, id="not-xml"),
             # A WFS FeatureCollection never carries a DTD, so any body that
-            # declares one is refused before it reaches the parser (issue #840).
+            # declares one is refused before it reaches the parser (issue
+            # #840). The fetch path raises a WFSError for these instead of
+            # calling this sniff at all; False here keeps the sniff itself
+            # safe for any caller.
             pytest.param(
                 b'<!DOCTYPE wfs:FeatureCollection [<!ENTITY x "y">]>'
                 b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
@@ -2029,6 +2032,96 @@ class TestGMLResponseParsing:
         start = time.perf_counter()
         assert _is_empty_gml_collection(_billion_laughs_gml()) is False
         assert time.perf_counter() - start < 1.0, "the DTD was handed to the parser"
+
+    def test_utf16_bomb_never_reaches_the_parser(self):
+        """A UTF-16 body must be refused before the ASCII DTD scan can miss it.
+
+        expat auto-detects UTF-16, so an entity bomb encoded that way carries no
+        ASCII ``<!doctype``/``<!entity`` bytes for the marker scan to find: it
+        sailed past the guard, was parsed, had its entities expanded, and --
+        with only text content inside the root -- was even reported as an empty
+        collection. The small expansion here stays under libexpat's
+        amplification threshold on purpose: on an unfixed build it parses
+        cleanly and returns True, so this asserts the refusal, not a parser
+        error.
+        """
+        from geoparquet_io.core.wfs import _is_empty_gml_collection
+
+        body = _billion_laughs_gml(levels=3).decode().encode("utf-16")
+        start = time.perf_counter()
+        assert _is_empty_gml_collection(body) is False
+        assert time.perf_counter() - start < 1.0, "the UTF-16 body was handed to the parser"
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(b"\xfe\xff\x00<\x00a\x00>", True, id="utf16-be-bom"),
+            pytest.param(b"\xff\xfe<\x00a\x00>\x00", True, id="utf16-le-bom"),
+            pytest.param(b"\x00\x00\xfe\xff", True, id="utf32-be-bom"),
+            pytest.param(b"\xff\xfe\x00\x00", True, id="utf32-le-bom"),
+            pytest.param(
+                '<?xml version="1.0"?><a/>'.encode("utf-16-le"),
+                True,
+                id="bomless-utf16-nul-in-prolog",
+            ),
+            pytest.param(
+                b'<?xml version="1.0"?><!DOCTYPE a><a/>',
+                True,
+                id="doctype",
+            ),
+            pytest.param(MOCK_EMPTY_GML_WFS20.encode(), False, id="utf8-empty-collection"),
+            pytest.param(MOCK_GML_RESPONSE.encode(), False, id="utf8-collection"),
+        ],
+    )
+    def test_xml_body_refusal(self, body, expected):
+        """DTDs and UTF-16/UTF-32 bodies are refused; plain UTF-8 GML is not."""
+        from geoparquet_io.core.wfs import _xml_body_must_be_refused
+
+        assert _xml_body_must_be_refused(body) is expected
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(
+                b'<?xml version="1.0"?>\n'
+                b"<!DOCTYPE wfs:FeatureCollection [<!ELEMENT a EMPTY>]>\n"
+                b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>',
+                id="ascii-doctype-empty-collection",
+            ),
+            pytest.param(_billion_laughs_gml(), id="ascii-entity-bomb"),
+            pytest.param(
+                _billion_laughs_gml(levels=3).decode().encode("utf-16"),
+                id="utf16-bom-entity-bomb",
+            ),
+            pytest.param(
+                _billion_laughs_gml(levels=3).decode().encode("utf-16-le"),
+                id="utf16-bomless-entity-bomb",
+            ),
+        ],
+    )
+    def test_refused_xml_raises_wfs_error_without_reaching_gdal(self, body):
+        """A DTD or UTF-16 body gets the clean error-page WFSError, never GDAL.
+
+        Two crash routes are closed at once. Falling through to GDAL is not a
+        safe default: a DOCTYPE'd *empty* FeatureCollection is a zero-layer GML
+        dataset, exactly the shape Linux ST_Read segfaults on instead of
+        raising. And a UTF-16 body used to slip past the ASCII DTD scan into
+        the sniffer's XML parse, entities and all. No legitimate WFS GetFeature
+        response has either shape (GML uses XML Schema, servers send UTF-8), so
+        both are refused with the standard error-page WFSError and its body
+        preview -- the tripwire proves ST_Read is never invoked.
+        """
+        from geoparquet_io.core import wfs as wfs_module
+
+        def _tripwire(*args, **kwargs):
+            raise AssertionError("refused XML body reached ST_Read")
+
+        with (
+            _mock_wfs_http_response(body, "text/xml"),
+            patch.object(wfs_module, "_gml_geometry_column", side_effect=_tripwire),
+            pytest.raises(wfs_module.WFSError, match="Expected a feature collection"),
+        ):
+            wfs_module._fetch_wfs_page("http://mock.wfs/wfs?service=WFS")
 
     def test_idless_features_get_null_fid(self):
         """Features without gml:id must get a NULL _wfs_fid, not GDAL's ''.

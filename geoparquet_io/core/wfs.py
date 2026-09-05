@@ -1675,9 +1675,45 @@ _DTD_MARKERS: Final = (b"<!doctype", b"<!entity")
 
 
 def _declares_a_dtd(body: bytes) -> bool:
-    """True when ``body`` declares a doctype or an entity, in any casing."""
+    """True when ``body`` declares a doctype or an entity, in any casing.
+
+    The scan is over ASCII bytes, so it only holds for ASCII-compatible
+    encodings -- which is why ``_xml_body_must_be_refused`` rejects UTF-16 and
+    UTF-32 bodies before relying on it.
+    """
     lowered = body.lower()
     return any(marker in lowered for marker in _DTD_MARKERS)
+
+
+# UTF-16/UTF-32 byte-order marks (the UTF-32 BE mark starts with NUL bytes and
+# is also caught by the prolog NUL scan; it is listed for completeness).
+_UTF16_UTF32_BOMS: Final = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")
+
+# How far into the body to look for NUL bytes. The XML prolog and root-element
+# open tag of any real response fall well inside this window, and in a UTF-16
+# or UTF-32 body every ASCII character in that window carries NUL padding.
+_XML_PROLOG_SNIFF_BYTES: Final = 256
+
+
+def _xml_body_must_be_refused(body: bytes) -> bool:
+    """True when an XML body may not be parsed -- or handed to GDAL -- at all.
+
+    Two shapes are refused, neither of which a legitimate WFS GetFeature
+    response can have:
+
+    - **A DTD** (``<!DOCTYPE``/``<!ENTITY`` in any casing). Every
+      entity-expansion attack (billion laughs, quadratic blowup) needs one --
+      a couple of kilobytes of nested ``<!ENTITY>`` definitions expand to
+      gigabytes on an expat built without amplification protection -- and GML
+      uses XML Schema, never a DTD (issue #840).
+    - **A UTF-16/UTF-32 body**: a byte-order mark, or NUL bytes in the prolog
+      region. expat auto-detects those encodings, so a UTF-16 payload carries
+      no ASCII ``<!doctype`` bytes for the marker scan to find yet still gets
+      its entities expanded; real servers send UTF-8/ASCII XML.
+    """
+    if body.startswith(_UTF16_UTF32_BOMS) or b"\x00" in body[:_XML_PROLOG_SNIFF_BYTES]:
+        return True
+    return _declares_a_dtd(body)
 
 
 def _is_empty_gml_collection(body: bytes) -> bool:
@@ -1690,21 +1726,19 @@ def _is_empty_gml_collection(body: bytes) -> bool:
     feature-bearing child goes to GDAL, keeping the error-page WFSError for
     genuinely broken bodies.
 
-    A body declaring a DTD is refused before it is parsed. Entity expansion is
-    the attack class that matters for untrusted XML -- a couple of kilobytes of
-    nested ``<!ENTITY>`` definitions expand to gigabytes on an expat built
-    without amplification protection, which the size cap does nothing about --
-    and every form of it needs a DTD. A WFS FeatureCollection never carries one,
-    so refusing it costs nothing: such a body takes the same route as any other
-    unrecognized one (issue #840).
+    A body ``_xml_body_must_be_refused`` rejects (a DTD, or a UTF-16/UTF-32
+    encoding that would smuggle one past the ASCII scan) never reaches the
+    parse below. ``_parse_gml_response`` refuses such bodies with a WFSError
+    before this sniff is consulted; the check is repeated here so the parse
+    stays safe for any caller.
     """
-    if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES or _declares_a_dtd(body):
+    if len(body) > _EMPTY_GML_SNIFF_MAX_BYTES or _xml_body_must_be_refused(body):
         return False
     try:
-        # nosec B314 - the body reaching this line declares no DTD (checked
-        # above), so no entity expansion is possible; stdlib ET never resolves
-        # external entities regardless; the body is capped at 1MB; and the parse
-        # only gates an empty-collection check whose fallback is GDAL.
+        # The body reaching this line declares no DTD and is ASCII-compatible
+        # (both checked above), so no entity expansion is possible; stdlib ET
+        # never resolves external entities regardless; the body is capped at
+        # 1MB; and the parse only gates an empty-collection check.
         root = ET.fromstring(body)  # nosec B314
     except ET.ParseError:
         return False
@@ -1770,12 +1804,21 @@ def _parse_gml_response(
     is kept, so everything downstream (repair, CRS validation, type inference,
     tile deduplication) works unchanged.
     """
+    # A DTD or a UTF-16/UTF-32 body is refused outright: no legitimate WFS
+    # GetFeature response has either shape (GML uses XML Schema; servers send
+    # UTF-8), and falling through to GDAL is not a safe default -- a DOCTYPE'd
+    # *empty* FeatureCollection is a zero-layer GML dataset, exactly the shape
+    # Linux ST_Read segfaults on instead of raising.
+    body = Path(tmp_path).read_bytes()
+    if _xml_body_must_be_refused(body):
+        raise _error_page_error(content_type, _read_body_preview(tmp_path))
+
     # Zero-feature collection: same shape the JSON path returns for an empty
     # ``features`` array (geometry-only, no _wfs_fid), so pagination and tiled
     # fetches see an empty page, not a failure. Decided from the bytes, before
     # ST_Read -- Linux GDAL segfaults on a zero-layer GML dataset. The
     # ``described is None`` branch is the fallback for platforms that raise.
-    if _is_empty_gml_collection(Path(tmp_path).read_bytes()):
+    if _is_empty_gml_collection(body):
         debug("Empty GML response, returning empty table")
         return pa.table({"geometry": pa.array([], type=pa.binary())})
 
