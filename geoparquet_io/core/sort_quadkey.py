@@ -32,6 +32,7 @@ from geoparquet_io.core.remote import (
     setup_aws_profile_if_needed,
     validate_profile_for_urls,
 )
+from geoparquet_io.core.sort_by_column import _sortable_columns
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
@@ -109,6 +110,7 @@ def sort_by_quadkey(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     memory_limit: str | None = None,
+    allow_schema_diff: bool = False,
 ) -> None:
     """
     Sort a GeoParquet file by quadkey column.
@@ -138,6 +140,9 @@ def sort_by_quadkey(
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
+        allow_schema_diff: For multi-file input, read the union of the files'
+            columns (DuckDB ``union_by_name``) instead of the first file's
+            schema, which silently drops any column the others add
     """
     configure_verbose(verbose)
     row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
@@ -174,6 +179,16 @@ def sort_by_quadkey(
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
 
+    # A directory has to become the glob over its files before anything reads
+    # it (#817). `input_parquet` itself stays raw: it is what messages quote and
+    # what the multi-file stats guard below is asked about. The options travel
+    # with the path: dropping them left hive keys to DuckDB's auto-detect,
+    # which agrees only by coincidence (#867). Resolving first also means an
+    # empty directory is named as one, rather than reaching the schema read
+    # below and coming back as "Cannot read schema: <dir> ... is a directory".
+    actual_input, read_options = resolve_read_path(input_parquet, verbose=verbose)
+    hive_input: bool | None = True if read_options.get("hive_partitioning") else None
+
     # Check if quadkey column exists
     column_names = get_column_names(input_parquet)
     column_exists = quadkey_column_name in column_names
@@ -181,10 +196,6 @@ def sort_by_quadkey(
 
     # Track if we created a temporary file with quadkey
     temp_file = None
-    # A directory has to become the glob over its files before anything reads
-    # it (#817). `input_parquet` itself stays raw: it is what messages quote and
-    # what the multi-file stats guard below is asked about.
-    actual_input = resolve_read_path(input_parquet, verbose=verbose)[0]
 
     if not column_exists:
         if not using_default_name:
@@ -223,8 +234,14 @@ def sort_by_quadkey(
                 row_group_size_mb=None,
                 row_group_rows=None,
                 profile=profile,
+                allow_schema_diff=allow_schema_diff,
+                hive_input=hive_input,
             )
+            # The scratch file already holds the union (and the materialised
+            # hive keys), so the sort below reads it as the plain single file
+            # it is.
             actual_input = temp_file
+            hive_input = None
             if verbose:
                 debug(f"Quadkey column added successfully at resolution {resolution}")
         except Exception as e:
@@ -240,13 +257,23 @@ def sort_by_quadkey(
         debug(f"Using existing quadkey column '{quadkey_column_name}'")
 
     # Get metadata from input file (use actual_input in case we added quadkey)
-    read_expr = build_read_parquet_expr(actual_input, verbose=verbose)
+    read_expr = build_read_parquet_expr(
+        actual_input,
+        allow_schema_diff=allow_schema_diff,
+        hive_input=hive_input,
+        verbose=verbose,
+    )
     metadata, _ = get_parquet_metadata(actual_input, verbose)
 
-    # Get usable columns for building SELECT clause
-    usable_cols = get_usable_columns(actual_input)
-    existing_columns = [c["name"] for c in usable_cols]
+    # Get the columns for building the SELECT clause. Under --allow-schema-diff
+    # the read expression carries union_by_name, so the list must describe the
+    # read itself rather than the first file -- or the remove-column branch
+    # silently drops the very columns the flag was turned on to keep.
+    existing_columns = _sortable_columns(actual_input, read_expr, allow_schema_diff)
 
+    # Bound before the try: the `finally` below closes it, and a constructor
+    # that throws would otherwise be masked by an UnboundLocalError (#867).
+    con = None
     try:
         # Create DuckDB connection
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(actual_input))
@@ -305,7 +332,8 @@ def sort_by_quadkey(
         raise_for_schema_mismatch(e, input_parquet)
         raise
     finally:
-        con.close()
+        if con:
+            con.close()
         # Clean up temp file if we created one
         if temp_file and os.path.exists(temp_file):
             if verbose:

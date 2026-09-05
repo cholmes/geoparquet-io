@@ -537,6 +537,23 @@ def partition_options(func):
     return func
 
 
+def allow_schema_diff_option(func):
+    """Add --allow-schema-diff to a command that reads multi-file input.
+
+    One definition, shared: `extract` and the two sorts that accept a directory
+    (`sort column`, `sort quadkey`) must spell this flag and its help text
+    identically, or the same opt-in reads as two different features (#867).
+    The sorts take no `--hive-input`, so this is a separate decorator rather
+    than part of `partition_input_options`.
+    """
+    return click.option(
+        "--allow-schema-diff",
+        is_flag=True,
+        help="Combine files with different schemas (fills NULL for missing columns). "
+        "Default: strict schema matching (all files must have same schema).",
+    )(func)
+
+
 def partition_input_options(func):
     """
     Add options for reading partitioned input data.
@@ -545,12 +562,7 @@ def partition_input_options(func):
     - --allow-schema-diff: Combine files with different schemas (fills NULL for missing columns)
     - --hive-input: Explicitly enable hive partitioning on input
     """
-    func = click.option(
-        "--allow-schema-diff",
-        is_flag=True,
-        help="Combine files with different schemas (fills NULL for missing columns). "
-        "Default: strict schema matching (all files must have same schema).",
-    )(func)
+    func = allow_schema_diff_option(func)
     func = click.option(
         "--hive-input",
         is_flag=True,

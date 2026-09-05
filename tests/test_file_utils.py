@@ -21,6 +21,7 @@ from geoparquet_io.core.file_utils import (
     _get_file_cache_key,
     get_all_parquet_files,
     get_first_parquet_file,
+    guard_output_not_read_as_input,
     handle_output_overwrite,
     has_glob_pattern,
     is_partition_path,
@@ -353,6 +354,113 @@ class TestHandleOutputOverwrite:
     def test_none_output_path_ok(self):
         """None output path does nothing."""
         handle_output_overwrite(None, overwrite=False)
+
+
+# =============================================================================
+# Tests for guard_output_not_read_as_input()
+# =============================================================================
+
+
+@pytest.fixture
+def parts_dir(tmp_path):
+    """A directory holding two parquet files, plus a sibling output directory."""
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    (parts / "a.parquet").write_bytes(b"a")
+    (parts / "b.parquet").write_bytes(b"b")
+    (tmp_path / "out").mkdir()
+    return parts
+
+
+class TestGuardOutputNotReadAsInput:
+    """An output written into the input dataset is refused (#867).
+
+    A directory or glob input is re-globbed on every run, so an output written
+    inside it joins the dataset: the next run reads its own previous output
+    back and duplicates every row it holds. Nothing downstream can notice --
+    the read succeeds and the counts merely grow -- so the write is refused up
+    front, before anything is created.
+    """
+
+    def test_output_inside_input_directory_raises(self, parts_dir):
+        with pytest.raises(GeoParquetError) as exc:
+            guard_output_not_read_as_input(str(parts_dir), str(parts_dir / "sorted.parquet"))
+        message = str(exc.value)
+        assert "sorted.parquet" in message
+        assert str(parts_dir) in message
+        assert "somewhere else" in message
+
+    def test_output_deeper_inside_input_directory_raises(self, parts_dir):
+        nested = parts_dir / "nested"
+        nested.mkdir()
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            guard_output_not_read_as_input(str(parts_dir), str(nested / "sorted.parquet"))
+
+    def test_trailing_separator_on_the_directory_still_raises(self, parts_dir):
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            guard_output_not_read_as_input(
+                f"{parts_dir}{os.sep}", str(parts_dir / "sorted.parquet")
+            )
+
+    def test_output_matching_input_glob_raises(self, parts_dir):
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            guard_output_not_read_as_input(
+                str(parts_dir / "*.parquet"), str(parts_dir / "sorted.parquet")
+            )
+
+    def test_output_matching_recursive_input_glob_raises(self, parts_dir):
+        nested = parts_dir / "nested"
+        nested.mkdir()
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            guard_output_not_read_as_input(
+                str(parts_dir / "**" / "*.parquet"), str(nested / "sorted.parquet")
+            )
+
+    def test_output_the_input_glob_does_not_match_is_allowed(self, parts_dir):
+        """``parts/*.parquet`` is not read recursively, so a subdirectory is safe."""
+        nested = parts_dir / "nested"
+        nested.mkdir()
+        guard_output_not_read_as_input(str(parts_dir / "*.parquet"), str(nested / "sorted.parquet"))
+
+    def test_output_with_another_extension_under_the_glob_is_allowed(self, parts_dir):
+        guard_output_not_read_as_input(str(parts_dir / "*.parquet"), str(parts_dir / "sorted.fgb"))
+
+    def test_sibling_directory_output_is_allowed(self, parts_dir):
+        guard_output_not_read_as_input(str(parts_dir), str(parts_dir.parent / "out" / "s.parquet"))
+
+    def test_single_file_input_is_not_this_guard_s_business(self, tmp_path):
+        """A single file input names exactly one file; the equality check in
+        handle_output_overwrite covers it, and writing next to it is fine."""
+        single = tmp_path / "in.parquet"
+        single.write_bytes(b"x")
+        guard_output_not_read_as_input(str(single), str(tmp_path / "out.parquet"))
+        guard_output_not_read_as_input(str(single), str(single))
+
+    def test_missing_paths_and_streams_are_ignored(self, parts_dir):
+        guard_output_not_read_as_input(None, str(parts_dir / "s.parquet"))
+        guard_output_not_read_as_input(str(parts_dir), None)
+        guard_output_not_read_as_input(str(parts_dir), "-")
+        guard_output_not_read_as_input("-", str(parts_dir / "s.parquet"))
+
+    def test_remote_paths_are_ignored(self, parts_dir):
+        """Remote datasets are not enumerated here; nothing local to compare."""
+        guard_output_not_read_as_input("s3://bucket/parts/", "s3://bucket/parts/out.parquet")
+        guard_output_not_read_as_input(str(parts_dir), "s3://bucket/out.parquet")
+
+    def test_handle_output_overwrite_refuses_before_the_output_exists(self, parts_dir):
+        """The very first run must be refused: the file it would create is the
+        one that poisons the dataset, and it does not exist yet."""
+        target = parts_dir / "sorted.parquet"
+        assert not target.exists()
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            handle_output_overwrite(str(target), overwrite=False, input_path=str(parts_dir))
+
+    def test_overwrite_does_not_bypass_the_guard(self, parts_dir):
+        target = parts_dir / "sorted.parquet"
+        target.write_bytes(b"stale")
+        with pytest.raises(GeoParquetError, match="somewhere else"):
+            handle_output_overwrite(str(target), overwrite=True, input_path=str(parts_dir))
+        assert target.exists(), "a refused write must not delete anything"
 
 
 # =============================================================================

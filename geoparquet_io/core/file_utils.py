@@ -3,9 +3,10 @@ File path utilities for GeoParquet files.
 """
 
 import contextlib
+import fnmatch
 import glob as glob_module
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from geoparquet_io.core.duckdb_utils import _escape_sql_string
 from geoparquet_io.core.exceptions import (
@@ -154,11 +155,99 @@ def validate_parquet_extension(output_file: str, any_extension: bool = False) ->
         )
 
 
+def _match_path_segments(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
+    """True when ``path``'s segments satisfy glob ``pattern``'s segments.
+
+    Segment-aware on purpose: :func:`fnmatch.fnmatch` on whole paths lets a
+    single ``*`` swallow separators, which would call ``parts/sub/out.parquet``
+    a match for ``parts/*.parquet`` -- a pattern DuckDB does not read
+    recursively. Only ``**`` spans segments, and it spans zero or more.
+    """
+    if not pattern:
+        return not path
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return any(_match_path_segments(rest, path[i:]) for i in range(len(path) + 1))
+    if not path or not fnmatch.fnmatchcase(path[0], head):
+        return False
+    return _match_path_segments(rest, path[1:])
+
+
+def _absolute_glob_segments(pattern: str) -> tuple[str, ...]:
+    """Absolute segments of a glob, its magic-free prefix symlink-resolved.
+
+    Only the leading directories can be resolved: ``Path.resolve()`` on a
+    pattern would treat ``*`` as a literal directory name, and the answer has
+    to be comparable with a resolved output path (``/var`` vs ``/private/var``
+    on macOS is exactly this trap).
+    """
+    parts = PurePath(pattern).parts
+    first_magic = next((i for i, p in enumerate(parts) if has_glob_pattern(p)), len(parts))
+    return (*Path(*parts[:first_magic]).resolve().parts, *parts[first_magic:])
+
+
+def _output_is_read_as_input(input_path: str, output_path: str) -> bool:
+    """Would a multi-file read of ``input_path`` pick ``output_path`` up?"""
+    output = Path(output_path).resolve()
+    if os.path.isdir(input_path):
+        return Path(input_path).resolve() in output.parents
+    return _match_path_segments(_absolute_glob_segments(input_path), output.parts)
+
+
+def guard_output_not_read_as_input(input_path: str | None, output_path: str | None) -> None:
+    """Refuse an output the *next* run would read back as part of its input.
+
+    A directory or glob input is re-expanded on every run, so an output written
+    inside it joins the dataset. The second run then reads its own first output
+    back and every row it holds is counted twice -- exit 0, no warning, and the
+    counts merely grow (#867). ``--overwrite`` is no defence either: the stale
+    output is read before it is replaced.
+
+    Nothing downstream can notice, because the read genuinely succeeds. So the
+    write is refused up front, before the first run creates the file that
+    poisons the dataset -- which is why this runs whether or not the output
+    already exists.
+
+    Single-file inputs are not this guard's business: they name exactly one
+    file, and :func:`handle_output_overwrite`'s equality check already covers
+    writing over it. Remote paths are skipped -- gpio does not enumerate them
+    here, so there is nothing local to compare.
+
+    Args:
+        input_path: The RAW input path the user gave (file, directory or glob)
+        output_path: The output path the command is about to write
+
+    Raises:
+        GeoParquetError: When the output lies inside the input directory, or
+            matches the input glob.
+    """
+    from geoparquet_io.core.remote import is_remote_url
+
+    if not input_path or not output_path or "-" in (input_path, output_path):
+        return
+    if is_remote_url(input_path) or is_remote_url(output_path):
+        return
+    if not is_partition_path(input_path) or not _output_is_read_as_input(input_path, output_path):
+        return
+
+    where = "inside the input directory" if os.path.isdir(input_path) else "matched by the input"
+    raise GeoParquetError(
+        f"Output '{output_path}' is {where} '{input_path}'.\n\n"
+        "Writing it there would add it to the dataset, so the next run would "
+        "read it back as input and count every row twice.\n\n"
+        "Write the output somewhere else, outside the input dataset."
+    )
+
+
 def handle_output_overwrite(
     output_path: str | None, overwrite: bool, input_path: str | None = None
 ) -> None:
     if not output_path:
         return
+
+    # Before the existence check: on the FIRST run the offending file does not
+    # exist yet, and creating it is what breaks every later run (#867).
+    guard_output_not_read_as_input(input_path, output_path)
 
     output_file = Path(output_path)
 

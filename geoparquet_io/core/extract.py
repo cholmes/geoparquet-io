@@ -51,6 +51,7 @@ from geoparquet_io.core.geometry_detection import (
 )
 from geoparquet_io.core.geometry_repair import repair_query_geometry
 from geoparquet_io.core.logging_config import debug, info, progress, success, warn
+from geoparquet_io.core.partition.reader import require_parquet_files
 from geoparquet_io.core.remote import (
     _sanitize_url_for_logging,
     is_remote_url,
@@ -1291,6 +1292,10 @@ def _extract_impl(
         )
 
     # File-based mode
+    # Every read below goes at the first file's footer, so an empty dataset has
+    # to be named here -- the shared resolver only sees it once the read
+    # expression is built, several DuckDB errors too late (#867).
+    require_parquet_files(input_parquet)
     all_columns = get_schema_columns(input_parquet)
     geometry_col = find_primary_geometry_column(input_parquet, verbose)
     bbox_info = check_bbox_structure(input_parquet, verbose=False)

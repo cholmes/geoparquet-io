@@ -265,6 +265,59 @@ result would make conformant readers skip data.
 `sort hilbert` and `sort str` take a single file only; they stop with a message
 pointing at `gpio extract` to consolidate first.
 
+### Write the output somewhere else
+
+The output must land **outside** the input directory (and must not match the
+input glob). A directory input is re-expanded on every run, so an output left
+inside it joins the dataset: the next run reads its own previous output back
+and counts every row twice. gpio refuses that write up front — including under
+`--overwrite`, which would otherwise read the stale output while replacing it.
+
+<!-- doctest: skip="needs a directory of parquet files the sample data does not have" -->
+```bash
+# Refused: sorted.parquet would become part of parts/
+gpio sort column parts/ parts/sorted.parquet name
+
+# Fine
+gpio sort column parts/ sorted/places.parquet name
+```
+
+### Files with different columns
+
+By default the files must share one schema, and DuckDB reads them all as the
+first file's — so a column only some files carry is dropped without a word.
+`--allow-schema-diff` reads the union instead, filling `NULL` where a file has
+no such column. It is the same flag, spelled the same way, that `gpio extract`
+takes:
+
+=== "CLI"
+
+    <!-- doctest: skip="needs a directory of parquet files the sample data does not have" -->
+    ```bash
+    gpio sort column parts/ sorted.parquet name --allow-schema-diff
+
+    gpio sort quadkey parts/ sorted.parquet --allow-schema-diff
+    ```
+
+=== "Python"
+
+    <!-- doctest: skip="needs a directory of parquet files the sample data does not have" -->
+    ```python
+    import geoparquet_io as gpio
+
+    gpio.read_partition('parts/', allow_schema_diff=True) \
+        .sort_column('name') \
+        .write('sorted.parquet', row_group_rows=50000)
+    ```
+
+Files that disagree about the *same* column — a geometry column named
+`geometry` in one and `geom` in another — are not reconciled by the flag, and
+never silently: gpio stops and points at `gpio extract ... --allow-schema-diff`
+to merge them into one file first.
+
+An empty directory, or a glob that matches nothing, fails with
+`No .parquet files found in: <path>`.
+
 ## Output Format
 
 The output file:

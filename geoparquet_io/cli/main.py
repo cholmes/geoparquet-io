@@ -12,6 +12,7 @@ from click_plugins import with_plugins
 from geoparquet_io.cli.decorators import (
     GlobAwareCommand,
     SingleFileCommand,
+    allow_schema_diff_option,
     any_extension_option,
     aws_profile_option,
     bucket_point_options,
@@ -3808,6 +3809,7 @@ def str_order_command(
     is_flag=True,
     help="Sort in descending order (default: ascending)",
 )
+@allow_schema_diff_option
 @output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
@@ -3821,6 +3823,7 @@ def sort_column(
     output_parquet,
     columns,
     descending,
+    allow_schema_diff,
     compression,
     compression_level,
     row_group_size,
@@ -3865,6 +3868,7 @@ def sort_column(
             geoparquet_version=geoparquet_version,
             overwrite=overwrite,
             memory_limit=write_memory,
+            allow_schema_diff=allow_schema_diff,
         )
 
 
@@ -3892,6 +3896,7 @@ def sort_column(
     is_flag=True,
     help="Exclude quadkey column from output after sorting",
 )
+@allow_schema_diff_option
 @output_format_options(default_rows=DEFAULT_SORT_ROW_GROUP_ROWS)
 @geoparquet_version_option
 @overwrite_option
@@ -3907,6 +3912,7 @@ def sort_quadkey(
     resolution,
     use_centroid,
     remove_quadkey_column,
+    allow_schema_diff,
     compression,
     compression_level,
     row_group_size,
@@ -3952,6 +3958,7 @@ def sort_quadkey(
             geoparquet_version=geoparquet_version,
             overwrite=overwrite,
             memory_limit=write_memory,
+            allow_schema_diff=allow_schema_diff,
         )
 
 

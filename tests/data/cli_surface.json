@@ -12643,6 +12643,22 @@
        "is_flag": true,
        "metavar": null,
        "multiple": false,
+       "name": "allow_schema_diff",
+       "nargs": 1,
+       "opts": [
+        "--allow-schema-diff"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "metavar": null,
+       "multiple": false,
        "name": "any_extension",
        "nargs": 1,
        "opts": [
@@ -13102,6 +13118,22 @@
      "hidden": false,
      "kind": "command",
      "params": [
+      {
+       "default": "False",
+       "hidden": false,
+       "is_flag": true,
+       "metavar": null,
+       "multiple": false,
+       "name": "allow_schema_diff",
+       "nargs": 1,
+       "opts": [
+        "--allow-schema-diff"
+       ],
+       "param_type": "Option",
+       "required": false,
+       "secondary_opts": [],
+       "type": "boolean"
+      },
       {
        "default": "False",
        "hidden": false,

@@ -19,6 +19,25 @@ from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.remote import is_remote_url
 
 
+def require_parquet_files(path: str) -> None:
+    """Name the empty dataset, rather than letting DuckDB blame its reader.
+
+    An empty directory reached DuckDB as the directory itself and came back as
+    ``Cannot read file: <dir> ... is a directory`` -- true, and no help at all
+    in finding out that the directory simply holds nothing to read (#867). A
+    glob that matches nothing is the same question with a different spelling.
+
+    Remote paths are left alone: :func:`get_all_parquet_files` cannot enumerate
+    them, and reports the URL itself as the single match.
+    """
+    from geoparquet_io.core.exceptions import GeoParquetError
+
+    if is_remote_url(path):
+        return
+    if not get_all_parquet_files(path):
+        raise GeoParquetError(f"No .parquet files found in: {path}")
+
+
 def resolve_read_path(
     path: str,
     hive_input: bool | None = None,
@@ -47,10 +66,14 @@ def resolve_read_path(
 
     Returns:
         tuple: (raw path for DuckDB, read_parquet options dict)
+
+    Raises:
+        GeoParquetError: When a local directory or glob holds no parquet files.
     """
     if not is_partition_path(path):
         return path, {}
 
+    require_parquet_files(path)
     resolved_path, auto_options = resolve_partition_path(path, hive_input)
     if verbose:
         debug(f"Resolved partition path: {resolved_path}")
