@@ -29,20 +29,22 @@ dependencies = [
     "click>=8.0.0",
     "click-plugins>=1.1.1",  # Plugin system for extending CLI
     "pyarrow>=23.0.1",  # PYSEC-2026-113 fix
-    # Floor at 1.5.2: DuckDB <= 1.5.1 applies the selection vector twice in TRY()
-    # under conditional execution (duckdb/duckdb-spatial#858), so TRY() over a
-    # blob segfaults and over a fixed-width type can silently return another
-    # row's value. That crashed geometry repair on ordinary extractions (#737)
-    # and is why core/geometry_repair.py counts invalid geometry in layers (#645).
+    # Floor at 1.5.5: it is the DuckDB release the 'geography' community
+    # extension is published for, so S2 (`gpio add s2`, `gpio partition s2`)
+    # works on every supported version rather than only some of them (#737).
+    # The floor also has to stay above 1.5.1, which applies the selection vector
+    # twice in TRY() under conditional execution (duckdb/duckdb-spatial#858):
+    # TRY() over a blob segfaults and over a fixed-width type can silently
+    # return another row's value, crashing geometry repair on ordinary
+    # extractions (#737) and why core/geometry_repair.py counts invalid
+    # geometry in layers (#645).
     #
-    # The floor briefly cost S2: the 'geography' community extension would not
-    # build past DuckDB 1.5.1 (a plan_serializer link error). That was fixed
-    # upstream and 'geography' is published for DuckDB 1.5.5 -- what uv.lock
-    # resolves -- so `gpio add s2` / `gpio partition s2` work again (#737).
-    # Community extensions are built per DuckDB release, so a hand-pinned
-    # 1.5.2-1.5.4 still has no build; core/duckdb_utils.require_community_extension
-    # fails fast and says so.
-    "duckdb>=1.5.2,<1.6",
+    # The <1.6 cap is unchanged from #778. Keeping it is what makes the S2
+    # claim above hold: community extensions are built per DuckDB release, so
+    # if 1.6 ships before 'geography' is published for it, an uncapped range
+    # would let `uv sync` pull a DuckDB that silently breaks S2. Lift it in a
+    # deliberate step once 1.6 exists and the extension is published for it.
+    "duckdb>=1.5.5,<1.6",
     "pandas>=1.0.0",
     "fsspec>=2023.9.0",
     "rich>=13.0.0",

@@ -167,10 +167,12 @@ def is_unpublished_extension_error(exc: BaseException | str | None) -> bool:
 # cannot say.
 _UNPUBLISHED_EXTENSION_HINTS = {
     "geography": (
-        "'geography' is published for the newest DuckDB in gpio's supported "
-        "range but not for every older patch release in it, so upgrading DuckDB "
-        "is usually the fix. For a hierarchical cell index that works meanwhile, "
-        "use `gpio add a5` or `gpio partition a5`."
+        "'geography' is published for gpio's whole DuckDB range on mainstream "
+        "platforms (Linux/macOS amd64+arm64, Windows amd64), so a 404 here "
+        "means a platform the registry carries no community builds for "
+        "(Windows ARM, musl/Alpine, a source-built DuckDB) or a proxy "
+        "answering in the registry's place. For a hierarchical cell index "
+        "meanwhile, use `gpio add a5` or `gpio partition a5`."
     ),
 }
 

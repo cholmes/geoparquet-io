@@ -150,7 +150,7 @@ def _failed_checks(path: str) -> list[str]:
 
     The `native_geo_stats_contains_data_*` checks used to be excused on win32:
     DuckDB <= 1.5.1 misread the geospatial statistics of a native GEOMETRY
-    column there (#721). gpio now floors DuckDB at 1.5.2, which reads them
+    column there (#721). gpio now floors DuckDB at 1.5.5, which reads them
     correctly, so nothing is excused any more.
     """
     result = validate_geoparquet(path)

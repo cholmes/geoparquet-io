@@ -47,16 +47,16 @@ class TestCoreExceptions:
 
     def test_extension_unavailable_error(self):
         """ExtensionUnavailableError names the extension and DuckDB version (issue #491)."""
-        exc = ExtensionUnavailableError("geography", "1.5.4")
+        exc = ExtensionUnavailableError("geography", "1.5.5")
         assert isinstance(exc, GeoParquetError)
         assert exc.name == "geography"
-        assert exc.duckdb_version == "1.5.4"
+        assert exc.duckdb_version == "1.5.5"
         message = str(exc)
         assert "geography" in message
-        assert "1.5.4" in message
+        assert "1.5.5" in message
 
     def test_extension_unavailable_error_with_detail(self):
-        exc = ExtensionUnavailableError("geography", "1.5.4", "HTTP 404")
+        exc = ExtensionUnavailableError("geography", "1.5.5", "HTTP 404")
         assert "HTTP 404" in str(exc)
 
     def test_extension_unavailable_error_names_the_feature(self):
@@ -67,19 +67,23 @@ class TestCoreExceptions:
     def test_geography_hint_offers_a5_and_never_a_forbidden_downgrade(self):
         """The 404 branch must be actionable without violating the pin (#778).
 
-        'geography' is published again for the newest DuckDB in gpio's supported
-        range (1.5.5, what uv.lock resolves), but not for every older patch
-        release — so a 404 can still mean the registry has no build for a
-        hand-pinned older DuckDB. Either way the hint must
-        not tell a user to install duckdb 1.5.1: pyproject requires >=1.5.2, so
-        that leaves `uv pip check` failing and any `uv sync` silently reverting
-        it. `gpio add a5` is the substitute that works without S2.
+        The floor is duckdb>=1.5.5, the release 'geography' is published for
+        on mainstream platforms, so a 404 now points at a platform the
+        registry has no builds for (Windows ARM, musl, source builds) or an
+        intercepting proxy — not at the version, and not primarily at this
+        machine's network. Either way the hint must not tell a user to
+        install duckdb 1.5.1: that is below the floor, so it leaves
+        `uv pip check` failing and any `uv sync` silently reverting it.
+        `gpio add a5` is the substitute without S2.
         """
         message = str(ExtensionUnavailableError("geography", "1.5.5", _NOT_PUBLISHED))
 
         assert "a5" in message
-        assert "upgrading DuckDB" in message
+        assert "mainstream platforms" in message
+        assert "no community builds" in message
         assert "is not published for this one" in message
+        # The 404 branch must not repeat the connectivity branch's diagnosis.
+        assert "check network access" not in message
         # Never recommend a DuckDB the pin forbids.
         assert "duckdb==1.5.1" not in message
         assert "pip install" not in message
@@ -95,7 +99,7 @@ class TestCoreExceptions:
         """
         message = str(ExtensionUnavailableError("geography", "1.5.5", _OFFLINE))
 
-        assert "upgrading DuckDB" not in message
+        assert "published for every DuckDB gpio supports" not in message
         assert "is not published for this one" not in message
         assert "reachable" in message
         assert "proxy" in message
@@ -111,13 +115,13 @@ class TestCoreExceptions:
 
         assert "may not be published" in message
         assert "proxy" not in message
-        assert "upgrading DuckDB" not in message
+        assert "published for every DuckDB gpio supports" not in message
 
     def test_extension_unavailable_error_hint_is_extension_specific(self):
         """Other community extensions must not inherit the geography guidance."""
         message = str(ExtensionUnavailableError("h3", "1.5.5", _NOT_PUBLISHED))
 
-        assert "upgrading DuckDB" not in message
+        assert "published for every DuckDB gpio supports" not in message
         assert "a5" not in message
         assert "h3" in message
 
