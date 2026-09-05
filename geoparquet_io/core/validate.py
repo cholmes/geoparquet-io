@@ -1302,28 +1302,39 @@ def _check_geometry_types_match_data(
         )
 
 
-def _polygon_orientation_violations(polygon_wkbs: list) -> int:
-    """Polygons whose exterior ring is not counterclockwise or whose holes are not clockwise.
+def _polygon_orientation_violations(polygon_wkbs: list, geodesic: bool = False) -> tuple[int, int]:
+    """(violations, checked): polygons whose exterior ring is not counterclockwise or whose
+    holes are not clockwise, and how many polygons could be judged.
 
     Ring orientation is the sign of the shoelace sum (positive is counterclockwise).
     Rings with fewer than four vertices or zero area cannot be oriented and are ignored.
+    With geodesic edges a ring spanning more than 180 degrees of longitude crosses the
+    antimeridian or encloses a pole, where planar winding is meaningless; it is ignored too.
     """
     import geoarrow.pyarrow as ga
     import pyarrow as pa
 
     polygons = ga.as_geoarrow(pa.array(polygon_wkbs, pa.binary()), ga.polygon())
-    violations = 0
+    violations = checked = 0
     for rings in polygons.storage.to_pylist():
+        judged = False
         for i, ring in enumerate(rings):
             if len(ring) < 4:
+                continue
+            xs = [p["x"] for p in ring]
+            if geodesic and max(xs) - min(xs) > 180:
                 continue
             area2 = sum(
                 a["x"] * b["y"] - b["x"] * a["y"] for a, b in zip(ring, ring[1:], strict=False)
             )
-            if area2 and (area2 > 0) != (i == 0):
+            if not area2:
+                continue
+            judged = True
+            if (area2 > 0) != (i == 0):
                 violations += 1
                 break
-    return violations
+        checked += judged
+    return violations, checked
 
 
 def _check_orientation_matches_data(
@@ -1333,6 +1344,7 @@ def _check_orientation_matches_data(
     con,
     sample_size: int,
     encoding: Any = "WKB",
+    edges: Any = "planar",
 ) -> ValidationCheck:
     """Check 19: all polygon geometries must follow 'orientation' metadata."""
     name = f"orientation_matches_data_{geom_col}"
@@ -1373,18 +1385,22 @@ def _check_orientation_matches_data(
         """).fetchall()
         if not rows:
             return _result(CheckStatus.SKIPPED, "no polygons to check against declared orientation")
-        violations = _polygon_orientation_violations([bytes(r[0]) for r in rows])
+        violations, checked = _polygon_orientation_violations(
+            [bytes(r[0]) for r in rows], geodesic=edges != "planar"
+        )
     except Exception as e:
         return _result(CheckStatus.FAILED, f"failed to validate orientation: {e}")
 
+    if not checked:
+        return _result(CheckStatus.SKIPPED, "no polygons whose ring orientation can be determined")
     if violations:
         return _result(
             CheckStatus.FAILED,
-            f'{violations} of {len(rows)} polygons violate orientation "{orientation}"',
+            f'{violations} of {checked} polygons violate orientation "{orientation}"',
         )
     return _result(
         CheckStatus.PASSED,
-        f'all {len(rows)} polygon{"s" if len(rows) != 1 else ""} follow orientation "{orientation}"',
+        f'all {checked} polygon{"s" if checked != 1 else ""} follow orientation "{orientation}"',
     )
 
 
@@ -3624,7 +3640,13 @@ def _run_geoparquet_checks(
             orientation = col_meta.get("orientation")
             checks.append(
                 _check_orientation_matches_data(
-                    parquet_file, col_name, orientation, con, sample_size, encoding
+                    parquet_file,
+                    col_name,
+                    orientation,
+                    con,
+                    sample_size,
+                    encoding,
+                    col_meta.get("edges") or "planar",
                 )
             )
 

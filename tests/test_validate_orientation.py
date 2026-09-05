@@ -1,5 +1,7 @@
 """orientation_matches_data: exterior rings CCW and holes CW when orientation is declared (#586)."""
 
+from pathlib import Path
+
 import pytest
 
 from geoparquet_io.core.common import get_duckdb_connection
@@ -38,6 +40,8 @@ def _check(path, con, orientation="counterclockwise", sample_size=0, **kw):
     return _check_orientation_matches_data(path, "geometry", orientation, con, sample_size, **kw)
 
 
+@pytest.mark.corpus
+@pytest.mark.skipif(not Path(CORPUS, "data").exists(), reason="run: git submodule update --init")
 class TestCorpusFiles:
     def test_declared_ccw_with_cw_rings_fails(self, con):
         check = _check(f"{CORPUS}/bad_data/orientation-ccw-declared-rings-cw.parquet", con)
@@ -102,11 +106,22 @@ class TestRings:
 
 
 class TestEdges:
-    def test_rings_with_fewer_than_four_vertices_are_ignored(self, tmp_path, con):
+    def test_zero_area_rings_are_not_judged(self, tmp_path, con):
         path = _write_v2(tmp_path / "f.parquet", ["POLYGON ((0 0, 1 1, 2 2, 0 0))", CCW])
         check = _check(path, con)
         assert check.status == CheckStatus.PASSED
-        assert "2 polygons" in check.message
+        assert "all 1 polygon " in check.message
+
+    def test_spherical_polygon_across_the_antimeridian_is_not_judged_planar(self, tmp_path, con):
+        # counterclockwise on the sphere, clockwise when read as planar lon/lat
+        wkt = "POLYGON ((170 -10, -170 -10, -170 10, 170 10, 170 -10))"
+        path = _write_v2(tmp_path / "f.parquet", [wkt])
+        assert _check(path, con, edges="planar").status == CheckStatus.FAILED
+        assert _check(path, con, edges="spherical").status == CheckStatus.SKIPPED
+        both = _write_v2(tmp_path / "g.parquet", [wkt, CCW])
+        check = _check(both, con, edges="spherical")
+        assert check.status == CheckStatus.PASSED
+        assert "all 1 polygon " in check.message
 
     def test_unknown_orientation_value_is_skipped(self, tmp_path, con):
         check = _check(_write_v2(tmp_path / "f.parquet", [CCW]), con, orientation="clockwise")
