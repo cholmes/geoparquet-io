@@ -1191,6 +1191,8 @@ def _process_geometry_column_for_version(
     geoparquet_version: str | None,
     input_crs: dict | None,
     verbose: bool,
+    *,
+    crs_resolved: bool = False,
 ):
     """
     Process geometry column based on GeoParquet version.
@@ -1209,6 +1211,9 @@ def _process_geometry_column_for_version(
         geoparquet_version: GeoParquet version
         input_crs: PROJJSON dict with CRS
         verbose: Whether to print verbose output
+        crs_resolved: True when ``input_crs`` is the geo block's already-resolved
+            answer for this column, so ``None`` means "spec default, declared by
+            omission" and must not be second-guessed from the Arrow field's type
 
     Returns:
         pa.Table: Table with geometry column processed
@@ -1229,17 +1234,26 @@ def _process_geometry_column_for_version(
             # GEOMETRY column carrying OGC:CRS84 when it is registered and a bare
             # one when it is not (#706). A default CRS is the spec default and is
             # declared by the geo block, so the schema type carries none.
-            # A missing `crs` in the geo block does not mean "no CRS": at 2.0 the
-            # Parquet logical type is authoritative, and a block may legitimately
-            # omit the key. Clearing unconditionally relabelled projected data as
-            # the CRS84 default -- silent corruption nothing validates. Fall back
-            # to the CRS the incoming type already carries before clearing.
+            # The field-CRS fallback is only for columns nothing has resolved:
+            # there a missing CRS does not mean "no CRS" -- clearing it
+            # unconditionally relabelled projected data as the CRS84 default,
+            # silent corruption nothing validates. But when `crs_resolved` says
+            # the geo block just resolved this column (`apply_output_crs` on the
+            # write path), `input_crs=None` IS the answer -- the spec default,
+            # declared by omission -- and falling back to the field's CRS would
+            # resurrect exactly what the block dropped, e.g. an explicit CRS84
+            # `input_crs` over a field carrying EPSG:3857: the type would say
+            # 3857 beside a block claiming the default, and gpio's own
+            # `v2_crs_consistency_geometry` check fails on the file it wrote.
             #
-            # geoarrow hands that back as a CRS object, which `is_default_crs`
-            # does not recognize; normalizing to PROJJSON is what keeps the
-            # reader's incidental OGC:CRS84 classified as the default and thus
-            # cleared, so the output stays independent of import state (#706).
-            resolved_crs = input_crs or _crs_as_projjson(getattr(wkb_arr.type, "crs", None))
+            # geoarrow hands the field CRS back as a CRS object, which
+            # `is_default_crs` does not recognize; normalizing to PROJJSON is
+            # what keeps the reader's incidental OGC:CRS84 classified as the
+            # default and thus cleared, so the output stays independent of
+            # import state (#706).
+            resolved_crs = input_crs
+            if not crs_resolved:
+                resolved_crs = input_crs or _crs_as_projjson(getattr(wkb_arr.type, "crs", None))
             if resolved_crs and not is_default_crs(resolved_crs):
                 if verbose:
                     debug(
@@ -1719,7 +1733,15 @@ def _apply_geoparquet_metadata(
         if column not in table.column_names:
             continue
         table = _process_geometry_column_for_version(
-            table, column, effective_version, native_crs.get(column), verbose
+            table,
+            column,
+            effective_version,
+            native_crs.get(column),
+            verbose,
+            # A column `native_crs` names was resolved by the block just built
+            # (`apply_output_crs`), so a None there is "default by omission" and
+            # the field-CRS fallback must not resurrect what the block dropped.
+            crs_resolved=column in native_crs,
         )
 
     if effective_version in ("1.0", "1.1"):

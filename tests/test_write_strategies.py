@@ -1783,6 +1783,75 @@ class TestNativeGeometryCrsAcrossStrategies:
         assert _type_crs(out) == {"geometry": ("EPSG", 3857)}
         assert _block_crs(out) == {"geometry": ("EPSG", 3857)}
 
+    def test_an_explicit_default_input_crs_clears_a_projected_field_crs(self, tmp_path):
+        """A requested spec-default CRS beats the CRS the Arrow field carries.
+
+        The in-memory table entry point with ``input_crs`` spelling out
+        OGC:CRS84: the geo block drops it (the default is declared by omission),
+        so the logical type has to come out bare too. Resurrecting the incoming
+        field's EPSG:3857 puts a projected CRS on the type beside a block
+        claiming the default -- ``v2_crs_consistency_geometry`` fails on gpio's
+        own output.
+        """
+        import geoarrow.pyarrow as ga
+        import pyproj
+
+        wkb = [struct.pack("<BI2d", 1, 1, float(i), float(i)) for i in range(3)]
+        projected = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
+        geom = ga.wkb().with_crs(projected).wrap_array(pa.array(wkb, type=pa.binary()))
+        table = pa.table({"id": [0, 1, 2], "geometry": geom})
+        out = str(tmp_path / "in_memory_default_input_crs.parquet")
+
+        WriteStrategyFactory.get_strategy(WriteStrategy.ARROW_MEMORY).write_from_table(
+            table=table,
+            output_path=out,
+            geometry_column="geometry",
+            geoparquet_version="2.0",
+            compression="ZSTD",
+            compression_level=None,
+            row_group_size_mb=None,
+            row_group_rows=None,
+            verbose=False,
+            input_crs=pyproj.CRS.from_authority("OGC", "CRS84").to_json_dict(),
+        )
+
+        # Probed on the physical logical type: PyArrow's read-back attaches the
+        # default OGC:CRS84 to a bare GEOMETRY type, so ``_type_crs`` cannot
+        # tell "bare" from "spelled out".
+        con = get_duckdb_connection(load_spatial=False)
+        try:
+            logical_types = dict(
+                con.execute(
+                    f"SELECT name, logical_type FROM parquet_schema({sql_path(out)})"
+                ).fetchall()
+            )
+        finally:
+            con.close()
+        assert "crs=<null>" in str(logical_types["geometry"])
+        assert _block_crs(out) == {"geometry": None}
+        assert _failed_checks(out) == []
+
+    def test_the_field_crs_fallback_survives_for_unresolved_columns(self):
+        """A column no geo block has resolved keeps the CRS its Arrow field carries.
+
+        The guard against the opposite bug: with ``crs_resolved`` False (the
+        default), a missing ``input_crs`` must not clear a projected field CRS
+        -- that would silently relabel projected coordinates as CRS84.
+        """
+        import geoarrow.pyarrow as ga
+        import pyproj
+
+        from geoparquet_io.core.common import _process_geometry_column_for_version
+
+        projected = pyproj.CRS.from_authority("EPSG", "3857").to_json_dict()
+        wkb = [struct.pack("<BI2d", 1, 1, 1.0, 2.0)]
+        geom = ga.wkb().with_crs(projected).wrap_array(pa.array(wkb, type=pa.binary()))
+        table = pa.table({"geometry": geom})
+
+        processed = _process_geometry_column_for_version(table, "geometry", "2.0", None, False)
+
+        assert _crs_identity(processed.schema.field("geometry").type.crs) == ("EPSG", 3857)
+
     def test_streaming_table_entry_point_keeps_the_crs_with_no_geo_block(self, tmp_path):
         """``Table.write()`` under parquet-geo-only: the type is the only identity left.
 
