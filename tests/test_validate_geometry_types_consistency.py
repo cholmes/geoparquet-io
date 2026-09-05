@@ -19,7 +19,7 @@ from geoparquet_io.core.validate import (
     validate_geoparquet,
 )
 
-CORPUS = "tests/data/geoparquet-testing/data"
+CORPUS = str(Path(__file__).parent / "data" / "geoparquet-testing" / "data")
 
 
 def _wkb(*wkts):
@@ -145,9 +145,10 @@ class TestGeometryTypesMatchStatsEdges:
         check = _check_geometry_types_match_stats("s3://bucket/file.parquet", "geometry", ["Point"])
         assert check.status == CheckStatus.SKIPPED
 
-    def test_unreadable_file_fails(self, tmp_path):
+    def test_unreadable_file_is_skipped(self, tmp_path):
+        """Unreadable stats skip, matching _check_native_geo_statistics on the same throw."""
         check = _check_geometry_types_match_stats(
             str(tmp_path / "missing.parquet"), "geometry", ["Point"]
         )
-        assert check.status == CheckStatus.FAILED
-        assert "could not read" in check.message
+        assert check.status == CheckStatus.SKIPPED
+        assert "could not check" in check.message

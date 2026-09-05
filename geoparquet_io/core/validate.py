@@ -2446,10 +2446,12 @@ def _check_geometry_types_match_stats(
     try:
         chunks = get_native_geo_stats_by_row_group(parquet_file, geom_col) or []
     except Exception as e:
+        # SKIPPED, not FAILED: unreadable statistics are an inability to check,
+        # mirroring _check_native_geo_statistics on the identical throw.
         return ValidationCheck(
             name=name,
-            status=CheckStatus.FAILED,
-            message=f"could not read geospatial statistics: {e}",
+            status=CheckStatus.SKIPPED,
+            message=f"could not check geospatial statistics: {e}",
             category="geoparquet_2_0",
         )
     found = {_stats_geometry_type_name(t) for c in chunks for t in c["geometry_types"]}
