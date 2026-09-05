@@ -1,6 +1,5 @@
 """Upload GeoParquet files to cloud object storage."""
 
-import configparser
 import os
 import re
 import time
@@ -10,57 +9,13 @@ from pathlib import Path
 import obstore as obs
 from obstore.store import AzureStore, S3Store
 
+from geoparquet_io.core.aws_credentials import (
+    CREDENTIAL_CHAIN_SOURCES,
+    resolve_aws_credentials,
+    resolve_aws_region,
+)
 from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.logging_config import error, progress, success
-
-
-def _load_aws_credentials_from_profile(
-    profile: str = "default",
-) -> tuple[str | None, str | None, str | None]:
-    """Load AWS credentials from ~/.aws/credentials file.
-
-    Uses Python's built-in configparser to read credentials without requiring boto3.
-
-    Args:
-        profile: AWS profile name (default: "default")
-
-    Returns:
-        Tuple of (access_key_id, secret_access_key, region)
-        Any value may be None if not found.
-    """
-    creds_file = Path.home() / ".aws" / "credentials"
-    config_file = Path.home() / ".aws" / "config"
-
-    access_key = None
-    secret_key = None
-    region = None
-
-    # Read credentials
-    if creds_file.exists():
-        parser = configparser.ConfigParser()
-        parser.read(creds_file)
-
-        if profile in parser.sections():
-            section = parser[profile]
-            access_key = section.get("aws_access_key_id")
-            secret_key = section.get("aws_secret_access_key")
-        elif profile == "default" and "DEFAULT" in parser:
-            access_key = parser["DEFAULT"].get("aws_access_key_id")
-            secret_key = parser["DEFAULT"].get("aws_secret_access_key")
-
-    # Read region from config
-    if config_file.exists():
-        config = configparser.ConfigParser()
-        config.read(config_file)
-
-        # Profile sections in config are named "profile <name>" except for default
-        profile_section = profile if profile == "default" else f"profile {profile}"
-        if profile_section in config.sections():
-            region = config[profile_section].get("region")
-        elif profile == "default" and "DEFAULT" in config:
-            region = config["DEFAULT"].get("region")
-
-    return access_key, secret_key, region
 
 
 def _try_infer_region_from_bucket(bucket: str) -> str | None:
@@ -89,8 +44,57 @@ def _try_infer_region_from_bucket(bucket: str) -> str | None:
     return None
 
 
+def _missing_profile_hint(profile: str) -> str:
+    """Hint shown when ``--aws-profile`` names a profile the chain cannot use."""
+    hints = [
+        f"AWS profile '{profile}' not found or incomplete.",
+        "",
+        "Ensure your ~/.aws/credentials file has this profile:",
+        f"  [{profile}]",
+        "  aws_access_key_id = YOUR_ACCESS_KEY",
+        "  aws_secret_access_key = YOUR_SECRET_KEY",
+        "",
+        "Or that ~/.aws/config configures it another way, e.g.:",
+        f"  [profile {profile}]",
+        f"  sso_session = my-sso        # then: aws sso login --profile {profile}",
+        "  # or role_arn + source_profile, or credential_process",
+        "",
+        "Or use environment variables instead:",
+        "  export AWS_ACCESS_KEY_ID=your_access_key",
+        "  export AWS_SECRET_ACCESS_KEY=your_secret_key",
+    ]
+    return "\n".join(hints)
+
+
+def _missing_credentials_hint() -> str:
+    """Hint shown when no source in botocore's chain produced credentials."""
+    hints = [
+        "S3 credentials not found. To configure credentials:",
+        "",
+        "Option 1: Set environment variables",
+        "  export AWS_ACCESS_KEY_ID=your_access_key",
+        "  export AWS_SECRET_ACCESS_KEY=your_secret_key",
+        "  export AWS_REGION=us-west-2  # required for most buckets",
+        "",
+        "Option 2: Use --aws-profile with a configured profile",
+        "  gpio publish upload file.parquet s3://bucket/path --aws-profile myprofile",
+        "",
+        "Option 3: Configure the AWS CLI",
+        "  aws configure          # static keys",
+        "  aws sso login          # SSO / IAM Identity Center",
+        "",
+        "Credentials are resolved through the standard AWS chain:",
+    ]
+    hints.extend(f"  - {source}" for source in CREDENTIAL_CHAIN_SOURCES)
+    return "\n".join(hints)
+
+
 def _check_s3_credentials(profile: str | None = None) -> tuple[bool, str]:
     """Check if S3 credentials are available.
+
+    Resolution goes through botocore's chain (see
+    :mod:`geoparquet_io.core.aws_credentials`), so an SSO or assume-role user
+    passes this gate rather than being told to write static keys (#865).
 
     Args:
         profile: AWS profile name to check (optional)
@@ -98,52 +102,9 @@ def _check_s3_credentials(profile: str | None = None) -> tuple[bool, str]:
     Returns:
         Tuple of (credentials_found, hint_message)
     """
-    # If profile specified, check credentials file
-    if profile:
-        access_key, secret_key, _ = _load_aws_credentials_from_profile(profile)
-        if access_key and secret_key:
-            return True, ""
-        else:
-            hints = []
-            hints.append(f"AWS profile '{profile}' not found or incomplete.")
-            hints.append("")
-            hints.append("Ensure your ~/.aws/credentials file has this profile:")
-            hints.append(f"  [{profile}]")
-            hints.append("  aws_access_key_id = YOUR_ACCESS_KEY")
-            hints.append("  aws_secret_access_key = YOUR_SECRET_KEY")
-            hints.append("")
-            hints.append("Or use environment variables instead:")
-            hints.append("  export AWS_ACCESS_KEY_ID=your_access_key")
-            hints.append("  export AWS_SECRET_ACCESS_KEY=your_secret_key")
-            return False, "\n".join(hints)
-
-    # Check environment variables first
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-
-    if access_key and secret_key:
+    if resolve_aws_credentials(profile):
         return True, ""
-
-    # Fall back to default profile in ~/.aws/credentials
-    access_key, secret_key, _ = _load_aws_credentials_from_profile("default")
-    if access_key and secret_key:
-        return True, ""
-
-    hints = []
-    hints.append("S3 credentials not found. To configure credentials:")
-    hints.append("")
-    hints.append("Option 1: Set environment variables")
-    hints.append("  export AWS_ACCESS_KEY_ID=your_access_key")
-    hints.append("  export AWS_SECRET_ACCESS_KEY=your_secret_key")
-    hints.append("  export AWS_REGION=us-west-2  # required for most buckets")
-    hints.append("")
-    hints.append("Option 2: Use --profile flag with AWS credentials file")
-    hints.append("  gpio publish upload file.parquet s3://bucket/path --profile myprofile")
-    hints.append("")
-    hints.append("Option 3: Configure AWS CLI")
-    hints.append("  aws configure")
-
-    return False, "\n".join(hints)
+    return False, _missing_profile_hint(profile) if profile else _missing_credentials_hint()
 
 
 def _check_gcs_credentials() -> tuple[bool, str]:
@@ -359,47 +320,33 @@ def _setup_store_and_kwargs(
         s3_region: S3 region (auto-detected from env var or profile config)
         s3_use_ssl: Whether to use HTTPS for S3 endpoint (default: True)
 
-    Note: For S3, credentials are loaded from (in order):
-    1. --profile flag (reads ~/.aws/credentials)
-    2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-    3. Default profile in ~/.aws/credentials (automatic fallback)
+    Note: For S3, credentials come from botocore's standard chain (see
+    :mod:`geoparquet_io.core.aws_credentials`), the same chain DuckDB reads use
+    via ``PROVIDER credential_chain``: environment variables, the shared
+    credentials file, ``--aws-profile``, SSO, assume-role, ``credential_process``
+    and instance metadata. Naming a profile makes that profile win over
+    environment keys, as it always has. When the chain finds nothing, no
+    credential kwargs are passed and obstore resolves for itself.
     """
     if bucket_url.startswith("s3://"):
         bucket = bucket_url.replace("s3://", "").split("/")[0]
 
-        # Load credentials from profile, environment, or default profile
-        access_key = None
-        secret_key = None
-        profile_region = None
-
-        if profile:
-            access_key, secret_key, profile_region = _load_aws_credentials_from_profile(profile)
-        else:
-            # Try environment variables first
-            access_key = os.environ.get("AWS_ACCESS_KEY_ID")
-            secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-
-            # Fall back to default profile if no env vars
-            if not (access_key and secret_key):
-                access_key, secret_key, profile_region = _load_aws_credentials_from_profile(
-                    "default"
-                )
+        credentials = resolve_aws_credentials(profile)
 
         # Determine region: explicit flag > env var > profile config > bucket heuristic
         region = s3_region
         if not region:
             region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-        if not region and profile_region:
-            region = profile_region
+        if not region:
+            region = resolve_aws_region(profile)
         if not region:
             region = _try_infer_region_from_bucket(bucket)
 
         # Build S3Store with appropriate configuration
         store_kwargs = {"region": region} if region else {}
 
-        if access_key and secret_key:
-            store_kwargs["access_key_id"] = access_key
-            store_kwargs["secret_access_key"] = secret_key
+        if credentials:
+            store_kwargs.update(credentials)
 
         if s3_endpoint:
             protocol = "https" if s3_use_ssl else "http"

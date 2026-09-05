@@ -52,6 +52,13 @@ dependencies = [
     "obstore>=0.8.2",
     "aiohttp>=3.13.4",  # Required by fsspec for HTTP/HTTPS support (CVE-2026-* fixes)
     "s3fs>=2023.9.0",  # Required by fsspec for S3 support
+    # Resolves the full AWS credential chain (SSO, assume-role, credential_process,
+    # instance metadata) for object-store writes and copies (#865). Already present
+    # transitively via s3fs -> aiobotocore; declared here because gpio imports it.
+    # boto3 is deliberately not used: botocore alone carries the chain.
+    # Floor is the feature floor, not uv.lock's 1.43.0: aiobotocore pins
+    # botocore<1.43.1, so a >=1.43.0 floor would pin every user to one release.
+    "botocore>=1.34.0",
     "geoarrow-pyarrow>=0.1.0",  # Required for CRS handling in Parquet native geo types
     "pyproj>=3.0.0",  # Required for CRS handling and PROJJSON generation
     "mercantile>=1.2.0",  # Required for quadkey generation

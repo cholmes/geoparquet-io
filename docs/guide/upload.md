@@ -41,6 +41,12 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 | Azure Blob Storage | `az://` | `az://myaccount/mycontainer/path/file.parquet` |
 | HTTP/HTTPS | `http://` or `https://` | `https://api.example.com/upload` |
 
+### S3 credentials come from the full AWS chain
+
+An S3 upload resolves credentials through the standard AWS credential chain, the same one gpio's reads use: environment variables, `~/.aws/credentials` (the profile named by `--aws-profile` or `AWS_PROFILE`), an `aws sso login` session, an assume-role profile (`role_arn` with `source_profile`, or a web identity token), `credential_process`, and EC2/ECS/EKS instance metadata ([#865](https://github.com/geoparquet/geoparquet-io/issues/865)). Uploads and the byte-for-byte copies other commands make now share one resolution, so a command no longer succeeds on one branch and fails Access Denied on the other.
+
+Credentials from SSO, assume-role or `credential_process` expire. gpio resolves them once when the command starts, which covers a single upload or copy; a run longer than the credential lifetime needs to be restarted.
+
 ### Azure URLs name the account first
 
 An Azure destination is `az://<account>/<container>/<path>` — the storage account, then the container, then the key. gpio builds the store from those two segments itself, so the account never has to be in the environment and is never mistaken for the container ([#864](https://github.com/geoparquet/geoparquet-io/issues/864)).

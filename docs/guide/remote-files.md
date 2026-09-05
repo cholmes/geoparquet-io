@@ -33,11 +33,18 @@ geoparquet-io uses standard cloud provider authentication. Configure your creden
 
 ### AWS S3
 
-Credentials are automatically discovered in this order:
+Credentials come from the standard AWS credential chain, so anything the AWS CLI can use, gpio can use — for reads, for writes and for copies alike ([#865](https://github.com/geoparquet/geoparquet-io/issues/865)):
 
-1. **Environment variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-2. **AWS profile**: `~/.aws/credentials` via `AWS_PROFILE` env var or `--aws-profile` flag
-3. **IAM role**: EC2/ECS/EKS instance metadata (when running on AWS infrastructure)
+1. **Environment variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`)
+2. **Shared credentials file**: `~/.aws/credentials`, the profile named by `AWS_PROFILE` or `--aws-profile`
+3. **SSO / IAM Identity Center**: an `aws sso login` session
+4. **Assume-role profiles**: `role_arn` with `source_profile`, or a web identity token
+5. **`credential_process`**: an external command that prints credentials
+6. **IAM role**: EC2 instance, ECS task or EKS pod identity metadata
+
+Naming a profile makes that profile win over environment keys. The region is read from the same chain: `--s3-region`, then `AWS_REGION`/`AWS_DEFAULT_REGION`, then the profile's `region`.
+
+Credentials from SSO, assume-role and `credential_process` are short-lived. gpio resolves them once at the start of a command, which is fine for a single upload or copy; a run that outlives the credential lifetime needs to be restarted.
 
 **Examples:**
 
