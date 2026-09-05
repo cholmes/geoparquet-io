@@ -18,6 +18,7 @@ from geoparquet_io.core.crs_utils import (
     extract_crs_from_parquet,
     is_default_crs,
     normalize_projjson_crs,
+    note_default_crs_normalized,
     parse_crs_string_to_projjson,
 )
 from geoparquet_io.core.duckdb_utils import (
@@ -2090,6 +2091,16 @@ def convert_to_geoparquet(
         if has_geometry:
             geom_col = "geometry" if is_csv else geometry_info["primary"]
             query = repair_query_geometry(con, query, geom_col, repair=repair_geometry)
+
+            # This convert rebuilds the output's `geo` block from the converted
+            # data (`original_metadata=None` below, and at 2.0 DuckDB regenerates
+            # the block outright on the plain-COPY fast path), so an input `crs`
+            # that spelled out the default never reaches `apply_output_crs` and
+            # its note never fired here. Emit the same note from the same helper
+            # so the key does not vanish unannounced on this path alone (#844).
+            note_default_crs_normalized(
+                (geometry_info or {}).get("metadata", {}).get(geom_col, {}).get("crs")
+            )
 
         # Sidecar KV payloads (fiboa, vecorel, STAC fragments) live next to the
         # 'geo' key and are rebuilt from scratch by every write strategy, so a

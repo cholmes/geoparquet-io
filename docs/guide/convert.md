@@ -338,6 +338,14 @@ GeoParquet files can have multiple geometry columns (e.g., `geometry` for point 
     `gpio check spec` would reject. Fix such a CRS in the source data, or
     re-export it from a tool that writes valid PROJJSON.
 
+!!! note "An explicit default CRS is normalized, not preserved"
+    GeoParquet writes its default CRS (OGC:CRS84, equivalently EPSG:4326) by
+    *omitting* the `crs` key, so an input that spells that default out comes back
+    without the key. The coordinates and their meaning are unchanged, but a
+    byte-for-byte diff of the `geo` metadata will show the key gone. `convert`
+    rebuilds the `geo` block from the converted data, so this applies at every
+    `--geoparquet-version`. Run with `--verbose` to see a note when it happens.
+
 ### Custom Geometry Column Names
 
 GeoParquet files can use non-standard geometry column names (e.g., `the_geom`, `my_geometry`). These names are preserved during conversion:

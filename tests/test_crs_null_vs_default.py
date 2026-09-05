@@ -436,3 +436,89 @@ def test_sort_hilbert_verbose_is_silent_for_a_non_default_crs(buildings_test_fil
     assert result.exit_code == 0, result.output
     assert "explicit default CRS" not in result.output
     assert _col_crs(out)[0] is True
+
+
+# --------------------------------------------------------------------------- #
+# `gpio convert geoparquet` rebuilds the `geo` block from the converted data,
+# so the input's block never reaches apply_output_crs and the note above never
+# fired there -- loudest at 2.0, whose plain-COPY fast path lets DuckDB
+# regenerate the block outright (#844).
+# --------------------------------------------------------------------------- #
+
+
+def _convert_geoparquet(*args):
+    from click.testing import CliRunner
+
+    from geoparquet_io.cli.main import convert
+
+    return CliRunner().invoke(convert, ["geoparquet", *args])
+
+
+def _parquet_with_crs(source, dest, crs):
+    """Write a copy of ``source`` whose geometry column declares ``crs``."""
+    import json
+
+    table = pq.read_table(source)
+    meta = dict(table.schema.metadata)
+    geo = json.loads(meta[b"geo"].decode("utf-8"))
+    geo["columns"][geo.get("primary_column", "geometry")]["crs"] = crs
+    meta[b"geo"] = json.dumps(geo).encode("utf-8")
+    pq.write_table(table.replace_schema_metadata(meta), dest)
+    return str(dest)
+
+
+@pytest.mark.parametrize("version", ["1.1", "2.0"])
+def test_convert_geoparquet_verbose_notes_the_normalization(default_crs_parquet, tmp_path, version):
+    """The drop is reported once, on the fast path (2.0) and the rewrite (1.1)."""
+    out = str(tmp_path / f"converted_{version}.parquet")
+    result = _convert_geoparquet(
+        default_crs_parquet, out, "--geoparquet-version", version, "--verbose"
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.count("explicit default CRS") == 1
+
+
+def test_convert_geoparquet_v2_leaves_the_output_bytes_alone(default_crs_parquet, tmp_path):
+    """The note is a diagnostic: the output still omits the crs key, as before."""
+    out = str(tmp_path / "converted.parquet")
+    result = _convert_geoparquet(
+        default_crs_parquet, out, "--geoparquet-version", "2.0", "--verbose"
+    )
+    assert result.exit_code == 0, result.output
+    assert _col_crs(out) == (False, None)
+
+
+def test_convert_geoparquet_v2_is_quiet_about_it_without_verbose(default_crs_parquet, tmp_path):
+    out = str(tmp_path / "converted.parquet")
+    result = _convert_geoparquet(default_crs_parquet, out, "--geoparquet-version", "2.0")
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+
+
+def test_convert_geoparquet_v2_verbose_is_silent_for_an_absent_crs(absent_crs_parquet, tmp_path):
+    """Nothing was declared, so nothing is normalized away."""
+    out = str(tmp_path / "converted.parquet")
+    result = _convert_geoparquet(
+        absent_crs_parquet, out, "--geoparquet-version", "2.0", "--verbose"
+    )
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+
+
+def test_convert_geoparquet_v2_verbose_is_silent_for_a_non_default_crs(
+    buildings_test_file, tmp_path
+):
+    """A projected input keeps its CRS through the convert, so there is no note."""
+    src = _parquet_with_crs(buildings_test_file, tmp_path / "epsg3857.parquet", EPSG_3857)
+    out = str(tmp_path / "converted_3857.parquet")
+    result = _convert_geoparquet(src, out, "--geoparquet-version", "2.0", "--verbose")
+    assert result.exit_code == 0, result.output
+    assert "explicit default CRS" not in result.output
+    assert _col_crs(out)[0] is True
+
+
+def test_convert_geoparquet_v2_verbose_is_silent_for_a_null_crs(null_crs_parquet, tmp_path):
+    """``crs: null`` is *unknown*, not the default; it keeps its own warning."""
+    out = str(tmp_path / "converted_null.parquet")
+    result = _convert_geoparquet(null_crs_parquet, out, "--geoparquet-version", "2.0", "--verbose")
+    assert "explicit default CRS" not in result.output
