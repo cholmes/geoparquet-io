@@ -460,16 +460,49 @@ class TestAzureStoreConstruction:
         assert store.config["account_name"] == "urlaccount"
 
     def test_azure_url_without_a_container_is_rejected(self, monkeypatch):
-        """``az://account`` alone names no container; say so instead of guessing."""
+        """``az://account`` alone names no container; say so instead of guessing.
+
+        The refusal is an ``InvalidParameterError`` so the CLI boundary renders
+        it as a clean error rather than a raw traceback.
+        """
+        from geoparquet_io.core.exceptions import InvalidParameterError
         from geoparquet_io.core.upload import _build_azure_store
 
         self._clear_azure_env(monkeypatch)
 
-        with pytest.raises(ValueError, match=r"az://<account>/<container>"):
+        with pytest.raises(InvalidParameterError, match=r"az://<account>/<container>"):
             _build_azure_store("az://myaccount")
 
-        with pytest.raises(ValueError, match=r"az://<account>/<container>"):
+        with pytest.raises(InvalidParameterError, match=r"az://<account>/<container>"):
             parse_object_store_url("az://myaccount")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "abfs://container@account.dfs.core.windows.net/out.parquet",
+            "abfss://container@account.dfs.core.windows.net/out.parquet",
+            "azure://account/container/out.parquet",
+        ],
+    )
+    def test_parse_object_store_url_refuses_azure_alias_schemes_by_name(self, url):
+        """``abfs[s]://`` and ``azure://`` are refused with the supported spelling.
+
+        These spellings order the account and container differently (or bury them
+        in a host name), so parsing them account-first would target the wrong
+        place. They used to fall into the generic ``Unsupported URL scheme``
+        ValueError -- a raw traceback at the CLI.
+        """
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match=r"az://<account>/<container>"):
+            parse_object_store_url(url)
+
+    def test_parse_object_store_url_refuses_unknown_schemes_without_a_traceback(self):
+        """A scheme gpio does not speak is an InvalidParameterError, not a ValueError."""
+        from geoparquet_io.core.exceptions import InvalidParameterError
+
+        with pytest.raises(InvalidParameterError, match="unsupported URL scheme"):
+            parse_object_store_url("ftp://host/file.parquet")
 
     def test_setup_store_builds_an_azure_store_instead_of_calling_from_url(self, monkeypatch):
         """The upload path routes az:// through the explicit builder."""
@@ -510,6 +543,34 @@ class TestAzureStoreConstruction:
         assert store.config["container_name"] == "mycontainer"
         assert store.prefix is None
         assert mock_put.call_args.args[1] == "dataset/data.parquet"
+
+
+class TestUploadCLIRefusesUnparseableAzureUrls:
+    """``gpio publish upload`` answers a bad Azure URL with a message, not a traceback."""
+
+    @pytest.mark.parametrize(
+        "destination",
+        [
+            "abfs://container@account.dfs.core.windows.net/out.parquet",
+            "abfss://container@account.dfs.core.windows.net/out.parquet",
+            "azure://account/container/out.parquet",
+            "az://acctonly",
+        ],
+    )
+    def test_publish_upload_refuses_with_a_clean_error(self, destination, tmp_path):
+        """Exit non-zero, the supported ``az://`` form named, and no raw traceback."""
+        source = tmp_path / "data.parquet"
+        source.write_bytes(b"parquet-bytes")
+
+        runner = CliRunner()
+        with patch.object(main_module, "check_credentials", return_value=(True, "")):
+            result = runner.invoke(
+                cli, ["publish", "upload", str(source), destination], catch_exceptions=False
+            )
+
+        assert result.exit_code != 0
+        assert "az://<account>/<container>" in result.output
+        assert "Traceback" not in result.output
 
 
 class TestUploadCLIS3Options:
@@ -710,26 +771,44 @@ class TestCredentialValidationFunctions:
             assert found is False
             assert "GCS credentials not found" in hint
 
-    def test_check_azure_credentials_with_account_key(self):
-        """Test Azure credential detection with storage account key."""
-        with patch.dict(os.environ, {"AZURE_STORAGE_ACCOUNT_KEY": "test_key"}):
+    @pytest.mark.parametrize(
+        "env_var",
+        [
+            "AZURE_STORAGE_ACCOUNT_KEY",
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_MASTER_KEY",
+            "AZURE_STORAGE_SAS_TOKEN",
+            "AZURE_STORAGE_SAS_KEY",
+            "AZURE_STORAGE_TOKEN",
+            "AZURE_STORAGE_CLIENT_ID",
+            "AZURE_CLIENT_ID",
+        ],
+    )
+    def test_check_azure_credentials_accepts_every_env_var_obstore_honours(self, env_var):
+        """Each credential variable obstore's AzureStore reads passes the gate alone.
+
+        The gate used to hard-fail unless one of exactly three variables was set,
+        blocking uploads that obstore itself would have authenticated -- e.g. with
+        only ``AZURE_STORAGE_ACCESS_KEY`` (the documented alias) in the
+        environment.
+        """
+        with patch.dict(os.environ, {env_var: "credential-value"}, clear=True):
             found, hint = _check_azure_credentials()
             assert found is True
             assert hint == ""
 
-    def test_check_azure_credentials_with_sas_token(self):
-        """Test Azure credential detection with SAS token."""
-        with patch.dict(os.environ, {"AZURE_STORAGE_SAS_TOKEN": "test_token"}):
+    def test_check_azure_credentials_accepts_azure_cli_opt_in(self):
+        """``AZURE_USE_AZURE_CLI=true`` is a credential source, not a missing one."""
+        with patch.dict(os.environ, {"AZURE_USE_AZURE_CLI": "true"}, clear=True):
             found, hint = _check_azure_credentials()
             assert found is True
             assert hint == ""
 
-    def test_check_azure_credentials_with_client_id(self):
-        """Test Azure credential detection with client ID."""
-        with patch.dict(os.environ, {"AZURE_CLIENT_ID": "test_client_id"}):
+    def test_check_azure_credentials_azure_cli_false_is_not_a_credential(self):
+        """An explicit ``AZURE_USE_AZURE_CLI=false`` does not pass the gate."""
+        with patch.dict(os.environ, {"AZURE_USE_AZURE_CLI": "false"}, clear=True):
             found, hint = _check_azure_credentials()
-            assert found is True
-            assert hint == ""
+            assert found is False
 
     def test_check_azure_credentials_missing(self):
         """Test Azure credential check fails with helpful hint."""
@@ -739,3 +818,5 @@ class TestCredentialValidationFunctions:
             assert "Azure credentials not found" in hint
             assert "AZURE_STORAGE_ACCOUNT_KEY" in hint
             assert "az login" in hint
+            # "az login" alone is not enough for obstore -- the opt-in must be named.
+            assert "AZURE_USE_AZURE_CLI=true" in hint
