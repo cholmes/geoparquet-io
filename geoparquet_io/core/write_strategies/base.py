@@ -8,7 +8,6 @@ varying memory and performance characteristics.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import tempfile
@@ -164,23 +163,34 @@ def build_geo_metadata(
 
 
 def _parse_existing_geo_metadata(original_metadata: dict | None) -> dict | None:
-    """Parse existing geo metadata from file metadata."""
-    if not original_metadata:
+    """Parse existing geo metadata from file metadata.
+
+    A write-path reader: the result is indexed into while the output block is
+    built, so it goes through ``sanitize_geo_metadata`` -- a carried block whose
+    ``columns`` is not an object per column would otherwise abort the write with
+    a bare ``TypeError`` (#771).
+    """
+    from geoparquet_io.core.geo_metadata import sanitize_geo_metadata
+
+    return sanitize_geo_metadata(_decode_geo_key(original_metadata))
+
+
+def _decode_geo_key(original_metadata: dict | None):
+    """Decode the raw ``geo`` key, accepting bytes or str keys and values.
+
+    Bytes that are not UTF-8 and JSON that does not parse are treated like a
+    malformed block -- dropped with a warning, so fresh metadata gets built --
+    via :func:`geo_metadata.decode_carried_geo` (#771 follow-up).
+    """
+    from geoparquet_io.core.geo_metadata import decode_carried_geo
+
+    if not isinstance(original_metadata, dict) or not original_metadata:
         return None
 
-    if isinstance(original_metadata, dict):
-        if "geo" in original_metadata:
-            geo_data = original_metadata["geo"]
-            if isinstance(geo_data, str):
-                return json.loads(geo_data)
-            return geo_data
-        if b"geo" in original_metadata:
-            geo_data = original_metadata[b"geo"]
-            if isinstance(geo_data, bytes):
-                return json.loads(geo_data.decode("utf-8"))
-            if isinstance(geo_data, str):
-                return json.loads(geo_data)
-            return geo_data
+    if "geo" in original_metadata:
+        return decode_carried_geo(original_metadata["geo"])
+    if b"geo" in original_metadata:
+        return decode_carried_geo(original_metadata[b"geo"])
 
     return None
 
@@ -408,19 +418,19 @@ def needs_metadata_rewrite(
             return False
         # For 2.0 output, check if input has different version that needs updating
         if original_metadata:
-            import json
+            from geoparquet_io.core.geo_metadata import decode_carried_geo
 
             geo_data = original_metadata.get("geo") or original_metadata.get(b"geo")
             if geo_data:
-                if isinstance(geo_data, bytes):
-                    geo_data = geo_data.decode("utf-8")
-                if isinstance(geo_data, str):
-                    geo_meta = json.loads(geo_data)
-                else:
-                    geo_meta = geo_data
+                # Undecodable or non-object carried metadata cannot vouch for a
+                # 2.x version, so it needs the rewrite (which builds fresh
+                # metadata); a raw json.loads here aborted the write instead.
+                geo_meta = decode_carried_geo(geo_data)
+                if not isinstance(geo_meta, dict):
+                    return True
                 input_version = geo_meta.get("version", "")
                 # Need rewrite if input version is not 2.x
-                if not input_version.startswith("2."):
+                if not isinstance(input_version, str) or not input_version.startswith("2."):
                     return True
         return False
 

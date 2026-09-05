@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import copy
 import json
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import duckdb
@@ -77,6 +78,218 @@ _DIMENSION_SUFFIXES = {
 
 
 # =============================================================================
+# Carried-block shape check
+# =============================================================================
+
+#: Python type -> the JSON type name a user would recognize in their own file.
+_JSON_TYPE_NAMES = {
+    type(None): "null",
+    bool: "boolean",
+    int: "number",
+    float: "number",
+    str: "string",
+    list: "array",
+    tuple: "array",
+    dict: "object",
+}
+
+
+def _json_type_name(value) -> str:
+    """Name ``value``'s JSON type, so a warning can say what the file actually holds."""
+    return _JSON_TYPE_NAMES.get(type(value), type(value).__name__)
+
+
+@lru_cache(maxsize=256)
+def _emit_malformed_geo_warning(detail: str) -> None:
+    """Emit the malformed-block warning once per distinct ``detail`` (LRU-bounded)."""
+    warn(f"Ignoring malformed 'geo' metadata on the input: {detail}")
+
+
+def reset_malformed_geo_warnings() -> None:
+    """Clear the malformed-``geo`` warn-once cache. Intended for tests."""
+    _emit_malformed_geo_warning.cache_clear()
+
+
+def decode_carried_geo(raw):
+    """Decode a raw carried ``geo`` value (bytes or str) to JSON, or None.
+
+    The decode step can fail one call before :func:`sanitize_geo_metadata` ever
+    sees a shape: bytes that are not UTF-8 crash ``.decode`` and a truncated
+    payload crashes ``json.loads``. Both get the malformed-block treatment --
+    the value is dropped so fresh metadata gets built, and one warning names
+    the cause -- instead of aborting the write with a raw decoder traceback.
+
+    Already-decoded values (a dict handed over directly) pass through untouched.
+    """
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if isinstance(raw, str):
+            return json.loads(raw)
+    except UnicodeDecodeError:
+        _emit_malformed_geo_warning("the value is not valid UTF-8; fresh metadata will be written")
+        return None
+    except json.JSONDecodeError:
+        _emit_malformed_geo_warning("the value is not valid JSON; fresh metadata will be written")
+        return None
+    return raw
+
+
+def _is_json_number(value) -> bool:
+    """A JSON number: int or float, but not the bool subtype of int."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+#: Carried per-column keys that write paths pass through to the output
+#: verbatim, with the values they may hold. A well-shaped entry can still
+#: poison the output -- ``"crs": 42`` survives a shape-only check and the
+#: written file is then refused by DuckDB ("has invalid CRS") and by
+#: ``gpio check spec``. Each key maps to (predicate, expected-phrase); a value
+#: the predicate rejects is dropped with a warning naming both. ``crs: null``
+#: stays: JSON null is the spec's spelling of "CRS is unknown".
+_COLUMN_VALUE_CHECKS: dict[str, tuple] = {
+    "crs": (lambda v: v is None or isinstance(v, (dict, str)), "an object, a string or null"),
+    "encoding": (lambda v: isinstance(v, str), "a string"),
+    "epoch": (_is_json_number, "a number"),
+    "orientation": (lambda v: isinstance(v, str), "a string"),
+    "edges": (lambda v: isinstance(v, str), "a string"),
+    "covering": (lambda v: isinstance(v, dict), "an object"),
+    "geometry_types": (
+        lambda v: isinstance(v, list) and all(isinstance(t, str) for t in v),
+        "an array of strings",
+    ),
+    "bbox": (
+        lambda v: isinstance(v, list) and len(v) in (4, 6) and all(_is_json_number(x) for x in v),
+        "an array of 4 or 6 numbers",
+    ),
+}
+
+
+def _sanitize_column_entry(name: str, entry: dict) -> tuple[dict, list[str]]:
+    """Drop wrong-typed carried values from one column entry; never mutates.
+
+    Returns ``entry`` itself when every value is acceptable, else a cleaned
+    shallow copy, plus the problems to warn about.
+    """
+    problems: list[str] = []
+    cleaned = entry
+    for key, (accepts, expected) in _COLUMN_VALUE_CHECKS.items():
+        if key in entry and not accepts(entry[key]):
+            problems.append(
+                f"'{key}' on column '{name}' is "
+                f"{_article(_json_type_name(entry[key]))}, expected {expected}"
+            )
+            if cleaned is entry:
+                cleaned = dict(entry)
+            cleaned.pop(key)
+    return cleaned, problems
+
+
+def _sanitize_columns(columns: dict) -> tuple[dict, list[str]]:
+    """Sanitize a ``columns`` mapping known to be a dict; never mutates.
+
+    Returns ``columns`` itself when nothing needed dropping, else a cleaned
+    copy, plus the problems to warn about.
+    """
+    problems: list[str] = []
+    kept: dict = {}
+    dropped: list[str] = []
+    changed = False
+    for name, entry in columns.items():
+        if not (isinstance(name, str) and isinstance(entry, dict)):
+            dropped.append(str(name))
+            changed = True
+            continue
+        entry_clean, entry_problems = _sanitize_column_entry(name, entry)
+        changed = changed or entry_clean is not entry
+        problems.extend(entry_problems)
+        kept[name] = entry_clean
+    if dropped:
+        problems.append(
+            f"'columns' entries {', '.join(repr(n) for n in sorted(dropped))} "
+            "are not objects, expected an object per column"
+        )
+    return (kept if changed else columns), problems
+
+
+def sanitize_geo_metadata(geo_meta):
+    """Drop the parts of a carried ``geo`` block that readers cannot accept.
+
+    The ``geo`` key on an input file is arbitrary JSON written by some other
+    tool, but every writer here reads it as ``geo["columns"][name][key]``. A
+    block whose ``columns`` is null, an array, a string, or a mapping to
+    non-objects used to abort the write with a bare ``TypeError`` raised three
+    frames deep, in the middle of building the output metadata (#771). And a
+    well-shaped entry can still carry a wrong-typed value (``"crs": 42``) that
+    makes the *output* unreadable, so the carried values write paths pass
+    through verbatim are type-checked too (:data:`_COLUMN_VALUE_CHECKS`).
+
+    A malformed block is a property of the *input*, not a caller error, so it is
+    treated the way an absent one is: the malformed parts are dropped so fresh
+    metadata gets built from the table, and one warning names what was wrong.
+
+    This is the single shape check every write-path reader of the raw block goes
+    through. The read-only readers (``parse_geo_metadata``,
+    ``crs_utils.parse_geo_metadata_from_schema``,
+    ``duckdb_metadata.get_geo_metadata``) deliberately do *not* sanitize:
+    ``gpio check`` has to see the file as it really is.
+
+    Args:
+        geo_meta: A decoded ``geo`` block, or None.
+
+    Returns:
+        ``geo_meta`` itself when it is already well-shaped, a repaired shallow
+        copy when it is not, or None when nothing usable is left.
+    """
+    if geo_meta is None:
+        return None
+
+    if not isinstance(geo_meta, dict):
+        _emit_malformed_geo_warning(
+            f"the block is {_article(_json_type_name(geo_meta))}, expected an object"
+        )
+        return None
+
+    problems: list[str] = []
+    cleaned = geo_meta
+
+    primary = geo_meta.get("primary_column")
+    if "primary_column" in geo_meta and not isinstance(primary, str):
+        problems.append(
+            f"'primary_column' is {_article(_json_type_name(primary))}, expected a string"
+        )
+        cleaned = dict(cleaned)
+        cleaned.pop("primary_column")
+
+    if "columns" in geo_meta:
+        columns = geo_meta["columns"]
+        if not isinstance(columns, dict):
+            problems.append(
+                f"'columns' is {_article(_json_type_name(columns))}, "
+                "expected an object keyed by column name"
+            )
+            cleaned = dict(cleaned)
+            cleaned.pop("columns")
+        else:
+            kept, column_problems = _sanitize_columns(columns)
+            problems.extend(column_problems)
+            if kept is not columns:
+                cleaned = dict(cleaned)
+                cleaned["columns"] = kept
+
+    for problem in problems:
+        _emit_malformed_geo_warning(problem)
+    return cleaned
+
+
+def _article(type_name: str) -> str:
+    """``"a list"`` / ``"an object"`` -- correct article for a JSON type name."""
+    if type_name == "null":
+        return "null"
+    return f"{'an' if type_name[0] in 'aeiou' else 'a'} {type_name}"
+
+
+# =============================================================================
 # Metadata Parsing Functions
 # =============================================================================
 
@@ -113,18 +326,18 @@ def _parse_existing_geo_metadata(original_metadata: dict | None) -> dict | None:
     """
     Parse existing geo metadata from original parquet metadata.
 
+    This is a write-path reader: what it returns is indexed into while building
+    the output block, so it goes through :func:`sanitize_geo_metadata` (#771).
+
     Args:
         original_metadata: Original parquet file metadata dict
 
     Returns:
-        Parsed geo metadata dict, or None if not present
+        Parsed geo metadata dict, or None if not present or not usable
     """
     if not original_metadata or b"geo" not in original_metadata:
         return None
-    try:
-        return json.loads(original_metadata[b"geo"].decode("utf-8"))
-    except json.JSONDecodeError:
-        return None
+    return sanitize_geo_metadata(decode_carried_geo(original_metadata[b"geo"]))
 
 
 # =============================================================================
@@ -152,6 +365,12 @@ def _initialize_geo_metadata(geo_meta: dict | None, geom_col: str, version: str 
 
     # Set the specified version
     geo_meta["version"] = version
+    # `primary_column` is required by every version of the spec. A carried block
+    # can arrive without one -- absent in the input, or dropped by
+    # `sanitize_geo_metadata` because it was not a string (#771) -- and the
+    # output would then be invalid. Matches `write_strategies.base`.
+    if "primary_column" not in geo_meta:
+        geo_meta["primary_column"] = geom_col
     if "columns" not in geo_meta:
         geo_meta["columns"] = {}
     if geom_col not in geo_meta["columns"]:

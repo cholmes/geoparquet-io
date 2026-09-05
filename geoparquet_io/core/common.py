@@ -45,6 +45,7 @@ from geoparquet_io.core.geo_metadata import (
     create_geo_metadata,
     detect_bbox_column_from_schema,
     prune_geo_metadata_to_columns,
+    sanitize_geo_metadata,
     strip_derived_stats,
 )
 from geoparquet_io.core.geoarrow_encoding import (
@@ -1569,22 +1570,13 @@ def _parse_geo_metadata_quietly(original_metadata) -> dict:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
         return {}
-    if not isinstance(parsed, dict):
-        return {}
-
     # Callers read ``columns`` as a mapping of column name to a dict of that
     # column's metadata. A carried block is arbitrary JSON from the input file,
-    # so anything else is dropped here rather than allowed to raise a TypeError
-    # three frames away, in the middle of a write. `create_geo_metadata` reads
-    # the raw block itself and still does; that is pre-existing, tracked in #771.
-    columns = parsed.get("columns")
-    if isinstance(columns, dict):
-        parsed["columns"] = {
-            name: entry for name, entry in columns.items() if isinstance(entry, dict)
-        }
-    else:
-        parsed.pop("columns", None)
-    return parsed
+    # so anything else is dropped rather than allowed to raise a TypeError three
+    # frames away, in the middle of a write. The check lives in one place --
+    # ``sanitize_geo_metadata`` -- that every write-path reader goes through
+    # (#771); this function is one of them.
+    return sanitize_geo_metadata(parsed) or {}
 
 
 def _apply_geoparquet_metadata(

@@ -572,9 +572,13 @@ def extract_crs_from_table(
     if table.schema.metadata and b"geo" in table.schema.metadata:
         try:
             from geoparquet_io.core.crs_utils import crs_is_explicitly_null, warn_null_crs_once
+            from geoparquet_io.core.geo_metadata import sanitize_geo_metadata
 
             geo_bytes = table.schema.metadata[b"geo"]
-            geo_meta = json.loads(geo_bytes.decode("utf-8"))
+            # `Table.write()` resolves the CRS through here before it builds any
+            # metadata, so this reader sees a malformed carried block first and
+            # has to survive it too (#771).
+            geo_meta = sanitize_geo_metadata(json.loads(geo_bytes.decode("utf-8")))
             if isinstance(geo_meta, dict):
                 columns = geo_meta.get("columns", {})
                 geom_col_name = geometry_column or geo_meta.get("primary_column", "geometry")
