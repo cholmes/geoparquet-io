@@ -438,6 +438,19 @@ def resolve_file_url(file_path, verbose=False):
     from geoparquet_io.core.remote import is_remote_url
 
     if is_remote_url(file_path):
+        # Azure reads are not supported: gpio never loads DuckDB's azure
+        # extension, so an az:// input would die deep in the metadata probe
+        # with a misleading "not a valid GeoParquet file". Name the actual
+        # limitation here, before anything is opened. (az:// still works as a
+        # write destination -- uploads and copies go through obstore.)
+        scheme = file_path.split("://", 1)[0].lower()
+        if scheme in ("az", *_UNPARSEABLE_AZURE_SCHEMES):
+            raise InvalidParameterError(
+                "path",
+                f"cannot read '{file_path}': Azure Blob Storage is supported as a "
+                "write destination only (az://<account>/<container>/<path>). "
+                "Reading from Azure is not supported yet; download the file first.",
+            )
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
             debug(f"Reading from {protocol}: {file_path}")

@@ -4341,9 +4341,10 @@ def add_bbox(
     recomputes instead, since a copy cannot honour them. Use --force to recompute and
     replace an existing bbox column.
 
-    Reads local paths, s3://, gs://, az:// and https:// URLs, and writes local
-    paths, s3://, gs:// and az:// URLs. Azure URLs name the storage account
-    first: az://<account>/<container>/<path>, with credentials from
+    Reads local paths, s3://, gs:// and https:// URLs, and writes local
+    paths, s3://, gs:// and az:// URLs. az:// is a write destination only --
+    reading from Azure is not supported. An Azure output names the storage
+    account first: az://<account>/<container>/<path>, with credentials from
     AZURE_STORAGE_ACCOUNT_KEY or AZURE_STORAGE_SAS_TOKEN. Remote work -- the
     copy included -- goes through the object store gpio is configured to use,
     so --s3-endpoint, --s3-region, --s3-no-ssl and --aws-profile apply.
@@ -6330,8 +6331,10 @@ def publish_upload(
 
     Azure destinations name the storage account first:
     az://<account>/<container>/<path>. The account comes from the URL; the
-    credential comes from the environment (AZURE_STORAGE_ACCOUNT_KEY,
-    AZURE_STORAGE_SAS_TOKEN, or the AZURE_STORAGE_CLIENT_* client-secret vars).
+    credential comes from the environment (AZURE_STORAGE_ACCOUNT_KEY or its
+    aliases, AZURE_STORAGE_SAS_TOKEN/AZURE_STORAGE_SAS_KEY, the
+    AZURE_STORAGE_CLIENT_* client-secret vars, or AZURE_USE_AZURE_CLI=true
+    to use an az login session -- az login alone is not enough).
 
     \b
     Examples:

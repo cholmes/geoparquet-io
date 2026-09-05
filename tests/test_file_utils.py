@@ -479,7 +479,18 @@ class TestCopyFile:
 
         from geoparquet_io.core.file_utils import resolve_object_store
 
-        for name in ("AZURE_STORAGE_ACCOUNT_NAME", "AZURE_CONTAINER_NAME"):
+        # Same breadth as TestAzureStoreConstruction.AZURE_ENV_VARS: a malformed
+        # credential variable in the ambient environment (CI included) must not
+        # be able to fail AzureStore construction.
+        for name in (
+            "AZURE_STORAGE_ACCOUNT_NAME",
+            "AZURE_STORAGE_ACCOUNT_KEY",
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_MASTER_KEY",
+            "AZURE_STORAGE_SAS_TOKEN",
+            "AZURE_STORAGE_SAS_KEY",
+            "AZURE_CONTAINER_NAME",
+        ):
             monkeypatch.delenv(name, raising=False)
 
         store, key = resolve_object_store("az://myaccount/mycontainer/path/file.parquet")
@@ -845,6 +856,37 @@ class TestSafeFileUrl:
         result = safe_file_url(str(test_file))
         # Result should be usable in SQL without injection risk
         assert result.count("'") % 2 == 0 or "'" not in result
+
+
+class TestAzureReadsAreRefusedByName:
+    """Azure-scheme inputs are refused at the read boundary, not deep in DuckDB.
+
+    gpio never loads DuckDB's azure extension, so an ``az://`` input dies inside
+    the metadata probe with a misleading "not a valid GeoParquet file" unless the
+    read boundary names the actual limitation first: Azure is a write destination
+    only.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "az://myaccount/mycontainer/in.parquet",
+            "azure://myaccount/mycontainer/in.parquet",
+            "abfs://container@account.dfs.core.windows.net/in.parquet",
+            "abfss://container@account.dfs.core.windows.net/in.parquet",
+        ],
+    )
+    def test_resolve_file_url_refuses_azure_reads(self, url):
+        """Every Azure spelling gets the same early, named refusal."""
+        from geoparquet_io.core.file_utils import resolve_file_url
+
+        with pytest.raises(InvalidParameterError, match="write destination"):
+            resolve_file_url(url)
+
+    def test_safe_file_url_refuses_azure_reads_too(self):
+        """The SQL-facing wrapper shares the same boundary."""
+        with pytest.raises(InvalidParameterError, match="write destination"):
+            safe_file_url("az://myaccount/mycontainer/in.parquet")
 
 
 # =============================================================================

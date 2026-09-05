@@ -1,12 +1,12 @@
 # Remote Files
 
-All commands work with remote URLs (`s3://`, `gs://`, `az://`, `https://`). Use them anywhere you'd use local paths.
+All commands work with remote URLs (`s3://`, `gs://`, `https://` for reads and writes; `az://` for writes). Use them anywhere you'd use local paths.
 
 ## How Remote Access Works
 
 gpio uses different libraries for reads and writes:
 
-- **Reads**: All commands read remote files via DuckDB's httpfs extension. This supports S3, GCS, Azure, and HTTPS URLs transparently.
+- **Reads**: All commands read remote files via DuckDB's httpfs extension. This supports S3, GCS, and HTTPS URLs transparently. Azure is not readable — see below.
 
 - **Writes**: All commands write to remote destinations using obstore. When you specify a remote output path, gpio writes to a local temp file first, then uploads via obstore automatically.
 
@@ -86,14 +86,15 @@ Credentials are automatically discovered in this order:
 
 ### Azure Blob Storage
 
-Azure credentials are discovered automatically when reading files:
+Azure is a **write destination only**: `gpio publish upload` and remote outputs can target `az://`, but no command reads from Azure — an `az://` input is refused up front with a message saying so. To process data that lives in Azure, download it first.
+
+Credentials for writes are discovered from the environment:
 
 ```bash
-# Set account credentials via environment variables
-export AZURE_STORAGE_ACCOUNT_NAME=myaccount
+# Set the account key via an environment variable
 export AZURE_STORAGE_ACCOUNT_KEY=mykey
 
-# Or use SAS token
+# Or use a SAS token
 export AZURE_STORAGE_SAS_TOKEN=mytoken
 ```
 
@@ -105,7 +106,7 @@ gpio publish upload data.parquet az://myaccount/mycontainer/data.parquet
 
 Everything gpio writes to Azure — `gpio publish upload` and the object-store copies behind commands such as `gpio add bbox` — addresses it as `az://<account>/<container>/<path>`. The account comes from the URL, so `AZURE_STORAGE_ACCOUNT_NAME` is optional there, and the container is never guessed from the wrong segment ([#864](https://github.com/geoparquet/geoparquet-io/issues/864)). The `abfs://`, `abfss://` and `azure://` spellings order those parts differently and are refused by name.
 
-**Note:** Azure support for reads is currently limited. For full Azure support, process files locally.
+`AZURE_STORAGE_ACCESS_KEY`, `AZURE_STORAGE_SAS_KEY`, the `AZURE_STORAGE_CLIENT_*` client-secret variables and `AZURE_USE_AZURE_CLI=true` (required to use an `az login` session — `az login` alone is not picked up) are honoured too.
 
 ### Google Cloud Storage
 

@@ -58,7 +58,7 @@ export AZURE_STORAGE_SAS_TOKEN=your_token
 gpio publish upload data.parquet az://myaccount/mycontainer/data.parquet
 ```
 
-`AZURE_STORAGE_ACCESS_KEY`, `AZURE_STORAGE_SAS_KEY`, the `AZURE_STORAGE_CLIENT_*` client-secret variables and `AZURE_USE_AZURE_CLI` are honoured too. `AZURE_STORAGE_ACCOUNT_NAME` is not needed — the account in the URL wins over it.
+`AZURE_STORAGE_ACCESS_KEY`, `AZURE_STORAGE_SAS_KEY`, the `AZURE_STORAGE_CLIENT_*` client-secret variables and `AZURE_USE_AZURE_CLI=true` are honoured too. The Azure CLI opt-in is explicit: `az login` alone is not picked up — set `AZURE_USE_AZURE_CLI=true` as well. `AZURE_STORAGE_ACCOUNT_NAME` is not needed — the account in the URL wins over it.
 
 ## Directory Uploads
 
