@@ -120,6 +120,97 @@ class TestReprojectToProjectedCrs:
         assert geo["columns"]["geometry"].get("edges") is None, geo["columns"]["geometry"]
 
 
+def _write_crs84_two_geometry_columns(path):
+    """A file with a primary ``geometry`` and a secondary ``centerline`` column."""
+    con = get_duckdb_connection(load_spatial=True)
+    try:
+        con.execute(f"""
+            COPY (
+              SELECT * FROM (VALUES
+                (1, ST_Point(1, 1), ST_Point(10, 10)),
+                (2, ST_Point(3, 3), ST_Point(30, 30))
+              ) t(id, geometry, centerline)
+            ) TO '{path.as_posix()}' (FORMAT PARQUET)
+        """)
+    finally:
+        con.close()
+
+
+@pytest.fixture
+def spherical_two_columns(tmp_path):
+    """Two geometry columns, both declaring ``edges: spherical``."""
+    path = tmp_path / "two_spherical.parquet"
+    _write_crs84_two_geometry_columns(path)
+    _set_edges(path, "spherical")
+    return path
+
+
+class TestMultiGeometryColumns:
+    """Only the column actually transformed loses its declaration.
+
+    Reproject transforms the primary geometry column only; a secondary column
+    keeps its geographic CRS and untransformed coordinates, so its great-circle
+    ``edges`` declaration still holds and must survive — without a warning
+    falsely claiming it was reprojected.
+    """
+
+    def test_only_transformed_column_loses_edges(self, spherical_two_columns, tmp_path, caplog):
+        out = tmp_path / "out.parquet"
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            reproject(str(spherical_two_columns), str(out), target_crs="EPSG:3857")
+
+        geo = get_geo_metadata(str(out))
+        assert geo["columns"]["geometry"].get("edges") is None, geo["columns"]["geometry"]
+        assert geo["columns"]["centerline"].get("edges") == "spherical", geo["columns"][
+            "centerline"
+        ]
+
+        warnings = [r for r in caplog.records if DROP_WARNING in r.message]
+        assert len(warnings) == 1, caplog.text
+        assert '"geometry"' in warnings[0].message
+        assert "centerline" not in caplog.text
+
+    def test_python_api_table_scopes_drop_to_transformed_column(
+        self, spherical_two_columns, caplog
+    ):
+        table = pq.read_table(str(spherical_two_columns))
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            result = reproject_table(table, target_crs="EPSG:3857")
+
+        geo = json.loads(result.schema.metadata[b"geo"].decode("utf-8"))
+        assert geo["columns"]["geometry"].get("edges") is None, geo["columns"]["geometry"]
+        assert geo["columns"]["centerline"].get("edges") == "spherical", geo["columns"][
+            "centerline"
+        ]
+        assert "centerline" not in caplog.text
+
+    def test_streaming_path_scopes_drop_to_transformed_column(
+        self, spherical_two_columns, tmp_path, caplog
+    ):
+        from geoparquet_io.core.reproject import _reproject_streaming
+
+        out = tmp_path / "streamed.parquet"
+        with caplog.at_level(logging.WARNING, logger="geoparquet_io"):
+            _reproject_streaming(
+                str(spherical_two_columns),
+                str(out),
+                "EPSG:3857",
+                None,  # source_crs
+                "ZSTD",  # compression
+                None,  # compression_level
+                False,  # verbose
+                None,  # profile
+                None,  # geoparquet_version
+            )
+
+        geo = get_geo_metadata(str(out))
+        assert geo["columns"]["geometry"].get("edges") is None, geo["columns"]["geometry"]
+        assert geo["columns"]["centerline"].get("edges") == "spherical", geo["columns"][
+            "centerline"
+        ]
+        assert "centerline" not in caplog.text
+
+
 class TestReprojectToGeographicCrs:
     """A datum shift between geographic CRSs keeps great-circle semantics."""
 

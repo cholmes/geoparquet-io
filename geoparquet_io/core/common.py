@@ -2,6 +2,7 @@ import copy
 import json
 import os
 import re
+from collections.abc import Collection
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -2733,7 +2734,7 @@ def write_parquet_with_metadata(
     extra_kv_metadata: dict[str, str] | None = None,
     input_file: str | None = None,
     invalidate_derived_stats: bool = False,
-    carry_nonplanar_edges: bool = True,
+    drop_nonplanar_edges_columns: Collection[str] | None = None,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2784,12 +2785,15 @@ def write_parquet_with_metadata(
             carried metadata came from only the first file: the input's stats no
             longer describe the output, so they must be recomputed from the
             written data or omitted rather than carried.
-        carry_nonplanar_edges: When False, do not re-attach the input's
-            non-planar ``edges`` declaration to the output. Set by writes that
-            invalidate the edge interpretation itself — reprojecting to a
-            projected CRS turns great-circle edges into straight lines (#601) —
-            where planar (the spec default) is the truthful description of the
-            output. The caller warns; this only stops the carry.
+        drop_nonplanar_edges_columns: Geometry columns whose non-planar
+            ``edges`` declaration must neither be carried through nor
+            re-attached to the output. Set by writes that invalidate the edge
+            interpretation for the columns they transform — reprojecting the
+            primary geometry column to a projected CRS turns its great-circle
+            edges into straight lines (#601) — where planar (the spec default)
+            is the truthful description of the output. Columns not named here
+            (e.g. an untransformed secondary geometry column) keep their
+            declaration. The caller warns; this only stops the carry.
 
     Returns:
         None
@@ -2808,11 +2812,14 @@ def write_parquet_with_metadata(
     if invalidate_derived_stats:
         original_metadata = strip_derived_stats(original_metadata)
 
-    # A write that invalidates the edge interpretation itself (reprojecting into
-    # a projected CRS, #601) must neither carry the declaration through nor
-    # re-attach it afterwards; planar is then the truthful description.
-    if not carry_nonplanar_edges:
-        original_metadata = strip_nonplanar_edges(original_metadata)
+    # A write that invalidates the edge interpretation for the columns it
+    # transforms (reprojecting into a projected CRS, #601) must neither carry
+    # those columns' declaration through nor re-attach it afterwards; planar is
+    # then the truthful description. Untransformed columns keep theirs.
+    if drop_nonplanar_edges_columns:
+        original_metadata = strip_nonplanar_edges(
+            original_metadata, columns=drop_nonplanar_edges_columns
+        )
 
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)
@@ -2990,17 +2997,18 @@ def write_parquet_with_metadata(
         # Non-planar edges must survive every rewrite path (#588): DuckDB
         # regenerates geo metadata without `edges`, silently demoting geography
         # data to planar. Runs on the local temp file, so remote outputs are
-        # patched before upload.
-        if carry_nonplanar_edges:
-            _preserve_edges_after_write(
-                input_file,
-                original_metadata,
-                actual_output,
-                compression=compression,
-                compression_level=compression_level,
-                row_group_rows=row_group_rows,
-                verbose=verbose,
-            )
+        # patched before upload. Columns whose declaration this write
+        # invalidated (#601) are excluded rather than re-attached.
+        _preserve_edges_after_write(
+            input_file,
+            original_metadata,
+            actual_output,
+            compression=compression,
+            compression_level=compression_level,
+            row_group_rows=row_group_rows,
+            verbose=verbose,
+            exclude_columns=drop_nonplanar_edges_columns,
+        )
 
         # Auto-fix vecorel schema compliance when collection metadata is present
         if not is_remote:
@@ -3024,16 +3032,21 @@ def _preserve_edges_after_write(
     compression_level: int | None = None,
     row_group_rows: int | None = None,
     verbose: bool = False,
+    exclude_columns: Collection[str] | None = None,
 ) -> None:
     """Restore non-planar edges dropped by the writer, on any rewrite path.
 
     Prefers the input file (sees native GEOGRAPHY logical types as well as geo
     metadata); falls back to the input's KV metadata dict when only that is
-    available (e.g. partition staging rewrites).
+    available (e.g. partition staging rewrites). ``exclude_columns`` names
+    columns whose declaration the write itself invalidated (#601): the input
+    still declares them, but they must not come back.
     """
     edges_by_col = collect_nonplanar_edges(input_file) if input_file else {}
     if not edges_by_col:
         edges_by_col = _collect_nonplanar_edges_from_metadata(original_metadata)
+    if exclude_columns:
+        edges_by_col = {k: v for k, v in edges_by_col.items() if k not in exclude_columns}
     _apply_nonplanar_edges(
         edges_by_col,
         output_path,

@@ -142,34 +142,42 @@ def _warn_edges_dropped(col_name: str, edges: str, target_crs: str) -> None:
     )
 
 
-def _carry_edges_to_target(input_file: str | None, target_crs: str, con=None) -> bool:
-    """Whether a non-planar ``edges`` declaration survives this reprojection (#601).
+def _edges_columns_to_drop(
+    input_file: str | None, target_crs: str, geom_col: str, con=None
+) -> set[str]:
+    """Columns whose non-planar ``edges`` declaration this reprojection voids (#601).
 
     Reprojection transforms vertices, not edges: gpio does not densify along
     great circles, so in a projected destination the output's edges *are*
     straight lines and planar (the spec default) is the truthful description.
     A geographic destination is only a datum shift, so the declaration stands.
-    Warns once per column that loses its declaration.
+
+    Only ``geom_col`` — the one column reproject actually transforms — is ever
+    dropped: an untransformed secondary geometry column keeps its geographic
+    CRS, so its great-circle declaration still holds. Warns when ``geom_col``
+    loses a declaration the input actually made.
     """
     if not _target_crs_is_projected(target_crs, con):
-        return True
+        return set()
     if input_file:
-        for col_name, edges in sorted(collect_nonplanar_edges(input_file).items()):
-            _warn_edges_dropped(col_name, edges, target_crs)
-    return False
+        edges = collect_nonplanar_edges(input_file).get(geom_col)
+        if edges:
+            _warn_edges_dropped(geom_col, edges, target_crs)
+    return {geom_col}
 
 
-def _drop_nonplanar_edges_from_geo_meta(geo_meta: dict, target_crs: str) -> None:
-    """Strip non-planar ``edges`` from an in-memory geo metadata dict (#601).
+def _drop_nonplanar_edges_from_geo_meta(geo_meta: dict, target_crs: str, geom_col: str) -> None:
+    """Strip ``geom_col``'s non-planar ``edges`` from an in-memory geo dict (#601).
 
-    The counterpart of ``_carry_edges_to_target`` for the write paths that hand
-    the input's geo metadata straight through (Arrow tables, streaming).
+    The counterpart of ``_edges_columns_to_drop`` for the write paths that hand
+    the input's geo metadata straight through (Arrow tables, streaming). Other
+    columns are untransformed and keep their declaration.
     """
-    for col_name, col_meta in (geo_meta.get("columns") or {}).items():
-        edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
-        if edges and edges != "planar":
-            del col_meta["edges"]
-            _warn_edges_dropped(col_name, edges, target_crs)
+    col_meta = (geo_meta.get("columns") or {}).get(geom_col)
+    edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
+    if edges and edges != "planar":
+        del col_meta["edges"]
+        _warn_edges_dropped(geom_col, edges, target_crs)
 
 
 #: Raised by the Arrow/Python-API path on an explicit ``crs: null`` input.
@@ -274,7 +282,7 @@ def reproject_table(
                     geo_meta = json.loads(new_metadata[b"geo"].decode("utf-8"))
                     apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
                     if _target_crs_is_projected(target_crs, con):
-                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs)
+                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs, geom_col)
                     new_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                     result = result.replace_schema_metadata(new_metadata)
                 except (json.JSONDecodeError, KeyError) as e:
@@ -586,9 +594,10 @@ def reproject_impl(
         # Read original metadata to preserve non-geo KV metadata (e.g., vecorel)
         original_metadata, _ = get_parquet_metadata(input_parquet, verbose)
 
-        # A projected destination invalidates a non-planar `edges` declaration:
-        # the reprojected edges are straight lines there (#601).
-        carry_edges = _carry_edges_to_target(read_source, target_crs, con)
+        # A projected destination invalidates the transformed column's
+        # non-planar `edges` declaration: the reprojected edges are straight
+        # lines there (#601). Untransformed columns keep theirs.
+        drop_edges_columns = _edges_columns_to_drop(read_source, target_crs, geom_col, con)
 
         # Auto version mode: match convert's contract (todo 040) — preserve the
         # input's GeoParquet version and upgrade native-geo-only inputs to 2.0
@@ -625,7 +634,7 @@ def reproject_impl(
                     memory_limit=memory_limit,
                     input_file=read_source,
                     invalidate_derived_stats=True,
-                    carry_nonplanar_edges=carry_edges,
+                    drop_nonplanar_edges_columns=drop_edges_columns,
                 )
                 # Replace original with temp file
                 shutil.move(str(tmp_path), str(out_path))
@@ -655,7 +664,7 @@ def reproject_impl(
                     memory_limit=memory_limit,
                     input_file=read_source,
                     invalidate_derived_stats=True,
-                    carry_nonplanar_edges=carry_edges,
+                    drop_nonplanar_edges_columns=drop_edges_columns,
                 )
 
                 if is_remote:
@@ -795,7 +804,7 @@ def _reproject_streaming(
                     geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
                     apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
                     if _target_crs_is_projected(target_crs, con):
-                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs)
+                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs, geom_col)
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                 except (json.JSONDecodeError, KeyError) as e:
                     debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")
