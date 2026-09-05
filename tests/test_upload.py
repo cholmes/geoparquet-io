@@ -329,7 +329,18 @@ class TestCredentialChecking:
 
 
 class TestS3EndpointConfiguration:
-    """Test suite for S3 endpoint configuration."""
+    """Test suite for S3 endpoint configuration.
+
+    resolve_aws_credentials is patched out: these tests are about store
+    construction, and the real resolver walks botocore's full chain, which
+    would execute ambient config (an assume-role or credential_process
+    profile) from a unit test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_credentials(self):
+        with patch("geoparquet_io.core.upload.resolve_aws_credentials", return_value=None):
+            yield
 
     def test_setup_store_with_custom_endpoint(self):
         """Test _setup_store_and_kwargs uses S3Store for custom endpoint."""
