@@ -164,23 +164,35 @@ def build_geo_metadata(
 
 
 def _parse_existing_geo_metadata(original_metadata: dict | None) -> dict | None:
-    """Parse existing geo metadata from file metadata."""
-    if not original_metadata:
+    """Parse existing geo metadata from file metadata.
+
+    A write-path reader: the result is indexed into while the output block is
+    built, so it goes through ``sanitize_geo_metadata`` -- a carried block whose
+    ``columns`` is not an object per column would otherwise abort the write with
+    a bare ``TypeError`` (#771).
+    """
+    from geoparquet_io.core.geo_metadata import sanitize_geo_metadata
+
+    return sanitize_geo_metadata(_decode_geo_key(original_metadata))
+
+
+def _decode_geo_key(original_metadata: dict | None):
+    """Decode the raw ``geo`` key, accepting bytes or str keys and values."""
+    if not isinstance(original_metadata, dict) or not original_metadata:
         return None
 
-    if isinstance(original_metadata, dict):
-        if "geo" in original_metadata:
-            geo_data = original_metadata["geo"]
-            if isinstance(geo_data, str):
-                return json.loads(geo_data)
-            return geo_data
-        if b"geo" in original_metadata:
-            geo_data = original_metadata[b"geo"]
-            if isinstance(geo_data, bytes):
-                return json.loads(geo_data.decode("utf-8"))
-            if isinstance(geo_data, str):
-                return json.loads(geo_data)
-            return geo_data
+    if "geo" in original_metadata:
+        geo_data = original_metadata["geo"]
+        if isinstance(geo_data, str):
+            return json.loads(geo_data)
+        return geo_data
+    if b"geo" in original_metadata:
+        geo_data = original_metadata[b"geo"]
+        if isinstance(geo_data, bytes):
+            return json.loads(geo_data.decode("utf-8"))
+        if isinstance(geo_data, str):
+            return json.loads(geo_data)
+        return geo_data
 
     return None
 
