@@ -777,13 +777,19 @@ def _parse_crs_property(params: str) -> Any:
 
 def parse_geometry_logical_type(logical_type: str) -> dict | None:
     """
-    Parse Geometry/Geography logical type string from DuckDB schema.
+    Parse a Geometry/Geography logical type string from a Parquet schema.
 
     Handles strings like:
     - GeometryType(crs={"$schema": "...", "id": {"authority": "EPSG", "code": 4326}})
     - GeographyType(algorithm=spherical)
     - GeometryType(crs=<null>)
     - GeometryType(crs=EPSG:32633)
+
+    The two readers spell the same type differently -- DuckDB's
+    ``parquet_schema()`` renders ``GeometryType(...)``, PyArrow's
+    ``ParquetLogicalType`` renders ``Geometry(...)`` -- so the ``Type`` suffix is
+    optional. Rejecting PyArrow's spelling made the CRS invisible to the callers
+    that read the schema through PyArrow (#785).
 
     Returns dict with keys: geo_type, geometry_type, coordinate_dimension, crs, algorithm
 
@@ -798,8 +804,7 @@ def parse_geometry_logical_type(logical_type: str) -> dict | None:
     if not logical_type:
         return None
 
-    # Match GeometryType(...) or GeographyType(...) - DuckDB's format from parquet_schema()
-    match = re.match(r"(Geometry|Geography)Type\((.*)\)$", logical_type, re.DOTALL)
+    match = re.match(r"(Geometry|Geography)(?:Type)?\((.*)\)$", logical_type, re.DOTALL)
     if not match:
         return None
 
@@ -909,13 +914,19 @@ def resolve_crs_reference(parquet_file: str, crs_value: Any) -> Any:
             import pyarrow.parquet as pq
 
             pf = pq.ParquetFile(parquet_file)
-            file_metadata = pf.metadata.metadata
-            if file_metadata:
-                # Keys are bytes in PyArrow metadata
-                key_bytes = key_name.encode("utf-8")
-                if key_bytes in file_metadata:
-                    projjson_str = file_metadata[key_bytes].decode("utf-8")
-                    return json.loads(projjson_str)
+            try:
+                file_metadata = pf.metadata.metadata
+                if file_metadata:
+                    # Keys are bytes in PyArrow metadata
+                    key_bytes = key_name.encode("utf-8")
+                    if key_bytes in file_metadata:
+                        projjson_str = file_metadata[key_bytes].decode("utf-8")
+                        return json.loads(projjson_str)
+            finally:
+                # Callers resolve a CRS on the way to rewriting the file in
+                # place; a lingering read handle makes os.replace fail on
+                # Windows.
+                pf.close()
         except Exception:
             pass  # Fall through to return the reference string
         return crs_value  # Return the reference string if resolution failed
