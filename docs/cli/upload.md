@@ -75,5 +75,5 @@ gpio publish upload output/ s3://bucket/dataset/ --dry-run
 |----------|------------|
 | Amazon S3 | `s3://bucket/path/` |
 | Google Cloud Storage | `gs://bucket/path/` |
-| Azure Blob Storage | `az://container/path/` |
+| Azure Blob Storage | `az://account/container/path/` |
 | HTTP/HTTPS | `http://` or `https://` |

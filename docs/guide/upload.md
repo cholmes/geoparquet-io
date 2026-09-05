@@ -38,8 +38,27 @@ The `gpio publish upload` command uploads files and directories to cloud object 
 |-------------|------------|---------|
 | Amazon S3 | `s3://` | `s3://my-bucket/path/file.parquet` |
 | Google Cloud Storage | `gs://` | `gs://my-bucket/path/file.parquet` |
-| Azure Blob Storage | `az://` | `az://container/path/file.parquet` |
+| Azure Blob Storage | `az://` | `az://myaccount/mycontainer/path/file.parquet` |
 | HTTP/HTTPS | `http://` or `https://` | `https://api.example.com/upload` |
+
+### Azure URLs name the account first
+
+An Azure destination is `az://<account>/<container>/<path>` — the storage account, then the container, then the key. gpio builds the store from those two segments itself, so the account never has to be in the environment and is never mistaken for the container ([#864](https://github.com/geoparquet/geoparquet-io/issues/864)).
+
+The credential still comes from the environment, and gpio checks for one before it uploads:
+
+<!-- doctest: skip="needs cloud credentials" -->
+```bash
+# Storage account key
+export AZURE_STORAGE_ACCOUNT_KEY=your_key
+
+# ...or a SAS token
+export AZURE_STORAGE_SAS_TOKEN=your_token
+
+gpio publish upload data.parquet az://myaccount/mycontainer/data.parquet
+```
+
+`AZURE_STORAGE_ACCESS_KEY`, `AZURE_STORAGE_SAS_KEY`, the `AZURE_STORAGE_CLIENT_*` client-secret variables and `AZURE_USE_AZURE_CLI=true` are honoured too. The Azure CLI opt-in is explicit: `az login` alone is not picked up — set `AZURE_USE_AZURE_CLI=true` as well. `AZURE_STORAGE_ACCOUNT_NAME` is not needed — the account in the URL wins over it.
 
 ## Directory Uploads
 

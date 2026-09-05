@@ -8,8 +8,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import obstore as obs
-from obstore.store import S3Store
+from obstore.store import AzureStore, S3Store
 
+from geoparquet_io.core.exceptions import InvalidParameterError
 from geoparquet_io.core.logging_config import error, progress, success
 
 
@@ -171,18 +172,40 @@ def _check_gcs_credentials() -> tuple[bool, str]:
     return False, "\n".join(hints)
 
 
+# Every credential-bearing environment variable obstore's AzureStore reads
+# (see obstore's AzureConfig): the aliases are equivalent, so any one of them
+# is enough for the pre-upload gate. AZURE_USE_AZURE_CLI is checked separately
+# because it is a boolean opt-in, not a secret.
+_AZURE_CREDENTIAL_ENV_VARS = (
+    "AZURE_STORAGE_ACCOUNT_KEY",
+    "AZURE_STORAGE_ACCESS_KEY",
+    "AZURE_STORAGE_MASTER_KEY",
+    "AZURE_STORAGE_SAS_TOKEN",
+    "AZURE_STORAGE_SAS_KEY",
+    "AZURE_STORAGE_TOKEN",
+    "AZURE_STORAGE_CLIENT_ID",
+    "AZURE_CLIENT_ID",
+)
+
+
 def _check_azure_credentials() -> tuple[bool, str]:
     """Check if Azure credentials are available.
+
+    The gate must accept everything obstore itself would authenticate with,
+    or it blocks uploads that would have succeeded: obstore honours several
+    aliases for each credential (``AZURE_STORAGE_ACCESS_KEY`` for
+    ``AZURE_STORAGE_ACCOUNT_KEY``, ``AZURE_STORAGE_SAS_KEY`` for
+    ``AZURE_STORAGE_SAS_TOKEN``, ...) plus the ``AZURE_USE_AZURE_CLI=true``
+    opt-in for ``az login`` sessions.
 
     Returns:
         Tuple of (credentials_found, hint_message)
     """
-    # Check for various Azure credential env vars
-    account_key = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
-    sas_token = os.environ.get("AZURE_STORAGE_SAS_TOKEN")
-    client_id = os.environ.get("AZURE_CLIENT_ID")
+    if any(os.environ.get(name) for name in _AZURE_CREDENTIAL_ENV_VARS):
+        return True, ""
 
-    if account_key or sas_token or client_id:
+    # obstore only uses an `az login` session when explicitly opted in.
+    if os.environ.get("AZURE_USE_AZURE_CLI", "").strip().lower() in ("1", "true", "yes", "on"):
         return True, ""
 
     hints = []
@@ -194,8 +217,9 @@ def _check_azure_credentials() -> tuple[bool, str]:
     hints.append("Option 2: Set SAS token")
     hints.append("  export AZURE_STORAGE_SAS_TOKEN=your_token")
     hints.append("")
-    hints.append("Option 3: Use Azure CLI")
+    hints.append("Option 3: Use Azure CLI (the opt-in is required; az login alone is not used)")
     hints.append("  az login")
+    hints.append("  export AZURE_USE_AZURE_CLI=true")
 
     return False, "\n".join(hints)
 
@@ -263,6 +287,55 @@ def _print_directory_dry_run(
     if len(files) > 10:
         print(f"  ... and {len(files) - 10} more file(s)")
     print()
+
+
+AZURE_URL_FORM = "az://<account>/<container>/<path>"
+
+
+def _split_azure_url(url: str) -> tuple[str, str, str]:
+    """Split ``az://<account>/<container>[/<path>]`` into (account, container, path).
+
+    gpio's Azure URLs name the storage account first and the container second.
+    obstore's own ``az://`` convention is container-first, with the account taken
+    from the environment, so a gpio URL can never be handed to
+    ``obs.store.from_url``: with no account in the environment it refuses to build
+    ("Account must be specified"), with ``AZURE_STORAGE_ACCOUNT_NAME`` set it
+    panics inside Rust, and were it to build at all it would read the account
+    segment as the container and write to the wrong place (#864). Splitting the
+    URL here, and building the store from the parts, is what makes the account in
+    the URL authoritative.
+
+    Args:
+        url: An ``az://`` URL
+
+    Returns:
+        Tuple of (account, container, path within the container)
+
+    Raises:
+        InvalidParameterError: If the URL names no account or no container
+    """
+    parts = url[len("az://") :].split("/", 2)
+    account = parts[0]
+    container = parts[1] if len(parts) > 1 else ""
+    if not account or not container:
+        raise InvalidParameterError("url", f"invalid Azure URL '{url}'. Expected {AZURE_URL_FORM}")
+    return account, container, parts[2] if len(parts) > 2 else ""
+
+
+def _build_azure_store(url: str) -> AzureStore:
+    """Build an AzureStore for an ``az://<account>/<container>[/<path>]`` URL.
+
+    Only the account and container are pinned from the URL. Credentials still come
+    from the environment exactly as they did through ``obs.store.from_url``: every
+    obstore constructor reads the same ``AZURE_STORAGE_*`` variables
+    (``AZURE_STORAGE_ACCOUNT_KEY``/``AZURE_STORAGE_ACCESS_KEY``,
+    ``AZURE_STORAGE_SAS_TOKEN``/``AZURE_STORAGE_SAS_KEY``, the client-credential
+    ones, ``AZURE_USE_AZURE_CLI``). The account in the URL simply overrides
+    ``AZURE_STORAGE_ACCOUNT_NAME``.
+    """
+    account, container, prefix = _split_azure_url(url)
+    prefix_kwarg = {"prefix": prefix} if prefix else {}
+    return AzureStore(container_name=container, account_name=account, **prefix_kwarg)
 
 
 def _setup_store_and_kwargs(
@@ -335,8 +408,12 @@ def _setup_store_and_kwargs(
                 store_kwargs["region"] = "us-east-1"  # Default for custom endpoints
 
         store = S3Store(bucket, **store_kwargs)
+    elif bucket_url.startswith("az://"):
+        # Azure is built explicitly: obstore reads az:// as container-first, so
+        # from_url() cannot serve gpio's account-first URLs (#864).
+        store = _build_azure_store(bucket_url)
     else:
-        # Non-S3 stores (GCS, Azure, HTTP)
+        # Other stores (GCS, HTTP)
         store = obs.store.from_url(bucket_url)
 
     kwargs = {"max_concurrency": chunk_concurrency}
@@ -643,7 +720,9 @@ def parse_object_store_url(url: str) -> tuple[str, str]:
         Tuple of (bucket_url, prefix)
 
     Raises:
-        ValueError: If URL scheme is not supported
+        InvalidParameterError: If URL scheme is not supported, or an Azure URL
+            is malformed or uses a spelling gpio cannot parse account-first
+            (``abfs://``, ``abfss://``, ``azure://``)
     """
     if url.startswith("s3://"):
         parts = url[5:].split("/", 1)
@@ -658,12 +737,7 @@ def parse_object_store_url(url: str) -> tuple[str, str]:
         return f"gs://{bucket}", prefix
 
     elif url.startswith("az://"):
-        # Azure: az://account/container/path
-        parts = url[5:].split("/", 2)
-        if len(parts) < 2:
-            raise ValueError(f"Invalid Azure URL: {url}. Expected az://account/container/path")
-        account, container = parts[0], parts[1]
-        prefix = parts[2] if len(parts) > 2 else ""
+        account, container, prefix = _split_azure_url(url)
         return f"az://{account}/{container}", prefix
 
     elif url.startswith(("https://", "http://")):
@@ -671,5 +745,15 @@ def parse_object_store_url(url: str) -> tuple[str, str]:
         # For now, return as-is
         return url, ""
 
+    elif url.startswith(("abfs://", "abfss://", "azure://")):
+        # These spellings put the account and container in a different order
+        # (or in a host name), so parsing them account-first would target the
+        # wrong place. Name the supported form instead of guessing.
+        raise InvalidParameterError(
+            "url",
+            f"cannot parse '{url}': gpio addresses Azure Blob Storage as "
+            f"{AZURE_URL_FORM}. Rewrite the URL in that form.",
+        )
+
     else:
-        raise ValueError(f"Unsupported URL scheme: {url}")
+        raise InvalidParameterError("url", f"unsupported URL scheme: {url}")

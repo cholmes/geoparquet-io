@@ -537,6 +537,24 @@ class TestAddBboxCLI:
         covering = _read_geo_metadata(bbox_optioned_run)["columns"]["geometry"]["covering"]
         assert covering["bbox"]["xmin"][0] == "bounds"
 
+    def test_azure_input_is_refused_by_name_not_at_the_metadata_probe(self, tmp_path):
+        """An ``az://`` INPUT gets an early, named refusal (write destinations only).
+
+        gpio never loads DuckDB's azure extension, so an az:// input used to die
+        at the metadata probe with a misleading "not a valid GeoParquet file".
+        The limitation is named before anything is probed instead.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            add,
+            ["bbox", "az://myaccount/mycontainer/in.parquet", str(tmp_path / "out.parquet")],
+        )
+
+        assert result.exit_code != 0
+        assert "write destination" in result.output
+        assert "Traceback" not in result.output
+        assert "not a valid GeoParquet file" not in result.output
+
 
 class TestAddH3CLI:
     """`gpio add h3` plumbing, asserted off two shared runs (#666, item 5).

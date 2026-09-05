@@ -85,11 +85,14 @@ class TestHttpUrlIsTakenAsEncoded:
         assert resolve_file_url(url, verbose=True) == url
 
     def test_non_http_remote_schemes_unchanged(self):
-        """S3/GCS/Azure URLs were never encoded and still are not."""
+        """S3/GCS URLs were never encoded and still are not.
+
+        Azure is absent on purpose: ``az://`` reads are refused at this boundary
+        (write destinations only) -- see tests/test_file_utils.py.
+        """
         for url in (
             "s3://bucket/my%20file.parquet",
             "gs://bucket/my%20file.parquet",
-            "az://container/my%20file.parquet",
         ):
             assert resolve_file_url(url) == url
 

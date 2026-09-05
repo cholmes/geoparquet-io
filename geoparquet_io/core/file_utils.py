@@ -273,15 +273,15 @@ def handle_output_overwrite(
 # Schemes copy_file can resolve to a configured object store. The aliases map onto
 # the canonical scheme gpio's upload path speaks; every other scheme is_remote_url()
 # accepts is refused by name, rather than dying inside a filesystem library on a
-# dependency gpio does not ship (#810). Azure is refused explicitly:
-# obs.store.from_url("az://account/container") cannot be configured to work (it
-# misreads the account segment as the container).
-# TODO(#864): support az:// copies once a working Azure store
-# construction exists, and re-advertise az:// in the messages below.
-_COPYABLE_STORE_SCHEMES = ("s3", "gs")
+# dependency gpio does not ship (#810). Azure is served through the one spelling
+# gpio's upload path parses -- az://<account>/<container>/<path>, built by
+# upload._build_azure_store (#864). The abfs[s]:// and azure:// spellings put the
+# account and container in a different order, or in a host name, so they are
+# refused by name rather than mis-parsed as account-first.
+_COPYABLE_STORE_SCHEMES = ("s3", "gs", "az")
 _COPY_SCHEME_ALIASES = {"s3a": "s3", "gcs": "gs"}
 _HTTP_SCHEMES = ("http", "https")
-_AZURE_SCHEMES = ("az", "abfs", "abfss", "azure")
+_UNPARSEABLE_AZURE_SCHEMES = ("abfs", "abfss", "azure")
 
 # _setup_store_and_kwargs() folds this into the upload kwargs it returns alongside
 # the store. A streamed copy does not use those kwargs, so this only satisfies the
@@ -306,21 +306,23 @@ def _check_copyable_scheme(param_name: str, url: str, writing: bool) -> None:
             raise InvalidParameterError(
                 param_name,
                 f"'{url}' is an HTTP(S) URL, which is read-only. Write to a local "
-                "path or to an s3:// or gs:// URL instead.",
+                "path or to an s3://, gs:// or az:// URL instead.",
             )
         return
 
-    if scheme in _AZURE_SCHEMES:
+    if scheme in _UNPARSEABLE_AZURE_SCHEMES:
+        from geoparquet_io.core.upload import AZURE_URL_FORM
+
         raise InvalidParameterError(
             param_name,
-            f"cannot copy '{url}': Azure Blob Storage copies are not supported yet. "
-            "Copy the file with another tool (e.g. azcopy) for now.",
+            f"cannot copy '{url}': gpio addresses Azure Blob Storage as "
+            f"{AZURE_URL_FORM}. Rewrite the URL in that form.",
         )
 
     if scheme not in _COPYABLE_STORE_SCHEMES:
         raise InvalidParameterError(
             param_name,
-            f"cannot copy '{scheme}://' URLs. gpio copies s3:// and gs:// "
+            f"cannot copy '{scheme}://' URLs. gpio copies s3://, gs:// and az:// "
             "URLs, and reads http:// and https:// ones.",
         )
 
@@ -389,7 +391,9 @@ def resolve_object_store(url: str) -> tuple[object, str]:
     S3 stores are built by :func:`geoparquet_io.core.upload._setup_store_and_kwargs`
     from the ambient S3 config, so a copy honours ``--s3-endpoint``,
     ``--s3-region``, ``--s3-no-ssl`` and ``--aws-profile`` exactly as every other
-    remote write in gpio does (#810). GCS goes through obstore's own
+    remote write in gpio does (#810). Azure stores are built from the account and
+    container in the ``az://`` URL, with credentials still read from the
+    ``AZURE_STORAGE_*`` environment (#864). GCS goes through obstore's own
     ``from_url``, which needs no extra dependency. HTTP(S) never reaches this
     function: it carries a full URL, not a store plus key, and is streamed
     verbatim by :func:`_copy_http_source` instead.
@@ -523,6 +527,19 @@ def resolve_file_url(file_path, verbose=False):
     from geoparquet_io.core.remote import is_remote_url
 
     if is_remote_url(file_path):
+        # Azure reads are not supported: gpio never loads DuckDB's azure
+        # extension, so an az:// input would die deep in the metadata probe
+        # with a misleading "not a valid GeoParquet file". Name the actual
+        # limitation here, before anything is opened. (az:// still works as a
+        # write destination -- uploads and copies go through obstore.)
+        scheme = file_path.split("://", 1)[0].lower()
+        if scheme in ("az", *_UNPARSEABLE_AZURE_SCHEMES):
+            raise InvalidParameterError(
+                "path",
+                f"cannot read '{file_path}': Azure Blob Storage is supported as a "
+                "write destination only (az://<account>/<container>/<path>). "
+                "Reading from Azure is not supported yet; download the file first.",
+            )
         if verbose:
             protocol = file_path.split("://")[0].upper() if "://" in file_path else "HTTP"
             debug(f"Reading from {protocol}: {file_path}")
