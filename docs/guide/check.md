@@ -313,6 +313,14 @@ Validates file structure and metadata against the GeoParquet specification:
   scans read GeoArrow coordinates directly. GeoParquet 1.0 and 2.0 are
   WKB-only per their spec text, so a file claiming a GeoArrow encoding under
   either version fails.
+- **Spherical edges on a projected CRS** — a column declaring `edges` other
+  than `planar` while its CRS is projected **warns**
+  (`edges_spherical_on_projected_crs_<column>`). Great-circle edges are only
+  meaningful on an ellipsoid; in projected space the edge between two vertices
+  is a straight line, so readers will draw it that way. Files with this
+  combination exist in the wild, so it is a warning, not a failure — densify
+  the geometries and declare planar edges, or keep the data in a geographic
+  CRS.
 - **Native geospatial statistics** — for files using the Parquet `GEOMETRY` or
   `GEOGRAPHY` logical types, `native_geo_stats_*` reports the bounds a file
   declares and `native_geo_stats_contains_data_*` checks its geometries against

@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import (
     check_bbox_structure,
+    collect_nonplanar_edges,
     get_parquet_metadata,
     validate_compression_settings,
     write_parquet_with_metadata,
@@ -25,6 +26,7 @@ from geoparquet_io.core.crs_utils import (
     crs_is_explicitly_null,
     extract_crs_from_parquet,
     geoparquet_crs_is_null,
+    is_geographic_crs,
     parse_crs_string_to_projjson,
     resolve_crs_to_string,
 )
@@ -32,7 +34,7 @@ from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identif
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
-from geoparquet_io.core.logging_config import debug, info, success
+from geoparquet_io.core.logging_config import debug, info, success, warn
 from geoparquet_io.core.remote import (
     needs_httpfs,
     remote_write_context,
@@ -119,6 +121,55 @@ def _table_geo_column_meta(table: pa.Table, geom_col: str) -> dict:
         except (json.JSONDecodeError, KeyError):
             return {}
     return {}
+
+
+def _target_crs_is_projected(target_crs: str, con=None) -> bool:
+    """True when reprojecting into ``target_crs`` lands in projected space.
+
+    Resolves the CRS string to PROJJSON first: ``is_geographic_crs`` reads the
+    CRS *type* from PROJJSON, while its string fallback only recognizes the
+    WGS84 spellings and would call a geographic datum like EPSG:4269 projected.
+    An unresolvable CRS falls back to that string heuristic.
+    """
+    return not is_geographic_crs(parse_crs_string_to_projjson(target_crs, con) or target_crs)
+
+
+def _warn_edges_dropped(col_name: str, edges: str, target_crs: str) -> None:
+    warn(
+        f"Dropped 'edges: {edges}' on column \"{col_name}\": the reprojected "
+        f"edges are straight lines in {target_crs}. Densify before reprojecting "
+        "if great-circle edges must be preserved."
+    )
+
+
+def _carry_edges_to_target(input_file: str | None, target_crs: str, con=None) -> bool:
+    """Whether a non-planar ``edges`` declaration survives this reprojection (#601).
+
+    Reprojection transforms vertices, not edges: gpio does not densify along
+    great circles, so in a projected destination the output's edges *are*
+    straight lines and planar (the spec default) is the truthful description.
+    A geographic destination is only a datum shift, so the declaration stands.
+    Warns once per column that loses its declaration.
+    """
+    if not _target_crs_is_projected(target_crs, con):
+        return True
+    if input_file:
+        for col_name, edges in sorted(collect_nonplanar_edges(input_file).items()):
+            _warn_edges_dropped(col_name, edges, target_crs)
+    return False
+
+
+def _drop_nonplanar_edges_from_geo_meta(geo_meta: dict, target_crs: str) -> None:
+    """Strip non-planar ``edges`` from an in-memory geo metadata dict (#601).
+
+    The counterpart of ``_carry_edges_to_target`` for the write paths that hand
+    the input's geo metadata straight through (Arrow tables, streaming).
+    """
+    for col_name, col_meta in (geo_meta.get("columns") or {}).items():
+        edges = col_meta.get("edges") if isinstance(col_meta, dict) else None
+        if edges and edges != "planar":
+            del col_meta["edges"]
+            _warn_edges_dropped(col_name, edges, target_crs)
 
 
 #: Raised by the Arrow/Python-API path on an explicit ``crs: null`` input.
@@ -222,6 +273,8 @@ def reproject_table(
                 try:
                     geo_meta = json.loads(new_metadata[b"geo"].decode("utf-8"))
                     apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
+                    if _target_crs_is_projected(target_crs, con):
+                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs)
                     new_metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                     result = result.replace_schema_metadata(new_metadata)
                 except (json.JSONDecodeError, KeyError) as e:
@@ -533,6 +586,10 @@ def reproject_impl(
         # Read original metadata to preserve non-geo KV metadata (e.g., vecorel)
         original_metadata, _ = get_parquet_metadata(input_parquet, verbose)
 
+        # A projected destination invalidates a non-planar `edges` declaration:
+        # the reprojected edges are straight lines there (#601).
+        carry_edges = _carry_edges_to_target(read_source, target_crs, con)
+
         # Auto version mode: match convert's contract (todo 040) — preserve the
         # input's GeoParquet version and upgrade native-geo-only inputs to 2.0
         # instead of silently stripping native types to 1.1 WKB.
@@ -568,6 +625,7 @@ def reproject_impl(
                     memory_limit=memory_limit,
                     input_file=read_source,
                     invalidate_derived_stats=True,
+                    carry_nonplanar_edges=carry_edges,
                 )
                 # Replace original with temp file
                 shutil.move(str(tmp_path), str(out_path))
@@ -597,6 +655,7 @@ def reproject_impl(
                     memory_limit=memory_limit,
                     input_file=read_source,
                     invalidate_derived_stats=True,
+                    carry_nonplanar_edges=carry_edges,
                 )
 
                 if is_remote:
@@ -735,6 +794,8 @@ def _reproject_streaming(
                 try:
                     geo_meta = json.loads(metadata[b"geo"].decode("utf-8"))
                     apply_target_crs_to_geo_meta(geo_meta, geom_col, target_crs, con)
+                    if _target_crs_is_projected(target_crs, con):
+                        _drop_nonplanar_edges_from_geo_meta(geo_meta, target_crs)
                     metadata[b"geo"] = json.dumps(geo_meta).encode("utf-8")
                 except (json.JSONDecodeError, KeyError) as e:
                     debug(f"Could not update CRS in geo metadata, leaving as-is: {e}")

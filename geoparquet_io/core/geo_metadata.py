@@ -380,6 +380,27 @@ def strip_orientation(metadata: dict | None, column: str) -> dict | None:
     return _rewrite_geo_metadata(metadata, _drop)
 
 
+def strip_nonplanar_edges(metadata: dict | None) -> dict | None:
+    """Return a copy of KV ``metadata`` without any non-planar ``edges`` (#601).
+
+    Reprojection transforms vertices, not edges: gpio does not densify along
+    great circles, so once the destination CRS is projected the output's edges
+    really are straight lines and ``planar`` — the spec default, expressed by
+    the key's absence — is the truthful description. Like ``orientation``, the
+    key is only removed, never rewritten to something gpio cannot vouch for.
+
+    Both ``"geo"`` and ``b"geo"`` keys are handled; the input is never mutated.
+    """
+
+    def _drop(geo_dict: dict) -> dict:
+        for col_meta in (geo_dict.get("columns") or {}).values():
+            if isinstance(col_meta, dict) and col_meta.get("edges", "planar") != "planar":
+                del col_meta["edges"]
+        return geo_dict
+
+    return _rewrite_geo_metadata(metadata, _drop)
+
+
 def backfill_derived_stats(
     metadata: dict | None,
     table: pa.Table,

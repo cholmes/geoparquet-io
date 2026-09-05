@@ -141,11 +141,16 @@ def test_sort_by_column_preserves_spherical_edges(spherical_input, tmp_path):
     assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
 
 
-def test_reproject_preserves_spherical_edges(spherical_input, tmp_path):
+def test_reproject_to_geographic_crs_preserves_spherical_edges(spherical_input, tmp_path):
+    """A datum shift keeps great-circle semantics, so the declaration stands.
+
+    Reprojecting to a *projected* CRS drops it instead (#601) — see
+    tests/test_reproject_spherical_edges.py.
+    """
     from geoparquet_io.core.reproject import reproject
 
     out = tmp_path / "out.parquet"
-    reproject(str(spherical_input), str(out), target_crs="EPSG:3857")
+    reproject(str(spherical_input), str(out), target_crs="EPSG:4269")
     geo = get_geo_metadata(str(out))
     assert geo["columns"]["geometry"].get("edges") == "spherical", geo["columns"]["geometry"]
 

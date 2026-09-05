@@ -46,6 +46,7 @@ from geoparquet_io.core.geo_metadata import (
     detect_bbox_column_from_schema,
     prune_geo_metadata_to_columns,
     strip_derived_stats,
+    strip_nonplanar_edges,
 )
 from geoparquet_io.core.geoarrow_encoding import (
     is_geoarrow_extension_field,
@@ -2732,6 +2733,7 @@ def write_parquet_with_metadata(
     extra_kv_metadata: dict[str, str] | None = None,
     input_file: str | None = None,
     invalidate_derived_stats: bool = False,
+    carry_nonplanar_edges: bool = True,
 ):
     """
     Write a parquet file with proper compression and metadata handling.
@@ -2782,6 +2784,12 @@ def write_parquet_with_metadata(
             carried metadata came from only the first file: the input's stats no
             longer describe the output, so they must be recomputed from the
             written data or omitted rather than carried.
+        carry_nonplanar_edges: When False, do not re-attach the input's
+            non-planar ``edges`` declaration to the output. Set by writes that
+            invalidate the edge interpretation itself — reprojecting to a
+            projected CRS turns great-circle edges into straight lines (#601) —
+            where planar (the spec default) is the truthful description of the
+            output. The caller warns; this only stops the carry.
 
     Returns:
         None
@@ -2799,6 +2807,12 @@ def write_parquet_with_metadata(
     # strategies recompute (or omit) them instead of describing the input.
     if invalidate_derived_stats:
         original_metadata = strip_derived_stats(original_metadata)
+
+    # A write that invalidates the edge interpretation itself (reprojecting into
+    # a projected CRS, #601) must neither carry the declaration through nor
+    # re-attach it afterwards; planar is then the truthful description.
+    if not carry_nonplanar_edges:
+        original_metadata = strip_nonplanar_edges(original_metadata)
 
     # Use geometry column from geometry_info if provided, otherwise auto-detect
     # This ensures original column names are preserved (fixes #328)
@@ -2977,15 +2991,16 @@ def write_parquet_with_metadata(
         # regenerates geo metadata without `edges`, silently demoting geography
         # data to planar. Runs on the local temp file, so remote outputs are
         # patched before upload.
-        _preserve_edges_after_write(
-            input_file,
-            original_metadata,
-            actual_output,
-            compression=compression,
-            compression_level=compression_level,
-            row_group_rows=row_group_rows,
-            verbose=verbose,
-        )
+        if carry_nonplanar_edges:
+            _preserve_edges_after_write(
+                input_file,
+                original_metadata,
+                actual_output,
+                compression=compression,
+                compression_level=compression_level,
+                row_group_rows=row_group_rows,
+                verbose=verbose,
+            )
 
         # Auto-fix vecorel schema compliance when collection metadata is present
         if not is_remote:

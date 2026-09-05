@@ -372,6 +372,16 @@ GEOGRAPHY extracts) survives every rewrite: `convert`, `extract`, `sort`,
 `convert reproject`, and `partition` all carry it through to the output —
 including remote (S3/GCS/Azure) outputs.
 
+The one exception is reprojecting into a **projected** CRS. `gpio` reprojects
+vertices, not edges: it does not densify along great circles first, so the
+output's edges are straight lines in the destination CRS and the declaration is
+dropped (with a warning) rather than carried onto data it no longer describes —
+`planar`, the spec default, is what the output actually is. Densify before
+reprojecting if great-circle edges must be preserved. Reprojecting between two
+geographic CRSs (a datum shift, e.g. `EPSG:4326` → `EPSG:4269`) keeps the
+declaration unchanged. `gpio check spec` warns about files that carry
+`edges: spherical` on a projected CRS.
+
 === "CLI"
 
     ```bash
