@@ -335,6 +335,14 @@ def _check_geometry_types_list(col_meta: dict, col_name: str) -> ValidationCheck
             message=f'column "{col_name}" has invalid geometry_types: {invalid_types}',
             category="column_metadata",
         )
+    duplicates = sorted({t for t in geometry_types if geometry_types.count(t) > 1})
+    if duplicates:
+        return ValidationCheck(
+            name=f"geometry_types_list_{col_name}",
+            status=CheckStatus.FAILED,
+            message=f'column "{col_name}" has duplicate geometry_types: {duplicates}',
+            category="column_metadata",
+        )
 
     return ValidationCheck(
         name=f"geometry_types_list_{col_name}",
@@ -2431,6 +2439,94 @@ def _check_native_geo_types_match(
 # =============================================================================
 
 
+def _check_native_columns_in_metadata(schema_info: list, columns: dict) -> ValidationCheck:
+    """Check V2-6: every GEOMETRY/GEOGRAPHY column must be described in geo 'columns'."""
+    from geoparquet_io.core.duckdb_metadata import is_geometry_column
+
+    missing = [
+        col["name"]
+        for col in schema_info
+        if is_geometry_column(col.get("logical_type") or "") and col["name"] not in columns
+    ]
+    if missing:
+        return ValidationCheck(
+            name="native_columns_in_metadata",
+            status=CheckStatus.FAILED,
+            message=f"geometry columns not described in geo metadata: {missing}",
+            category="geoparquet_2_0",
+        )
+    return ValidationCheck(
+        name="native_columns_in_metadata",
+        status=CheckStatus.PASSED,
+        message="all GEOMETRY/GEOGRAPHY columns are described in geo metadata",
+        category="geoparquet_2_0",
+    )
+
+
+def _stats_geometry_type_name(raw) -> str:
+    """'point_z' / 1001 from parquet_metadata().geo_types -> 'Point Z'."""
+    if isinstance(raw, int):
+        return WKB_TYPE_CODES.get(raw, str(raw))
+    return _normalize_found_geometry_type(str(raw).replace("_", " "))
+
+
+def _check_geometry_types_match_stats(
+    parquet_file: str, geom_col: str, declared_types: list
+) -> ValidationCheck:
+    """Check V2-7: geometry_types must include every type in the geospatial statistics."""
+    from geoparquet_io.core.duckdb_metadata import get_native_geo_stats_by_row_group
+    from geoparquet_io.core.remote import is_remote_url
+
+    name = f"geometry_types_match_stats_{geom_col}"
+    if not declared_types:
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.SKIPPED,
+            message="geometry_types is empty (types not declared)",
+            category="geoparquet_2_0",
+        )
+    if is_remote_url(parquet_file):
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.SKIPPED,
+            message="geospatial statistics check skipped for remote files",
+            category="geoparquet_2_0",
+        )
+    try:
+        chunks = get_native_geo_stats_by_row_group(parquet_file, geom_col) or []
+    except Exception as e:
+        # SKIPPED, not FAILED: unreadable statistics are an inability to check,
+        # mirroring _check_native_geo_statistics on the identical throw.
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.SKIPPED,
+            message=f"could not check geospatial statistics: {e}",
+            category="geoparquet_2_0",
+        )
+    found = {_stats_geometry_type_name(t) for c in chunks for t in c["geometry_types"]}
+    if not found:
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.SKIPPED,
+            message="no geospatial_types statistics to compare with geometry_types",
+            category="geoparquet_2_0",
+        )
+    undeclared = sorted(found - set(declared_types))
+    if undeclared:
+        return ValidationCheck(
+            name=name,
+            status=CheckStatus.FAILED,
+            message=f"geospatial statistics contain types not in geometry_types: {undeclared}",
+            category="geoparquet_2_0",
+        )
+    return ValidationCheck(
+        name=name,
+        status=CheckStatus.PASSED,
+        message=f"geometry_types covers the geospatial statistics types {sorted(found)}",
+        category="geoparquet_2_0",
+    )
+
+
 def _check_v2_uses_native_types(schema_info: list, geom_col: str) -> ValidationCheck:
     """Check V2-1: geometry columns MUST use Parquet GEOMETRY or GEOGRAPHY types."""
     from geoparquet_io.core.duckdb_metadata import is_geometry_column
@@ -3688,12 +3784,18 @@ def _run_geoparquet_checks(
 
     # GeoParquet 2.0 checks - run Parquet native geo type checks first
     if file_type_info["file_type"] == "geoparquet_v2":
+        checks.append(_check_native_columns_in_metadata(schema_info, columns))
         # Parquet native geo type checks (run first for 2.0)
-        for col_name in columns.keys():
+        for col_name, col_meta in columns.items():
             checks.append(_check_native_geo_type_present(schema_info, col_name))
             checks.append(_check_native_crs_format(schema_info, col_name))
             checks.append(_check_geography_edges_valid(schema_info, col_name))
             checks.append(_check_native_geo_statistics(parquet_file, col_name))
+            checks.append(
+                _check_geometry_types_match_stats(
+                    parquet_file, col_name, col_meta.get("geometry_types") or []
+                )
+            )
 
             # Data validation checks for native geo types
             if validate_data and con:
