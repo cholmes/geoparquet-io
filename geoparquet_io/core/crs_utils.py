@@ -223,6 +223,35 @@ def is_default_crs(crs):
     return False
 
 
+def note_default_crs_normalized(declared) -> None:
+    """Note at ``--verbose`` that a declared default ``crs`` is dropped on write.
+
+    GeoParquet signals the default CRS (OGC:CRS84 / EPSG:4326) by *omitting* the
+    ``crs`` key, so an input that spelled it out loses that key on write. The
+    output is correct GeoParquet, but the drop is invisible — a caller diffing
+    ``geo`` blocks sees a key they wrote go missing (#815).
+
+    ``declared`` is the input's raw ``crs`` value. Only a value that really names
+    the default is noted: an empty value names nothing, and an explicit
+    ``crs: null`` means *unknown*, which has its own warning
+    (:data:`NULL_CRS_HINT`). :func:`is_default_crs` is the sole predicate here so
+    the note and the drop can never disagree about what the default is (#796).
+
+    This is the single wording of the note. :func:`apply_output_crs` calls it for
+    every write path that carries the input's ``geo`` block through; paths that
+    rebuild the block from the converted data (``gpio convert geoparquet``, whose
+    2.0 fast path lets DuckDB regenerate it) call it themselves, because their
+    input's ``crs`` never reaches ``apply_output_crs`` (#844).
+    """
+    if not declared or not is_default_crs(declared):
+        return
+    debug(
+        "Normalized an explicit default CRS: dropped the geometry column's "
+        "`crs` key, which is how GeoParquet spells the OGC:CRS84 / EPSG:4326 "
+        "default (the coordinates are unchanged)."
+    )
+
+
 def apply_output_crs(col_meta: dict, input_crs) -> None:
     """Set or clear a geometry column's ``crs`` for the requested output CRS.
 
@@ -238,29 +267,20 @@ def apply_output_crs(col_meta: dict, input_crs) -> None:
       still strip a stray default/null one the source or DuckDB may have attached.
 
     Dropping a ``crs`` the input *spelled out* as the default is invisible in the
-    output — the file is correct GeoParquet, but a caller diffing ``geo`` blocks
-    sees a key they wrote go missing (#815). Note it once at ``--verbose``. An
-    explicit ``crs: null`` is excluded: that means *unknown*, and it has its own
-    warning (:data:`NULL_CRS_HINT`).
+    output, so :func:`note_default_crs_normalized` reports it once at
+    ``--verbose`` (#815).
 
     Mutates ``col_meta`` in place.
     """
+    # Captured before the pop: the note describes what the input declared.
     declared = col_meta.get("crs")
-    # Only a value that actually names the default counts: ``None`` is the
-    # unknown-CRS case and an empty value names nothing at all.
-    declared_the_default = bool(declared) and is_default_crs(declared)
 
     if input_crs and not is_default_crs(input_crs):
         col_meta["crs"] = input_crs
         return
     if input_crs or is_default_crs(col_meta.get("crs")):
         col_meta.pop("crs", None)
-        if declared_the_default:
-            debug(
-                "Normalized an explicit default CRS: dropped the geometry column's "
-                "`crs` key, which is how GeoParquet spells the OGC:CRS84 / EPSG:4326 "
-                "default (the coordinates are unchanged)."
-            )
+        note_default_crs_normalized(declared)
 
 
 #: Shared guidance appended to null-CRS warnings and the validate message.
