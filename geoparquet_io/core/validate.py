@@ -2566,9 +2566,25 @@ def _check_v2_crs_consistency(geo_meta: dict, schema_info: list, geom_col: str) 
         name=f"v2_crs_consistency_{geom_col}",
         status=CheckStatus.FAILED,
         message="CRS in geo metadata must match CRS in Parquet schema",
-        details=f"Metadata: {get_crs_display_name(metadata_crs)}, Schema: {get_crs_display_name(schema_crs)}",
+        details=f"Metadata: {get_crs_display_name(metadata_crs)}, "
+        f"Schema: {_schema_crs_display(schema_crs)}",
         category="geoparquet_2_0",
     )
+
+
+def _schema_crs_display(schema_crs: Any) -> str:
+    """The Parquet geo type's CRS, as it should read in a mismatch message.
+
+    A value still in string form is one gpio could not resolve to a CRS -- the
+    Parquet ``crs`` property is free-form, so it may be anything from a
+    ``projjson:<key>`` this check cannot look up to ``WGS 84`` or raw WKT. Print
+    it verbatim *and* say it was not recognized: on its own the literal reads
+    like a CRS gpio understood and rejected, which is the opposite of what
+    happened (#866).
+    """
+    if isinstance(schema_crs, str):
+        return f"{schema_crs} (unrecognized CRS form, compared as-is)"
+    return get_crs_display_name(schema_crs)
 
 
 def _edges_schema_facts(schema_info: list, geom_col: str) -> tuple[bool, bool, str | None]:
@@ -2692,6 +2708,22 @@ def _check_parquet_geo_only_crs(
 
             # Resolve CRS reference if needed for further checks
             crs = resolve_crs_reference(parquet_file, raw_crs)
+
+            # Still a string means nothing resolved it: the Parquet crs property
+            # is free-form, so this is a value like "4326" or "WGS 84" that no
+            # reader can be relied on to interpret. Report it before the
+            # is_geographic_crs heuristic below, which pattern-matches "4326"
+            # into a confident "CRS is geographic" gpio cannot back (#866).
+            if isinstance(crs, str):
+                return ValidationCheck(
+                    name=f"parquet_geo_only_crs_{geom_col}",
+                    status=CheckStatus.WARNING,
+                    message=f'column "{geom_col}" CRS format may not be widely recognized',
+                    details=f"CRS: {crs}. This is not inline PROJJSON, srid:<id>, "
+                    "projjson:<key> or a resolvable <authority>:<code>. "
+                    "Use 'gpio convert --geoparquet-version 2.0' to standardize.",
+                    category="parquet_geo_types",
+                )
 
             # Check if CRS is geographic (WGS84, EPSG:4326, OGC:CRS84)
             if is_geographic_crs(crs):

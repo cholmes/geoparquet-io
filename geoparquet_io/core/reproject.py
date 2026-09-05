@@ -28,7 +28,11 @@ from geoparquet_io.core.crs_utils import (
     parse_crs_string_to_projjson,
     resolve_crs_to_string,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import (
+    _escape_sql_string,
+    get_duckdb_connection,
+    quote_identifier,
+)
 from geoparquet_io.core.file_utils import safe_file_url
 from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
@@ -200,14 +204,18 @@ def reproject_table(
 
         # Build reprojection query
         # Use ST_AsWKB to convert back to WKB format for GeoParquet compatibility
+        # The CRS values come from file metadata (or the caller) and may be
+        # free-form strings, so they are escaped like any other SQL literal.
+        source_crs_literal = _escape_sql_string(effective_source_crs)
+        target_crs_literal = _escape_sql_string(target_crs)
         query = f"""
             SELECT
                 * EXCLUDE ({quote_identifier(geom_col)}),
                 ST_AsWKB(
                     ST_Transform(
                         {quote_identifier(geom_col)},
-                        '{effective_source_crs}',
-                        '{target_crs}'
+                        '{source_crs_literal}',
+                        '{target_crs_literal}'
                     )
                 ) AS {quote_identifier(geom_col)}
             FROM {source_table}
@@ -471,6 +479,12 @@ def reproject_impl(
         # geometry_always_xy is set at connection level (DuckDB 1.5+)
         log("Reprojecting...")
 
+        # The detected source CRS may be a free-form string a file carried in
+        # its metadata or Parquet geo type (#866), so both CRS values are
+        # escaped like any other SQL literal.
+        source_crs_literal = _escape_sql_string(effective_source_crs)
+        target_crs_literal = _escape_sql_string(target_crs)
+
         # Build bbox regeneration clause if input had bbox column
         if bbox_col:
             # Use CTE to avoid computing ST_Transform multiple times
@@ -480,8 +494,8 @@ def reproject_impl(
                         * EXCLUDE ({exclude_clause}),
                         ST_Transform(
                             {quote_identifier(geom_col)},
-                            '{effective_source_crs}',
-                            '{target_crs}'
+                            '{source_crs_literal}',
+                            '{target_crs_literal}'
                         ) AS {quote_identifier(geom_col)}
                     FROM '{input_url}'
                 )
@@ -503,8 +517,8 @@ def reproject_impl(
                     * EXCLUDE ({exclude_clause}),
                     ST_Transform(
                         {quote_identifier(geom_col)},
-                        '{effective_source_crs}',
-                        '{target_crs}'
+                        '{source_crs_literal}',
+                        '{target_crs_literal}'
                     ) AS {quote_identifier(geom_col)}
                 FROM '{input_url}'
             """
@@ -683,6 +697,12 @@ def _reproject_streaming(
             # Quote column names to handle special characters (colons, spaces, etc.)
             exclude_clause = ", ".join(quote_identifier(c) for c in exclude_cols)
 
+            # The detected source CRS may be a free-form string a file carried
+            # in its metadata or Parquet geo type (#866), so both CRS values
+            # are escaped like any other SQL literal.
+            source_crs_literal = _escape_sql_string(effective_source_crs)
+            target_crs_literal = _escape_sql_string(target_crs)
+
             # Build reprojection query with bbox regeneration if input had bbox
             if bbox_col:
                 # Use CTE to compute reprojected geometry once, then regenerate bbox
@@ -692,8 +712,8 @@ def _reproject_streaming(
                             * EXCLUDE ({exclude_clause}),
                             ST_Transform(
                                 {quote_identifier(geom_col)},
-                                '{effective_source_crs}',
-                                '{target_crs}'
+                                '{source_crs_literal}',
+                                '{target_crs_literal}'
                             ) AS {quote_identifier(geom_col)}
                         FROM '{working_url}'
                     )
@@ -713,8 +733,8 @@ def _reproject_streaming(
                         * EXCLUDE ({exclude_clause}),
                         ST_Transform(
                             {quote_identifier(geom_col)},
-                            '{effective_source_crs}',
-                            '{target_crs}'
+                            '{source_crs_literal}',
+                            '{target_crs_literal}'
                         ) AS {quote_identifier(geom_col)}
                     FROM '{working_url}'
                 """

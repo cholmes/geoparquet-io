@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import duckdb
 
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
 from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 from geoparquet_io.core.geometry_repair import repair_geometry_sql
 
@@ -176,9 +176,12 @@ def _build_feature_query(
     # repair_geometry_sql repeats its argument, and ST_Transform is far too
     # expensive to evaluate once per repetition per row.
     if source_crs:
+        # source_crs comes straight out of a file's own geo metadata, so it can
+        # be any free-form string -- escape it like every other SQL literal.
+        source_crs_literal = _escape_sql_string(source_crs)
         source_ref = (
             f"(SELECT * REPLACE ("
-            f"ST_Transform({quoted_geom}, '{source_crs}', '{WGS84_CRS}') AS {quoted_geom}"
+            f"ST_Transform({quoted_geom}, '{source_crs_literal}', '{WGS84_CRS}') AS {quoted_geom}"
             f") FROM {source_ref} WHERE {quoted_geom} IS NOT NULL)"
         )
 

@@ -7,6 +7,7 @@ CRS information from GeoParquet files and other spatial formats.
 
 import json
 import os
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -853,6 +854,19 @@ def parse_crs_string_to_projjson(crs_string, con=None):
 #: With ``SET geometry_always_xy = true`` this is interchangeable with EPSG:4326.
 DEFAULT_TARGET_CRS = "OGC:CRS84"
 
+#: The only shape :func:`crs_string_for_transform` may ever return.
+#:
+#: The same strict quote-free ``<authority>:<code>`` shape the logical-type
+#: parser enforced before #870 (``_AUTHORITY_CODE_CRS`` in
+#: ``core/duckdb_metadata.py``). #866/#870 made the parser carry *arbitrary*
+#: free-form ``crs`` strings through so validation can fail closed on them --
+#: but a value headed for ``ST_Transform`` is headed for SQL, so this choke
+#: point restores the old invariant for transforms: authority code or nothing.
+#: The sinks still SQL-escape on top of this (defense in depth, and the
+#: reproject path legitimately passes PROJJSON strings that bypass this
+#: helper).
+_TRANSFORM_CRS_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*:[A-Za-z0-9_.\-]+$")
+
 
 def crs_string_for_transform(crs) -> str | None:
     """Return an ``"AUTH:CODE"`` CRS string for ``ST_Transform``, or ``None``.
@@ -861,6 +875,11 @@ def crs_string_for_transform(crs) -> str | None:
     default (OGC:CRS84 / EPSG:4326), or is not identifiable as an authority code.
     ``crs`` may be PROJJSON (as returned by :func:`extract_crs_from_parquet`) or
     an ``"AUTH:CODE"`` string.
+
+    The result is guaranteed to match :data:`_TRANSFORM_CRS_SHAPE`: a file's
+    free-form ``crs`` (carried through for validation since #866) or a hostile
+    PROJJSON ``id`` must never come out of here, because callers interpolate
+    the result into SQL.
     """
     if not crs or is_default_crs(crs):
         return None
@@ -868,7 +887,10 @@ def crs_string_for_transform(crs) -> str | None:
     if not identifier:
         return None
     authority, code = identifier
-    return f"{authority}:{code}"
+    candidate = f"{authority}:{code}"
+    if not _TRANSFORM_CRS_SHAPE.match(candidate):
+        return None
+    return candidate
 
 
 def transform_geom_sql(geom_expr: str, source_crs, target_crs: str = DEFAULT_TARGET_CRS) -> str:
