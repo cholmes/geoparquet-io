@@ -160,10 +160,9 @@ Override auto-detection when needed:
         no spill path. Size a BigQuery extract against the result set, not
         against `--write-memory`.
 
-        The shared `--help` text still describes the flag as a "Memory limit for
-        streaming writes"; on this command it is the scan. Whether the flag
-        should be renamed or removed here is tracked in
-        [#760](https://github.com/geoparquet/geoparquet-io/issues/760).
+        The flag keeps its name here — it is the same knob, spelled the same way
+        — but `gpio extract bigquery --help` describes it accurately: "Memory
+        limit for the DuckDB scan of the BigQuery result."
 
 === "Python"
 

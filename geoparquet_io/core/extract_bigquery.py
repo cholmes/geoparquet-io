@@ -824,6 +824,8 @@ def extract_bigquery(
         row_group_size_mb: Target row group size in MB
         row_group_rows: Exact rows per row group
         geoparquet_version: GeoParquet version to write
+        memory_limit: DuckDB memory_limit for the BigQuery scan (e.g. "4GB").
+            The write goes through PyArrow, so this bounds the read side only.
 
     Returns:
         PyArrow Table if output_parquet is None, otherwise None

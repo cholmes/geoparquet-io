@@ -870,6 +870,10 @@ Other limitations:
 
 - **BIGNUMERIC columns**: Not supported (76-digit precision exceeds DuckDB's 38-digit limit)
 - **Large results**: Consider using `--limit` and `--where` to reduce data transfer
+- **`--write-memory` bounds the scan, not the write**: this command writes through
+  PyArrow, so the value is applied as DuckDB's `memory_limit` on the connection
+  running the BigQuery scan. It is not a cap on the command's peak memory — see
+  [Write Strategies](write-strategies.md#explicit-memory-limits)
 
 ## Extracting from ArcGIS Feature Services
 

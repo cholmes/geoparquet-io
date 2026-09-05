@@ -732,3 +732,46 @@ class TestStdoutStreamingIgnoresMemoryLimit:
             con.close()
         mocked.assert_called_once()
         assert "memory" in capsys.readouterr().err.lower()
+
+
+class TestWriteMemoryHelpTextIsPerCommand:
+    """`extract bigquery` writes through PyArrow, so its --write-memory bounds the
+    DuckDB scan of the BigQuery result, not a write. Its help text has to say so
+    (gpio #760) — and overriding it there must not change every other command."""
+
+    def test_bigquery_help_describes_the_scan_not_a_streaming_write(self):
+        result = CliRunner().invoke(cli, ["extract", "bigquery", "--help"])
+        assert result.exit_code == 0
+        help_text = " ".join(result.output.split())
+        assert "Memory limit for the DuckDB scan of the BigQuery result" in help_text
+        assert "writes through PyArrow" in help_text
+        assert "streaming writes" not in help_text
+
+    def test_sibling_command_keeps_the_generic_streaming_write_wording(self):
+        result = CliRunner().invoke(cli, ["sort", "hilbert", "--help"])
+        assert result.exit_code == 0
+        help_text = " ".join(result.output.split())
+        assert "Memory limit for streaming writes" in help_text
+        assert "BigQuery" not in help_text
+
+    def test_decorator_works_bare_and_called(self):
+        """Both spellings of the decorator attach the same option."""
+        from geoparquet_io.cli.decorators import write_memory_option
+
+        @click.command()
+        @write_memory_option
+        def bare(write_memory):  # pragma: no cover - help only
+            pass
+
+        @click.command()
+        @write_memory_option(help="Custom wording.")
+        def overridden(write_memory):  # pragma: no cover - help only
+            pass
+
+        runner = CliRunner()
+        bare_help = " ".join(runner.invoke(bare, ["--help"]).output.split())
+        overridden_help = " ".join(runner.invoke(overridden, ["--help"]).output.split())
+
+        assert "Memory limit for streaming writes" in bare_help
+        assert "Custom wording." in overridden_help
+        assert "streaming writes" not in overridden_help
