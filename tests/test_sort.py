@@ -644,6 +644,24 @@ def schema_diff_parts_dir(places_test_file, tmp_path):
     return parts_dir, 200
 
 
+@pytest.fixture
+def schema_diff_quadkey_parts_dir(places_test_file, tmp_path):
+    """Like ``schema_diff_parts_dir``, but both files already carry a
+    ``quadkey`` column, so ``sort quadkey`` skips the auto-add step and reads
+    the directory glob directly. Returns ``(directory, total_rows)``."""
+    table = pq.read_table(places_test_file).slice(0, 200)
+    table = table.append_column("quadkey", pa.array([f"{i:03d}" for i in range(200)]))
+    parts_dir = tmp_path / "schema_diff_quadkey_parts"
+    parts_dir.mkdir()
+    first = table.slice(0, 100)
+    pq.write_table(first, parts_dir / "a.parquet")
+
+    second = table.slice(100, 100)
+    second = second.append_column("note", pa.array(["later"] * second.num_rows))
+    pq.write_table(second.replace_schema_metadata(first.schema.metadata), parts_dir / "b.parquet")
+    return parts_dir, 200
+
+
 class TestSortAllowSchemaDiff:
     """``sort column``/``sort quadkey`` take ``--allow-schema-diff`` (#867).
 
@@ -732,6 +750,45 @@ class TestSortAllowSchemaDiff:
         parts_dir, _ = schema_diff_parts_dir
         sort_by_quadkey(str(parts_dir), temp_output_file, allow_schema_diff=True)
         assert "note" in pq.read_schema(temp_output_file).names
+
+    def test_sort_quadkey_remove_column_allow_schema_diff_keeps_the_extra_column(
+        self, schema_diff_quadkey_parts_dir, temp_output_file
+    ):
+        """``--remove-quadkey-column`` builds an explicit SELECT list, which
+        must describe the union the read returns, not the first file's schema
+        -- or the very column the flag protects is silently dropped."""
+        parts_dir, total = schema_diff_quadkey_parts_dir
+        result = CliRunner().invoke(
+            sort,
+            [
+                "quadkey",
+                str(parts_dir),
+                temp_output_file,
+                "--remove-quadkey-column",
+                "--allow-schema-diff",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" in out.column_names
+        assert out.column("note").to_pylist().count("later") == 100
+        assert "quadkey" not in out.column_names
+
+    def test_sort_quadkey_remove_column_without_the_flag_keeps_first_file_schema(
+        self, schema_diff_quadkey_parts_dir, temp_output_file
+    ):
+        """Without the flag the strict read returns the first file's columns,
+        so the SELECT list built from that first file stays correct."""
+        parts_dir, total = schema_diff_quadkey_parts_dir
+        result = CliRunner().invoke(
+            sort, ["quadkey", str(parts_dir), temp_output_file, "--remove-quadkey-column"]
+        )
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" not in out.column_names
+        assert "quadkey" not in out.column_names
 
 
 class TestSortSelfReadGuard:

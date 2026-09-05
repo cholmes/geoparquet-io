@@ -32,6 +32,7 @@ from geoparquet_io.core.remote import (
     setup_aws_profile_if_needed,
     validate_profile_for_urls,
 )
+from geoparquet_io.core.sort_by_column import _sortable_columns
 from geoparquet_io.core.stream_io import write_output
 from geoparquet_io.core.streaming import is_stdin, read_stdin_to_temp_file, should_stream_output
 
@@ -264,9 +265,11 @@ def sort_by_quadkey(
     )
     metadata, _ = get_parquet_metadata(actual_input, verbose)
 
-    # Get usable columns for building SELECT clause
-    usable_cols = get_usable_columns(actual_input)
-    existing_columns = [c["name"] for c in usable_cols]
+    # Get the columns for building the SELECT clause. Under --allow-schema-diff
+    # the read expression carries union_by_name, so the list must describe the
+    # read itself rather than the first file -- or the remove-column branch
+    # silently drops the very columns the flag was turned on to keep.
+    existing_columns = _sortable_columns(actual_input, read_expr, allow_schema_diff)
 
     # Bound before the try: the `finally` below closes it, and a constructor
     # that throws would otherwise be masked by an UnboundLocalError (#867).
