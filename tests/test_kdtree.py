@@ -212,7 +212,9 @@ class TestPartitionKDTree:
 
         assert result.exit_code == 0, result.output
         assert "Auto-selected 2 partitions" in result.output
-        assert "512" not in result.output
+        # "512" alone can appear by chance inside a random temp-file name in the
+        # output (it did, on CI); pin the failure shape, not the bare digits.
+        assert "512 partitions" not in result.output
 
 
 @pytest.mark.slow
