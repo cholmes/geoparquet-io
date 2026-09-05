@@ -2974,6 +2974,150 @@ class TestVersionNegotiation:
 
 
 # =============================================================================
+# Query Param Merging Tests (Issue #828)
+# =============================================================================
+
+
+class TestBuildWfsUrlQueryParamMerging:
+    """A service_url with an existing query param (e.g. an apikey) must not
+    be corrupted by a second "?" when WFS GetFeature params are appended."""
+
+    def test_build_wfs_url_preserves_existing_query_param(self):
+        """The issue's exact reproduction: an apikey query param must survive
+        intact, joined with '&' rather than a second '?'."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/geo/wfs?apikey=mykey",
+            "layer",
+            "2.0.0",
+        )
+
+        # Exactly one '?' delimiter in the whole URL.
+        assert url.count("?") == 1
+
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert params["apikey"] == ["mykey"]
+        assert params["service"] == ["WFS"]
+        assert params["version"] == ["2.0.0"]
+        assert params["request"] == ["GetFeature"]
+        assert params["typeNames"] == ["layer"]
+
+    def test_build_wfs_url_no_existing_query_param(self):
+        """Non-regression: a service_url with no query string still produces
+        a single '?' and no stray leading '&'."""
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs",
+            "test:layer",
+            version="2.0.0",
+        )
+
+        assert url.count("?") == 1
+        assert "?&" not in url
+        assert url.startswith("https://example.com/wfs?")
+
+    def test_build_wfs_url_merges_multiple_existing_query_params(self):
+        """Multiple pre-existing query params must all be preserved and
+        merged with the WFS params."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs?apikey=mykey&format=json",
+            "test:layer",
+            version="1.1.0",
+        )
+
+        assert url.count("?") == 1
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert params["apikey"] == ["mykey"]
+        assert params["format"] == ["json"]
+        assert params["service"] == ["WFS"]
+        assert params["typeName"] == ["test:layer"]
+
+    def test_build_wfs_url_strips_wfs_specific_params_before_merging(self):
+        """A service_url that already carries GetCapabilities-style WFS
+        params (service/request/version) must not end up with duplicate or
+        conflicting keys after merging."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs?service=WFS&request=GetCapabilities&apikey=mykey",
+            "test:layer",
+            version="2.0.0",
+        )
+
+        assert url.count("?") == 1
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        # Stale GetCapabilities value must not survive; GetFeature is authoritative.
+        assert params["request"] == ["GetFeature"]
+        assert params["apikey"] == ["mykey"]
+
+    def test_build_wfs_url_strips_mixed_case_wfs_params(self):
+        """WFS KVP keys are case-insensitive per the OGC spec, so the strip
+        must be too: ``typeName`` (canonical WFS 1.1 casing users copy from a
+        browser URL) surviving next to the ``typeNames`` we set would leave the
+        server to pick a layer from conflicting duplicate keys."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs"
+            "?Version=1.0.0&typeName=roads&Request=GetCapabilities&apikey=mykey",
+            "buildings",
+            version="2.0.0",
+        )
+
+        assert url.count("?") == 1
+        params = parse_qs(urlparse(url).query)
+        # The apikey survives; every mixed-case control param is replaced by
+        # exactly one authoritative value.
+        assert params["apikey"] == ["mykey"]
+        assert params["typeNames"] == ["buildings"]
+        assert params["version"] == ["2.0.0"]
+        assert params["request"] == ["GetFeature"]
+        lowered = [k.lower() for k in params]
+        assert "typename" not in lowered  # typeName=roads must not survive
+        assert lowered.count("version") == 1
+        assert lowered.count("request") == 1
+
+    def test_build_wfs_url_strips_stale_control_params_case_insensitively(self):
+        """A GetFeature URL copied from a browser carries request-control keys
+        (outputFormat, count, startIndex, resultType, srsName) that must not
+        leak into the request gpio builds — a stale ``resultType=hits`` would
+        turn every data request into a count response."""
+        from urllib.parse import parse_qs, urlparse
+
+        from geoparquet_io.core.wfs import _build_wfs_url
+
+        url = _build_wfs_url(
+            "https://example.com/wfs"
+            "?resultType=hits&outputFormat=text/xml&startIndex=100"
+            "&maxFeatures=5&Count=5&srsName=EPSG:3857&apikey=mykey",
+            "buildings",
+            version="2.0.0",
+        )
+
+        params = parse_qs(urlparse(url).query)
+        assert params["apikey"] == ["mykey"]
+        lowered = [k.lower() for k in params]
+        for stale in ("resulttype", "outputformat", "startindex", "maxfeatures", "srsname"):
+            assert stale not in lowered
+        assert "count" not in lowered  # no max_features requested → no count param
+
+
+# =============================================================================
 # CRS Validation Tests (Issue #398)
 # =============================================================================
 
@@ -4321,6 +4465,22 @@ class TestRefineTilesAdaptive:
         assert len(result) == 1
 
 
+def _hits_probe_query(mock_req) -> dict:
+    """Return the query params of the URL a mocked _make_request received.
+
+    The hits probe must pre-merge its WFS params into the URL rather than
+    passing ``params=`` to httpx: httpx 0.28 *replaces* a URL's existing
+    query when ``params=`` is given, which drops e.g. an apikey (issue #828).
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    assert mock_req.call_args.kwargs.get("params") is None, (
+        "hits probe must not pass params= (httpx replaces the URL query, dropping apikeys)"
+    )
+    requested_url = mock_req.call_args[0][0]
+    return parse_qs(urlparse(requested_url).query)
+
+
 class TestGetFeatureCountWithBbox:
     """Test _get_feature_count extended with bbox parameter."""
 
@@ -4339,8 +4499,7 @@ class TestGetFeatureCountWithBbox:
             )
 
         assert result == 42
-        call_params = mock_req.call_args[1]["params"]
-        assert "bbox" in call_params
+        assert "bbox" in _hits_probe_query(mock_req)
 
     def test_no_bbox_backward_compatible(self):
         """Without bbox, request should not include bbox param."""
@@ -4351,8 +4510,34 @@ class TestGetFeatureCountWithBbox:
             result = _get_feature_count("http://mock/wfs", "layer", "1.1.0")
 
         assert result == 100
-        call_params = mock_req.call_args[1]["params"]
-        assert "bbox" not in call_params
+        assert "bbox" not in _hits_probe_query(mock_req)
+
+
+class TestGetFeatureCountPreservesQueryParams:
+    """The resultType=hits probe must keep the service URL's own query params.
+
+    On the issue #828 scenario a server that 403s without its apikey made the
+    probe fail, the failure was swallowed into count=None, and pagination /
+    auto-tiling silently disengaged — the #678 truncation failure mode.
+    """
+
+    def test_hits_probe_url_carries_apikey_and_resulttype(self):
+        """The probe request URL carries BOTH the apikey and resultType=hits."""
+        from geoparquet_io.core.wfs import _get_feature_count
+
+        with patch("geoparquet_io.core.wfs._make_request") as mock_req:
+            mock_req.return_value = b'numberMatched="7"'
+            result = _get_feature_count(
+                "https://example.com/geo/wfs?apikey=mykey", "layer", "2.0.0"
+            )
+
+        assert result == 7
+        params = _hits_probe_query(mock_req)
+        assert params["apikey"] == ["mykey"]
+        assert params["resultType"] == ["hits"]
+        assert params["service"] == ["WFS"]
+        assert params["request"] == ["GetFeature"]
+        assert params["typeNames"] == ["layer"]
 
 
 class TestGetFeatureCountErrorVisibility:
@@ -4441,8 +4626,12 @@ class TestGetFeatureCountErrorVisibility:
         seen = []
 
         def fake_request(url, params=None, **kwargs):
-            # Root tile is over the limit; every quadrant is under it.
-            seen.append(params.get("bbox", ""))
+            from urllib.parse import parse_qs, urlparse
+
+            # Root tile is over the limit; every quadrant is under it. The
+            # probe pre-merges its params into the URL (issue #828).
+            query = parse_qs(urlparse(url).query)
+            seen.append(query.get("bbox", [""])[0])
             n = 500 if len(seen) == 1 else 10
             return f'numberOfFeatures="{n}"'.encode()
 
@@ -4527,7 +4716,11 @@ class TestSpeculativeCountProbeIsQuiet:
         """2.0.0 rejected, negotiated 1.1.0 answers: no probe warning at all."""
 
         def fake_request(url, params=None, **kwargs):
-            if params.get("version") == "2.0.0":
+            from urllib.parse import parse_qs, urlparse
+
+            # The probe pre-merges its params into the URL (issue #828).
+            query = parse_qs(urlparse(url).query)
+            if query.get("version") == ["2.0.0"]:
                 raise WFSError("HTTP error 400: version 2.0.0 not supported")
             return b'numberOfFeatures="42"'
 
