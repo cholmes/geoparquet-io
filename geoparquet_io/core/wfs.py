@@ -300,10 +300,26 @@ def _clean_service_url(url: str) -> str:
     parsed = urlparse(url)
     params = parse_qs(parsed.query, keep_blank_values=True)
 
-    # Remove WFS-specific params that shouldn't persist
-    for key in ["service", "request", "version", "typename", "typenames"]:
-        params.pop(key, None)
-        params.pop(key.upper(), None)
+    # Remove WFS request-control params that shouldn't persist, in any casing:
+    # WFS KVP keys are case-insensitive per the OGC spec, so ``typeName``
+    # (the canonical 1.1 casing users copy from a browser URL) must be
+    # stripped just like ``typename``, or it survives next to the
+    # ``typeNames`` gpio sets and the server picks a layer from conflicting
+    # duplicate keys. Everything else (apikeys, tokens, vendor params) stays.
+    wfs_control_keys = {
+        "service",
+        "request",
+        "version",
+        "typename",
+        "typenames",
+        "outputformat",
+        "srsname",
+        "count",
+        "maxfeatures",
+        "startindex",
+        "resulttype",
+    }
+    params = {k: v for k, v in params.items() if k.lower() not in wfs_control_keys}
 
     # Rebuild URL
     new_query = urlencode(params, doseq=True) if params else ""
@@ -1366,8 +1382,15 @@ def _get_feature_count(
     if bbox and crs:
         params["bbox"] = _build_bbox_param(bbox, crs, version, axis_order)
 
+    # Merge the WFS params into the URL instead of passing params= to the
+    # HTTP layer: httpx *replaces* a URL's existing query when params= is
+    # given, which would drop e.g. an apikey the service URL carries — the
+    # probe then 403s, the failure degrades to count=None, and pagination /
+    # auto-tiling silently disengage (issues #828, #678).
+    url = _merge_query_params(clean_url, params)
+
     try:
-        content = _make_request(clean_url, params=params)
+        content = _make_request(url)
     except (WFSError, httpx.HTTPError, OSError) as e:
         # Expected failure modes: the service is down, unreachable, rejecting us,
         # or timing out. Degrade to "count unknown" rather than aborting the
