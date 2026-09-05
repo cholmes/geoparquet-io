@@ -99,3 +99,20 @@ class TestRings:
     def test_geoarrow_encoding_is_skipped(self, con):
         check = _check("tests/data/data-polygon-encoding_native.parquet", con, encoding="polygon")
         assert check.status == CheckStatus.SKIPPED
+
+
+class TestEdges:
+    def test_rings_with_fewer_than_four_vertices_are_ignored(self, tmp_path, con):
+        path = _write_v2(tmp_path / "f.parquet", ["POLYGON ((0 0, 1 1, 2 2, 0 0))", CCW])
+        check = _check(path, con)
+        assert check.status == CheckStatus.PASSED
+        assert "2 polygons" in check.message
+
+    def test_unknown_orientation_value_is_skipped(self, tmp_path, con):
+        check = _check(_write_v2(tmp_path / "f.parquet", [CCW]), con, orientation="clockwise")
+        assert check.status == CheckStatus.SKIPPED
+
+    def test_unreadable_file_fails(self, tmp_path, con):
+        check = _check(str(tmp_path / "missing.parquet"), con)
+        assert check.status == CheckStatus.FAILED
+        assert "failed to validate orientation" in check.message
