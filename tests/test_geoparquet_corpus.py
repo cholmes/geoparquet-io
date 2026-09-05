@@ -257,11 +257,7 @@ BAD_DATA_EXPECTATIONS = {
     "missing-geo-metadata.parquet": ("2.0", [r"version_match"], None),
     "missing-primary-column.parquet": ("auto", [r"primary_column_present"], None),
     "missing-version.parquet": ("auto", [r"version_present"], None),
-    "orientation-ccw-declared-rings-cw.parquet": (
-        "auto",
-        [r"orientation"],
-        "#586 no orientation-vs-data check",
-    ),
+    "orientation-ccw-declared-rings-cw.parquet": ("auto", [r"orientation_matches_data_"], None),
     "primary-column-not-in-columns.parquet": ("auto", [r"primary_column_in_columns"], None),
     "version-1-0-with-2-0-features.parquet": ("auto", [r"version_features"], None),
     "version-unknown.parquet": ("auto", [r"version_known"], None),
