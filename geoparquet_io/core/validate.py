@@ -111,7 +111,8 @@ _GEOARROW_ENCODING_TYPE = {
     "multilinestring": "MultiLineString",
     "multipolygon": "MultiPolygon",
 }
-VALID_ORIENTATIONS = ["counterclockwise"]
+OrientationCounterClockwise = "counterclockwise"
+VALID_ORIENTATIONS = [OrientationCounterClockwise]
 VALID_EDGES_GEOPARQUET = ["planar", "spherical"]
 VALID_EDGES_PARQUET_GEO = ["spherical", "vincenty", "thomas", "andoyer", "karney"]
 VALID_GEOMETRY_TYPES = [
@@ -1301,25 +1302,89 @@ def _check_geometry_types_match_data(
         )
 
 
+def _polygon_orientation_violations(polygon_wkbs: list) -> int:
+    """Polygons whose exterior ring is not counterclockwise or whose holes are not clockwise.
+
+    Ring orientation is the sign of the shoelace sum (positive is counterclockwise).
+    Rings with fewer than four vertices or zero area cannot be oriented and are ignored.
+    """
+    import geoarrow.pyarrow as ga
+    import pyarrow as pa
+
+    polygons = ga.as_geoarrow(pa.array(polygon_wkbs, pa.binary()), ga.polygon())
+    violations = 0
+    for rings in polygons.storage.to_pylist():
+        for i, ring in enumerate(rings):
+            if len(ring) < 4:
+                continue
+            area2 = sum(
+                a["x"] * b["y"] - b["x"] * a["y"] for a, b in zip(ring, ring[1:], strict=False)
+            )
+            if area2 and (area2 > 0) != (i == 0):
+                violations += 1
+                break
+    return violations
+
+
 def _check_orientation_matches_data(
-    parquet_file: str, geom_col: str, orientation: str | None, con, sample_size: int
+    parquet_file: str,
+    geom_col: str,
+    orientation: str | None,
+    con,
+    sample_size: int,
+    encoding: Any = "WKB",
 ) -> ValidationCheck:
     """Check 19: all polygon geometries must follow 'orientation' metadata."""
-    if orientation is None:
+    name = f"orientation_matches_data_{geom_col}"
+
+    def _result(status, message):
         return ValidationCheck(
-            name=f"orientation_matches_data_{geom_col}",
-            status=CheckStatus.SKIPPED,
-            message="no orientation specified, skipping check",
-            category="data_validation",
+            name=name, status=status, message=message, category="data_validation"
         )
 
-    # This check would require inspecting ring orientations which is complex
-    # For now, we'll mark it as passed with a note
-    return ValidationCheck(
-        name=f"orientation_matches_data_{geom_col}",
-        status=CheckStatus.PASSED,
-        message=f'orientation "{orientation}" declared (ring order validation not implemented)',
-        category="data_validation",
+    if orientation is None:
+        return _result(CheckStatus.SKIPPED, "no orientation specified, skipping check")
+    if orientation != OrientationCounterClockwise:
+        return _result(CheckStatus.SKIPPED, f'unknown orientation "{orientation}", skipping check')
+    if _is_geoarrow_encoding(encoding):
+        return _result(
+            CheckStatus.SKIPPED, f'orientation check not implemented for encoding "{encoding}"'
+        )
+
+    from geoparquet_io.core.duckdb_utils import sql_path
+    from geoparquet_io.core.file_utils import safe_file_url
+
+    limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
+    quoted_geom = quote_identifier(geom_col)
+    try:
+        col_type = _describe_geom_type(con, safe_file_url(parquet_file, verbose=False), geom_col)
+        geom_expr = (
+            quoted_geom if "GEOMETRY" in col_type.upper() else f"ST_GeomFromWKB({quoted_geom})"
+        )
+        rows = con.execute(f"""
+            SELECT ST_AsWKB(ST_Force2D(part.geom))
+            FROM (
+                SELECT {geom_expr} AS g
+                FROM read_parquet({sql_path(parquet_file)})
+                WHERE {quoted_geom} IS NOT NULL
+                {limit_clause}
+            ) t, UNNEST(ST_Dump(t.g)) AS u(part)
+            WHERE ST_GeometryType(part.geom) = 'POLYGON' AND NOT ST_IsEmpty(part.geom)
+        """).fetchall()
+        if not rows:
+            return _result(CheckStatus.SKIPPED, "no polygons to check against declared orientation")
+        violations = _polygon_orientation_violations([bytes(r[0]) for r in rows])
+    except Exception as e:
+        return _result(CheckStatus.FAILED, f"failed to validate orientation: {e}")
+
+    if violations:
+        return _result(
+            CheckStatus.FAILED,
+            f'{violations} of {len(rows)} polygons violate orientation "{orientation}"',
+        )
+    return _result(
+        CheckStatus.PASSED,
+        f'all {len(rows)} polygon{"s" if len(rows) != 1 else ""} follow orientation "{orientation}"',
     )
 
 
@@ -3559,7 +3624,7 @@ def _run_geoparquet_checks(
             orientation = col_meta.get("orientation")
             checks.append(
                 _check_orientation_matches_data(
-                    parquet_file, col_name, orientation, con, sample_size
+                    parquet_file, col_name, orientation, con, sample_size, encoding
                 )
             )
 
