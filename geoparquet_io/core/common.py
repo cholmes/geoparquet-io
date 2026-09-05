@@ -3,13 +3,14 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 import duckdb
 import pyarrow.parquet as pq
 
 # Internal imports - used by functions in this module
 from geoparquet_io.core.crs_utils import (
+    NULL_CRS_HINT,
     _format_crs_display,
     _wrap_query_with_crs,
     apply_output_crs,
@@ -2086,7 +2087,37 @@ def _geography_edges_from_logical(logical: str) -> str | None:
     return match.group(1).lower() if match else "spherical"
 
 
-def _geo_col_meta_from_stats(pf, col_index: int, logical: str) -> dict:
+def _crs_from_geo_logical(logical: str, parquet_file: str) -> tuple[bool, Any]:
+    """The CRS a native Geometry/Geography logical type declares.
+
+    Returns ``(present, crs)``. ``present`` is False when the type names no CRS
+    or names the OGC:CRS84 / EPSG:4326 default, both of which GeoParquet spells
+    by *omitting* the key. Otherwise ``crs`` is the resolved PROJJSON dict, or
+    ``None`` for a reference this build cannot resolve -- an explicit
+    ``"crs": null`` (CRS unknown), which is the honest reading and never the
+    silent CRS84 claim that omitting it would make (#785).
+    """
+    from geoparquet_io.core.duckdb_metadata import (
+        parse_geometry_logical_type,
+        resolve_crs_reference,
+    )
+
+    parsed = parse_geometry_logical_type(logical) or {}
+    raw = parsed.get("crs")
+    if raw is None:
+        return False, None
+    crs = resolve_crs_reference(parquet_file, raw)
+    if isinstance(crs, dict):
+        return (False, None) if is_default_crs(crs) else (True, crs)
+    warn(
+        f"Native geometry type declares a CRS this build cannot resolve to PROJJSON: {crs!r}. "
+        "Writing an explicit null CRS (unknown) rather than claiming the OGC:CRS84 default. "
+        + NULL_CRS_HINT
+    )
+    return True, None
+
+
+def _geo_col_meta_from_stats(pf, col_index: int, logical: str, parquet_file: str) -> dict:
     """Build one geo column metadata dict from a column's native geo statistics."""
     codes: set[int] = set()
     bbox = None
@@ -2124,6 +2155,14 @@ def _geo_col_meta_from_stats(pf, col_index: int, logical: str) -> dict:
             col_meta["bbox"] = [bbox[0], bbox[1], zrange[0], bbox[2], bbox[3], zrange[1]]
         else:
             col_meta["bbox"] = bbox
+    # The rebuilt block is the file's only geo metadata, so a CRS left behind
+    # here is not merely missing: an absent `crs` *means* OGC:CRS84, which
+    # relabels projected coordinates as lon/lat while the Parquet logical type
+    # still names the real CRS (#785). Mirror the logical type, which is the
+    # authority at 2.0.
+    crs_present, crs = _crs_from_geo_logical(logical, parquet_file)
+    if crs_present:
+        col_meta["crs"] = crs
     # A Geography logical type carries edge semantics the geo metadata must
     # not drop: synthesize the matching edges declaration (#588).
     edges = _geography_edges_from_logical(logical)
@@ -2143,9 +2182,9 @@ def _ensure_v2_geo_metadata(
     """Attach GeoParquet 2.0 geo metadata if the writer omitted it (#589).
 
     DuckDB 1.5.4's V2 writer skips the geo KV metadata for M/ZM geometries.
-    Rebuild it from the file's native geospatial statistics, mirroring the
-    shape DuckDB writes for XY/XYZ data, and rewrite the file in place.
-    ``primary_column`` names the real geometry column for multi-geometry
+    Rebuild it from the file's native geospatial statistics and logical types,
+    mirroring the shape DuckDB writes for XY/XYZ data, and rewrite the file in
+    place. ``primary_column`` names the real geometry column for multi-geometry
     files; without it the fallback is "geometry", then alphabetical.
     """
     pf = pq.ParquetFile(output_path)
@@ -2163,7 +2202,7 @@ def _ensure_v2_geo_metadata(
             return
 
         columns = {
-            name: _geo_col_meta_from_stats(pf, i, logical)
+            name: _geo_col_meta_from_stats(pf, i, logical, output_path)
             for i, (name, logical) in geo_cols.items()
         }
 
