@@ -68,7 +68,7 @@ import io
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -421,26 +421,112 @@ def test_add_table_custom_column_name(spec, sample_table):
     assert result.num_rows == sample_table.num_rows
 
 
+def _specs(params):
+    """The IndexSpec carried by each pytest param in a family list."""
+    return [param.values[0] for param in params]
+
+
+def _check_add_family_specs(params, family="ADD_FAMILY"):
+    """Every add-family member must carry non-empty resolution knobs.
+
+    ``invalid_resolution_match`` included: ``pytest.raises(..., match="")``
+    matches any message, so a blank one silently downgrades
+    ``test_add_table_invalid_resolution`` to a bare "some ValueError" check.
+    """
+    for spec in _specs(params):
+        assert spec.valid_resolutions, f"{spec.name}: empty valid_resolutions in {family}"
+        assert spec.invalid_resolutions, f"{spec.name}: empty invalid_resolutions in {family}"
+        assert spec.invalid_resolution_match, (
+            f"{spec.name}: empty invalid_resolution_match in {family}"
+        )
+
+
+def _check_partition_family_specs(params, family="PARTITION_FAMILY"):
+    """Every partition-family member must carry its invalid pair and Hive prefix.
+
+    ``hive_prefix`` included: ``test_partition_hive_style`` asserts
+    ``spec.hive_prefix in d.name``, and ``"" in name`` is always True.
+    """
+    for spec in _specs(params):
+        assert spec.partition_invalid_resolution is not None, (
+            f"{spec.name}: partition_invalid_resolution unset in {family}"
+        )
+        assert spec.partition_invalid_match, (
+            f"{spec.name}: partition_invalid_match unset in {family}"
+        )
+        assert spec.hive_prefix, f"{spec.name}: empty hive_prefix in {family}"
+
+
+def _check_auto_family_specs(params, family="AUTO_FAMILY"):
+    """Every auto-family member must carry its Hive directory prefix.
+
+    ``test_partition_auto_with_hive`` asserts ``name.startswith(prefix)``,
+    which is always True for the ``""`` default.
+    """
+    for spec in _specs(params):
+        assert spec.auto_hive_prefix, f"{spec.name}: empty auto_hive_prefix in {family}"
+
+
 def test_family_specs_are_not_vacuous():
     """A spec that joins a family with empty knobs must fail loudly, not pass.
 
     Every other spec-table mistake surfaces as a failing parametrized case;
     an empty resolutions tuple (quadkey's spec carries them today, outside
-    the families) or an unset partition-invalid pair would instead collect
-    zero cases and silently green.
+    the families), an unset partition-invalid pair, a blank ``match`` pattern
+    or a blank Hive prefix would instead collect zero cases, or collect cases
+    whose assertion is a tautology, and silently green.
     """
-    for param in ADD_FAMILY:
-        spec = param.values[0]
-        assert spec.valid_resolutions, f"{spec.name}: empty valid_resolutions in ADD_FAMILY"
-        assert spec.invalid_resolutions, f"{spec.name}: empty invalid_resolutions in ADD_FAMILY"
-    for param in PARTITION_FAMILY:
-        spec = param.values[0]
-        assert spec.partition_invalid_resolution is not None, (
-            f"{spec.name}: partition_invalid_resolution unset in PARTITION_FAMILY"
-        )
-        assert spec.partition_invalid_match, (
-            f"{spec.name}: partition_invalid_match unset in PARTITION_FAMILY"
-        )
+    _check_add_family_specs(ADD_FAMILY)
+    _check_partition_family_specs(PARTITION_FAMILY)
+    _check_auto_family_specs(AUTO_FAMILY)
+
+
+@pytest.mark.parametrize(
+    ("check", "blank_field", "blank_value"),
+    [
+        (_check_add_family_specs, "valid_resolutions", ()),
+        (_check_add_family_specs, "invalid_resolutions", ()),
+        (_check_add_family_specs, "invalid_resolution_match", ""),
+        (_check_partition_family_specs, "partition_invalid_resolution", None),
+        (_check_partition_family_specs, "partition_invalid_match", ""),
+        (_check_partition_family_specs, "hive_prefix", ""),
+        (_check_auto_family_specs, "auto_hive_prefix", ""),
+    ],
+    ids=lambda value: getattr(value, "__name__", None) if callable(value) else None,
+)
+def test_vacuity_checks_reject_a_blank_field(check, blank_field, blank_value):
+    """Each guarded field, blanked on an otherwise-complete spec, is rejected.
+
+    Without this the guard itself could regress to a no-op unnoticed: it only
+    ever runs against the four real specs, all of which already pass.
+    """
+    vacuous = replace(A5, name="future", **{blank_field: blank_value})
+    with pytest.raises(AssertionError, match=blank_field):
+        check([pytest.param(vacuous, id=vacuous.name)])
+
+
+def test_family_membership_is_pinned():
+    """Dropping a spec from a family list must fail, not quietly shrink coverage.
+
+    Removing a member is otherwise invisible: the remaining params still pass,
+    so the suite stays green while covering one index less.
+    """
+    assert {spec.name for spec in _specs(ADD_FAMILY)} == {"a5", "h3", "s2"}
+    assert {spec.name for spec in _specs(ADD_CLI)} == {"a5", "h3", "s2", "quadkey"}
+    assert {spec.name for spec in _specs(PARTITION_FAMILY)} == {"a5", "s2"}
+    assert {spec.name for spec in _specs(PARTITION_CLI)} == {"a5", "s2", "quadkey"}
+    assert {spec.name for spec in _specs(AUTO_FAMILY)} == {"a5", "h3", "quadkey"}
+    assert {spec.name for spec in _specs(CALC_FAMILY)} == {"a5", "h3", "s2", "quadkey"}
+    # One case per (spec, out-of-range value); pinned as pairs so dropping
+    # either a spec or one end of a range is loud.
+    assert {(param.values[0].name, param.values[1]) for param in ADD_INVALID_RESOLUTION} == {
+        ("a5", -1),
+        ("a5", 31),
+        ("h3", -1),
+        ("h3", 16),
+        ("s2", -1),
+        ("s2", 31),
+    }
 
 
 @pytest.mark.parametrize("spec", ADD_FAMILY)
