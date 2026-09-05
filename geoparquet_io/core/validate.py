@@ -487,6 +487,45 @@ def _check_edges_valid(
     )
 
 
+def _check_edges_spherical_on_projected_crs(
+    parquet_file: str, col_meta: dict, col_name: str
+) -> ValidationCheck | None:
+    """Warn when a non-planar ``edges`` sits on a projected CRS (#601).
+
+    Great-circle (or geodesic) edges are only meaningful on an ellipsoid: in a
+    projected CRS the vertices are plane coordinates and the edge between two of
+    them is a straight line, so ``spherical`` has no coherent interpretation
+    there. Files with this combination exist in the wild — reprojectors that
+    move vertices without densifying carry the declaration along — so this is a
+    warning, not a failure.
+
+    Returns ``None`` when there is nothing to say (planar or absent edges, or a
+    geographic/unknown CRS), so conformant files gain no output line.
+    """
+    from geoparquet_io.core.duckdb_metadata import resolve_crs_reference
+
+    edges = col_meta.get("edges")
+    if not edges or edges == "planar":
+        return None
+
+    # An absent or null CRS means "OGC:CRS84 default" / "unknown"; neither is a
+    # projected CRS, and _check_crs_valid is what reports a null.
+    crs = resolve_crs_reference(parquet_file, col_meta.get("crs"))
+    if is_geographic_crs(crs):
+        return None
+
+    return ValidationCheck(
+        name=f"edges_spherical_on_projected_crs_{col_name}",
+        status=CheckStatus.WARNING,
+        message=f'column "{col_name}" declares edges: {edges} on a projected CRS '
+        f"({get_crs_display_name(crs)})",
+        details="Edges are interpolated along the ellipsoid, which a projected CRS "
+        "cannot express; readers will draw straight lines. Densify the geometries "
+        "and declare planar edges, or store the data in a geographic CRS.",
+        category="column_metadata",
+    )
+
+
 def _check_bbox_valid(col_meta: dict, col_name: str) -> ValidationCheck:
     """Check 12: optional 'bbox' must be an array of 4 or 6 numbers."""
     bbox = col_meta.get("bbox")
@@ -3567,6 +3606,10 @@ def _run_geoparquet_checks(
         checks.append(_check_crs_valid(col_meta, col_name))
         checks.append(_check_orientation_valid(col_meta, col_name))
         checks.append(_check_edges_valid(col_meta, col_name, geo_version))
+        # Only reports when there is something to report (#601).
+        edges_crs_check = _check_edges_spherical_on_projected_crs(parquet_file, col_meta, col_name)
+        if edges_crs_check:
+            checks.append(edges_crs_check)
         checks.append(_check_bbox_valid(col_meta, col_name))
         checks.append(_check_epoch_valid(col_meta, col_name))
 

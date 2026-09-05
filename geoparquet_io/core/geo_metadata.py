@@ -32,6 +32,8 @@ from geoparquet_io.core.duckdb_utils import (
 from geoparquet_io.core.logging_config import debug, warn
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     import pyarrow as pa
 
 # =============================================================================
@@ -594,6 +596,35 @@ def strip_orientation(metadata: dict | None, column: str) -> dict | None:
         col_meta = (geo_dict.get("columns") or {}).get(column)
         if isinstance(col_meta, dict):
             col_meta.pop("orientation", None)
+        return geo_dict
+
+    return _rewrite_geo_metadata(metadata, _drop)
+
+
+def strip_nonplanar_edges(
+    metadata: dict | None, columns: Collection[str] | None = None
+) -> dict | None:
+    """Return a copy of KV ``metadata`` without non-planar ``edges`` (#601).
+
+    Reprojection transforms vertices, not edges: gpio does not densify along
+    great circles, so once the destination CRS is projected the output's edges
+    really are straight lines and ``planar`` — the spec default, expressed by
+    the key's absence — is the truthful description. Like ``orientation``, the
+    key is only removed, never rewritten to something gpio cannot vouch for.
+
+    ``columns`` limits the strip to those column entries; reproject transforms
+    only the primary geometry column, so a secondary column — still geographic,
+    still great-circle — keeps its declaration. ``None`` strips every column.
+
+    Both ``"geo"`` and ``b"geo"`` keys are handled; the input is never mutated.
+    """
+
+    def _drop(geo_dict: dict) -> dict:
+        for col_name, col_meta in (geo_dict.get("columns") or {}).items():
+            if columns is not None and col_name not in columns:
+                continue
+            if isinstance(col_meta, dict) and col_meta.get("edges", "planar") != "planar":
+                del col_meta["edges"]
         return geo_dict
 
     return _rewrite_geo_metadata(metadata, _drop)
