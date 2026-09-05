@@ -9,6 +9,7 @@ These tests verify that gpio commands properly handle partition input:
 """
 
 import os
+import shutil
 
 import pyarrow.parquet as pq
 import pytest
@@ -385,3 +386,90 @@ class TestPartitionDataIntegrity:
         # All files should have the same GeoParquet version
         assert len(set(versions)) == 1
         assert versions[0] == "1.1.0"
+
+
+class TestOutputInsideInputDataset:
+    """``extract`` refuses to write into the dataset it is reading (#867).
+
+    A directory or glob is re-globbed on every run, so an output left inside
+    it silently joins the input: the second run reads its own first output
+    back and the row count doubles, exit 0, no warning. The guard lives in
+    ``handle_output_overwrite``, the one call every directory-reading command
+    already makes, so ``extract`` and both sorts inherit it together.
+    """
+
+    def test_extract_refuses_an_output_inside_the_input_directory(self, tmp_path, places_test_file):
+        parts = tmp_path / "parts"
+        parts.mkdir()
+        shutil.copy(places_test_file, parts / "a.parquet")
+        output = parts / "merged.parquet"
+
+        result = CliRunner().invoke(extract, [str(parts), str(output)])
+        assert result.exit_code != 0
+        assert "somewhere else" in result.output
+        assert not output.exists()
+
+    def test_extract_refuses_an_output_matching_the_input_glob(self, tmp_path, places_test_file):
+        parts = tmp_path / "parts"
+        parts.mkdir()
+        shutil.copy(places_test_file, parts / "a.parquet")
+        output = parts / "merged.parquet"
+
+        result = CliRunner().invoke(extract, [str(parts / "*.parquet"), str(output)])
+        assert result.exit_code != 0
+        assert "somewhere else" in result.output
+        assert not output.exists()
+
+    def test_extract_still_writes_to_a_sibling_directory(self, tmp_path, places_test_file):
+        parts = tmp_path / "parts"
+        parts.mkdir()
+        shutil.copy(places_test_file, parts / "a.parquet")
+        output = tmp_path / "merged.parquet"
+
+        result = CliRunner().invoke(extract, [str(parts), str(output)])
+        assert result.exit_code == 0, result.output
+        assert pq.read_metadata(output).num_rows == 766
+
+    def test_a_dry_run_inside_the_input_directory_is_untouched(self, tmp_path, places_test_file):
+        """--dry-run writes nothing, so there is nothing to poison."""
+        parts = tmp_path / "parts"
+        parts.mkdir()
+        shutil.copy(places_test_file, parts / "a.parquet")
+
+        result = CliRunner().invoke(
+            extract, [str(parts), str(parts / "merged.parquet"), "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+
+
+class TestEmptyPartitionDirectory:
+    """An empty directory names itself instead of blaming the reader (#867)."""
+
+    def test_resolve_read_path_reports_no_parquet_files(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        with pytest.raises(GeoParquetError, match="No .parquet files found"):
+            resolve_read_path(str(empty))
+
+    def test_a_glob_that_matches_nothing_reports_the_pattern(self, tmp_path):
+        with pytest.raises(GeoParquetError, match="No .parquet files found"):
+            resolve_read_path(str(tmp_path / "*.parquet"))
+
+    def test_extract_reports_no_parquet_files(self, tmp_path, temp_output_file):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = CliRunner().invoke(extract, [str(empty), temp_output_file])
+        assert result.exit_code != 0
+        assert "No .parquet files found" in result.output
+        assert "Traceback" not in result.output
+
+    def test_a_populated_directory_is_unaffected(self, country_partition_dir):
+        resolved, _options = resolve_read_path(country_partition_dir)
+        assert resolved.endswith(".parquet")
+
+    def test_a_remote_glob_is_left_to_the_reader(self):
+        """gpio cannot enumerate a remote prefix, so it must not claim it is
+        empty -- the read itself reports what is or is not there."""
+        remote = "s3://bucket/parts/*.parquet"
+        resolved, _options = resolve_read_path(remote)
+        assert resolved == remote

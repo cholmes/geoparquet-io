@@ -333,6 +333,8 @@ def add_quadkey_column(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     memory_limit: str | None = None,
+    allow_schema_diff: bool = False,
+    hive_input: bool | None = None,
 ) -> None:
     """
     Add a quadkey column to a GeoParquet file.
@@ -359,6 +361,10 @@ def add_quadkey_column(
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
+        allow_schema_diff: Read a multi-file input as the union of its columns
+            (DuckDB ``union_by_name``) rather than the first file's schema
+        hive_input: Read a multi-file input with hive partitioning on, so the
+            ``key=value`` directory names come through as columns
     """
     # Check for streaming mode (stdin input or stdout output)
     is_streaming = is_stdin(input_parquet) or should_stream_output(output_parquet)
@@ -398,6 +404,8 @@ def add_quadkey_column(
         geoparquet_version,
         overwrite,
         memory_limit=memory_limit,
+        allow_schema_diff=allow_schema_diff,
+        hive_input=hive_input,
     )
 
 
@@ -516,6 +524,25 @@ def _add_quadkey_streaming(
             )
 
 
+def _quadkey_from_clause(path: str, allow_schema_diff: bool, hive_input: bool | None) -> str:
+    """The FROM target for the add, RAW path escaped exactly once by sql_path.
+
+    Options are attached only when a caller asked for them, so the ordinary
+    single-file add keeps reading through a bare path literal exactly as it
+    always has. `sort quadkey` is the caller that needs them: its auto-add step
+    is the FIRST read of a directory, so a union or a hive setting that only
+    reached the sort afterwards would arrive one read too late (#867).
+    """
+    options = []
+    if hive_input:
+        options.append("hive_partitioning=true")
+    if allow_schema_diff:
+        options.append("union_by_name=true")
+    if not options:
+        return sql_path(path)
+    return f"read_parquet({sql_path(path)}, {', '.join(options)})"
+
+
 def _add_quadkey_file_based(
     input_parquet: str,
     output_parquet: str | None,
@@ -532,6 +559,8 @@ def _add_quadkey_file_based(
     geoparquet_version: str | None,
     overwrite: bool,
     memory_limit: str | None,
+    allow_schema_diff: bool = False,
+    hive_input: bool | None = None,
 ) -> None:
     """Handle file-based add_quadkey operation."""
     configure_verbose(verbose)
@@ -646,7 +675,7 @@ def _add_quadkey_file_based(
         query = f"""
             SELECT *,
                    lat_lon_to_quadkey({lat_expr}, {lon_expr}, {resolution}) AS {quote_identifier(quadkey_column_name)}
-            FROM {sql_path(input_file_path)}
+            FROM {_quadkey_from_clause(input_file_path, allow_schema_diff, hive_input)}
         """
 
         if verbose:

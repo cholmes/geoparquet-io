@@ -81,6 +81,26 @@ def sort_by_column_table(
         con.close()
 
 
+def _sortable_columns(input_parquet: str, read_expr: str, allow_schema_diff: bool) -> list[str]:
+    """The column names the sort may be asked for.
+
+    ``get_usable_columns`` describes the FIRST file of a multi-file input, which
+    is the right answer for a strict read -- that first file's schema is exactly
+    what DuckDB will return. Under ``--allow-schema-diff`` it is the wrong one:
+    the read returns the union, and validating against the first file would
+    reject the very column the flag was turned on to keep (#867). So describe
+    the read expression itself instead.
+    """
+    if not allow_schema_diff:
+        return [c["name"] for c in get_usable_columns(input_parquet)]
+
+    con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
+    try:
+        return [row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()]
+    finally:
+        con.close()
+
+
 def sort_by_column(
     input_parquet: str,
     output_parquet: str | None = None,
@@ -95,6 +115,7 @@ def sort_by_column(
     geoparquet_version: str | None = None,
     overwrite: bool = False,
     memory_limit: str | None = None,
+    allow_schema_diff: bool = False,
 ) -> None:
     """
     Sort a GeoParquet file by specified column(s).
@@ -121,6 +142,9 @@ def sort_by_column(
         profile: AWS profile name (S3 only, optional)
         geoparquet_version: GeoParquet version to write (1.0, 1.1, 2.0, parquet-geo-only)
         memory_limit: DuckDB memory limit for the write (e.g., '2GB', '512MB')
+        allow_schema_diff: For multi-file input, read the union of the files'
+            columns (DuckDB ``union_by_name``) instead of the first file's
+            schema, which silently drops any column the others add
     """
     configure_verbose(verbose)
     row_group_rows = resolve_sort_row_group_rows(row_group_rows, row_group_size_mb)
@@ -169,14 +193,15 @@ def sort_by_column(
 
     # A directory or glob reads as every parquet file under it, the way
     # `extract` reads one (#817). The helper owns the single escape.
-    read_expr = build_read_parquet_expr(input_parquet, verbose=verbose)
+    read_expr = build_read_parquet_expr(
+        input_parquet, allow_schema_diff=allow_schema_diff, verbose=verbose
+    )
 
     # Get metadata from original file
     metadata, schema = get_parquet_metadata(input_parquet, verbose)
 
     # Validate that specified columns exist - use get_usable_columns for actual DuckDB column names
-    usable_cols = get_usable_columns(input_parquet)
-    existing_columns = [c["name"] for c in usable_cols]
+    existing_columns = _sortable_columns(input_parquet, read_expr, allow_schema_diff)
     for col in column_list:
         if col not in existing_columns:
             raise InvalidParameterError(

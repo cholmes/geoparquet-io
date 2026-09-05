@@ -622,3 +622,217 @@ class TestSortPartitionSchemaMismatch:
         ):
             with pytest.raises(duckdb.InvalidInputException, match="something else entirely"):
                 sort_by_quadkey(str(parts_dir), temp_output_file)
+
+
+@pytest.fixture
+def schema_diff_parts_dir(places_test_file, tmp_path):
+    """Two parquet files where the second carries a column the first lacks.
+
+    DuckDB's multi-file reader defaults to the first file's schema, so ``note``
+    is dropped without a word unless the read asks for ``union_by_name``.
+    Returns ``(directory, total_rows)``.
+    """
+    table = pq.read_table(places_test_file).slice(0, 200)
+    parts_dir = tmp_path / "schema_diff_parts"
+    parts_dir.mkdir()
+    first = table.slice(0, 100)
+    pq.write_table(first, parts_dir / "a.parquet")
+
+    second = table.slice(100, 100)
+    second = second.append_column("note", pa.array(["later"] * second.num_rows))
+    pq.write_table(second.replace_schema_metadata(first.schema.metadata), parts_dir / "b.parquet")
+    return parts_dir, 200
+
+
+class TestSortAllowSchemaDiff:
+    """``sort column``/``sort quadkey`` take ``--allow-schema-diff`` (#867).
+
+    Without it a column only some files carry vanishes from the merged output,
+    exactly as DuckDB's glob reader defaults. ``extract`` has spelled the
+    opt-in ``--allow-schema-diff`` since it learned to read directories, so the
+    sorts reuse that flag rather than inventing a second name for it.
+    """
+
+    def test_sort_column_drops_the_extra_column_by_default(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, total = schema_diff_parts_dir
+        result = CliRunner().invoke(sort, ["column", str(parts_dir), temp_output_file, "name"])
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" not in out.column_names
+
+    def test_sort_column_allow_schema_diff_keeps_the_extra_column(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, total = schema_diff_parts_dir
+        result = CliRunner().invoke(
+            sort, ["column", str(parts_dir), temp_output_file, "name", "--allow-schema-diff"]
+        )
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" in out.column_names
+        assert out.column("note").to_pylist().count("later") == 100
+
+    def test_sort_column_allow_schema_diff_can_sort_by_the_extra_column(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        """The column check must see the union too, or the flag is unusable
+        for the very column it was turned on to keep."""
+        parts_dir, _ = schema_diff_parts_dir
+        result = CliRunner().invoke(
+            sort, ["column", str(parts_dir), temp_output_file, "note", "--allow-schema-diff"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "note" in pq.read_schema(temp_output_file).names
+
+    def test_sort_column_without_the_flag_still_rejects_an_unknown_column(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, _ = schema_diff_parts_dir
+        result = CliRunner().invoke(sort, ["column", str(parts_dir), temp_output_file, "note"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_sort_quadkey_allow_schema_diff_keeps_the_extra_column(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        """The auto-add step reads the glob first, so the flag has to reach it."""
+        parts_dir, total = schema_diff_parts_dir
+        result = CliRunner().invoke(
+            sort, ["quadkey", str(parts_dir), temp_output_file, "--allow-schema-diff"]
+        )
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" in out.column_names
+
+    def test_sort_quadkey_drops_the_extra_column_by_default(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, total = schema_diff_parts_dir
+        result = CliRunner().invoke(sort, ["quadkey", str(parts_dir), temp_output_file])
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(temp_output_file)
+        assert out.num_rows == total
+        assert "note" not in out.column_names
+
+    def test_core_sort_by_column_takes_the_same_keyword(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, _ = schema_diff_parts_dir
+        sort_by_column(str(parts_dir), temp_output_file, "name", allow_schema_diff=True)
+        assert "note" in pq.read_schema(temp_output_file).names
+
+    def test_core_sort_by_quadkey_takes_the_same_keyword(
+        self, schema_diff_parts_dir, temp_output_file
+    ):
+        parts_dir, _ = schema_diff_parts_dir
+        sort_by_quadkey(str(parts_dir), temp_output_file, allow_schema_diff=True)
+        assert "note" in pq.read_schema(temp_output_file).names
+
+
+class TestSortSelfReadGuard:
+    """An output written inside the input dataset is refused (#867).
+
+    The directory input #852 added is re-globbed on every run, so an output
+    left inside it becomes part of the input: the next run reads its own
+    previous output back and the row count grows. Both sorts refuse before
+    writing anything.
+    """
+
+    def test_sort_column_refuses_an_output_inside_the_input_directory(self, places_parts_dir):
+        parts_dir, _ = places_parts_dir
+        output = parts_dir / "sorted.parquet"
+        result = CliRunner().invoke(sort, ["column", str(parts_dir), str(output), "name"])
+        assert result.exit_code != 0
+        assert str(parts_dir) in result.output
+        assert "sorted.parquet" in result.output
+        assert "somewhere else" in result.output
+        assert not output.exists()
+
+    def test_sort_column_refuses_an_output_matching_the_input_glob(self, places_parts_dir):
+        parts_dir, _ = places_parts_dir
+        output = parts_dir / "sorted.parquet"
+        result = CliRunner().invoke(
+            sort, ["column", str(parts_dir / "*.parquet"), str(output), "name"]
+        )
+        assert result.exit_code != 0
+        assert "somewhere else" in result.output
+        assert not output.exists()
+
+    def test_sort_column_overwrite_does_not_bypass_the_guard(self, places_parts_dir):
+        parts_dir, _ = places_parts_dir
+        output = parts_dir / "sorted.parquet"
+        output.write_bytes(b"stale")
+        result = CliRunner().invoke(
+            sort, ["column", str(parts_dir), str(output), "name", "--overwrite"]
+        )
+        assert result.exit_code != 0
+        assert "somewhere else" in result.output
+        assert output.read_bytes() == b"stale"
+
+    def test_sort_quadkey_refuses_an_output_inside_the_input_directory(self, places_parts_dir):
+        parts_dir, _ = places_parts_dir
+        output = parts_dir / "sorted.parquet"
+        result = CliRunner().invoke(sort, ["quadkey", str(parts_dir), str(output)])
+        assert result.exit_code != 0
+        assert "somewhere else" in result.output
+        assert not output.exists()
+
+    def test_a_sibling_directory_is_still_accepted(self, places_parts_dir, tmp_path):
+        parts_dir, _ = places_parts_dir
+        output = tmp_path / "elsewhere.parquet"
+        result = CliRunner().invoke(sort, ["column", str(parts_dir), str(output), "name"])
+        assert result.exit_code == 0, result.output
+        assert pq.read_metadata(output).num_rows == 766
+
+
+class TestSortEmptyDirectory:
+    """An empty directory says so, instead of blaming the reader (#867)."""
+
+    def test_sort_column_reports_no_parquet_files(self, tmp_path, temp_output_file):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = CliRunner().invoke(sort, ["column", str(empty), temp_output_file, "name"])
+        assert result.exit_code != 0
+        assert "No .parquet files found" in result.output
+        assert str(empty) in result.output
+
+    def test_sort_quadkey_reports_no_parquet_files(self, tmp_path, temp_output_file):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = CliRunner().invoke(sort, ["quadkey", str(empty), temp_output_file])
+        assert result.exit_code != 0
+        assert "No .parquet files found" in result.output
+
+
+class TestSortQuadkeyHiveInput:
+    """``sort quadkey`` threads the resolved read options, not just the path."""
+
+    def test_hive_partition_keys_survive_the_sort(self, tmp_path, places_test_file):
+        table = pq.read_table(places_test_file).slice(0, 60)
+        root = tmp_path / "hive_root"
+        for i, country in enumerate(("US", "CA")):
+            part_dir = root / f"country={country}"
+            part_dir.mkdir(parents=True)
+            pq.write_table(table.slice(i * 30, 30), part_dir / "part.parquet")
+
+        output = tmp_path / "sorted.parquet"
+        result = CliRunner().invoke(sort, ["quadkey", str(root), str(output)])
+        assert result.exit_code == 0, result.output
+        out = pq.read_table(output)
+        assert out.num_rows == 60
+        assert "country" in out.column_names
+        assert set(out.column("country").to_pylist()) == {"US", "CA"}
+
+    def test_a_failing_connection_does_not_mask_itself(self, places_parts_dir, temp_output_file):
+        """``con.close()`` in the ``finally`` used to raise UnboundLocalError
+        when the constructor itself threw, hiding the real failure."""
+        parts_dir, _ = places_parts_dir
+        boom = RuntimeError("no connection for you")
+        with mock.patch.object(sort_quadkey_module, "get_duckdb_connection", side_effect=boom):
+            with pytest.raises(RuntimeError, match="no connection for you"):
+                sort_by_quadkey(str(parts_dir), temp_output_file)
