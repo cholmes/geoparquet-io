@@ -146,18 +146,24 @@ def row_group_options(func=None, *, default_rows: int | None = None):
     return func
 
 
-def output_format_options(func=None, *, default_rows: int | None = None):
+def output_format_options(
+    func=None, *, default_rows: int | None = None, write_memory_help: str | None = None
+):
     """
     Add all output format options (compression + row groups + memory limit).
 
     This is a convenience decorator that combines compression_options, row_group_options,
-    and write_memory_option. ``default_rows`` is forwarded to ``row_group_options``.
+    and write_memory_option. ``default_rows`` is forwarded to ``row_group_options``;
+    ``write_memory_help`` is forwarded to ``write_memory_option`` for the one command
+    where the limit governs a read rather than a write (see ``write_memory_option``).
     """
     if func is None:
-        return lambda inner: output_format_options(inner, default_rows=default_rows)
+        return lambda inner: output_format_options(
+            inner, default_rows=default_rows, write_memory_help=write_memory_help
+        )
     func = compression_options(func)
     func = row_group_options(func, default_rows=default_rows)
-    func = write_memory_option(func)
+    func = write_memory_option(func, help=write_memory_help)
     return func
 
 
@@ -266,23 +272,37 @@ def _validate_write_memory(ctx, param, value):
     return value
 
 
-def write_memory_option(func):
+# Click does not printf-format help text, so a literal "%%" would be rendered
+# verbatim.
+_WRITE_MEMORY_HELP = (
+    "Memory limit for streaming writes (e.g., '512MB', '2GB'). "
+    "Default: 50% of available RAM (container-aware)."
+)
+
+
+def write_memory_option(func=None, *, help: str | None = None):
     """
     Add --write-memory option to a command.
 
     Allows specifying the DuckDB memory limit for streaming writes.
     When set, DuckDB uses single-threaded mode for memory control.
     Accepts values like '512MB', '2GB', '4GB'.
+
+    Usable bare (``@write_memory_option``) or called
+    (``@write_memory_option(help="…")``). The ``help`` override exists for
+    commands where the limit does not govern a write: ``gpio extract bigquery``
+    writes through PyArrow and applies the value to the DuckDB scan instead
+    (gpio #760). Overriding it there must not change any other command, so the
+    default lives in ``_WRITE_MEMORY_HELP`` and is never mutated.
     """
+    if func is None:
+        return lambda inner: write_memory_option(inner, help=help)
     return click.option(
         "--write-memory",
         type=str,
         default=None,
         callback=_validate_write_memory,
-        # Click does not printf-format help text, so a literal "%%" would be
-        # rendered verbatim.
-        help="Memory limit for streaming writes (e.g., '512MB', '2GB'). "
-        "Default: 50% of available RAM (container-aware).",
+        help=help or _WRITE_MEMORY_HELP,
     )(func)
 
 

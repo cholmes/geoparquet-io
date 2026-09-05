@@ -2954,7 +2954,12 @@ def extract_arcgis(
     "Native GEOGRAPHY columns default to 'spherical' (BigQuery uses S2). "
     "VARCHAR columns default to 'planar'. Use this to override.",
 )
-@output_format_options
+@output_format_options(
+    write_memory_help=(
+        "Memory limit for the DuckDB scan of the BigQuery result (e.g., '512MB', '4GB'). "
+        "This command writes through PyArrow, so the limit bounds the read, not the write."
+    )
+)
 @geoparquet_version_option
 @overwrite_option
 @repair_geometry_option
