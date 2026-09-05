@@ -110,7 +110,12 @@ class TestEdges:
         path = _write_v2(tmp_path / "f.parquet", ["POLYGON ((0 0, 1 1, 2 2, 0 0))", CCW])
         check = _check(path, con)
         assert check.status == CheckStatus.PASSED
-        assert "all 1 polygon " in check.message
+        assert "all 1 polygon follows" in check.message
+
+    def test_passing_message_uses_plural_verb_for_many_polygons(self, tmp_path, con):
+        check = _check(_write_v2(tmp_path / "f.parquet", [CCW, CCW]), con)
+        assert check.status == CheckStatus.PASSED
+        assert "all 2 polygons follow " in check.message
 
     def test_spherical_polygon_across_the_antimeridian_is_not_judged_planar(self, tmp_path, con):
         # counterclockwise on the sphere, clockwise when read as planar lon/lat
@@ -121,7 +126,7 @@ class TestEdges:
         both = _write_v2(tmp_path / "g.parquet", [wkt, CCW])
         check = _check(both, con, edges="spherical")
         assert check.status == CheckStatus.PASSED
-        assert "all 1 polygon " in check.message
+        assert "all 1 polygon follows" in check.message
 
     def test_unknown_orientation_value_is_skipped(self, tmp_path, con):
         check = _check(_write_v2(tmp_path / "f.parquet", [CCW]), con, orientation="clockwise")

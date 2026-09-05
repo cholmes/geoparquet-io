@@ -111,8 +111,8 @@ _GEOARROW_ENCODING_TYPE = {
     "multilinestring": "MultiLineString",
     "multipolygon": "MultiPolygon",
 }
-OrientationCounterClockwise = "counterclockwise"
-VALID_ORIENTATIONS = [OrientationCounterClockwise]
+ORIENTATION_COUNTERCLOCKWISE = "counterclockwise"
+VALID_ORIENTATIONS = [ORIENTATION_COUNTERCLOCKWISE]
 VALID_EDGES_GEOPARQUET = ["planar", "spherical"]
 VALID_EDGES_PARQUET_GEO = ["spherical", "vincenty", "thomas", "andoyer", "karney"]
 VALID_GEOMETRY_TYPES = [
@@ -1356,7 +1356,7 @@ def _check_orientation_matches_data(
 
     if orientation is None:
         return _result(CheckStatus.SKIPPED, "no orientation specified, skipping check")
-    if orientation != OrientationCounterClockwise:
+    if orientation != ORIENTATION_COUNTERCLOCKWISE:
         return _result(CheckStatus.SKIPPED, f'unknown orientation "{orientation}", skipping check')
     if _is_geoarrow_encoding(encoding):
         return _result(
@@ -1400,7 +1400,8 @@ def _check_orientation_matches_data(
         )
     return _result(
         CheckStatus.PASSED,
-        f'all {checked} polygon{"s" if checked != 1 else ""} follow orientation "{orientation}"',
+        f"all {checked} "
+        f'{"polygons follow" if checked != 1 else "polygon follows"} orientation "{orientation}"',
     )
 
 
