@@ -4,6 +4,7 @@ Tests for the Python API (fluent Table class and ops module).
 
 from __future__ import annotations
 
+import functools
 import inspect
 import struct
 import tempfile
@@ -21,6 +22,7 @@ import pytest
 from geoparquet_io.api import Table, convert, ops, pipe, read
 from geoparquet_io.core import extract as core_extract
 from geoparquet_io.core import format_writers as core_format_writers
+from geoparquet_io.core import geojson_stream as core_geojson_stream
 from geoparquet_io.core import hilbert_order as core_hilbert
 from geoparquet_io.core import reproject as core_reproject
 from geoparquet_io.core import sort_by_column as core_sort_column
@@ -439,11 +441,28 @@ FRONT_DOOR_CASES: list[FrontDoorCase] = [
         id="add_kdtree",
         core_module=core_kdtree,
         core_name="add_kdtree_table",
+        # `iterations` and `auto` are mutually exclusive in core, but core is
+        # mocked out here, so one call can exercise both knobs. `auto=True` (not
+        # the default False, which would forward nothing) proves the wrappers
+        # translate `auto`/`target_rows` into core's `auto_target_rows` pair.
         ops_call=lambda t: ops.add_kdtree(
-            t, column_name="my_kd", iterations=5, sample_size=1000, geometry_column="geometry"
+            t,
+            column_name="my_kd",
+            iterations=5,
+            sample_size=1000,
+            geometry_column="geometry",
+            auto=True,
+            target_rows=50000,
         ),
-        table_call=lambda t: t.add_kdtree(column_name="my_kd", iterations=5, sample_size=1000),
-        expected={"kdtree_column_name": "my_kd", "iterations": 5, "sample_size": 1000},
+        table_call=lambda t: t.add_kdtree(
+            column_name="my_kd", iterations=5, sample_size=1000, auto=True, target_rows=50000
+        ),
+        expected={
+            "kdtree_column_name": "my_kd",
+            "iterations": 5,
+            "sample_size": 1000,
+            "auto_target_rows": ("rows", 50000),
+        },
         ops_only_expected={"geometry_column": "geometry"},
     ),
     # The two aggregators whose doors both import core inside the function body,
@@ -662,15 +681,169 @@ NOT_TABLE_IN_TABLE_OUT: dict[str, str] = {
 }
 
 
-def _shared_front_door_surface() -> set[str]:
-    """Every public callable `ops` and `Table` both expose under the same name."""
-    ops_names = {name for name in dir(ops) if not name.startswith("_")}
-    table_names = {name for name in dir(Table) if not name.startswith("_")}
+#: Every public callable `dir(ops)` shows that `ops` did not itself define: the
+#: ``core.*_table`` functions it imports at module scope as delegation patch
+#: sites. Pinned because `_ops_public_surface` filters them out on
+#: ``__module__`` -- a filter that would just as silently swallow a *deliberate*
+#: public re-export (``from core.x import y as add_foo``), hiding it from every
+#: surface guard in this file. `test_core_leaks_through_ops_are_pinned` asserts
+#: the filtered-out set is exactly this list, so a new foreign-``__module__``
+#: public callable in `ops` must be classified here or given a real wrapper.
+OPS_CORE_PATCH_SITE_LEAKS: frozenset[str] = frozenset(
+    {
+        "add_a5_table",
+        "add_bbox_metadata_table",
+        "add_bbox_table",
+        "add_h3_table",
+        "add_kdtree_table",
+        "add_quadkey_table",
+        "add_s2_table",
+        "extract_table",
+        "hilbert_order_table",
+        "reproject_table",
+        "sort_by_column_table",
+        "sort_by_quadkey_table",
+        "str_order_table",
+    }
+)
+
+
+def _ops_dir_public_surface() -> set[str]:
+    """Every public callable ``dir(ops)`` shows, wherever it was defined."""
+    return {name for name in dir(ops) if not name.startswith("_") and callable(getattr(ops, name))}
+
+
+def _ops_public_surface() -> set[str]:
+    """Every public callable `ops` itself defines.
+
+    Filtered on ``__module__``: `ops` also imports a dozen ``core.*_table``
+    functions at module scope so the delegation tests have a patch site, and
+    those are core's surface leaking through ``dir()``, not the front door's.
+    The filtered-out remainder is pinned as `OPS_CORE_PATCH_SITE_LEAKS`.
+    """
     return {
         name
-        for name in ops_names & table_names
-        if callable(getattr(ops, name)) and callable(getattr(Table, name))
+        for name in _ops_dir_public_surface()
+        if getattr(getattr(ops, name), "__module__", None) == ops.__name__
     }
+
+
+def _table_public_surface() -> set[str]:
+    """Every public callable `Table` exposes (properties are not callables)."""
+    return {
+        name for name in dir(Table) if not name.startswith("_") and callable(getattr(Table, name))
+    }
+
+
+def _shared_front_door_surface() -> set[str]:
+    """Every public callable `ops` and `Table` both expose under the same name."""
+    return _ops_public_surface() & _table_public_surface()
+
+
+#: The public `ops` functions with no same-named `Table` method, and why each is
+#: one-sided. Pinned rather than derived: the same-named intersection above sees
+#: neither a new `ops` function that nobody gave a `Table` twin nor a twin the
+#: two doors spell differently, so both classes of drift would land here silent.
+#: A new entry is a decision to be made, not a line to be added reflexively --
+#: if the operation has a counterpart, it belongs in `FRONT_DOOR_CASES` or
+#: `NOT_TABLE_IN_TABLE_OUT` under a shared name instead.
+OPS_ONLY_SURFACE: dict[str, str] = {
+    "compression_stats": "inspection helper: per-column ratios off a path, where "
+    "`Table.check_compression` returns the verdict rather than the numbers",
+    "convert_to_csv": "`Table.write(format=...)` is the method-side spelling",
+    "convert_to_flatgeobuf": "`Table.write(format=...)` is the method-side spelling",
+    "convert_to_geojson": "`Table.to_geojson` <-> `ops.convert_to_geojson`, differently "
+    "spelled twin",
+    "convert_to_geopackage": "`Table.write(format=...)` is the method-side spelling",
+    "convert_to_shapefile": "`Table.write(format=...)` is the method-side spelling",
+    "create_overviews": "`Table.overview` <-> `ops.create_overviews`, differently spelled "
+    "twin: the method rolls one level in memory, the function writes a whole pyramid",
+    "create_pmtiles": "file in, PMTiles out through tippecanoe: no table on either end",
+    "create_pmtiles_pyramid": "file in, banded PMTiles out: no table on either end",
+    "from_arcgis": "reader: fetches a service over the network, no input table",
+    "from_carto": "reader: fetches a service over the network, no input table",
+    "from_wfs_layers": "reader: writes many layers to a directory, so there is no single "
+    "table to hand back (`from_wfs`, which returns one, is a shared name)",
+    "get_row_group_geo_stats": "inspection helper: reads row-group stats off a path",
+    "read_bigquery": "`Table.from_bigquery` <-> `ops.read_bigquery`, differently spelled twin",
+    # Directory sub-partitioning (#853) is deliberately `Table`-twin-less: the
+    # unit of work is a directory of files on disk, splitting each oversized one
+    # into a sibling tree -- there is no in-memory table on either end to wrap.
+    "sub_partition_by_a5": "acts on a directory on disk, not a table",
+    "sub_partition_by_h3": "acts on a directory on disk, not a table",
+    "sub_partition_by_quadkey": "acts on a directory on disk, not a table",
+    "sub_partition_by_s2": "acts on a directory on disk, not a table",
+}
+
+#: The public `Table` methods with no same-named `ops` function, same contract.
+TABLE_ONLY_SURFACE: dict[str, str] = {
+    "check": "returns a CheckResult, not a table; the checks are a method-door feature",
+    "check_bbox": "returns a CheckResult, not a table",
+    "check_bloom_filters": "returns a CheckResult, not a table",
+    "check_compression": "returns a CheckResult, not a table",
+    "check_optimization": "returns a CheckResult, not a table",
+    "check_row_groups": "returns a CheckResult, not a table",
+    "check_spatial": "returns a CheckResult, not a table",
+    "check_spatial_pushdown": "returns a CheckResult, not a table",
+    "from_bigquery": "`Table.from_bigquery` <-> `ops.read_bigquery`, differently spelled twin",
+    "head": "row preview off the wrapped table; `ops` callers can slice the pa.Table",
+    "info": "prints a summary of the wrapped table",
+    "metadata": "reads metadata off the wrapped table",
+    "overview": "`Table.overview` <-> `ops.create_overviews`, differently spelled twin",
+    "stats": "computes statistics on the wrapped table",
+    "tail": "row preview off the wrapped table; `ops` callers can slice the pa.Table",
+    "to_arrow": "exit door of the fluent API; `ops` already speaks pa.Table",
+    "to_geojson": "`Table.to_geojson` <-> `ops.convert_to_geojson`, differently spelled twin",
+    "upload": "writes the wrapped table to object storage; an exit door, not a transform",
+    "validate": "returns a CheckResult, not a table",
+    "write": "exit door of the fluent API; `ops` already speaks pa.Table",
+}
+
+
+def _wrapper_knobs(wrapper: Callable) -> set[str]:
+    """Every option a front-door wrapper exposes, minus the subject it acts on."""
+    return set(inspect.signature(wrapper).parameters) - {"self", "table"}
+
+
+def _recording(wrapper: Callable, supplied: dict[str, Any]) -> Callable:
+    """``wrapper``, recording into ``supplied`` what a call names, and to what.
+
+    Bound without ``apply_defaults()``: only the parameters the call actually
+    names are recorded, with the values it passed for them.
+    """
+    signature = inspect.signature(wrapper)
+
+    @functools.wraps(wrapper)
+    def recorder(*args, **kwargs):
+        supplied.update(signature.bind(*args, **kwargs).arguments)
+        return wrapper(*args, **kwargs)
+
+    return recorder
+
+
+def _assert_nothing_supplied_at_its_default(
+    wrapper: Callable, supplied: dict[str, Any], door: str
+) -> None:
+    """Each value a case supplies must differ from the wrapper's own default.
+
+    Naming a knob is not exercising it: a case that passes ``auto=False`` when
+    ``auto`` defaults to False satisfies the completeness check below while the
+    delegation comparison sees exactly what a dropped knob would produce -- so
+    both doors could ignore the knob and stay green.
+    """
+    parameters = inspect.signature(wrapper).parameters
+    at_default = sorted(
+        name
+        for name, value in supplied.items()
+        if name not in {"self", "table"}
+        and parameters[name].default is not inspect.Parameter.empty
+        and value == parameters[name].default
+    )
+    assert not at_default, (
+        f"{door} is passed its own default for {at_default}, which exercises "
+        f"nothing: the delegation comparison cannot tell that call from a dropped "
+        f"knob. Pass a non-default value."
+    )
 
 
 class TestFrontDoorDelegation:
@@ -730,6 +903,98 @@ class TestFrontDoorDelegation:
         assert {k: v for k, v in via_ops.delivered.items() if k not in compared} == {
             k: v for k, v in via_table.delivered.items() if k not in compared
         }
+
+    @pytest.mark.parametrize("case", FRONT_DOOR_CASES, ids=FRONT_DOOR_IDS)
+    def test_every_wrapper_option_is_exercised(self, case, arrow_table, gpio_table):
+        """Each case must set every option both of its wrappers expose.
+
+        The comparison above is of what *core* receives, so an option both doors
+        take and both doors drop is invisible to it: neither door forwards it,
+        the two calls still match, and nothing goes red. Requiring the case to
+        name every parameter closes that -- a wrapper that grows a knob the case
+        does not set fails here until the case is extended, and once it is set,
+        a door that drops it fails the comparison above.
+
+        The wrappers are recorded around the real call (core is still mocked out
+        by ``_CallRecorder``), so this asserts what the case *actually* passes,
+        not what its lambda appears to.
+        """
+        ops_wrapper = getattr(ops, case.id)
+        ops_supplied: dict[str, Any] = {}
+        with (
+            patch.object(case.ops_patch_module, case.core_name, _CallRecorder(case.reference)),
+            patch.object(ops, case.id, _recording(ops_wrapper, ops_supplied)),
+        ):
+            case.ops_call(arrow_table)
+
+        table_wrapper = getattr(Table, case.id)
+        table_supplied: dict[str, Any] = {}
+        with (
+            patch.object(case.core_module, case.core_name, _CallRecorder(case.reference)),
+            patch.object(Table, case.id, _recording(table_wrapper, table_supplied)),
+        ):
+            case.table_call(gpio_table)
+
+        assert _wrapper_knobs(ops_wrapper) <= set(ops_supplied), (
+            f"ops.{case.id} takes options this case never sets, so both doors could "
+            f"drop them and stay green: {sorted(_wrapper_knobs(ops_wrapper) - set(ops_supplied))}"
+        )
+        assert _wrapper_knobs(table_wrapper) <= set(table_supplied), (
+            f"Table.{case.id} takes options this case never sets, so both doors could "
+            f"drop them and stay green: "
+            f"{sorted(_wrapper_knobs(table_wrapper) - set(table_supplied))}"
+        )
+
+        # ...and setting a knob to its own default is as good as not setting it.
+        _assert_nothing_supplied_at_its_default(ops_wrapper, ops_supplied, f"ops.{case.id}")
+        _assert_nothing_supplied_at_its_default(table_wrapper, table_supplied, f"Table.{case.id}")
+
+    def test_core_leaks_through_ops_are_pinned(self):
+        """The ``__module__`` filter may hide only the known patch-site imports.
+
+        `_ops_public_surface` drops every public callable whose ``__module__``
+        is not `ops` -- which hides the ``core.*_table`` patch sites, but would
+        also hide a public *re-export* (``from core.x import y as add_foo``)
+        from every guard in this file: not a shared name, not a one-sided name,
+        just invisible. Pinning the filtered-out set makes any new
+        foreign-``__module__`` public callable a decision: wrap it in a real
+        `ops` function, or classify it here as a patch-site leak.
+        """
+        leaked = _ops_dir_public_surface() - _ops_public_surface()
+        assert leaked == OPS_CORE_PATCH_SITE_LEAKS, (
+            "`ops` exposes public callables defined elsewhere that the surface guards "
+            "cannot see.\n"
+            f"  new (write a real `ops` wrapper, or add to OPS_CORE_PATCH_SITE_LEAKS if it "
+            f"is only a patch site): {sorted(leaked - OPS_CORE_PATCH_SITE_LEAKS)}\n"
+            f"  pinned but gone: {sorted(OPS_CORE_PATCH_SITE_LEAKS - leaked)}"
+        )
+
+    def test_one_sided_public_names_are_acknowledged(self):
+        """A public name on one door only must be listed, with its reason.
+
+        `_shared_front_door_surface` is an *intersection*, so the guard above
+        cannot see a one-sided name: a new `ops.add_foo` with no `Table` twin
+        never enters it, and neither does a twin the two doors spell differently
+        (`Table.from_bigquery`/`ops.read_bigquery` and two more). Pinning both
+        one-sided sets makes every such name an explicit decision.
+        """
+        ops_public = _ops_public_surface()
+        table_public = _table_public_surface()
+
+        assert ops_public - table_public == set(OPS_ONLY_SURFACE), (
+            "the `ops`-only surface has drifted.\n"
+            f"  unlisted (give `Table` a twin, or add an OPS_ONLY_SURFACE entry with the "
+            f"reason): {sorted(ops_public - table_public - set(OPS_ONLY_SURFACE))}\n"
+            f"  listed but no longer ops-only (gone, or grew a twin): "
+            f"{sorted(set(OPS_ONLY_SURFACE) - (ops_public - table_public))}"
+        )
+        assert table_public - ops_public == set(TABLE_ONLY_SURFACE), (
+            "the `Table`-only surface has drifted.\n"
+            f"  unlisted (give `ops` a twin, or add a TABLE_ONLY_SURFACE entry with the "
+            f"reason): {sorted(table_public - ops_public - set(TABLE_ONLY_SURFACE))}\n"
+            f"  listed but no longer Table-only (gone, or grew a twin): "
+            f"{sorted(set(TABLE_ONLY_SURFACE) - (table_public - ops_public))}"
+        )
 
     def test_every_shared_operation_has_a_case(self):
         """A new `ops`/`Table` twin must be added here, not left uncompared.
@@ -2360,14 +2625,17 @@ class TestTableWriteFormats:
             safe_unlink(output_path)
 
 
-#: ``ops.convert_to_<format>`` against the ``core.format_writers`` function it
-#: must reach, and the format-specific options that must survive the trip.
+#: ``ops.convert_to_<format>`` against the writer it must reach -- the module is
+#: named alongside the function because GeoJSON is written by
+#: ``core.geojson_stream``, not by ``core.format_writers`` like the other four --
+#: and the format-specific options that must survive the trip.
 #: The writers themselves are exercised for real by `TestTableWriteFormats`
 #: (the `Table.write` door) and by `TestOpsConversionFunctions` below, which
 #: keeps one unmocked run.
 CONVERSION_CASES = [
     (
         "geopackage",
+        core_format_writers,
         "write_geopackage",
         ".gpkg",
         lambda t, p: ops.convert_to_geopackage(t, p, overwrite=True, layer_name="test_layer"),
@@ -2375,6 +2643,7 @@ CONVERSION_CASES = [
     ),
     (
         "flatgeobuf",
+        core_format_writers,
         "write_flatgeobuf",
         ".fgb",
         lambda t, p: ops.convert_to_flatgeobuf(t, p),
@@ -2382,6 +2651,7 @@ CONVERSION_CASES = [
     ),
     (
         "csv",
+        core_format_writers,
         "write_csv",
         ".csv",
         lambda t, p: ops.convert_to_csv(t, p, include_wkt=False, include_bbox=False),
@@ -2389,10 +2659,33 @@ CONVERSION_CASES = [
     ),
     (
         "shapefile",
+        core_format_writers,
         "write_shapefile",
         ".shp",
         lambda t, p: ops.convert_to_shapefile(t, p, overwrite=True, encoding="LATIN1"),
         {"overwrite": True, "encoding": "LATIN1"},
+    ),
+    (
+        "geojson",
+        core_geojson_stream,
+        "convert_to_geojson",
+        ".geojson",
+        lambda t, p: ops.convert_to_geojson(
+            t,
+            p,
+            rs=False,
+            precision=3,
+            write_bbox=True,
+            id_field="name",
+            repair_geometry=False,
+        ),
+        {
+            "rs": False,
+            "precision": 3,
+            "write_bbox": True,
+            "id_field": "name",
+            "repair_geometry": False,
+        },
     ),
 ]
 
@@ -2400,7 +2693,7 @@ CONVERSION_CASES = [
 class TestOpsConversionFunctions:
     """`ops.convert_to_*()` writes a temp parquet and hands it to a format writer.
 
-    The four functions differ only in which writer they name and which options
+    The five functions differ only in which writer they name and which options
     they forward, so the options are asserted on the call (#666, item 6) and one
     format is run unmocked to prove the temp-file round trip itself works.
     """
@@ -2413,16 +2706,16 @@ class TestOpsConversionFunctions:
         return pq.read_table(str(PLACES_PARQUET))
 
     @pytest.mark.parametrize(
-        ("fmt", "writer_name", "suffix", "call", "expected"),
+        ("fmt", "writer_module", "writer_name", "suffix", "call", "expected"),
         CONVERSION_CASES,
         ids=[case[0] for case in CONVERSION_CASES],
     )
     def test_options_reach_the_format_writer(
-        self, sample_table, fmt, writer_name, suffix, call, expected, tmp_path
+        self, sample_table, fmt, writer_module, writer_name, suffix, call, expected, tmp_path
     ):
         output_path = str(tmp_path / f"out{suffix}")
 
-        with patch.object(core_format_writers, writer_name) as writer:
+        with patch.object(writer_module, writer_name) as writer:
             result = call(sample_table, output_path)
 
         assert result == output_path

@@ -455,11 +455,13 @@ def h3_default_run(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def h3_optioned_run(tmp_path_factory):
-    """The same command with every option this subcommand has set at once.
+def _h3_optioned_invocation(tmp_path_factory):
+    """The one `gpio add h3` run with every option this subcommand has set at once.
 
     One run rather than one per option: each option is read back off the output
-    separately below, so a dropped option still fails on its own assertion.
+    separately below, so a dropped option still fails on its own assertion. The
+    two fixtures underneath split what that run produced, so the path fixture
+    keeps the same shape as its siblings above.
     """
     output = tmp_path_factory.mktemp("add_h3_options") / "output.parquet"
     result = CliRunner().invoke(
@@ -478,6 +480,20 @@ def h3_optioned_run(tmp_path_factory):
     assert result.exit_code == 0, result.output
     assert output.exists()
     return output, result
+
+
+@pytest.fixture(scope="module")
+def h3_optioned_run(_h3_optioned_invocation):
+    """The optioned run's output file."""
+    output, _ = _h3_optioned_invocation
+    return output
+
+
+@pytest.fixture(scope="module")
+def h3_optioned_verbose_output(_h3_optioned_invocation):
+    """What the optioned run printed, for the one assertion about the CLI's chatter."""
+    _, result = _h3_optioned_invocation
+    return result.output
 
 
 class TestAddBboxCLI:
@@ -579,29 +595,27 @@ class TestAddH3CLI:
         assert covering["h3"] == {"column": "h3_cell", "resolution": 9}
 
     def test_resolution_option_reaches_core(self, h3_optioned_run):
-        output, _ = h3_optioned_run
         conn = self._h3_connection()
         resolutions = conn.execute(
-            f'SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_building)) FROM "{output}"'
+            f"SELECT DISTINCT h3_get_resolution(h3_string_to_h3(h3_building)) "
+            f'FROM "{h3_optioned_run}"'
         ).fetchall()
         assert resolutions == [(13,)]
 
     def test_column_name_option_reaches_core(self, h3_optioned_run):
-        output, _ = h3_optioned_run
         conn = duckdb.connect()
-        columns = conn.execute(f'DESCRIBE SELECT * FROM "{output}"').fetchall()
+        columns = conn.execute(f'DESCRIBE SELECT * FROM "{h3_optioned_run}"').fetchall()
         column_names = {col[0] for col in columns}
         assert "h3_building" in column_names
         assert "h3_cell" not in column_names
 
         # The covering must name the column that was actually written, at the
         # resolution that was actually asked for.
-        covering = _read_geo_metadata(output)["columns"]["geometry"]["covering"]
+        covering = _read_geo_metadata(h3_optioned_run)["columns"]["geometry"]["covering"]
         assert covering["h3"] == {"column": "h3_building", "resolution": 13}
 
-    def test_verbose_option_reaches_the_extension_loader(self, h3_optioned_run):
-        _, result = h3_optioned_run
-        assert "Loading DuckDB extension: h3" in result.output
+    def test_verbose_option_reaches_the_extension_loader(self, h3_optioned_verbose_output):
+        assert "Loading DuckDB extension: h3" in h3_optioned_verbose_output
 
     @pytest.mark.parametrize(
         ("input_file", "extra_args", "message"),
