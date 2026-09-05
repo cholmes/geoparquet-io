@@ -1721,6 +1721,19 @@ def _apply_geoparquet_metadata(
         effective_version, {"columns": declared_crs}, geometry_column, geometry_info
     )
 
+    # Which columns' CRS the block-building actually RESOLVED, as opposed to
+    # merely giving an entry. Only two things count as a source: an explicit
+    # `crs` value in a column's entry, and -- for the primary alone, the one
+    # column `apply_output_crs` runs on -- a caller-supplied `input_crs`
+    # (a requested spec default is dropped from the block, so that entry is
+    # crs-less yet still resolved). A crs-less entry produced without
+    # consulting either is "unknown", NOT "default": at 2.0 the schema type is
+    # authoritative and a block may legitimately omit the key, so the field-CRS
+    # fallback in `_process_geometry_column_for_version` must stay live there.
+    crs_resolved_columns = {name for name, meta in declared_crs.items() if (meta or {}).get("crs")}
+    if input_crs is not None:
+        crs_resolved_columns.add(geometry_column)
+
     # Step 2: Handle geometry columns based on version.
     #
     # EVERY geometry column, not just the primary: validation applies the same
@@ -1738,10 +1751,10 @@ def _apply_geoparquet_metadata(
             effective_version,
             native_crs.get(column),
             verbose,
-            # A column `native_crs` names was resolved by the block just built
-            # (`apply_output_crs`), so a None there is "default by omission" and
-            # the field-CRS fallback must not resurrect what the block dropped.
-            crs_resolved=column in native_crs,
+            # For a column whose CRS the block-building genuinely resolved, a
+            # None from `native_crs` is "default by omission" and the field-CRS
+            # fallback must not resurrect what the block dropped.
+            crs_resolved=column in crs_resolved_columns,
         )
 
     if effective_version in ("1.0", "1.1"):
