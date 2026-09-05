@@ -282,3 +282,251 @@ def test_table_write_survives_a_malformed_columns_block(case, columns, _hint, st
 
     written = pq.ParquetFile(out).schema_arrow.metadata
     _assert_fresh_and_valid(json.loads(written[b"geo"].decode("utf-8")))
+
+
+# =============================================================================
+# Undecodable ``geo`` bytes: truncated JSON and invalid UTF-8
+# =============================================================================
+
+# A `geo` value can fail one step before the shape check: bytes that are not
+# UTF-8 crash `.decode`, and a truncated payload crashes `json.loads`. Both are
+# properties of the input, so they get the same treatment as a malformed shape:
+# fresh metadata, one warning naming the cause (#883 review).
+
+UNDECODABLE_GEO = [
+    ("truncated_json", b'{"version": "1.1.0", "columns": {', "JSON"),
+    ("invalid_utf8", b'\xff\xfe{"columns": {}}', "UTF-8"),
+]
+
+
+def _corrupt_geo_file(tmp_path, cause: str):
+    """A real GeoParquet file whose ``geo`` bytes are overwritten in place.
+
+    Byte surgery on a valid gpio-written 2.0 file keeps the thrift footer and
+    the native GEOMETRY logical type intact, so only the ``geo`` value itself
+    is undecodable -- the shape a partially-written or wrongly-encoded footer
+    actually takes in the wild.
+    """
+    from geoparquet_io.api import Table
+
+    src = tmp_path / "valid_src.parquet"
+    table = pa.table({"id": [1], "geometry": pa.array([POINT_WKB], type=pa.binary())})
+    Table(table).write(src, geoparquet_version="2.0", compression="SNAPPY")
+
+    geo = pq.read_metadata(src).metadata[b"geo"]
+    raw = src.read_bytes()
+    assert raw.count(geo) == 1
+    replacement = b"{" + b" " * (len(geo) - 1) if cause == "JSON" else b"\xff" * len(geo)
+    corrupted = tmp_path / "corrupt_geo.parquet"
+    corrupted.write_bytes(raw.replace(geo, replacement))
+    return corrupted
+
+
+@pytest.mark.parametrize("cause", ["JSON", "UTF-8"])
+def test_get_geo_metadata_tolerates_undecodable_bytes_on_both_paths(cause, tmp_path):
+    """Both readers give the answer invalid JSON already got: no usable metadata."""
+    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.duckdb_metadata import get_geo_metadata
+
+    src = _corrupt_geo_file(tmp_path, cause)
+    assert get_geo_metadata(str(src)) is None  # PyArrow fast path
+    con = get_duckdb_connection()
+    assert get_geo_metadata(str(src), con=con) is None  # DuckDB path (remote files)
+
+
+@pytest.mark.parametrize("version", ["1.1", "2.0"])
+@pytest.mark.parametrize("cause", ["JSON", "UTF-8"])
+def test_extract_survives_undecodable_geo_bytes(cause, version, tmp_path, caplog):
+    """The reviewer's repro: ``gpio extract geoparquet in.parquet out.parquet --limit 1``.
+
+    2.0 output takes a second raw-decode path before the rewrite decision
+    (``needs_metadata_rewrite``), so both versions must survive.
+    """
+    from geoparquet_io.core.extract import extract
+
+    reset_malformed_geo_warnings()
+    src = _corrupt_geo_file(tmp_path, cause)
+    out = tmp_path / "out.parquet"
+
+    with caplog.at_level(logging.WARNING):
+        extract(str(src), str(out), limit=1, geoparquet_version=version)
+
+    _assert_fresh_and_valid(_geo_of_file(out))
+    messages = _malformed_warnings(caplog.records)
+    assert any("'geo'" in m and cause in m for m in messages), messages
+
+
+@pytest.mark.parametrize(("case", "geo_bytes", "cause"), UNDECODABLE_GEO)
+def test_apply_metadata_survives_undecodable_geo_bytes(case, geo_bytes, cause, caplog):
+    """The exact bytes-level repro from the #883 review of `_parse_existing_geo_metadata`."""
+    reset_malformed_geo_warnings()
+    table = pa.table({"id": [1], "geometry": pa.array([POINT_WKB], type=pa.binary())})
+
+    with caplog.at_level(logging.WARNING):
+        result = _apply_geoparquet_metadata(
+            table, "geometry", "1.1", original_metadata={b"geo": geo_bytes}
+        )
+
+    _assert_fresh_and_valid(_geo_of(result))
+    messages = _malformed_warnings(caplog.records)
+    assert len(messages) == 1, messages
+    assert cause in messages[0]
+
+
+@pytest.mark.parametrize("version", ["1.1", "2.0"])
+@pytest.mark.parametrize("strategy", WRITE_STRATEGIES)
+@pytest.mark.parametrize(("case", "geo_bytes", "_cause"), UNDECODABLE_GEO)
+def test_table_write_survives_undecodable_geo_bytes(
+    case, geo_bytes, _cause, strategy, version, tmp_path
+):
+    """Undecodable bytes must not abort any strategy (2.0 also reads them pre-rewrite)."""
+    from geoparquet_io.api import Table
+
+    reset_malformed_geo_warnings()
+    table = pa.table({"id": [1], "geometry": pa.array([POINT_WKB], type=pa.binary())})
+    table = table.replace_schema_metadata({b"geo": geo_bytes})
+    out = tmp_path / f"{case}_{strategy}_{version}.parquet"
+    Table(table).write(
+        out, write_strategy=strategy, geoparquet_version=version, compression="SNAPPY"
+    )
+    _assert_fresh_and_valid(_geo_of_file(out))
+
+
+# =============================================================================
+# Wrong-typed carried values: well-shaped entries whose values readers reject
+# =============================================================================
+
+# A column entry can be an object and still poison the output: `"crs": 42`
+# passes a shape-only check, is carried verbatim, and the written file is then
+# refused by DuckDB ("has invalid CRS") and by `gpio check spec`. The decision
+# from the #883 review: type-check the carried values too, drop-and-warn the
+# wrong-typed ones.
+
+WRONG_TYPED_VALUES = [
+    ("crs", 42, "number"),
+    ("crs", [4326], "array"),
+    ("crs", True, "boolean"),
+    ("encoding", 7, "number"),
+    ("epoch", "2020", "string"),
+    ("epoch", True, "boolean"),
+    ("orientation", 1, "number"),
+    ("edges", {"type": "spherical"}, "object"),
+    ("covering", "bbox", "string"),
+    ("geometry_types", "Point", "string"),
+    ("geometry_types", [1, 2], "array"),
+    ("bbox", "0,0,1,1", "string"),
+    ("bbox", [0.0, 0.0, 1.0], "array"),
+]
+
+#: Values of the right type must carry through untouched -- including the
+#: spec-sanctioned ``crs: null`` ("CRS is unknown"), which is not wrong-typed.
+WELL_TYPED_VALUES = [
+    ("crs", None),
+    ("crs", "OGC:CRS84"),
+    ("crs", {"type": "GeographicCRS", "id": {"authority": "OGC", "code": "CRS84"}}),
+    ("encoding", "WKB"),
+    ("epoch", 2020),
+    ("epoch", 2020.5),
+    ("orientation", "counterclockwise"),
+    ("edges", "spherical"),
+    ("covering", {"bbox": {"xmin": ["bbox", "xmin"]}}),
+    ("geometry_types", ["Point", "MultiPolygon Z"]),
+    ("bbox", [0.0, 0.0, 1.0, 1.0]),
+    ("bbox", [0, 0, 0, 1, 1, 1]),
+]
+
+
+def _geo_of_file(path) -> dict:
+    return json.loads(pq.ParquetFile(path).schema_arrow.metadata[b"geo"].decode("utf-8"))
+
+
+class TestSanitizeWrongTypedValues:
+    @pytest.mark.parametrize(("key", "value", "type_name"), WRONG_TYPED_VALUES)
+    def test_drops_and_names_the_key_and_type(self, key, value, type_name, caplog):
+        reset_malformed_geo_warnings()
+        block = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", key: value}},
+        }
+        if key == "encoding":
+            block["columns"]["geometry"] = {key: value}
+
+        with caplog.at_level(logging.WARNING):
+            cleaned = sanitize_geo_metadata(block)
+
+        assert key not in cleaned["columns"]["geometry"]
+        messages = _malformed_warnings(caplog.records)
+        assert len(messages) == 1, messages
+        assert f"'{key}'" in messages[0]
+        assert "'geometry'" in messages[0]
+        assert type_name in messages[0]
+
+    @pytest.mark.parametrize(("key", "value"), WELL_TYPED_VALUES)
+    def test_keeps_well_typed_values_untouched(self, key, value, caplog):
+        reset_malformed_geo_warnings()
+        block = {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", key: value}},
+        }
+        with caplog.at_level(logging.WARNING):
+            assert sanitize_geo_metadata(block) is block
+        assert _malformed_warnings(caplog.records) == []
+
+    def test_does_not_mutate_the_carried_entry(self):
+        reset_malformed_geo_warnings()
+        entry = {"encoding": "WKB", "crs": 42}
+        block = {"columns": {"geometry": entry}}
+        cleaned = sanitize_geo_metadata(block)
+        assert entry["crs"] == 42
+        assert block["columns"]["geometry"] is entry
+        assert "crs" not in cleaned["columns"]["geometry"]
+
+    def test_keeps_the_rest_of_the_entry(self):
+        reset_malformed_geo_warnings()
+        cleaned = sanitize_geo_metadata(
+            {"columns": {"geometry": {"encoding": "WKB", "crs": 42, "epoch": 2020.0}}}
+        )
+        assert cleaned["columns"]["geometry"] == {"encoding": "WKB", "epoch": 2020.0}
+
+
+@pytest.mark.parametrize("strategy", WRITE_STRATEGIES)
+def test_table_write_drops_a_wrong_typed_crs(strategy, tmp_path, caplog):
+    """The reviewer's exact repro: ``"crs": 42`` must not reach the output.
+
+    The recovered output must actually be *valid*: gpio's own ``check spec``
+    passes and DuckDB agrees to open it (it refuses a non-object ``crs`` with
+    "Geoparquet column 'geometry' has invalid CRS").
+    """
+    from geoparquet_io.api import Table
+    from geoparquet_io.core.common import get_duckdb_connection
+    from geoparquet_io.core.duckdb_utils import sql_path
+    from geoparquet_io.core.validate import validate_geoparquet
+
+    reset_malformed_geo_warnings()
+    table = _table_with_geo(
+        {
+            "version": "1.1.0",
+            "primary_column": "geometry",
+            "columns": {"geometry": {"encoding": "WKB", "crs": 42}},
+        }
+    )
+    out = tmp_path / f"crs42_{strategy}.parquet"
+    with caplog.at_level(logging.WARNING):
+        Table(table).write(
+            out, write_strategy=strategy, geoparquet_version="1.1", compression="SNAPPY"
+        )
+
+    geo = _geo_of_file(out)
+    _assert_fresh_and_valid(geo)
+    assert "crs" not in geo["columns"]["geometry"]
+
+    messages = _malformed_warnings(caplog.records)
+    assert any("'crs'" in m and "number" in m for m in messages), messages
+
+    failed = {c.name for c in validate_geoparquet(str(out)).checks if c.status.value == "failed"}
+    assert not failed
+
+    con = get_duckdb_connection(load_spatial=True)
+    assert con.execute(f"SELECT count(*) FROM read_parquet({sql_path(out)})").fetchone()[0] == 1
