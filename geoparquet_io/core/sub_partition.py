@@ -135,6 +135,42 @@ def _assert_no_rows_lost(source_file: str, output_dir: str) -> None:
         )
 
 
+def quadkey_resolution_error(
+    resolution: int | None,
+    partition_resolution: int | None,
+    *,
+    auto: bool,
+    labels: tuple[str, str] = ("--resolution", "--partition-resolution"),
+    auto_label: str = "--auto",
+) -> str | None:
+    """Say what a quadkey run is missing, or None when it has what it needs.
+
+    Quadkey is the one index that takes two numbers: the cell column is built at
+    ``resolution`` and the directories are split on the first
+    ``partition_resolution`` characters of it. Directory mode used to forward
+    only the first, so every file tripped the single-file gate (#854); the check
+    now runs once, before the loop, through either front door.
+
+    Args:
+        resolution: Resolution the cell column would be built at
+        partition_resolution: Prefix length the partitions would be split on
+        auto: Whether both are to be calculated from the data instead
+        labels: How to spell the two arguments back at the caller
+        auto_label: How to spell the auto argument back at the caller
+
+    Returns:
+        The message to report, or None when the combination is usable.
+    """
+    if auto or (resolution is not None and partition_resolution is not None):
+        return None
+
+    return (
+        f"must specify either {auto_label} or both {labels[0]} and {labels[1]} -- "
+        "quadkey builds its cell column at one resolution and splits the "
+        "directories on a prefix of it."
+    )
+
+
 def find_large_files(
     directory: str,
     min_size_bytes: int,
@@ -174,6 +210,8 @@ def sub_partition_directory(
     min_size_bytes: int,
     resolution: int | None = None,
     level: int | None = None,
+    partition_resolution: int | None = None,
+    use_centroid: bool = False,
     in_place: bool = False,
     hive: bool = False,
     overwrite: bool = False,
@@ -185,7 +223,6 @@ def sub_partition_directory(
     auto: bool = False,
     target_rows: int = 100000,
     max_partitions: int = 10000,
-    partition_resolution: int | None = None,
 ) -> dict:
     """
     Sub-partition large files in a directory.
@@ -199,6 +236,10 @@ def sub_partition_directory(
         min_size_bytes: Minimum file size to process
         resolution: Resolution for A5/H3/quadkey (0-15 for H3, 0-30 for A5)
         level: Level for S2 (alias for resolution)
+        partition_resolution: Quadkey only -- prefix length the partitions are
+            split on (0-23). Required alongside ``resolution`` unless ``auto``
+        use_centroid: Quadkey only -- use the geometry centroid when adding the
+            quadkey column
         in_place: If True, delete original after successful sub-partition
         hive: Use Hive-style partitioning
         overwrite: Overwrite existing output directories
@@ -210,7 +251,6 @@ def sub_partition_directory(
         auto: Auto-calculate resolution
         target_rows: Target rows per partition for auto mode
         max_partitions: Max partitions for auto mode
-        partition_resolution: Quadkey partition prefix length (0-23), at most resolution
 
     Returns:
         dict with keys: processed, skipped, errors
@@ -249,7 +289,13 @@ def sub_partition_directory(
 
     # Handle resolution/level parameter
     res_value = resolution if resolution is not None else level
-    if not auto and res_value is None:
+    if partition_type == "quadkey":
+        # Quadkey wants two numbers, and wanted them per file before this ran
+        # once here (#854).
+        missing = quadkey_resolution_error(resolution, partition_resolution, auto=auto)
+        if missing:
+            raise ValueError(missing)
+    elif not auto and res_value is None:
         raise ValueError(f"Must specify resolution/level or auto for {partition_type} partitioning")
 
     # Preflight once, not once per file: a missing community extension fails
@@ -303,7 +349,11 @@ def sub_partition_directory(
                 kwargs[res_param] = res_value
 
             if partition_type == "quadkey":
+                # The two options only this partitioner has. Forwarding them is
+                # the whole of #854: without partition_resolution every file
+                # failed, and use_centroid was silently ignored.
                 kwargs["partition_resolution"] = partition_resolution
+                kwargs["use_centroid"] = use_centroid
 
             func(**kwargs)
 

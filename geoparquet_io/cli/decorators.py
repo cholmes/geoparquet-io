@@ -762,6 +762,8 @@ def handle_directory_sub_partition(
     min_size: str | None,
     resolution: int | None = None,
     level: int | None = None,
+    partition_resolution: int | None = None,
+    use_centroid: bool = False,
     in_place: bool = False,
     hive: bool = False,
     overwrite: bool = False,
@@ -776,7 +778,6 @@ def handle_directory_sub_partition(
     preview: bool = False,
     column_name: str | None = None,
     output_folder: str | None = None,
-    partition_resolution: int | None = None,
 ) -> bool:
     """
     Handle directory input with --min-size for partition commands.
@@ -790,8 +791,10 @@ def handle_directory_sub_partition(
         partition_type: Type of partition ("a5", "h3", "s2", "quadkey")
         min_size: Size threshold string (e.g., "100MB") or None
         resolution: Resolution for A5/H3/quadkey
-        partition_resolution: Quadkey partition prefix length
         level: Level for S2
+        partition_resolution: Quadkey only -- the --partition-resolution the
+            directories are split on, required alongside --resolution (#854)
+        use_centroid: Quadkey only -- the --use-centroid flag
         in_place: Delete originals after sub-partition
         hive: Use Hive-style partitioning
         overwrite: Overwrite existing output
@@ -856,8 +859,9 @@ def handle_directory_sub_partition(
             partition_type=partition_type,
             min_size_bytes=min_size_bytes,
             resolution=resolution,
-            partition_resolution=partition_resolution,
             level=level,
+            partition_resolution=partition_resolution,
+            use_centroid=use_centroid,
             in_place=in_place,
             hive=hive,
             overwrite=overwrite,
