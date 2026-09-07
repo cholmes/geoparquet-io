@@ -107,8 +107,15 @@ def _default_repr(param: click.Parameter) -> str:
 
     Click's "no default declared" sentinel is normalized to ``<unset>`` so the
     snapshot does not churn wholesale when click changes the sentinel's repr.
+
+    A flag with no explicit ``default=`` resolves to ``False`` at runtime under
+    every click version, but click 8.5 ("Streamline Option flag handling")
+    introspects it as ``UNSET`` where 8.4 materialized ``False``. Resolve the
+    sentinel the way click's parser does so the snapshot matches both versions.
     """
     default = param.default
+    if default is _UNSET and getattr(param, "is_flag", False):
+        return repr(False)
     if default is _UNSET:
         return UNSET_TOKEN
     if callable(default):
