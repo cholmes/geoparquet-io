@@ -166,9 +166,22 @@ def _same_default(cli_value, api_value) -> bool:
     return cli_value == api_value
 
 
+def _click_default(param):
+    """Return a Click parameter's default as it resolves at runtime.
+
+    A flag with no explicit ``default=`` resolves to ``False`` at runtime under
+    every click version, but click 8.5 ("Streamline Option flag handling")
+    introspects it as ``UNSET`` where 8.4 materialized ``False``. Resolve the
+    sentinel the way click's parser does so parity compares runtime meaning.
+    """
+    if param.default is UNSET and getattr(param, "is_flag", False):
+        return False
+    return param.default
+
+
 def _cli_defaults(cmd) -> dict:
     return {
-        p.name: p.default
+        p.name: _click_default(p)
         for p in cmd.params
         if not isinstance(p, click.Argument) and p.name not in IGNORE_PARAMS
     }
@@ -552,7 +565,7 @@ def _cli_option_default(command, opt_name):
     """Return the normalized Click default for an option like '--dataset'."""
     for param in command.params:
         if opt_name in param.opts:
-            return _normalize(param.default)
+            return _normalize(_click_default(param))
     raise AssertionError(f"{opt_name!r} not found on command {command.name!r}")
 
 
