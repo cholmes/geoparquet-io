@@ -536,8 +536,12 @@ def _check_edges_spherical_on_projected_crs(
     )
 
 
-def _check_bbox_valid(col_meta: dict, col_name: str) -> ValidationCheck:
-    """Check 12: optional 'bbox' must be an array of 4 or 6 numbers."""
+def _check_bbox_valid(col_meta: dict, col_name: str, geo_version: str = "1.0.0") -> ValidationCheck:
+    """Check 12: optional 'bbox' must be an array of 4, 6 or 8 numbers.
+
+    The 8-element (XYZM) form is spec text only on the 2.0 line; the released
+    1.x schemas allow only 4 or 6 elements.
+    """
     bbox = col_meta.get("bbox")
 
     if bbox is None:
@@ -556,11 +560,22 @@ def _check_bbox_valid(col_meta: dict, col_name: str) -> ValidationCheck:
             category="column_metadata",
         )
 
-    if len(bbox) not in [4, 6]:
+    if len(bbox) not in [4, 6, 8]:
         return ValidationCheck(
             name=f"bbox_valid_{col_name}",
             status=CheckStatus.FAILED,
-            message=f'column "{col_name}" bbox must have 4 or 6 elements (got {len(bbox)})',
+            message=f'column "{col_name}" bbox must have 4, 6 or 8 elements (got {len(bbox)})',
+            category="column_metadata",
+        )
+
+    if len(bbox) == 8 and not _version_at_least(geo_version, 2, 0):
+        return ValidationCheck(
+            name=f"bbox_valid_{col_name}",
+            status=CheckStatus.FAILED,
+            message=(
+                f'column "{col_name}" bbox has 8 elements (XYZM), which requires '
+                f"GeoParquet 2.0; version {geo_version} allows only 4 or 6"
+            ),
             category="column_metadata",
         )
 
@@ -1453,6 +1468,38 @@ def _check_orientation_matches_data(
     )
 
 
+def _bbox_xy(bbox: list) -> tuple | None:
+    """(xmin, ymin, xmax, ymax) of a 4-, 6- or 8-element GeoParquet bbox; None otherwise.
+
+    Coerces through float() so a non-numeric metadata element can never reach
+    the SQL the values are interpolated into.
+    """
+    if len(bbox) not in (4, 6, 8):
+        return None
+    half = len(bbox) // 2
+    try:
+        return float(bbox[0]), float(bbox[1]), float(bbox[half]), float(bbox[half + 1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _x_within_sql(geom_expr: str, xmin, xmax) -> str:
+    """SQL predicate: every X of the geometry lies within the bbox X range.
+
+    When xmin > xmax the bbox crosses the antimeridian (RFC 7946, 5.2): the
+    allowed longitudes are [xmin, 180] and [-180, xmax], checked per vertex.
+    A segment whose interior spans the gap between two in-range vertices is
+    undecidable from vertices alone; RFC 7946 tells producers to cut such
+    geometries at the antimeridian.
+    """
+    if xmin <= xmax:
+        return f"ST_XMin({geom_expr}) >= {xmin} AND ST_XMax({geom_expr}) <= {xmax}"
+    return (
+        f"list_bool_and([ST_X(p.geom) <= {xmax} OR ST_X(p.geom) >= {xmin} "
+        f"FOR p IN ST_Dump(ST_Points({geom_expr}))])"
+    )
+
+
 def _build_bbox_query(
     raw_url: str,
     geom_col: str,
@@ -1500,9 +1547,8 @@ def _build_bbox_query(
     return f"""
         SELECT COUNT(*) as total,
                COUNT(CASE WHEN
-                   ST_XMin({geom_expr}) >= {xmin} AND
+                   {_x_within_sql(geom_expr, xmin, xmax)} AND
                    ST_YMin({geom_expr}) >= {ymin} AND
-                   ST_XMax({geom_expr}) <= {xmax} AND
                    ST_YMax({geom_expr}) <= {ymax}
                THEN 1 END) as within_bbox
         FROM (
@@ -1565,8 +1611,14 @@ def _check_bbox_contains_data(
     con,
     sample_size: int,
     encoding: Any = "WKB",
+    crs: Any = None,
 ) -> ValidationCheck:
-    """Check 20: all geometries must fall within 'bbox' metadata."""
+    """Check 20: all geometries must fall within 'bbox' metadata.
+
+    ``crs`` is the column's declared crs value (None means the CRS84 default):
+    xmin > xmax is read as an antimeridian-crossing extent (RFC 7946, 5.2) only
+    for a geographic CRS -- for a projected CRS it is broken metadata.
+    """
     if bbox is None:
         return ValidationCheck(
             name=f"bbox_contains_data_{geom_col}",
@@ -1580,19 +1632,45 @@ def _check_bbox_contains_data(
     raw_url = resolve_file_url(parquet_file, verbose=False)
     limit_clause = f"LIMIT {sample_size}" if sample_size > 0 else ""
 
-    try:
-        # Check if DuckDB already has it as a GEOMETRY type
-        col_type = _describe_geom_type(con, raw_url, geom_col)
-
-        # NOTE: bbox[:4] mishandles the spec's 6-element 3D form
-        # [xmin,ymin,zmin,xmax,ymax,zmax], comparing against
-        # [xmin,ymin,zmin,xmax]. Pre-existing and equally wrong for WKB;
-        # tracked as #603 item 1 (same line), so it is not fixed here.
-        query = _build_bbox_query(
-            raw_url, geom_col, col_type, tuple(bbox[:4]), limit_clause, encoding
+    xy = _bbox_xy(bbox)
+    if xy is None:
+        return ValidationCheck(
+            name=f"bbox_contains_data_{geom_col}",
+            status=CheckStatus.SKIPPED,
+            message=(
+                f"bbox {bbox!r} is not valid, expected 4, 6 or 8 numbers; skipping data check"
+            ),
+            category="data_validation",
         )
+    wrapped = xy[0] > xy[2]
+    if wrapped and not is_geographic_crs(crs):
+        return ValidationCheck(
+            name=f"bbox_contains_data_{geom_col}",
+            status=CheckStatus.FAILED,
+            message=(
+                "declared bbox has xmin > xmax; the antimeridian wrap-around reading "
+                "(RFC 7946, 5.2) applies only to geographic CRS, so this bbox is "
+                "invalid for the declared projected CRS"
+            ),
+            category="data_validation",
+        )
+    if wrapped and _is_geoarrow_encoding(encoding):
+        return ValidationCheck(
+            name=f"bbox_contains_data_{geom_col}",
+            status=CheckStatus.SKIPPED,
+            message="antimeridian-crossing bbox is not checked for GeoArrow encodings",
+            category="data_validation",
+        )
+
+    try:
+        col_type = _describe_geom_type(con, raw_url, geom_col)
+        query = _build_bbox_query(raw_url, geom_col, col_type, xy, limit_clause, encoding)
         result = con.execute(query).fetchone()
-        return _interpret_bbox_result(result, geom_col)
+        check = _interpret_bbox_result(result, geom_col)
+        if wrapped and check.status != CheckStatus.SKIPPED:
+            # The wrap reading must never be invisible in the check output.
+            check.message += " (bbox interpreted as antimeridian-crossing, RFC 7946 5.2)"
+        return check
 
     except Exception as e:
         check_name = f"bbox_contains_data_{geom_col}"
@@ -3801,7 +3879,7 @@ def _run_geoparquet_checks(
         edges_crs_check = _check_edges_spherical_on_projected_crs(parquet_file, col_meta, col_name)
         if edges_crs_check:
             checks.append(edges_crs_check)
-        checks.append(_check_bbox_valid(col_meta, col_name))
+        checks.append(_check_bbox_valid(col_meta, col_name, geo_version))
         checks.append(_check_epoch_valid(col_meta, col_name))
 
         # Parquet schema checks
@@ -3836,12 +3914,14 @@ def _run_geoparquet_checks(
             )
 
             bbox = col_meta.get("bbox")
+            crs = col_meta.get("crs")
             checks.append(
-                _check_bbox_contains_data(parquet_file, col_name, bbox, con, sample_size, encoding)
+                _check_bbox_contains_data(
+                    parquet_file, col_name, bbox, con, sample_size, encoding, crs
+                )
             )
 
             # Check coordinates are valid for declared CRS
-            crs = col_meta.get("crs")
             checks.append(
                 _check_coordinates_valid_for_crs(
                     parquet_file, col_name, crs, con, sample_size, encoding
