@@ -11,9 +11,9 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
 from geoparquet_io.core.exceptions import InvalidParameterError, RemoteAccessError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, resolve_file_url
 from geoparquet_io.core.geo_metadata import parse_geo_metadata
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -411,8 +411,7 @@ def _str_order_file_based(
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
     show_remote_read_message(working_parquet, verbose)
 
-    safe_url = safe_file_url(working_parquet, verbose)
-    source = f"'{safe_url}'"
+    source = sql_path(resolve_file_url(working_parquet, verbose))
     metadata, _ = get_parquet_metadata(working_parquet, verbose)
     if geometry_column == "geometry":
         geometry_column = find_primary_geometry_column(working_parquet, verbose)

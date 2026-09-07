@@ -15,9 +15,9 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
 from geoparquet_io.core.exceptions import RemoteAccessError
-from geoparquet_io.core.file_utils import handle_output_overwrite, safe_file_url
+from geoparquet_io.core.file_utils import handle_output_overwrite, resolve_file_url
 from geoparquet_io.core.geo_metadata import DEFAULT_GEOPARQUET_VERSION
 from geoparquet_io.core.geometry_detection import (
     STANDARD_GEOMETRY_NAMES,
@@ -498,7 +498,7 @@ def _hilbert_order_file_based(
     setup_aws_profile_if_needed(profile, input_parquet, output_parquet)
     show_remote_read_message(working_parquet, verbose)
 
-    safe_url = safe_file_url(working_parquet, verbose)
+    working_url = resolve_file_url(working_parquet, verbose)
     # Read the metadata of the file the query actually reads. With --add-bbox
     # that is the working copy, whose `geo` block `add_bbox` just extended with
     # the `covering` describing the column it wrote. Reading the *original*
@@ -518,7 +518,7 @@ def _hilbert_order_file_based(
 
     # Count empty/null geometries
     empty_count_result = con.execute(f"""
-        SELECT COUNT(*) FROM '{safe_url}'
+        SELECT COUNT(*) FROM {sql_path(working_url)}
         WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
     """).fetchone()
     empty_count = empty_count_result[0] if empty_count_result else 0
@@ -535,7 +535,7 @@ def _hilbert_order_file_based(
     # If all geometries are empty/null, copy file unchanged
     if not bounds:
         warn("All geometries are empty or null. Writing file without Hilbert ordering.")
-        passthrough_query = f"SELECT * FROM '{safe_url}'"
+        passthrough_query = f"SELECT * FROM {sql_path(working_url)}"
         write_parquet_with_metadata(
             con,
             passthrough_query,
@@ -566,13 +566,13 @@ def _hilbert_order_file_based(
     # Non-empty geometries are ordered by Hilbert curve, empty/null appended at end
     order_query = f"""
         WITH non_empty AS (
-            SELECT * FROM '{safe_url}'
+            SELECT * FROM {sql_path(working_url)}
             WHERE {quote_identifier(geometry_column)} IS NOT NULL AND NOT ST_IsEmpty({quote_identifier(geometry_column)})
             ORDER BY ST_Hilbert({quote_identifier(geometry_column)},
                 ST_Extent(ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax})))
         ),
         empty_or_null AS (
-            SELECT * FROM '{safe_url}'
+            SELECT * FROM {sql_path(working_url)}
             WHERE {quote_identifier(geometry_column)} IS NULL OR ST_IsEmpty({quote_identifier(geometry_column)})
         )
         SELECT * FROM non_empty

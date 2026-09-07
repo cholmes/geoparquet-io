@@ -22,8 +22,8 @@ import duckdb
 import pyarrow as pa
 
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geo_metadata import backfill_derived_stats, prune_geo_metadata_to_columns
 from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.remote import needs_httpfs
@@ -155,7 +155,7 @@ def _open_file_input(
     verbose: bool,
 ) -> Iterator[tuple[str, dict | None, bool, duckdb.DuckDBPyConnection]]:
     """Handle file-based input."""
-    safe_url = safe_file_url(path, verbose=verbose)
+    raw_url = resolve_file_url(path, verbose=verbose)
     file_metadata, _ = get_parquet_metadata(path, verbose=verbose)
 
     created_connection = con is None
@@ -163,7 +163,7 @@ def _open_file_input(
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(path))
 
     try:
-        yield f"read_parquet('{safe_url}')", file_metadata, False, con
+        yield f"read_parquet({sql_path(raw_url)})", file_metadata, False, con
     finally:
         if created_connection:
             con.close()

@@ -128,12 +128,13 @@ def build_admin_rollup_sql(
 
 def get_admin_country_context(con, verbose: bool = False) -> tuple[str, str, str]:
     """Return (country_ref, code_col, geom_expr) for the Overture country cache."""
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.duckdb_utils import sql_path
+    from geoparquet_io.core.file_utils import resolve_file_url
     from geoparquet_io.core.partition.admin_hierarchical import _setup_admin_dataset
 
     dataset, _boundary_columns = _setup_admin_dataset("overture", verbose, ["country"])
     path = dataset.get_source_for_level("country")
-    country_ref = f"read_parquet('{safe_file_url(path, verbose)}')"
+    country_ref = f"read_parquet({sql_path(resolve_file_url(path, verbose))})"
     code_col = quote_identifier(dataset.get_level_column_mapping()["country"])
     geom_expr = geometry_to_geom_expr(con, country_ref, dataset.get_geometry_column())
     return country_ref, code_col, geom_expr

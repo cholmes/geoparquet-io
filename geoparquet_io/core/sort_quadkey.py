@@ -13,12 +13,12 @@ from geoparquet_io.core.add.quadkey import add_quadkey_column, add_quadkey_table
 from geoparquet_io.core.common import get_parquet_metadata, write_parquet_with_metadata
 from geoparquet_io.core.constants import DEFAULT_QUADKEY_COLUMN_NAME, DEFAULT_QUADKEY_RESOLUTION
 from geoparquet_io.core.duckdb_metadata import get_column_names, get_usable_columns
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
 from geoparquet_io.core.exceptions import GeoParquetError, InvalidParameterError
 from geoparquet_io.core.file_utils import (
     handle_output_overwrite,
     is_partition_path,
-    safe_file_url,
+    resolve_file_url,
 )
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
 from geoparquet_io.core.parquet_writer import resolve_sort_row_group_rows
@@ -411,7 +411,7 @@ def _sort_by_quadkey_streaming(
             actual_input = temp_quadkey_file
 
         # Build and execute sort query
-        actual_safe_url = safe_file_url(actual_input, verbose=False)
+        actual_url = resolve_file_url(actual_input, verbose=False)
         metadata, _ = get_parquet_metadata(actual_input, verbose=False)
 
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(actual_input))
@@ -429,7 +429,7 @@ def _sort_by_quadkey_streaming(
 
         query = f"""
             SELECT {select_clause}
-            FROM '{actual_safe_url}'
+            FROM {sql_path(actual_url)}
             ORDER BY {quote_identifier(quadkey_column_name)}
         """
 

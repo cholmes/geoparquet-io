@@ -11,7 +11,7 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier, sql_path
 from geoparquet_io.core.logging_config import debug, warn
 
 
@@ -624,9 +624,8 @@ def extract_crs_from_parquet(parquet_file, verbose=False):
 
     ``parquet_file`` must be a **RAW** path/URL: every helper it reaches
     (``get_geo_metadata``, ``get_schema_info``, ``resolve_crs_reference``)
-    SQL-escapes its own argument, so an already-escaped ``safe_file_url``
-    result is escaped twice and the existence check then fails on a file that
-    is plainly there (issue #718).
+    SQL-escapes its own argument, so a pre-escaped path is escaped twice and
+    the existence check then fails on a file that is plainly there (#718).
 
     Checks in order:
     1. GeoParquet metadata (columns.<geom_col>.crs)
@@ -687,10 +686,9 @@ def _detect_crs_from_filegdb(gdb_path, con, verbose=False):
 
     for gdbtable_file in gdbtable_files:
         gdbtable_path = os.path.join(gdb_path, gdbtable_file)
-        escaped_path = _escape_sql_string(gdbtable_path)
         try:
             result = con.execute(f"""
-                SELECT * FROM ST_Read_Meta('{escaped_path}')
+                SELECT * FROM ST_Read_Meta({sql_path(gdbtable_path)})
             """).fetchone()
 
             if not result or not result[3]:
@@ -732,10 +730,9 @@ def _detect_crs_from_filegdb(gdb_path, con, verbose=False):
 
 def detect_crs_from_spatial_file(input_file, con, verbose=False):
     """Detect CRS from a spatial file (GeoJSON, GPKG, Shapefile, FileGDB)."""
-    escaped_input_file = _escape_sql_string(input_file)
     try:
         result = con.execute(f"""
-            SELECT * FROM ST_Read_Meta('{escaped_input_file}')
+            SELECT * FROM ST_Read_Meta({sql_path(input_file)})
         """).fetchone()
 
         if result:

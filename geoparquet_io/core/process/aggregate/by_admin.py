@@ -17,7 +17,7 @@ from geoparquet_io.core.duckdb_utils import (
     where_sql_fragment,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, info, success
 from geoparquet_io.core.partition.admin_hierarchical import (
@@ -240,7 +240,7 @@ def aggregate_by_admin(
     admin_geom_col = admin_dataset.get_geometry_column()
     admin_bbox_col = admin_dataset.get_bbox_column()
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)

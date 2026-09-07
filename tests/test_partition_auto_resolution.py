@@ -263,7 +263,7 @@ class TestProbeFallbackIsAnnounced:
 
     def test_a_failed_probe_warns_without_verbose(self, caplog, monkeypatch):
         module = "geoparquet_io.core.partition.auto_resolution"
-        monkeypatch.setattr(f"{module}.safe_file_url", lambda *a, **k: "u")
+        monkeypatch.setattr(f"{module}.resolve_file_url", lambda *a, **k: "u")
 
         def _boom(**kwargs):
             raise RuntimeError("HTTP 404 no geography")
@@ -278,7 +278,7 @@ class TestProbeFallbackIsAnnounced:
 
     def test_an_empty_probe_warns_without_verbose(self, caplog, monkeypatch):
         module = "geoparquet_io.core.partition.auto_resolution"
-        monkeypatch.setattr(f"{module}.safe_file_url", lambda *a, **k: "u")
+        monkeypatch.setattr(f"{module}.resolve_file_url", lambda *a, **k: "u")
         monkeypatch.setattr(f"{module}.get_duckdb_connection", lambda **k: _NullConnection())
         monkeypatch.setattr(f"{module}.find_primary_geometry_column", lambda *a, **k: "geometry")
         monkeypatch.setattr(f"{module}.source_crs_string", lambda *a, **k: None)

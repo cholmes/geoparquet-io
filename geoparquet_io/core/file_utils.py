@@ -513,9 +513,10 @@ def resolve_file_url(file_path, verbose=False):
     space themselves -- so encode it yourself rather than rely on that.
 
     Local paths are checked for existence. Nothing here escapes the result for
-    SQL -- use this for anything that opens the file directly (fsspec, pyarrow,
-    metadata helpers). :func:`safe_file_url` is the SQL-facing variant, and it
-    is the single point at which a path is escaped.
+    SQL, which is what makes it the right resolver for both cases: hand the
+    result to anything that opens the file directly (fsspec, pyarrow, metadata
+    helpers), or to :func:`~geoparquet_io.core.duckdb_utils.sql_path`, which is
+    the single point at which a path becomes a SQL literal (#802).
 
     Args:
         file_path: Local path or remote URL
@@ -553,6 +554,17 @@ def resolve_file_url(file_path, verbose=False):
 def safe_file_url(file_path, verbose=False):
     """
     Prepare a file path for safe use in SQL queries.
+
+    .. deprecated:: superseded by
+       :func:`~geoparquet_io.core.duckdb_utils.sql_path`
+
+       No gpio caller uses this any more (#802). It returns a *bare* escaped
+       value that the caller must quote itself, which is the shape that made
+       the path escape someone else's problem and produced #718's crashes:
+       write ``FROM {sql_path(raw_path)}`` instead, or
+       :func:`resolve_file_url` when the value is not going into SQL at all.
+       It is kept only because the escape-exactly-once contract these tests
+       pin is worth stating in one place.
 
     Resolves the path with :func:`resolve_file_url` -- which takes a remote URL
     as already percent-encoded (#825) -- and escapes single quotes to prevent

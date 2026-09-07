@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from urllib.parse import unquote
 
 from geoparquet_io.core.common import write_parquet_with_metadata
+from geoparquet_io.core.duckdb_utils import sql_path
 from geoparquet_io.core.exceptions import PartitionError
 from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.logging_config import debug
@@ -136,9 +137,8 @@ def run_partitioned_copy(con, select_sql, partition_cols, staging_dir, verbose, 
     con.execute(f"SET memory_limit = '{effective_limit}'")
 
     part_cols = ", ".join(partition_cols)
-    escaped_dir = staging_dir.replace("'", "''")
     copy_sql = (
-        f"COPY ({select_sql}) TO '{escaped_dir}' "
+        f"COPY ({select_sql}) TO {sql_path(staging_dir)} "
         f"(FORMAT PARQUET, PARTITION_BY ({part_cols}), "
         f"COMPRESSION SNAPPY, GEOPARQUET_VERSION 'NONE', OVERWRITE_OR_IGNORE)"
     )
@@ -203,8 +203,8 @@ def finalize_partition_file(
     # PARTITION_BY alias), and DuckDB would otherwise auto-detect that and re-add
     # the dropped alias as a data column, leaking ``__gpio_part`` into every
     # output file.
-    staging_glob = os.path.join(partition_dir, "*.parquet").replace("'", "''")
-    query = f"SELECT * FROM read_parquet('{staging_glob}', hive_partitioning=false)"
+    staging_glob = os.path.join(partition_dir, "*.parquet")
+    query = f"SELECT * FROM read_parquet({sql_path(staging_glob)}, hive_partitioning=false)"
     write_parquet_with_metadata(
         con,
         query,

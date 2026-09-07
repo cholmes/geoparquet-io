@@ -4,8 +4,8 @@
 import random as _random
 from statistics import mean
 
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, progress
 from geoparquet_io.core.remote import needs_httpfs
@@ -39,13 +39,13 @@ def _bboxes_overlap(bbox1: dict, bbox2: dict) -> bool:
     return x_overlap and y_overlap
 
 
-def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbose):
+def _calculate_consecutive_avg(con, raw_url, geometry_column, row_limit, verbose):
     """Calculate average distance between consecutive features."""
     quoted_geom = quote_identifier(geometry_column)
     query = f"""
     WITH numbered AS (
         SELECT ROW_NUMBER() OVER () as id, {quoted_geom} as geom
-        FROM '{safe_url}' {row_limit}
+        FROM {sql_path(raw_url)} {row_limit}
     )
     SELECT AVG(ST_Distance(a.geom, b.geom)) as avg_dist
     FROM numbered a JOIN numbered b ON b.id = a.id + 1;
@@ -59,11 +59,11 @@ def _calculate_consecutive_avg(con, safe_url, geometry_column, row_limit, verbos
     return avg
 
 
-def _calculate_random_avg(con, safe_url, geometry_column, row_limit, random_sample_size, verbose):
+def _calculate_random_avg(con, raw_url, geometry_column, row_limit, random_sample_size, verbose):
     """Calculate average distance between random pairs of features."""
     quoted_geom = quote_identifier(geometry_column)
     query = f"""
-    WITH sample AS (SELECT {quoted_geom} as geom FROM '{safe_url}' {row_limit}),
+    WITH sample AS (SELECT {quoted_geom} as geom FROM {sql_path(raw_url)} {row_limit}),
     random_pairs AS (
         SELECT a.geom as geom1, b.geom as geom2
         FROM (SELECT geom FROM sample ORDER BY random() LIMIT {random_sample_size}) a,
@@ -101,9 +101,9 @@ def _build_results_dict(ratio, consecutive_avg, random_avg):
     }
 
 
-def _get_row_limit_clause(con, safe_url, limit_rows, verbose):
+def _get_row_limit_clause(con, raw_url, limit_rows, verbose):
     """Determine row limit clause based on total rows."""
-    total_rows = con.execute(f"SELECT COUNT(*) FROM '{safe_url}'").fetchone()[0]
+    total_rows = con.execute(f"SELECT COUNT(*) FROM {sql_path(raw_url)}").fetchone()[0]
     if verbose:
         debug(f"Total rows in file: {total_rows:,}")
 
@@ -313,7 +313,7 @@ def check_spatial_order(
     )
     from geoparquet_io.core.logging_config import warn
 
-    safe_url = safe_file_url(parquet_file, verbose)
+    raw_url = resolve_file_url(parquet_file, verbose)
 
     # Try bbox-stats method first (faster)
     has_bbox, bbox_col_name = has_bbox_column(parquet_file)
@@ -361,13 +361,13 @@ def check_spatial_order(
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(parquet_file))
     try:
-        row_limit = _get_row_limit_clause(con, safe_url, limit_rows, verbose)
+        row_limit = _get_row_limit_clause(con, raw_url, limit_rows, verbose)
 
         consecutive_avg = _calculate_consecutive_avg(
-            con, safe_url, geometry_column, row_limit, verbose
+            con, raw_url, geometry_column, row_limit, verbose
         )
         random_avg = _calculate_random_avg(
-            con, safe_url, geometry_column, row_limit, random_sample_size, verbose
+            con, raw_url, geometry_column, row_limit, random_sample_size, verbose
         )
 
         ratio = consecutive_avg / random_avg if consecutive_avg and random_avg else None

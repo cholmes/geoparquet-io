@@ -24,6 +24,7 @@ from geoparquet_io.core.common import (
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import (
     quote_identifier,
+    sql_path,
     validate_where_clause,
     where_condition_fragment,
 )
@@ -248,7 +249,9 @@ def _get_row_count(
 
     conn = get_duckdb_connection()
     conn.execute(f"SET http_timeout = {int(timeout * 1000)}")  # DuckDB uses milliseconds
-    result = conn.execute(f"SELECT rows[1].count FROM read_json_auto('{full_url}')").fetchone()
+    result = conn.execute(
+        f"SELECT rows[1].count FROM read_json_auto({sql_path(full_url)})"
+    ).fetchone()
 
     return int(result[0]) if result else 0
 
@@ -463,7 +466,7 @@ def _fetch_with_retry(
     if fmt == "GeoJSON":
         read_expr = f'ST_Read("{full_url}")'
     else:
-        read_expr = f"read_csv_auto('{full_url}')"
+        read_expr = f"read_csv_auto({sql_path(full_url)})"
 
     debug(f"Request URL: {full_url[:100]}...")
 

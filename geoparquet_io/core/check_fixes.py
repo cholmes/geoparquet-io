@@ -13,9 +13,9 @@ from geoparquet_io.core.common import (
     get_parquet_metadata,
     write_parquet_with_metadata,
 )
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
 from geoparquet_io.core.exceptions import GeoParquetError, RemoteAccessError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.hilbert_order import hilbert_order
 from geoparquet_io.core.logging_config import debug, info, progress
 from geoparquet_io.core.remote import (
@@ -69,7 +69,7 @@ def fix_compression(
         profile, parquet_file, actual_output if not is_remote_output else output_file
     )
 
-    safe_url = safe_file_url(parquet_file, verbose)
+    raw_url = resolve_file_url(parquet_file, verbose)
 
     # Get original metadata (only needed for v1.x)
     original_metadata = None
@@ -81,7 +81,7 @@ def fix_compression(
 
     try:
         # Preserve row order from input file (important after Hilbert sorting)
-        query = f"SELECT * FROM read_parquet('{safe_url}', hive_partitioning=false)"
+        query = f"SELECT * FROM read_parquet({sql_path(raw_url)}, hive_partitioning=false)"
 
         write_parquet_with_metadata(
             con=con,
@@ -203,7 +203,7 @@ def fix_bbox_removal(parquet_file, output_file, bbox_column_name, verbose=False,
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, parquet_file, output_file)
 
-    safe_url = safe_file_url(parquet_file, verbose)
+    raw_url = resolve_file_url(parquet_file, verbose)
 
     # Detect file type to determine output version
     file_type_info = detect_geoparquet_file_type(parquet_file, verbose)
@@ -220,7 +220,7 @@ def fix_bbox_removal(parquet_file, output_file, bbox_column_name, verbose=False,
 
     try:
         # Select all columns EXCEPT the bbox column
-        query = f"SELECT * EXCLUDE ({bbox_column_name}) FROM '{safe_url}'"
+        query = f"SELECT * EXCLUDE ({bbox_column_name}) FROM {sql_path(raw_url)}"
 
         write_parquet_with_metadata(
             con=con,
@@ -329,7 +329,7 @@ def fix_row_groups(parquet_file, output_file, verbose=False, profile=None, geopa
     # Setup AWS profile if needed
     setup_aws_profile_if_needed(profile, parquet_file, output_file)
 
-    safe_url = safe_file_url(parquet_file, verbose)
+    raw_url = resolve_file_url(parquet_file, verbose)
 
     # Get original metadata (only needed for v1.x)
     original_metadata = None
@@ -340,7 +340,7 @@ def fix_row_groups(parquet_file, output_file, verbose=False, profile=None, geopa
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(parquet_file))
 
     try:
-        query = f"SELECT * FROM '{safe_url}'"
+        query = f"SELECT * FROM {sql_path(raw_url)}"
 
         write_parquet_with_metadata(
             con=con,

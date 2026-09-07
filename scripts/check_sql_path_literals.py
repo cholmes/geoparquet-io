@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ratchet: no NEW hand-written ``FROM '{path}'`` SQL interpolations.
+"""No hand-written ``FROM '{path}'`` SQL interpolations.
 
 Writing the quotes by hand is what let ``gpio add admin-divisions`` interpolate
 an unescaped CLI argument and die with a ``ParserException`` on an output path
@@ -10,12 +10,15 @@ complete, quoted, escaped literal::
     FROM {sql_path(path)}          # good -- one escape, no hand-written quotes
     FROM '{path}'                  # bad  -- the escape is the author's problem
 
-Most of the existing sites are correct: they interpolate a ``safe_file_url``
-result, which is already escaped. Rewriting all of them at once would be churn
-on working code and unreviewable, so this is a **ratchet**, not a ban: each
-file's current count is recorded in the baseline, and the check fails only when
-a file's count *goes up* (or a file not in the baseline grows one). Lowering a
-count is always allowed -- run ``--update`` after migrating call sites.
+This started as a **ratchet**: 118 existing sites across 34 files were correct
+but hand-written (they interpolated an already-escaped ``safe_file_url``
+result), and rewriting them in one go would have been an unreviewable diff, so
+each file's count was recorded in the baseline and the check failed only when a
+count went up. Issue #802 finished the migration, so the baseline is now empty
+and the mechanism is a flat ban: any occurrence at all fails. The per-file
+machinery stays because a stalled migration is the normal way this file gets
+reused, and ``--update`` still records one -- but a non-empty baseline is a
+deliberate exception that needs saying out loud in review, not a default.
 
 Only real call sites are counted: comments and docstrings are skipped, so a
 file's baseline is not a budget that a reworded docstring can free up for a
@@ -128,10 +131,11 @@ def read_baseline() -> dict[str, int]:
 
 def write_baseline(counts: dict[str, int]) -> None:
     header = (
-        "# Hand-written `FROM '{path}'` SQL interpolations per file (issue #718).\n"
-        "# A ratchet, not a target: counts may fall, never rise. New code must use\n"
-        "# sql_path() from geoparquet_io/core/duckdb_utils.py instead.\n"
-        "# Regenerate with: uv run python scripts/check_sql_path_literals.py --update\n"
+        "# Hand-written `FROM '{path}'` SQL interpolations per file (issues #718, #802).\n"
+        "# EMPTY ON PURPOSE: the migration finished in #802, so any occurrence now\n"
+        "# fails. Use sql_path() from geoparquet_io/core/duckdb_utils.py instead.\n"
+        "# Adding a line back here exempts a file -- say why in review; do not run\n"
+        "# `--update` just to get a red check green.\n"
     )
     body = "".join(f"{n} {rel}\n" for rel, n in sorted(counts.items()))
     BASELINE.write_text(header + body, encoding="utf-8")
@@ -165,8 +169,9 @@ def main() -> int:
     for rel, (was, now) in sorted(regressions.items()):
         print(f"  {rel}: {was} -> {now}")
     print()
-    print("       Deliberately keeping an old-style site? Lower the count elsewhere, or")
-    print("       run: uv run python scripts/check_sql_path_literals.py --update")
+    print("       The baseline is empty on purpose (#802 migrated all 118 old sites).")
+    print("       `--update` would exempt the file above rather than fix it, so reach")
+    print("       for it only when a reviewer has agreed the site cannot migrate.")
     return 1
 
 
