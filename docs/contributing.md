@@ -81,10 +81,16 @@ Add `--cov-fail-under=0` when you opt in on a subset: `[tool.coverage.report]`
 sets `fail_under = 80`, so coverage re-arms the floor on any `--cov` run even
 though `addopts` no longer requests one.
 
-CI runs three test tiers:
+CI runs four test tiers:
 
 - **Fast tests** (`not slow and not network and not meta`) — run on every PR
   across the full OS/Python matrix and **block merging**.
+- **Docs examples** (`docs_example and not network`) — the guide's fenced
+  examples, run on every PR on one ubuntu runner with GDAL and tippecanoe
+  installed so the `needs-ogr`/`needs-tippecanoe` fences execute instead of
+  skipping. Advisory for now (not a required check). Network-marked fences
+  stay in the network tier below, so a docs fence marked `slow` or `network`
+  still waits for its tier despite this pre-merge lane.
 - **Slow tests** (`(slow or meta) and not network`) — run after merge to main
   and nightly; opt in on a PR by adding the `run-slow-tests` label. This tier
   also carries the `meta` lane: repo-tooling checks (codespell, commitizen,
