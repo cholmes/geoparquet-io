@@ -28,12 +28,12 @@ def detect_parquet_geometry_column(parquet_file: str, verbose: bool = False) -> 
         The name of the detected geometry column, or None if not found.
     """
     from geoparquet_io.core.duckdb_metadata import get_geo_metadata
-    from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
+    from geoparquet_io.core.file_utils import resolve_file_url
     from geoparquet_io.core.remote import needs_httpfs
 
     # Normalize path for consistent handling of URLs and local files
-    safe_url = safe_file_url(parquet_file, verbose=False)
+    raw_url = resolve_file_url(parquet_file, verbose=False)
 
     # 1. Check GeoParquet metadata first
     geo_meta = get_geo_metadata(parquet_file)
@@ -47,8 +47,8 @@ def detect_parquet_geometry_column(parquet_file: str, verbose: bool = False) -> 
     # 2. Fall back to name-based detection from schema using DuckDB
     con = None
     try:
-        con = get_duckdb_connection(load_httpfs=needs_httpfs(safe_url))
-        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_url}')").fetchall()
+        con = get_duckdb_connection(load_httpfs=needs_httpfs(raw_url))
+        result = con.execute(f"DESCRIBE SELECT * FROM read_parquet({sql_path(raw_url)})").fetchall()
         column_names = [row[0] for row in result]
         for std_name in STANDARD_GEOMETRY_NAMES:
             for col in column_names:

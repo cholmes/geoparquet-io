@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import duckdb
 
-from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier
+from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier, sql_path
 from geoparquet_io.core.geometry_detection import STANDARD_GEOMETRY_NAMES
 from geoparquet_io.core.geometry_repair import repair_geometry_sql
 
@@ -474,7 +474,7 @@ def convert_to_geojson_stream(
         Number of features written
     """
     from geoparquet_io.core.duckdb_utils import get_duckdb_connection
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.file_utils import resolve_file_url
     from geoparquet_io.core.logging_config import configure_verbose, debug, info, success
     from geoparquet_io.core.remote import needs_httpfs, setup_aws_profile_if_needed
     from geoparquet_io.core.streaming import is_stdin
@@ -501,7 +501,7 @@ def convert_to_geojson_stream(
     setup_aws_profile_if_needed(profile, input_path)
 
     # Get safe URL for input
-    input_url = safe_file_url(input_path, verbose)
+    input_url = resolve_file_url(input_path, verbose)
 
     # Check if reprojection is needed
     source_crs = _get_source_crs(input_path)
@@ -514,7 +514,7 @@ def convert_to_geojson_stream(
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_path))
 
     try:
-        source_ref = f"read_parquet('{input_url}')"
+        source_ref = f"read_parquet({sql_path(input_url)})"
 
         # Find geometry column
         geometry_column = _find_geometry_column(con, source_ref)

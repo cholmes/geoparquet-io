@@ -20,12 +20,13 @@ from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
 )
 from geoparquet_io.core.exceptions import (
     GeoParquetError,
     InvalidParameterError,
 )
-from geoparquet_io.core.file_utils import resolve_file_url, safe_file_url, validate_output_path
+from geoparquet_io.core.file_utils import resolve_file_url, validate_output_path
 from geoparquet_io.core.geometry_detection import detect_parquet_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success, warn
 from geoparquet_io.core.remote import (
@@ -243,8 +244,6 @@ def write_gdal_format(
         # Execute write with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
         # so we use SQL standard escaping (double single quotes)
-        safe_input_url = safe_file_url(input_path, verbose=False)
-        safe_output_path = _escape_sql_string(output_path)
 
         # GDAL formats don't support complex types (STRUCT, LIST, MAP), so select only compatible columns
         # Read schema to filter out incompatible columns
@@ -289,8 +288,8 @@ def write_gdal_format(
         select_clause = ", ".join(compatible_cols)
 
         query = f"""
-            COPY (SELECT {select_clause} FROM read_parquet('{safe_input_url}'))
-            TO '{safe_output_path}'
+            COPY (SELECT {select_clause} FROM read_parquet({sql_path(input_path)}))
+            TO {sql_path(output_path)}
             WITH (FORMAT GDAL, DRIVER '{config["driver"]}'{lco_clause}{srs_clause})
         """
 
@@ -409,18 +408,15 @@ def write_csv(
         if not select_cols:
             raise GeoParquetError("No columns to export after filtering geometry.")
 
-        # Write to CSV with SQL-escaped paths
         # Note: DuckDB's COPY statement doesn't support parameterized paths,
-        # so we use SQL standard escaping (double single quotes)
-        safe_input_url = safe_file_url(input_path, verbose=False)
-        safe_output_path = _escape_sql_string(output_path)
+        # so sql_path() supplies the quoted, escaped literal.
 
         query = f"""
             COPY (
                 SELECT {", ".join(select_cols)}
-                FROM read_parquet('{safe_input_url}')
+                FROM read_parquet({sql_path(input_path)})
             )
-            TO '{safe_output_path}'
+            TO {sql_path(output_path)}
             WITH (HEADER TRUE, DELIMITER ',')
         """
 

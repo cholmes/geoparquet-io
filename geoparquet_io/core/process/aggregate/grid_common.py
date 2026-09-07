@@ -29,11 +29,12 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
+    sql_path,
     validate_where_clause,
     where_sql_fragment,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import configure_verbose, debug, info, success, warn
 from geoparquet_io.core.process.aggregate.common import (
@@ -474,13 +475,12 @@ def _warn_files_missing_column(con, input_path: str, column: str) -> None:
     """
     if not any(ch in input_path for ch in "*?["):
         return
-    url_lit = _escape_sql_string(input_path)
     col_lit = _escape_sql_string(column)
     try:
         total, with_col = con.execute(
             f"SELECT count(DISTINCT file_name), "
             f"count(DISTINCT file_name) FILTER (WHERE name = '{col_lit}') "
-            f"FROM parquet_schema('{url_lit}')"
+            f"FROM parquet_schema({sql_path(input_path)})"
         ).fetchone()
     except duckdb.Error:  # pragma: no cover - best-effort diagnostics only
         return
@@ -503,8 +503,8 @@ def _validate_keying_columns_for_file(
     """
     if bucket_point == BUCKET_POINT_GEOMETRY:
         return
-    input_url = safe_file_url(input_parquet, verbose=False)
-    relation = f"read_parquet('{input_url}', hive_partitioning=false, union_by_name=true)"
+    input_url = resolve_file_url(input_parquet, verbose=False)
+    relation = f"read_parquet({sql_path(input_url)}, hive_partitioning=false, union_by_name=true)"
     con = get_duckdb_connection(load_spatial=False, load_httpfs=needs_httpfs(input_parquet))
     try:
         if bucket_point == BUCKET_POINT_BBOX and bbox_column:
@@ -579,7 +579,7 @@ def aggregate_grid_file(
         scheme, input_parquet, resolution, auto, target_per_cell, max_cells, verbose, where=where
     )
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
     geom_col = find_primary_geometry_column(input_parquet, verbose) or "geometry"
     source_crs = extract_crs_from_parquet(input_parquet, verbose)
 

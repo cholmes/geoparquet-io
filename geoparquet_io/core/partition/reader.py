@@ -7,13 +7,14 @@ glob patterns, hive-style) across all gpio commands.
 
 import os
 
+from geoparquet_io.core.duckdb_utils import sql_path
 from geoparquet_io.core.file_utils import (
     get_all_parquet_files,
     get_first_parquet_file,
     has_glob_pattern,
     is_partition_path,
+    resolve_file_url,
     resolve_partition_path,
-    safe_file_url,
 )
 from geoparquet_io.core.logging_config import debug
 from geoparquet_io.core.remote import is_remote_url
@@ -56,8 +57,8 @@ def resolve_read_path(
     file at ``data/country=US/x.parquet`` must keep reading as itself, without
     the partition keys appearing as extra columns.
 
-    The result is RAW, so the caller still owes it exactly one escape --
-    :func:`safe_file_url` or ``sql_path``, never both.
+    The result is RAW, so the caller still owes it exactly one escape, and
+    ``sql_path`` is where that happens.
 
     Args:
         path: File path, directory, or glob pattern (local or remote)
@@ -109,7 +110,7 @@ def build_read_parquet_expr(
              "read_parquet('path/*.parquet', hive_partitioning=true)"
     """
     resolved_path, auto_options = resolve_read_path(path, hive_input, verbose=verbose)
-    safe_path = safe_file_url(resolved_path, verbose=False)
+    raw_path = resolve_file_url(resolved_path, verbose=False)
 
     # Build options list
     options = []
@@ -125,9 +126,9 @@ def build_read_parquet_expr(
     # Build expression
     if options:
         options_str = ", ".join(options)
-        return f"read_parquet('{safe_path}', {options_str})"
+        return f"read_parquet({sql_path(raw_path)}, {options_str})"
     else:
-        return f"read_parquet('{safe_path}')"
+        return f"read_parquet({sql_path(raw_path)})"
 
 
 def get_partition_info(path: str, verbose: bool = False) -> dict:

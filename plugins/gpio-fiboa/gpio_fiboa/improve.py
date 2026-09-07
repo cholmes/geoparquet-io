@@ -362,7 +362,8 @@ def _add_schemas_metadata(
     )
     from geoparquet_io.core.constants import build_collection_metadata
     from geoparquet_io.core.duckdb_metadata import get_column_names
-    from geoparquet_io.core.file_utils import safe_file_url
+    from geoparquet_io.core.duckdb_utils import sql_path
+    from geoparquet_io.core.file_utils import resolve_file_url
 
     verbose = kwargs.pop("verbose", False)
 
@@ -379,10 +380,10 @@ def _add_schemas_metadata(
     extra_kv = build_collection_metadata(schemas, metadata)
 
     actual_output = output_file or input_file
-    input_url = safe_file_url(input_file, verbose)
+    input_url = resolve_file_url(input_file, verbose)
 
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_file))
-    query = f"SELECT * FROM '{input_url}'"
+    query = f"SELECT * FROM {sql_path(input_url)}"
 
     write_parquet_with_metadata(
         con,

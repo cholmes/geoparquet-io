@@ -249,7 +249,7 @@ def _detect_metadata_mismatches(
             geom_types_lower = [g.lower() for g in geoparquet_geom_types]
             if parquet_geom_type.lower() not in geom_types_lower:
                 warnings.append(
-                    f"Geometry type mismatch: Parquet geo type restricts to '{parquet_geom_type}' "
+                    f"Geometry type mismatch: Parquet geo type restricts to {parquet_geom_type!r} "
                     f"but GeoParquet metadata allows {geoparquet_geom_types}"
                 )
 

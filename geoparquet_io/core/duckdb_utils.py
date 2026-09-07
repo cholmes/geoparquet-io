@@ -774,9 +774,7 @@ def get_duckdb_connection_for_s3(
     )
     try:
         # Lightweight test query - DuckDB handles glob patterns natively
-        # Escape single quotes in path to prevent SQL injection
-        safe_path = _escape_sql_string(path)
-        con.execute(f"SELECT 1 FROM read_parquet('{safe_path}') LIMIT 1").fetchone()
+        con.execute(f"SELECT 1 FROM read_parquet({sql_path(path)}) LIMIT 1").fetchone()
         return con
     except Exception as e:
         con.close()

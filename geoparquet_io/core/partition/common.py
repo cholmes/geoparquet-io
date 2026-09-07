@@ -6,9 +6,9 @@ import shutil
 from contextlib import contextmanager
 
 from geoparquet_io.core.common import get_parquet_metadata
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, quote_identifier, sql_path
 from geoparquet_io.core.exceptions import PartitionError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.logging_config import debug, error, info, progress, warn
 from geoparquet_io.core.partition.staging import (
     PartitionWriteOptions,
@@ -313,7 +313,7 @@ def analyze_partition_strategy(
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
 
     # Create DuckDB connection with httpfs if needed
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
@@ -333,7 +333,7 @@ def analyze_partition_strategy(
             SELECT
                 {column_expr} as partition_value,
                 COUNT(*) as row_count
-            FROM '{input_url}'
+            FROM {sql_path(input_url)}
             WHERE {quote_identifier(column_name)} IS NOT NULL
             GROUP BY partition_value
         )
@@ -607,7 +607,7 @@ def preview_partition(
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
 
     # Create DuckDB connection with httpfs if needed
     con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(input_parquet))
@@ -625,7 +625,7 @@ def preview_partition(
         SELECT
             {column_expr} as partition_value,
             COUNT(*) as record_count
-        FROM '{input_url}'
+        FROM {sql_path(input_url)}
         WHERE {quote_identifier(column_name)} IS NOT NULL
         GROUP BY partition_value
         ORDER BY record_count DESC
@@ -726,7 +726,7 @@ def _build_staging_select(
 
     projection = "*" if keep_partition_column else f"* EXCLUDE ({qcol})"
 
-    return f"SELECT {projection}, {pexpr} AS {alias} FROM '{input_url}' WHERE {qcol} IS NOT NULL"
+    return f"SELECT {projection}, {pexpr} AS {alias} FROM {sql_path(input_url)} WHERE {qcol} IS NOT NULL"
 
 
 def _determine_output_path(
@@ -823,7 +823,7 @@ def partition_by_column(
     # Show remote read message
     show_remote_read_message(input_parquet, verbose)
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
 
     # Run partition analysis unless skipped
     _run_partition_analysis(
@@ -849,7 +849,7 @@ def partition_by_column(
             # so it is the other place a non-conformant input surfaces -- probed
             # before the output directory exists, so a refusal leaves nothing behind.
             with readable_geoparquet(input_parquet):
-                describe = con.execute(f"SELECT * FROM '{input_url}' LIMIT 0").description
+                describe = con.execute(f"SELECT * FROM {sql_path(input_url)} LIMIT 0").description
             input_cols = [d[0] for d in describe]
             alias = make_partition_aliases(1, input_cols)[0]
 

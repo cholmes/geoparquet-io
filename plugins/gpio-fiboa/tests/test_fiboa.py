@@ -11,6 +11,8 @@ from click.testing import CliRunner
 from gpio_fiboa.cli import fiboa
 from gpio_fiboa.improve import improve_fiboa
 
+from geoparquet_io.core.duckdb_utils import sql_path
+
 TEST_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "data"
 BUILDINGS_TEST_FILE = TEST_DATA_DIR / "buildings_test.parquet"
 
@@ -181,7 +183,7 @@ class TestFiboaImprove:
         with duckdb.connect() as con:
             con.execute("LOAD spatial;")
             vals = con.execute(
-                f"""SELECT DISTINCT "determination:method" FROM read_parquet('{temp_output}')"""
+                f"""SELECT DISTINCT "determination:method" FROM read_parquet({sql_path(temp_output)})"""
             ).fetchall()
             assert vals == [("auto-imagery",)]
 
@@ -197,8 +199,8 @@ class TestFiboaImprove:
                 con.execute("LOAD spatial;")
                 con.execute(
                     f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
-                    f"'{os.path.normpath(buildings_file)}') "
-                    f"TO '{with_time}' (FORMAT PARQUET)"
+                    f"{sql_path(os.path.normpath(buildings_file))}) "
+                    f"TO {sql_path(with_time)} (FORMAT PARQUET)"
                 )
 
             runner = CliRunner()
@@ -213,7 +215,7 @@ class TestFiboaImprove:
                 cols = [
                     c[0]
                     for c in con.execute(
-                        f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                        f"DESCRIBE SELECT * FROM read_parquet({sql_path(temp_output)})"
                     ).fetchall()
                 ]
                 assert "determination:datetime" in cols
@@ -234,8 +236,8 @@ class TestFiboaImprove:
                 con.execute("LOAD spatial;")
                 con.execute(
                     f"COPY (SELECT *, TIMESTAMP '2024-01-01' AS time FROM "
-                    f"'{os.path.normpath(buildings_file)}') "
-                    f"TO '{with_time}' (FORMAT PARQUET)"
+                    f"{sql_path(os.path.normpath(buildings_file))}) "
+                    f"TO {sql_path(with_time)} (FORMAT PARQUET)"
                 )
 
             runner = CliRunner()
@@ -257,7 +259,7 @@ class TestFiboaImprove:
                 cols = [
                     c[0]
                     for c in con.execute(
-                        f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                        f"DESCRIBE SELECT * FROM read_parquet({sql_path(temp_output)})"
                     ).fetchall()
                 ]
                 assert "determination:datetime" in cols
@@ -288,7 +290,7 @@ class TestFiboaImprove:
             cols = [
                 c[0]
                 for c in con.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                    f"DESCRIBE SELECT * FROM read_parquet({sql_path(temp_output)})"
                 ).fetchall()
             ]
             assert "determination:datetime" in cols
@@ -308,7 +310,7 @@ class TestFiboaImprove:
             cols = [
                 c[0]
                 for c in con.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet('{temp_output}')"
+                    f"DESCRIBE SELECT * FROM read_parquet({sql_path(temp_output)})"
                 ).fetchall()
             ]
             assert "category" in cols
@@ -345,8 +347,8 @@ class TestFiboaImprove:
             with _duckdb.connect() as con:
                 con.execute("LOAD spatial;")
                 con.execute(
-                    f"COPY (SELECT * FROM '{buildings_file}' LIMIT 10) "
-                    f"TO '{v2_file}' (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE')"
+                    f"COPY (SELECT * FROM {sql_path(buildings_file)} LIMIT 10) "
+                    f"TO {sql_path(v2_file)} (FORMAT PARQUET, GEOPARQUET_VERSION 'NONE')"
                 )
 
             runner = CliRunner()

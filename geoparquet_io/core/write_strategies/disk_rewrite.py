@@ -20,9 +20,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from geoparquet_io.core.duckdb_utils import (
-    _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
 )
 from geoparquet_io.core.geoarrow_encoding import arrow_extension_name, native_wkb_type
 from geoparquet_io.core.logging_config import configure_verbose, debug, progress, success
@@ -182,13 +182,12 @@ class DiskRewriteStrategy(BaseWriteStrategy):
 
             final_query = _wrap_query_with_wkb_conversion(query, geometry_column, con)
 
-            escaped_temp = _escape_sql_string(temp_path)
             copy_options = ["FORMAT PARQUET", f"COMPRESSION {duckdb_compression}"]
             if resolved_row_group_rows:
                 copy_options.append(f"ROW_GROUP_SIZE {resolved_row_group_rows}")
             copy_query = f"""
                 COPY ({final_query})
-                TO '{escaped_temp}'
+                TO {sql_path(temp_path)}
                 ({", ".join(copy_options)})
             """
 
@@ -412,10 +411,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
         work_dir = tempfile.mkdtemp(prefix="gpio_disk_rewrite_") if is_remote else None
 
         try:
-            from geoparquet_io.core.duckdb_utils import _escape_sql_string
-
             local_path = os.path.join(work_dir, "output.parquet") if is_remote else output_path
-            escaped_path = _escape_sql_string(local_path)
 
             copy_options = ["FORMAT PARQUET", f"COMPRESSION {duckdb_compression}"]
             if row_group_rows:
@@ -423,7 +419,7 @@ class DiskRewriteStrategy(BaseWriteStrategy):
 
             copy_query = f"""
                 COPY ({query})
-                TO '{escaped_path}'
+                TO {sql_path(local_path)}
                 ({", ".join(copy_options)})
             """
 

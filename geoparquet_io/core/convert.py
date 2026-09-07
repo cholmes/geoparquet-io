@@ -36,7 +36,7 @@ from geoparquet_io.core.exceptions import (
 )
 from geoparquet_io.core.file_utils import (
     is_partition_path,
-    safe_file_url,
+    resolve_file_url,
     validate_output_path,
 )
 from geoparquet_io.core.geo_metadata import build_bbox_covering
@@ -89,7 +89,7 @@ def _build_st_read_expr(input_path: str, layer: str | None = None, keep_wkb: boo
     Args:
         input_path: RAW (unescaped) path or URL to the spatial file. It is
             turned into a SQL literal here by ``sql_path`` -- exactly once, so
-            do not pass a ``safe_file_url`` result (issue #718).
+            do not pass an already-escaped path (issue #718).
         layer: Optional layer name for multi-layer formats (GeoPackage, FileGDB)
         keep_wkb: Return raw WKB blobs instead of parsed GEOMETRY (DuckDB's
             escape hatch for geometry subtypes it cannot represent)
@@ -370,19 +370,17 @@ def _build_csv_read_expr(input_url, delimiter):
     """Build DuckDB CSV read expression with geospatial-appropriate max_line_size.
 
     Args:
-        input_url: An **already SQL-escaped** ``safe_file_url()`` result, not a
-            raw path -- this function writes the surrounding quotes but does not
-            escape. (A raw path would need ``sql_path()`` instead; the CSV read
-            chain has not been migrated, see #718.)
+        input_url: A RAW path or URL. ``sql_path()`` quotes and escapes it
+            here, so callers must not pre-escape it (#802).
         delimiter: CSV delimiter, or None to auto-detect.
     """
     max_line_size = get_csv_max_line_size()
     if delimiter:
         return (
-            f"read_csv('{input_url}', delim='{delimiter}', header=true, "
+            f"read_csv({sql_path(input_url)}, delim='{delimiter}', header=true, "
             f"AUTO_DETECT=TRUE, max_line_size={max_line_size})"
         )
-    return f"read_csv_auto('{input_url}', max_line_size={max_line_size})"
+    return f"read_csv_auto({sql_path(input_url)}, max_line_size={max_line_size})"
 
 
 def _get_csv_columns(con, csv_read):
@@ -867,7 +865,7 @@ def _build_plain_select_query(input_url, is_parquet=False, is_csv=False, delimit
     """Build a SELECT * query for non-geometry file conversion.
 
     Args:
-        input_url: An **already SQL-escaped** ``safe_file_url()`` result, not a
+        input_url: A RAW path or URL, escaped here by ``sql_path()``; not a
             raw path -- this function writes the surrounding quotes but does not
             escape. (A raw path would need ``sql_path()`` instead; this branch
             has not been migrated, see #718.)
@@ -879,12 +877,12 @@ def _build_plain_select_query(input_url, is_parquet=False, is_csv=False, delimit
         SQL SELECT query string
     """
     if is_parquet:
-        return f"SELECT * FROM read_parquet('{input_url}')"
+        return f"SELECT * FROM read_parquet({sql_path(input_url)})"
     if is_csv:
         csv_read = _build_csv_read_expr(input_url, delimiter)
         return f"SELECT * FROM {csv_read}"
     # Spatial formats (GeoJSON, Shapefile, GeoPackage, etc.) - use ST_Read
-    return f"SELECT * FROM ST_Read('{input_url}')"
+    return f"SELECT * FROM ST_Read({sql_path(input_url)})"
 
 
 #: Warned when Hilbert ordering is skipped for want of an envelope (#649). Both
@@ -1396,8 +1394,8 @@ def read_spatial_to_arrow(
     # Show progress for remote files
     show_remote_read_message(input_file, verbose=False)
 
-    # Get safe URL
-    input_url = safe_file_url(input_file, verbose)
+    # RAW path: every SQL interpolation escapes it through sql_path (#802).
+    input_url = resolve_file_url(input_file, verbose)
 
     # Check input file type
     is_csv = _is_csv_file(input_file)
@@ -1473,7 +1471,7 @@ def read_spatial_to_arrow(
         # No geometry found — read as plain table
         if arrow_table is None:
             if is_parquet:
-                table_expr = f"read_parquet('{input_url}')"
+                table_expr = f"read_parquet({sql_path(input_url)})"
             elif is_csv:
                 table_expr = _build_csv_read_expr(input_url, delimiter)
             else:
@@ -1999,7 +1997,7 @@ def convert_to_geoparquet(
     validate_profile_for_urls(profile, input_file, output_file)
     setup_aws_profile_if_needed(profile, input_file, output_file)
     show_remote_read_message(input_file, verbose=False)
-    input_url = safe_file_url(input_file, verbose)
+    input_url = resolve_file_url(input_file, verbose)
     validate_output_path(output_file, verbose)
 
     progress(f"Converting {input_file}...")

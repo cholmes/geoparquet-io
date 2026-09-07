@@ -17,9 +17,10 @@ from geoparquet_io.core.duckdb_utils import (
     get_duckdb_connection,
     load_community_extension,
     quote_identifier,
+    sql_path,
 )
 from geoparquet_io.core.exceptions import InvalidParameterError
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.logging_config import warn
 from geoparquet_io.core.process.aggregate.by_a5 import A5_SCHEME
 from geoparquet_io.core.process.aggregate.by_h3 import H3_SCHEME
@@ -287,11 +288,14 @@ def aggregate_connection(input_parquet: str, verbose: bool = False):
     (overview building, pyramid planning, file detection): spatial + httpfs
     connection, lon/lat axis order, and a ``read_parquet`` relation string.
     """
-    url = safe_file_url(input_parquet, verbose)
+    url = resolve_file_url(input_parquet, verbose)
     con = get_duckdb_connection(load_spatial=True, load_httpfs=True)
     try:
         con.execute("SET geometry_always_xy = true")
-        yield con, f"read_parquet('{url}', hive_partitioning=false, union_by_name=true)"
+        yield (
+            con,
+            f"read_parquet({sql_path(url)}, hive_partitioning=false, union_by_name=true)",
+        )
     finally:
         con.close()
         # Release GDAL/spatial native handles before the next spatial

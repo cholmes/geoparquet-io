@@ -34,8 +34,9 @@ from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
+    sql_path,
 )
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geo_metadata import strip_derived_stats
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, success, warn
@@ -495,7 +496,7 @@ def reproject_impl(
     )
 
     # Safe URL for SQL interpolation, computed from the (possibly sanitized) path.
-    input_url = safe_file_url(read_source, verbose=verbose)
+    input_url = resolve_file_url(read_source, verbose=verbose)
 
     # Create DuckDB connection with spatial extension
     con = get_duckdb_connection(
@@ -523,7 +524,7 @@ def reproject_impl(
         log(f"Target CRS: {target_crs}")
 
         # Get feature count
-        count = con.execute(f"SELECT COUNT(*) FROM '{input_url}'").fetchone()[0]
+        count = con.execute(f"SELECT COUNT(*) FROM {sql_path(input_url)}").fetchone()[0]
         log(f"Features: {count:,}")
 
         # Check for existing bbox column to exclude (will be regenerated)
@@ -558,7 +559,7 @@ def reproject_impl(
                             '{source_crs_literal}',
                             '{target_crs_literal}'
                         ) AS {quote_identifier(geom_col)}
-                    FROM '{input_url}'
+                    FROM {sql_path(input_url)}
                 )
                 SELECT
                     *,
@@ -581,7 +582,7 @@ def reproject_impl(
                         '{source_crs_literal}',
                         '{target_crs_literal}'
                     ) AS {quote_identifier(geom_col)}
-                FROM '{input_url}'
+                FROM {sql_path(input_url)}
             """
 
         # Determine output path
@@ -744,7 +745,7 @@ def _reproject_streaming(
         )
 
         # Get safe URL for SQL interpolation
-        working_url = safe_file_url(working_file, verbose=False)
+        working_url = resolve_file_url(working_file, verbose=False)
 
         # Create connection
         con = get_duckdb_connection(load_spatial=True, load_httpfs=needs_httpfs(working_file))
@@ -783,7 +784,7 @@ def _reproject_streaming(
                                 '{source_crs_literal}',
                                 '{target_crs_literal}'
                             ) AS {quote_identifier(geom_col)}
-                        FROM '{working_url}'
+                        FROM {sql_path(working_url)}
                     )
                     SELECT
                         *,
@@ -804,7 +805,7 @@ def _reproject_streaming(
                             '{source_crs_literal}',
                             '{target_crs_literal}'
                         ) AS {quote_identifier(geom_col)}
-                    FROM '{working_url}'
+                    FROM {sql_path(working_url)}
                 """
 
             # Get original metadata for preservation

@@ -21,7 +21,7 @@ import pyarrow.parquet as pq
 
 from geoparquet_io.core.common import _cast_table_to_schema, write_geoparquet_table
 from geoparquet_io.core.crs_utils import _extract_crs_identifier, parse_crs_string_to_projjson
-from geoparquet_io.core.duckdb_utils import get_duckdb_connection
+from geoparquet_io.core.duckdb_utils import get_duckdb_connection, sql_path
 from geoparquet_io.core.exceptions import (
     BatchTooLargeError,
     GeoParquetError,
@@ -989,7 +989,7 @@ def _json_doc_to_table(doc: dict, exclude: str, suffix: str, con=None) -> pa.Tab
             SELECT
                 ST_AsWKB(geom) as geometry,
                 * EXCLUDE ({exclude})
-            FROM ST_Read('{temp_file}')
+            FROM ST_Read({sql_path(temp_file)})
         """
 
         # Allow arbitrarily large/complex single features through GDAL's parser

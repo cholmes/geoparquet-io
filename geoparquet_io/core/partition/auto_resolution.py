@@ -16,10 +16,11 @@ from geoparquet_io.core.crs_utils import source_crs_string, transform_geom_sql
 from geoparquet_io.core.duckdb_utils import (
     load_community_extension,
     quote_identifier,
+    sql_path,
     validate_where_clause,
     where_sql_fragment,
 )
-from geoparquet_io.core.file_utils import safe_file_url
+from geoparquet_io.core.file_utils import resolve_file_url
 from geoparquet_io.core.geometry_detection import find_primary_geometry_column
 from geoparquet_io.core.logging_config import debug, info, warn
 
@@ -53,8 +54,11 @@ def _count_query(url: str, where: str | None) -> str:
     :func:`validate_where_clause` rejects separators as well (gpio #612).
     """
     if not where:
-        return f"SELECT COUNT(*) FROM '{url}'"
-    return f"SELECT COUNT(*) FROM (SELECT 1 FROM '{url}'{where_sql_fragment(where)}) AS __filtered"
+        return f"SELECT COUNT(*) FROM {sql_path(url)}"
+    return (
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {sql_path(url)}"
+        f"{where_sql_fragment(where)}) AS __filtered"
+    )
 
 
 def _get_total_row_count(
@@ -78,7 +82,7 @@ def _get_total_row_count(
     """
     from geoparquet_io.core.remote import setup_aws_profile_if_needed
 
-    input_url = safe_file_url(input_parquet, verbose)
+    input_url = resolve_file_url(input_parquet, verbose)
 
     # Create connection inside try block to ensure cleanup on any error
     con = None
@@ -365,7 +369,7 @@ def _geom_sql(con, url: str, geom_col: str) -> str:
     back as BLOB and must be decoded. Raises if the column is absent.
     """
     qcol = quote_identifier(geom_col)
-    desc = con.execute(f"DESCRIBE SELECT {qcol} FROM '{url}'").fetchall()
+    desc = con.execute(f"DESCRIBE SELECT {qcol} FROM {sql_path(url)}").fetchall()
     col_type = (desc[0][1] if desc else "").upper()
     if "GEOMETRY" in col_type:
         return qcol
@@ -402,7 +406,7 @@ def _probe_distinct_cell_counts(
     level of the statement, where it could otherwise chain a second one.
     """
     centroid = f"ST_Centroid({geom_sql})"
-    filtered = f"(SELECT {centroid} AS c FROM '{url}'{where_sql_fragment(where)})"
+    filtered = f"(SELECT {centroid} AS c FROM {sql_path(url)}{where_sql_fragment(where)})"
     sample_cte = f"SELECT ST_X(c) AS lon, ST_Y(c) AS lat FROM {filtered}{sample_clause}"
     if index_type == "quadkey":
         # A level-r quadkey is the length-r prefix of a finer one, so compute the
@@ -469,7 +473,7 @@ def _probe_extent_resolution(
     """
     from geoparquet_io.core.remote import setup_aws_profile_if_needed
 
-    url = safe_file_url(input_parquet, verbose)
+    url = resolve_file_url(input_parquet, verbose)
     resolutions = list(range(min_resolution, max_resolution + 1))
     con = None
     try:

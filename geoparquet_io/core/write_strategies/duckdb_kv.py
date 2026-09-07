@@ -26,6 +26,7 @@ from geoparquet_io.core.duckdb_utils import (
     _escape_sql_string,
     build_kv_metadata_clause,
     quote_identifier,
+    sql_path,
     validate_compression_level,
 )
 from geoparquet_io.core.geo_metadata import declare_carried_bbox_column
@@ -445,7 +446,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         # geometry encoding directly. No WKB conversion needed.
         # Apply CRS via ST_SetCRS so DuckDB writes it into the schema natively.
         final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
-        escaped_path = _escape_sql_string(local_path)
 
         copy_options = _build_copy_options(
             compression,
@@ -453,7 +453,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             extra_kv_metadata=extra_kv_metadata,
             compression_level=compression_level,
         )
-        copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
+        copy_query = f"COPY ({final_query}) TO {sql_path(local_path)} ({', '.join(copy_options)})"
         con.execute(copy_query)
 
         if verbose:
@@ -511,12 +511,10 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         else:
             final_query = _wrap_query_with_crs(query, geometry_column, input_crs)
 
-        escaped_path = _escape_sql_string(local_path)
-
         copy_options = _build_copy_options(
             compression, row_group_rows, json.dumps(geo_meta), extra_kv_metadata, compression_level
         )
-        copy_query = f"COPY ({final_query}) TO '{escaped_path}' ({', '.join(copy_options)})"
+        copy_query = f"COPY ({final_query}) TO {sql_path(local_path)} ({', '.join(copy_options)})"
 
         if verbose:
             debug(f"Writing via DuckDB COPY TO with {compression} compression...")
@@ -673,7 +671,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         con = get_duckdb_connection(load_spatial=False, load_httpfs=False)
         try:
             con.register("input_table", table)
-            escaped_path = _escape_sql_string(local_path)
 
             options = [
                 "FORMAT PARQUET",
@@ -685,7 +682,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             if row_group_rows:
                 options.append(f"ROW_GROUP_SIZE {row_group_rows}")
 
-            copy_query = f"COPY input_table TO '{escaped_path}' ({', '.join(options)})"
+            copy_query = f"COPY input_table TO {sql_path(local_path)} ({', '.join(options)})"
 
             if verbose:
                 debug(f"Writing plain Parquet with {compression_upper} compression...")
@@ -723,8 +720,6 @@ class DuckDBKVStrategy(BaseWriteStrategy):
         local_path = self._get_local_path(output_path, is_remote)
 
         try:
-            escaped_path = _escape_sql_string(local_path)
-
             options = [
                 "FORMAT PARQUET",
                 f"COMPRESSION {compression}",
@@ -735,7 +730,7 @@ class DuckDBKVStrategy(BaseWriteStrategy):
             if row_group_rows:
                 options.append(f"ROW_GROUP_SIZE {row_group_rows}")
 
-            copy_query = f"COPY ({query}) TO '{escaped_path}' ({', '.join(options)})"
+            copy_query = f"COPY ({query}) TO {sql_path(local_path)} ({', '.join(options)})"
 
             if verbose:
                 debug(f"Writing plain Parquet with {compression} compression...")

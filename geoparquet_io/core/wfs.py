@@ -52,7 +52,6 @@ from geoparquet_io.core.common import (
 )
 from geoparquet_io.core.crs_utils import parse_crs_string_to_projjson
 from geoparquet_io.core.duckdb_utils import (
-    _escape_sql_string,
     get_duckdb_connection,
     quote_identifier,
     sql_path,
@@ -1472,7 +1471,7 @@ def _infer_column_types(table: pa.Table) -> pa.Table:
 
 
 def _probe_properties_type(
-    con: duckdb.DuckDBPyConnection, safe_path: str, max_object_size: int
+    con: duckdb.DuckDBPyConnection, response_path: str, max_object_size: int
 ) -> tuple[str, bool]:
     """
     Probe the type of feature.properties to determine if unnest() will work.
@@ -1483,7 +1482,7 @@ def _probe_properties_type(
 
     Args:
         con: DuckDB connection with spatial extension loaded
-        safe_path: Path to the GeoJSON file (already escaped for SQL)
+        response_path: RAW path to the GeoJSON file; escaped here by ``sql_path``
         max_object_size: Maximum JSON object size for read_json_auto
 
     Returns:
@@ -1495,7 +1494,7 @@ def _probe_properties_type(
         props_type_result = con.execute(f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+                FROM read_json_auto({sql_path(response_path)}, maximum_object_size={max_object_size})
             )
             SELECT typeof(feature.properties) AS props_type
             FROM features
@@ -1514,13 +1513,13 @@ def _probe_properties_type(
 
 
 def _build_wfs_feature_query(
-    safe_path: str, extract_fid: bool, can_unnest_props: bool, max_object_size: int
+    response_path: str, extract_fid: bool, can_unnest_props: bool, max_object_size: int
 ) -> str:
     """
     Build SQL query to extract WFS features from GeoJSON.
 
     Args:
-        safe_path: Path to the GeoJSON file (already escaped for SQL)
+        response_path: RAW path to the GeoJSON file; escaped here by ``sql_path``
         extract_fid: If True, include feature.id as _wfs_fid column
         can_unnest_props: If True, unnest properties into columns; otherwise geometry-only
         max_object_size: Maximum JSON object size for read_json_auto
@@ -1536,7 +1535,7 @@ def _build_wfs_feature_query(
         return f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+                FROM read_json_auto({sql_path(response_path)}, maximum_object_size={max_object_size})
             ),
             extracted AS (
                 SELECT
@@ -1553,7 +1552,7 @@ def _build_wfs_feature_query(
         return f"""
             WITH features AS (
                 SELECT unnest(features) AS feature
-                FROM read_json_auto('{safe_path}', maximum_object_size={max_object_size})
+                FROM read_json_auto({sql_path(response_path)}, maximum_object_size={max_object_size})
             )
             SELECT
                 {fid_col}
@@ -1563,7 +1562,7 @@ def _build_wfs_feature_query(
 
 
 def _read_count_and_server_crs(
-    con: duckdb.DuckDBPyConnection, safe_path: str
+    con: duckdb.DuckDBPyConnection, response_path: str
 ) -> tuple[int, str | None]:
     """Read the feature count and the server-declared CRS in a single pass.
 
@@ -1588,7 +1587,7 @@ def _read_count_and_server_crs(
         SELECT
             json_array_length(content, '$.features') AS cnt,
             json_extract_string(content, '$.crs.properties.name') AS crs_name
-        FROM read_text('{safe_path}')
+        FROM read_text({sql_path(response_path)})
     """).fetchone()
     if not row:
         return 0, None
@@ -1983,7 +1982,6 @@ def _fetch_wfs_page(
     con = None
     try:
         con = get_duckdb_connection(load_spatial=True, load_httpfs=False)
-        safe_path = _escape_sql_string(tmp_path)
 
         if body_kind == "gml":
             parse_start = time.time()
@@ -1997,7 +1995,7 @@ def _fetch_wfs_page(
         # Read the feature count (DuckDB can't UNNEST empty JSON arrays) and the
         # authoritative CRS the server reported in its GeoJSON response, if any,
         # in a single scan over the response.
-        feature_count, server_crs = _read_count_and_server_crs(con, safe_path)
+        feature_count, server_crs = _read_count_and_server_crs(con, tmp_path)
 
         if feature_count == 0:
             debug("Empty response, returning empty table")
@@ -2005,13 +2003,13 @@ def _fetch_wfs_page(
             return _with_server_crs(empty, server_crs)
 
         # Detect property type and build extraction query
-        props_type, can_unnest_props = _probe_properties_type(con, safe_path, _MAX_JSON_OBJECT_SIZE)
+        props_type, can_unnest_props = _probe_properties_type(con, tmp_path, _MAX_JSON_OBJECT_SIZE)
         if not can_unnest_props:
             debug(f"Properties type is {props_type}, cannot unnest - returning geometry-only table")
 
         parse_start = time.time()
         query = _build_wfs_feature_query(
-            safe_path, extract_fid, can_unnest_props, _MAX_JSON_OBJECT_SIZE
+            tmp_path, extract_fid, can_unnest_props, _MAX_JSON_OBJECT_SIZE
         )
 
         result = con.execute(query)

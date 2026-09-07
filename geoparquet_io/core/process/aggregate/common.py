@@ -8,7 +8,7 @@ import re
 import string
 from dataclasses import dataclass
 
-from geoparquet_io.core.duckdb_utils import quote_identifier
+from geoparquet_io.core.duckdb_utils import quote_identifier, sql_path
 from geoparquet_io.core.exceptions import InvalidParameterError
 
 VALID_METRIC_FUNCS = {"sum", "avg", "min", "max"}
@@ -45,6 +45,9 @@ def _is_numeric_sql_type(col_type: str) -> bool:
 def aggregate_source_relation(input_url: str) -> str:
     """``read_parquet`` expression for the input scan of an aggregation.
 
+    ``input_url`` is a RAW path or URL; ``sql_path`` quotes and escapes it here,
+    so callers must not pre-escape it (#802).
+
     Hive partitioning is left to DuckDB's auto-detection (the default) rather
     than forced off, so ``--where "year = 2025"`` can filter on a partition
     column of a hive-style glob/directory -- the documented use case, which the
@@ -56,7 +59,7 @@ def aggregate_source_relation(input_url: str) -> str:
     fixed column list (bucket id, count, metrics, breakdown pivots, geometry),
     so a passthrough column added by the scan is dropped by the GROUP BY.
     """
-    return f"read_parquet('{input_url}', union_by_name=true)"
+    return f"read_parquet({sql_path(input_url)}, union_by_name=true)"
 
 
 def geometry_to_geom_expr(con, relation: str, geom_col: str) -> str:
