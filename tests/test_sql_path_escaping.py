@@ -417,17 +417,34 @@ class TestApostropheInOutputPath:
 
 
 class TestSqlPathLiteralRatchet:
-    """The pre-commit ratchet that stops new hand-written ``FROM '{path}'``.
+    """The pre-commit check that stops hand-written ``FROM '{path}'``.
 
-    Most of the existing sites interpolate an already-escaped ``safe_file_url``
-    result and are correct, so a flat ban would demand an unreviewable rewrite.
-    The ratchet records each file's count and fails only when one goes up --
-    counting real call sites only, never prose.
+    It began as a ratchet -- 118 correct-but-hand-written sites across 34 files,
+    each file's count recorded so only an increase failed. #802 migrated all of
+    them, so the baseline is empty and the check is now a flat ban, counting
+    real call sites only, never prose.
     """
 
     @staticmethod
     def _checker():
         return REPO_ROOT / "scripts" / "check_sql_path_literals.py"
+
+    def test_baseline_is_empty(self):
+        """Nothing is exempt any more, and nothing may be re-exempted quietly.
+
+        ``--update`` rewrites the baseline from whatever the tree currently
+        contains, so a new hand-written literal can be made to "pass" by
+        recording it. An empty baseline is the whole guarantee: adding a line
+        back has to break this test and be argued for in review.
+        """
+        entries = [
+            line
+            for line in (REPO_ROOT / "scripts" / "sql_path_literals_baseline.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        assert entries == []
 
     def test_checker_is_wired_into_the_precommit_hook(self):
         """The hook's ``-f`` guard means a missing script would silently pass."""

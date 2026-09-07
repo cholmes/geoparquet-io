@@ -139,12 +139,13 @@ repos:
             # sql_path(), which quotes and escapes in one step, so the escape
             # cannot be forgotten - it was forgotten for `add admin-divisions`,
             # which wrote its output file and then died with a ParserException on
-            # an output path containing an apostrophe (#718). Most existing sites
-            # interpolate an already-escaped safe_file_url() result and are
-            # correct, so this is a per-file ratchet over a checked-in baseline
-            # (counts may fall, never rise) rather than a ban that would demand a
-            # 160-site rewrite. Regenerate after migrating call sites:
-            #   uv run python scripts/check_sql_path_literals.py --update
+            # an output path containing an apostrophe (#718). This began as a
+            # per-file ratchet over a checked-in baseline, because the 118
+            # existing sites were correct (they interpolated an already-escaped
+            # safe_file_url() result) and could not be rewritten in one
+            # reviewable diff. #802 migrated all of them, so the baseline is
+            # empty and this is now a flat ban; `--update` exempts a file rather
+            # than recording progress, so use it only by agreement in review.
             # The -f guard keeps this block runnable from a scratch workspace
             # (tests/test_duckdb_connection_factory_bypass.py runs the script
             # against a synthetic tree); test_sql_path_escaping.py asserts the
