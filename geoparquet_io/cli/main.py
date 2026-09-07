@@ -5988,6 +5988,7 @@ def partition_quadkey(
             min_size=min_size,
             resolution=resolution,
             partition_resolution=partition_resolution,
+            use_centroid=use_centroid,
             preview=preview,
             column_name=quadkey_column,
             output_folder=output_folder,

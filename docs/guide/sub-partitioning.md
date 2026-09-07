@@ -74,8 +74,9 @@ by_country/
 | `--in-place` | `in_place=` | Delete original files after successful sub-partitioning |
 | `--preview` | `preview=` | List the files that would be processed, then stop |
 | `--resolution` / `--level` | `resolution=` / `level=` | Spatial index resolution (or use `--auto`) |
+| `--partition-resolution` | `partition_resolution=` | Quadkey only: prefix length the sub-partitions are split on. Required alongside `--resolution` unless `--auto` |
+| `--use-centroid` | `use_centroid=` | Quadkey only: use the geometry centroid when adding the quadkey column |
 | `--auto` | `auto=` | Auto-calculate optimal resolution |
-| `--partition-resolution` | `partition_resolution=` | Quadkey partition prefix length, no greater than `resolution` |
 
 `OUTPUT_FOLDER` and the index column name options (`--h3-name`, `--a5-name`,
 `--s2-name`, `--quadkey-column`) apply to single-file runs only: in directory
@@ -152,22 +153,28 @@ they are reached through `--min-size`.
 
 === "Quadkey"
 
-    Pass both a column resolution and a partition resolution, just as in single-file
-    mode. The partition resolution must be between zero and the column resolution
-    (at most 23). Alternatively, use `--auto` / `auto=True` to calculate both.
+    Quadkey takes two numbers: the cell column is built at `--resolution` and the
+    sub-partitions are the first `--partition-resolution` characters of each cell.
+    Pass both, or `--auto` / `auto=True` to size them from the data. As in the A5
+    tab, a tiny threshold makes the example split the small sample directory.
 
     <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```bash
-    gpio partition quadkey by_country/ --min-size 1B --resolution 13 --partition-resolution 6 --in-place
+    gpio partition quadkey by_country/ --min-size 1B --resolution 6 --partition-resolution 3 --in-place
     ```
 
     <!-- doctest: setup="gpio partition quadkey input.parquet by_country/ --resolution 6 --partition-resolution 2" -->
     ```python
     from geoparquet_io.api import ops
 
-    ops.sub_partition_by_quadkey(
-        'by_country/', min_size='1B', resolution=13, partition_resolution=6, in_place=True
+    result = ops.sub_partition_by_quadkey(
+        'by_country/',
+        min_size='1B',
+        resolution=6,
+        partition_resolution=3,
+        in_place=True,
     )
+    print(f"{result['processed']} file(s) sub-partitioned, {len(result['errors'])} failed")
     ```
 
 ## From Python

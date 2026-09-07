@@ -315,6 +315,141 @@ class TestSubPartitionCLI:
         assert os.path.isdir(os.path.join(temp_partition_dir, "test_quadkey"))
 
 
+class TestQuadkeyDirectoryResolutions:
+    """Quadkey takes two resolutions, and directory mode has to forward both (#854).
+
+    ``gpio partition quadkey`` builds the cell column at ``--resolution`` and
+    splits on the first ``--partition-resolution`` characters of it. Directory
+    mode forwarded only the first, so the documented
+    ``--min-size ... --resolution N`` run failed once per file on the single-file
+    gate ("must specify either --auto or both ...") and ``--auto`` was the only
+    way through.
+    """
+
+    @staticmethod
+    def _seed(directory) -> tuple[str, str]:
+        """A file in ``directory`` plus the ``--min-size`` that selects it."""
+        from pathlib import Path
+
+        buildings = Path(__file__).parent / "data" / "buildings_test.parquet"
+        test_file = os.path.join(directory, "test.parquet")
+        shutil.copy(buildings, test_file)
+        return test_file, f"{os.path.getsize(test_file) - 100}B"
+
+    def test_both_resolutions_are_forwarded_to_each_file(self, cli_runner, temp_partition_dir):
+        """The run in the issue, with the partition resolution it always needed."""
+        test_file, threshold = self._seed(temp_partition_dir)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "quadkey",
+                temp_partition_dir,
+                "--min-size",
+                threshold,
+                "--resolution",
+                "13",
+                "--partition-resolution",
+                "6",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert not os.path.exists(test_file), "--in-place left the original behind"
+
+        output_dir = os.path.join(temp_partition_dir, "test_quadkey")
+        assert _total_rows(output_dir) == BUILDINGS_ROWS
+        # Partition names are the first --partition-resolution characters of the
+        # quadkey, so a forwarded 6 shows up as 6-character stems.
+        assert {f.stem for f in _partition_files(output_dir)} == {"120203"}
+
+    def test_auto_still_works(self, cli_runner, temp_partition_dir):
+        """The workaround stays a working option, not a casualty of the fix."""
+        test_file, threshold = self._seed(temp_partition_dir)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "quadkey",
+                temp_partition_dir,
+                "--min-size",
+                threshold,
+                "--auto",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert not os.path.exists(test_file)
+        assert _total_rows(os.path.join(temp_partition_dir, "test_quadkey")) == BUILDINGS_ROWS
+
+    def test_a_lone_resolution_is_refused_once_up_front(self, cli_runner, temp_partition_dir):
+        """Name the missing flag before the loop, not once per file."""
+        test_file, threshold = self._seed(temp_partition_dir)
+
+        result = cli_runner.invoke(
+            partition,
+            [
+                "quadkey",
+                temp_partition_dir,
+                "--min-size",
+                threshold,
+                "--resolution",
+                "13",
+                "--in-place",
+                "--force",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--partition-resolution" in result.output
+        assert "ERROR:" not in result.output, "reported per file instead of once up front"
+        assert os.path.exists(test_file), "the original was touched by a refused run"
+
+    def test_neither_resolution_nor_auto_is_refused(self, cli_runner, temp_partition_dir):
+        """No resolutions at all is still a clear message, not a crash."""
+        _test_file, threshold = self._seed(temp_partition_dir)
+
+        result = cli_runner.invoke(
+            partition,
+            ["quadkey", temp_partition_dir, "--min-size", threshold, "--in-place"],
+        )
+
+        assert result.exit_code != 0
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "--auto" in result.output
+        assert "--partition-resolution" in result.output
+
+    def test_quadkey_only_options_reach_the_partitioner(self, temp_partition_dir, monkeypatch):
+        """``--use-centroid`` was dropped by directory mode the same way (#854)."""
+        from geoparquet_io.core import sub_partition as core_sub_partition
+
+        _test_file, threshold = self._seed(temp_partition_dir)
+        calls = []
+
+        def _record(**kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr("geoparquet_io.core.partition.by_quadkey.partition_by_quadkey", _record)
+
+        core_sub_partition.sub_partition_directory(
+            directory=temp_partition_dir,
+            partition_type="quadkey",
+            min_size_bytes=int(threshold.rstrip("B")),
+            resolution=13,
+            partition_resolution=6,
+            use_centroid=True,
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["resolution"] == 13
+        assert calls[0]["partition_resolution"] == 6
+        assert calls[0]["use_centroid"] is True
+
+
 class TestSubPartitionFailuresAreReported:
     """A directory sub-partition that partitions nothing must not exit 0 (#778)."""
 
@@ -839,13 +974,7 @@ class TestApiDirectorySubPartition:
         assert _total_rows(os.path.join(temp_partition_dir, "large_a5")) == BUILDINGS_ROWS
 
     def test_quadkey_partitions_by_its_own_index(self, temp_partition_dir):
-        """auto=True is what a quadkey directory run takes, exactly as on the CLI.
-
-        The quadkey partitioner needs both a column resolution and a partition
-        resolution, and directory mode forwards only one -- so a lone
-        ``resolution`` fails there through either front door (see
-        ``test_a_lone_quadkey_resolution_fails_the_same_way_as_the_cli``).
-        """
+        """auto=True is one of the two ways through, exactly as on the CLI."""
         from geoparquet_io.api import ops
 
         large, _small = self._seed(temp_partition_dir)
@@ -960,12 +1089,38 @@ class TestApiDirectorySubPartition:
         assert all(Path(path).read_bytes() == data for path, data in originals.items())
         assert not (Path(temp_partition_dir) / "large_quadkey").exists()
 
-    def test_a_lone_quadkey_resolution_fails_the_same_way_as_the_cli(
+    def test_quadkey_takes_both_resolutions(self, temp_partition_dir):
+        """The API twin of the fixed CLI run: two resolutions, no auto (#854)."""
+        from geoparquet_io.api import ops
+
+        large, _small = self._seed(temp_partition_dir)
+
+        result = ops.sub_partition_by_quadkey(
+            temp_partition_dir,
+            min_size=os.path.getsize(large) - 100,
+            resolution=13,
+            partition_resolution=6,
+            in_place=True,
+            force=True,
+        )
+
+        assert result["errors"] == []
+        assert result["processed"] == 1
+
+        output_dir = os.path.join(temp_partition_dir, "large_quadkey")
+        assert _total_rows(output_dir) == BUILDINGS_ROWS
+        assert {f.stem for f in _partition_files(output_dir)} == {"120203"}
+
+    def test_a_lone_quadkey_resolution_is_refused_up_front_on_both_doors(
         self, cli_runner, temp_partition_dir
     ):
-        """Explicit mode requires both resolutions, just like single-file mode."""
+        """Both doors say which resolution is missing, before any file is touched.
+
+        This used to be a per-file failure on the single-file gate through the
+        CLI, and the API mirrored it (#854).
+        """
         from geoparquet_io.api import ops
-        from geoparquet_io.core.exceptions import PartitionError
+        from geoparquet_io.core.exceptions import InvalidParameterError
 
         large, _small = self._seed(temp_partition_dir)
         threshold = f"{os.path.getsize(large) - 100}B"
@@ -983,14 +1138,15 @@ class TestApiDirectorySubPartition:
             ],
         )
         assert cli.exit_code != 0
-        assert "partition-resolution" in cli.output
+        assert "--partition-resolution" in cli.output
 
-        with pytest.raises(PartitionError) as exc:
+        with pytest.raises(InvalidParameterError) as exc:
             ops.sub_partition_by_quadkey(
                 temp_partition_dir, min_size=threshold, resolution=6, force=True
             )
 
-        assert "partition-resolution" in str(exc.value)
+        assert "partition_resolution" in str(exc.value)
+        assert os.path.exists(large), "a refused run touched the originals"
 
     def test_preview_lists_candidates_and_writes_nothing(self, temp_partition_dir):
         """The CLI's --preview: say what would happen, change nothing (#790)."""
@@ -1193,8 +1349,8 @@ class TestSubPartitionFrontDoorParity:
         (
             "quadkey",
             "sub_partition_by_quadkey",
-            ["--resolution", "13", "--partition-resolution", "6"],
-            {"resolution": 13, "partition_resolution": 6},
+            ["--resolution", "6", "--partition-resolution", "3", "--use-centroid"],
+            {"resolution": 6, "partition_resolution": 3, "use_centroid": True},
         ),
     ]
 

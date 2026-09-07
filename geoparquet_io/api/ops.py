@@ -1258,8 +1258,9 @@ def _sub_partition(
     *,
     min_size: str | int,
     resolution: int | None = None,
-    partition_resolution: int | None = None,
     level: int | None = None,
+    partition_resolution: int | None = None,
+    use_centroid: bool = False,
     auto: bool = False,
     target_rows: int = 100000,
     max_partitions: int = 10000,
@@ -1325,7 +1326,19 @@ def _sub_partition(
         }
 
     argument = _SUB_PARTITION_RESOLUTION_ARG.get(partition_type, "resolution")
-    if not auto and (resolution if resolution is not None else level) is None:
+    if partition_type == "quadkey":
+        # Quadkey takes two resolutions; refuse once here rather than per file
+        # (#854), spelled as keyword arguments rather than CLI flags.
+        missing = core_sub_partition.quadkey_resolution_error(
+            resolution,
+            partition_resolution,
+            auto=auto,
+            labels=("resolution=<int>", "partition_resolution=<int>"),
+            auto_label="auto=True",
+        )
+        if missing:
+            raise InvalidParameterError(argument, missing)
+    elif not auto and (resolution if resolution is not None else level) is None:
         raise InvalidParameterError(
             argument,
             f"pass {argument}=<int> or auto=True -- gpio does not guess a "
@@ -1341,8 +1354,9 @@ def _sub_partition(
         partition_type=partition_type,
         min_size_bytes=min_size_bytes,
         resolution=resolution,
-        partition_resolution=partition_resolution,
         level=level,
+        partition_resolution=partition_resolution,
+        use_centroid=use_centroid,
         in_place=in_place,
         hive=hive,
         overwrite=overwrite,
@@ -1551,6 +1565,7 @@ def sub_partition_by_quadkey(
     min_size: str | int,
     resolution: int | None = None,
     partition_resolution: int | None = None,
+    use_centroid: bool = False,
     auto: bool = False,
     target_rows: int = 100000,
     max_partitions: int = 10000,
@@ -1573,17 +1588,21 @@ def sub_partition_by_quadkey(
     over the threshold is partitioned into a sibling ``<file>_quadkey/``
     directory; files under it are left alone.
 
-    Pass both ``resolution`` (column precision) and ``partition_resolution``
-    (partition prefix length), or use ``auto=True`` to size both from the data.
+    Quadkey is the one index that takes two numbers: the cell column is built at
+    ``resolution`` and the sub-partitions are the first ``partition_resolution``
+    characters of each cell. Pass both, or ``auto=True`` to size them from the
+    data; a lone ``resolution`` is refused before any file is touched (#854).
     The partition resolution cannot exceed the column resolution, matching
     single-file partitioning.
 
     Args:
         directory: Directory of parquet files, searched recursively
         min_size: Size threshold -- ``'100MB'`` or a byte count
-        resolution: Quadkey column resolution 0-23
-        partition_resolution: Quadkey partition prefix length 0-23, at most resolution
-        auto: Size the resolution from each file (default: False)
+        resolution: Quadkey resolution 0-23 the cell column is built at
+        partition_resolution: Prefix length 0-23 the sub-partitions are split
+            on. Required alongside ``resolution`` unless ``auto=True``
+        use_centroid: Use the geometry centroid when adding the quadkey column
+        auto: Size both resolutions from each file (default: False)
         target_rows: Target rows per partition when ``auto=True`` (default: 100000)
         max_partitions: Maximum partitions when ``auto=True`` (default: 10000)
         in_place: Delete each original once its sub-partitions hold every row it
@@ -1613,7 +1632,8 @@ def sub_partition_by_quadkey(
 
     Example:
         >>> from geoparquet_io.api import ops
-        >>> ops.sub_partition_by_quadkey('by_country/', min_size='100MB', auto=True,
+        >>> ops.sub_partition_by_quadkey('by_country/', min_size='100MB',
+        ...                              resolution=13, partition_resolution=6,
         ...                              in_place=True)
     """
     return _sub_partition(
@@ -1622,6 +1642,7 @@ def sub_partition_by_quadkey(
         min_size=min_size,
         resolution=resolution,
         partition_resolution=partition_resolution,
+        use_centroid=use_centroid,
         auto=auto,
         target_rows=target_rows,
         max_partitions=max_partitions,
