@@ -335,8 +335,11 @@ def _stream_to_stdout(
     result = con.execute(query)
     count = 0
 
-    with _utf8_stdout() as output:
-        try:
+    # The `with` is inside the `try`: switching stdout to UTF-8 flushes whatever
+    # the caller buffered under the old codec, and if the reader is already gone
+    # that flush raises where only this handler should see it.
+    try:
+        with _utf8_stdout() as output:
             while True:
                 row = result.fetchone()
                 if row is None:
@@ -356,19 +359,19 @@ def _stream_to_stdout(
                 count += 1
 
             output.flush()
-        except BrokenPipeError:
-            # Downstream consumer closed the pipe early (e.g. `| head`, tippecanoe
-            # finished reading). Redirect stdout to devnull so interpreter-shutdown
-            # flush does not re-raise. Standard Unix pipe-tool behavior.
-            try:
-                stdout_fd = sys.stdout.fileno()
-            except (OSError, ValueError):
-                return count
-            devnull_fd = os.open(os.devnull, os.O_WRONLY)
-            try:
-                os.dup2(devnull_fd, stdout_fd)
-            finally:
-                os.close(devnull_fd)
+    except BrokenPipeError:
+        # Downstream consumer closed the pipe early (e.g. `| head`, tippecanoe
+        # finished reading). Redirect stdout to devnull so interpreter-shutdown
+        # flush does not re-raise. Standard Unix pipe-tool behavior.
+        try:
+            stdout_fd = sys.stdout.fileno()
+        except (OSError, ValueError):
+            return count
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull_fd, stdout_fd)
+        finally:
+            os.close(devnull_fd)
 
     return count
 

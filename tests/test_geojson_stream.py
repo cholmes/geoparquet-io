@@ -433,6 +433,32 @@ class TestNonUtf8Stdout:
             json.loads(self._written(stream)), ensure_ascii=False
         )
 
+    def test_a_pipe_that_broke_before_the_first_write_is_still_handled(self, monkeypatch):
+        """Entering the wrapper flushes, and that flush is inside the handler.
+
+        Switching stdout to UTF-8 has to push out whatever the caller already
+        buffered under the old codec first. If the reader is gone by then that
+        flush raises, and it must reach the BrokenPipeError handler below rather
+        than escaping as the exit-1 regression of issue #421.
+        """
+
+        class _BrokenPipeStdout(io.TextIOWrapper):
+            def flush(self):
+                raise BrokenPipeError(32, "Broken pipe")
+
+            def close(self):
+                """No-op: closing flushes, and this fake's flush always raises.
+
+                Without it the destructor raises during collection and pytest
+                reports an unraisable exception for a test that passed.
+                """
+
+        monkeypatch.setattr(
+            sys, "stdout", _BrokenPipeStdout(io.BytesIO(), encoding="cp1252", newline="")
+        )
+
+        assert convert_to_geojson_stream(str(PLACES_PARQUET)) == 0
+
     def test_a_utf8_stdout_is_left_alone(self, monkeypatch):
         """Nothing is reconfigured when the stream already speaks UTF-8."""
         stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
