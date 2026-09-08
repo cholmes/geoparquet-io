@@ -547,34 +547,40 @@ Partition by balanced spatial partitions:
     gpio partition kdtree input.parquet --preview
     ```
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```bash
-    # Auto-partition (default: ~120k rows each)
-    gpio partition kdtree input.parquet output/
+    # Auto-partition (default: ~120k rows each; small inputs get few partitions)
+    gpio partition kdtree input.parquet output/ --force
 
+    # Hive-style with progress tracking
+    gpio partition kdtree input.parquet output/ --hive --verbose --force
+    ```
+
+    <!-- doctest: skip="766 rows cannot fill 32 or 16 explicit partitions" -->
+    ```bash
     # Explicit partition count (must be power of 2)
     gpio partition kdtree input.parquet output/ --partitions 32
 
     # Exact computation (deterministic)
     gpio partition kdtree input.parquet output/ --partitions 16 --exact
-
-    # Hive-style with progress tracking
-    gpio partition kdtree input.parquet output/ --hive --verbose
     ```
 
 === "Python"
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
     ```python
     import geoparquet_io as gpio
 
     # Auto mode: size the tree from the row count, like the bare CLI call
-    gpio.read('input.parquet').partition_by_kdtree('output/', auto=True)
+    gpio.read('input.parquet').partition_by_kdtree('output/', auto=True, overwrite=True)
 
     # A different target, still auto
     gpio.read('input.parquet').partition_by_kdtree(
-        'output/', auto=True, target_rows=50000
+        'output/', auto=True, target_rows=50000, overwrite=True
     )
+    ```
+
+    <!-- doctest: skip="766 rows cannot fill 64 or 32 explicit partitions" -->
+    ```python
+    import geoparquet_io as gpio
 
     # 64 partitions (2^6)
     gpio.read('input.parquet').partition_by_kdtree('output/', iterations=6)
