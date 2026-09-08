@@ -10,6 +10,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.constants import DEFAULT_H3_COLUMN_NAME
 from geoparquet_io.core.process.aggregate.grid_common import (
+    UNWRAPPED_POLY_WKB,
     GridScheme,
     aggregate_grid_file,
     aggregate_grid_table,
@@ -23,10 +24,18 @@ H3_SCHEME = GridScheme(
     default_column=DEFAULT_H3_COLUMN_NAME,
     # h3_latlng_to_cell_string takes (lat, lng) -> note Y before X.
     key_template="h3_latlng_to_cell_string(ST_Y({pt}), ST_X({pt}), {res})",
-    # h3_cell_to_boundary_wkt returns a WKT polygon directly.
-    boundary_template="h3_cell_to_boundary_wkt({cell})",
+    # h3_cell_to_boundary_wkt returns a closed WKT ring whose vertices are all
+    # wrapped into [-180, 180]. Take its coordinates as an open DOUBLE[2][] ring,
+    # matching a5_cell_to_boundary, so the shared builder can unwrap them.
+    boundary_template=(
+        "list_transform("
+        "list_slice("
+        "ST_Dump(ST_Points(ST_ExteriorRing("
+        "ST_GeomFromText(h3_cell_to_boundary_wkt({cell}))))), 1, -2), "
+        "p -> [ST_X(p.geom), ST_Y(p.geom)])"
+    ),
     latlng_template="h3_cell_to_latlng({cell})",
-    poly_wkb_template="ST_AsWKB(ST_GeomFromText({bnd}))",
+    poly_wkb_template=UNWRAPPED_POLY_WKB,
     # h3_cell_to_latlng returns [lat, lng]; ST_Point wants (lng, lat).
     centroid_wkb_template="ST_AsWKB(ST_Point({ll}[2], {ll}[1]))",
 )
