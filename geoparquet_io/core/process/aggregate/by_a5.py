@@ -10,6 +10,7 @@ import pyarrow as pa
 
 from geoparquet_io.core.constants import DEFAULT_A5_COLUMN_NAME
 from geoparquet_io.core.process.aggregate.grid_common import (
+    UNWRAPPED_POLY_WKB,
     GridScheme,
     aggregate_grid_file,
     aggregate_grid_table,
@@ -24,11 +25,8 @@ A5_SCHEME = GridScheme(
     key_template="a5_lonlat_to_cell(ST_X({pt}), ST_Y({pt}), {res})",
     boundary_template="a5_cell_to_boundary({cell})",
     latlng_template="a5_cell_to_lonlat({cell})",
-    # a5_cell_to_boundary returns DOUBLE[2][]; close the ring and build a polygon.
-    poly_wkb_template=(
-        "ST_AsWKB(ST_MakePolygon(ST_MakeLine("
-        "list_transform(list_append({bnd}, {bnd}[1]), p -> ST_Point(p[1], p[2])))))"
-    ),
+    # a5_cell_to_boundary returns an open DOUBLE[2][] ring.
+    poly_wkb_template=UNWRAPPED_POLY_WKB,
     # a5_cell_to_lonlat returns [lon, lat].
     centroid_wkb_template="ST_AsWKB(ST_Point({ll}[1], {ll}[2]))",
 )

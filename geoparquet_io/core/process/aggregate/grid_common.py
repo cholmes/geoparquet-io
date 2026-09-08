@@ -80,6 +80,23 @@ class GridScheme:
     centroid_wkb_template: str
 
 
+# Cell rings that straddle the antimeridian must stay contiguous. Vertices are
+# unwrapped relative to the first, so a ring may legitimately run past +/-180,
+# which is what a5_cell_to_boundary already emits (for example -180.2).
+#
+# Without this, h3_cell_to_boundary_wkt wraps every vertex into [-180, 180] and
+# the ring tears: a cell near Fiji comes back spanning 359 degrees of longitude
+# and a renderer draws it as a band across the whole map.
+#
+# `{bnd}` is an open ring as DOUBLE[2][]; the ring is closed here.
+UNWRAPPED_POLY_WKB = (
+    "ST_AsWKB(ST_MakePolygon(ST_MakeLine(list_transform("
+    "list_append({bnd}, {bnd}[1]), p -> ST_Point("
+    "CASE WHEN p[1] - {bnd}[1][1] > 180 THEN p[1] - 360 "
+    "WHEN p[1] - {bnd}[1][1] < -180 THEN p[1] + 360 "
+    "ELSE p[1] END, p[2])))))"
+)
+
 # Internal column aliases used while building the aggregation. Any input column
 # with one of these names is dropped from the SELECT * passthrough so a generated
 # column can never be shadowed by a same-named user column. ("__geom" is kept
