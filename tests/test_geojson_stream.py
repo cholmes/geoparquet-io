@@ -17,6 +17,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -24,8 +25,10 @@ from click.testing import CliRunner
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.geojson_stream import (
+    RS,
     WGS84_CRS,
     _build_feature_query,
+    _encodes_utf8,
     _get_property_columns,
     _needs_reprojection,
     convert_to_geojson,
@@ -458,6 +461,56 @@ class TestNonUtf8Stdout:
         )
 
         assert convert_to_geojson_stream(str(PLACES_PARQUET)) == 0
+
+    def test_pretty_geojsonseq_survives_a_cp1252_stdout(self, monkeypatch):
+        """`--pretty` re-serializes each feature through a separate write.
+
+        `json.dumps` escapes non-ASCII by default, so this path could not have
+        hit the encoding bug - but it is the other half of the branch and it
+        must still come out as 766 parseable features with the names intact.
+        """
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        assert convert_to_geojson_stream(str(PLACES_PARQUET), pretty=True) == 766
+
+        features = [json.loads(chunk) for chunk in self._written(stream).split(RS) if chunk.strip()]
+        assert len(features) == 766
+        assert any(f["properties"]["name"] == self.NON_LATIN1_NAME for f in features)
+
+    def test_pretty_feature_collection_survives_a_cp1252_stdout(self, monkeypatch):
+        """The indented FeatureCollection takes the same stdout path."""
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        count = convert_to_geojson_stream(str(PLACES_PARQUET), seq=False, pretty=True)
+
+        assert count == 766
+        assert self.NON_LATIN1_NAME in json.dumps(
+            json.loads(self._written(stream)), ensure_ascii=False
+        )
+
+    @pytest.mark.parametrize(
+        ("encoding", "expected"),
+        [
+            ("utf-8", True),
+            # The reason for codecs.lookup rather than a string compare: Python
+            # reports the same codec under several names.
+            ("UTF8", True),
+            ("utf_8", True),
+            ("cp1252", False),
+            # A stream can name a codec Python does not have, and an unknown
+            # name must read as "not UTF-8" rather than raising mid-stream.
+            ("definitely-not-a-codec", False),
+        ],
+    )
+    def test_encodes_utf8_reads_the_codec_not_the_spelling(self, encoding, expected):
+        assert _encodes_utf8(SimpleNamespace(encoding=encoding)) is expected
+
+    @pytest.mark.parametrize("stream", [io.StringIO(), SimpleNamespace(encoding=None)])
+    def test_a_stream_with_no_codec_is_not_assumed_to_be_utf8(self, stream):
+        """A StringIO takes str directly and names no encoding; assume nothing."""
+        assert _encodes_utf8(stream) is False
 
     def test_a_utf8_stdout_is_left_alone(self, monkeypatch):
         """Nothing is reconfigured when the stream already speaks UTF-8."""
