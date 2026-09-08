@@ -20,10 +20,16 @@ Examples:
 
 from __future__ import annotations
 
+import codecs
+import contextlib
+import io
 import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from typing import TextIO
+
     import duckdb
 
 from geoparquet_io.core.duckdb_utils import _escape_sql_string, quote_identifier, sql_path
@@ -33,8 +39,57 @@ from geoparquet_io.core.geometry_repair import repair_geometry_sql
 # RFC 8142 record separator character
 RS = "\x1e"
 
+
 # WGS84 CRS identifier for RFC 7946 compliance
 WGS84_CRS = "EPSG:4326"
+
+
+def _encodes_utf8(stream: TextIO) -> bool:
+    """Whether ``stream`` already writes UTF-8, under any spelling of the name."""
+    name = getattr(stream, "encoding", None)
+    if not name:
+        return False
+    try:
+        return codecs.lookup(name).name == "utf-8"
+    except LookupError:
+        return False
+
+
+@contextlib.contextmanager
+def _utf8_stdout() -> Iterator[TextIO]:
+    """Yield a stdout stream that can encode any GeoJSON we produce.
+
+    GeoJSON is UTF-8 by definition (RFC 7946 §11), but Python hands
+    ``sys.stdout`` the console's codec - cp1252 on a default Windows console -
+    and the first place name outside Latin-1 then raises UnicodeEncodeError
+    mid-stream, after some features are already written. The CLI reconfigures
+    its own streams in the group callback, so only Python API callers were
+    exposed; reconfiguring theirs would leave a process-wide side effect behind
+    for code that merely called ``to_geojson()``. So wrap the underlying binary
+    buffer for the duration and detach - never close - it afterwards, leaving
+    ``sys.stdout`` exactly as we found it.
+    """
+    stream = sys.stdout
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None or _encodes_utf8(stream):
+        # Already UTF-8, or a stream with no binary layer to wrap (a StringIO
+        # test double takes str directly and cannot raise an encoding error).
+        yield stream
+        return
+
+    # Anything the caller already buffered belongs in front of our output, and
+    # must go out under the codec it was written for.
+    stream.flush()
+    wrapper = io.TextIOWrapper(buffer, encoding="utf-8", newline="", write_through=True)
+    try:
+        yield wrapper
+    finally:
+        # A broken pipe is handled by the caller and must not resurface here;
+        # detaching a wrapper whose buffer already went away raises ValueError.
+        with contextlib.suppress(OSError, ValueError):
+            wrapper.flush()
+        with contextlib.suppress(ValueError):
+            wrapper.detach()
 
 
 def _get_source_crs(input_path: str) -> str | None:
@@ -279,28 +334,31 @@ def _stream_to_stdout(
 
     result = con.execute(query)
     count = 0
-    output = sys.stdout
 
+    # The `with` is inside the `try`: switching stdout to UTF-8 flushes whatever
+    # the caller buffered under the old codec, and if the reader is already gone
+    # that flush raises where only this handler should see it.
     try:
-        while True:
-            row = result.fetchone()
-            if row is None:
-                break
+        with _utf8_stdout() as output:
+            while True:
+                row = result.fetchone()
+                if row is None:
+                    break
 
-            if rs:
-                output.write(RS)
+                if rs:
+                    output.write(RS)
 
-            if pretty:
-                # Parse and re-serialize with indentation
-                feature = json.loads(row[0])
-                output.write(json.dumps(feature, indent=2))
-            else:
-                output.write(row[0])
+                if pretty:
+                    # Parse and re-serialize with indentation
+                    feature = json.loads(row[0])
+                    output.write(json.dumps(feature, indent=2))
+                else:
+                    output.write(row[0])
 
-            output.write("\n")
-            count += 1
+                output.write("\n")
+                count += 1
 
-        output.flush()
+            output.flush()
     except BrokenPipeError:
         # Downstream consumer closed the pipe early (e.g. `| head`, tippecanoe
         # finished reading). Redirect stdout to devnull so interpreter-shutdown
@@ -375,13 +433,13 @@ def _stream_feature_collection(
                 json.dump(fc, f)
             f.write("\n")
     else:
-        output = sys.stdout
-        if pretty:
-            output.write(json.dumps(fc, indent=2))
-        else:
-            output.write(json.dumps(fc))
-        output.write("\n")
-        output.flush()
+        with _utf8_stdout() as output:
+            if pretty:
+                output.write(json.dumps(fc, indent=2))
+            else:
+                output.write(json.dumps(fc))
+            output.write("\n")
+            output.flush()
 
     return count
 

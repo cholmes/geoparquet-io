@@ -10,12 +10,14 @@ Tests verify that gpio convert geojson:
 - Supports --precision, --write-bbox, --id-field options
 """
 
+import io
 import json
 import shutil
 import sys
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -23,8 +25,10 @@ from click.testing import CliRunner
 from geoparquet_io.cli.main import cli
 from geoparquet_io.core.duckdb_utils import quote_identifier
 from geoparquet_io.core.geojson_stream import (
+    RS,
     WGS84_CRS,
     _build_feature_query,
+    _encodes_utf8,
     _get_property_columns,
     _needs_reprojection,
     convert_to_geojson,
@@ -383,6 +387,140 @@ class TestPipelineIntegration:
             f"gpio convert geojson exited {producer.returncode} after downstream "
             f"closed pipe. stderr: {stderr.decode(errors='replace')!r}"
         )
+
+
+@pytest.mark.skipif(not PLACES_PARQUET.exists(), reason="Test data not available")
+class TestNonUtf8Stdout:
+    """GeoJSON stays writable when the console codec cannot spell the data.
+
+    Regression for the Windows slow-tests failure on `docs/guide/geojson.md`:
+    GeoJSON is UTF-8 by definition (RFC 7946 s11), but Python gives
+    ``sys.stdout`` the console's codec - cp1252 on a default Windows console -
+    and only the CLI group callback reconfigured it. A Python API caller kept
+    the console codec, so ``Table.to_geojson()`` died on the first place name
+    outside Latin-1 (``UnicodeEncodeError`` on ``\u016b``, "Reicelas Buris").
+    """
+
+    #: A name in the fixture that cp1252 cannot encode; 125 of the 766 rows
+    #: carry one, so the first flush is enough to trip the old behavior.
+    NON_LATIN1_NAME = "Reicelas B\u016bris"
+
+    @staticmethod
+    def _cp1252_stdout() -> io.TextIOWrapper:
+        """A stand-in for a default Windows console."""
+        return io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="")
+
+    def _written(self, stream: io.TextIOWrapper) -> str:
+        stream.flush()
+        return stream.buffer.getvalue().decode("utf-8")
+
+    def test_geojsonseq_survives_a_cp1252_stdout(self, monkeypatch):
+        """The streaming (GeoJSONSeq) path is the one the docs example hits."""
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        count = convert_to_geojson_stream(str(PLACES_PARQUET))
+
+        assert count == 766
+        assert self.NON_LATIN1_NAME in self._written(stream)
+
+    def test_feature_collection_survives_a_cp1252_stdout(self, monkeypatch):
+        """`seq=False` writes a FeatureCollection to stdout, and must too."""
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        count = convert_to_geojson_stream(str(PLACES_PARQUET), seq=False)
+
+        assert count == 766
+        assert self.NON_LATIN1_NAME in json.dumps(
+            json.loads(self._written(stream)), ensure_ascii=False
+        )
+
+    def test_a_pipe_that_broke_before_the_first_write_is_still_handled(self, monkeypatch):
+        """Entering the wrapper flushes, and that flush is inside the handler.
+
+        Switching stdout to UTF-8 has to push out whatever the caller already
+        buffered under the old codec first. If the reader is gone by then that
+        flush raises, and it must reach the BrokenPipeError handler below rather
+        than escaping as the exit-1 regression of issue #421.
+        """
+
+        class _BrokenPipeStdout(io.TextIOWrapper):
+            def flush(self):
+                raise BrokenPipeError(32, "Broken pipe")
+
+            def close(self):
+                """No-op: closing flushes, and this fake's flush always raises.
+
+                Without it the destructor raises during collection and pytest
+                reports an unraisable exception for a test that passed.
+                """
+
+        monkeypatch.setattr(
+            sys, "stdout", _BrokenPipeStdout(io.BytesIO(), encoding="cp1252", newline="")
+        )
+
+        assert convert_to_geojson_stream(str(PLACES_PARQUET)) == 0
+
+    def test_pretty_geojsonseq_survives_a_cp1252_stdout(self, monkeypatch):
+        """`--pretty` re-serializes each feature through a separate write.
+
+        `json.dumps` escapes non-ASCII by default, so this path could not have
+        hit the encoding bug - but it is the other half of the branch and it
+        must still come out as 766 parseable features with the names intact.
+        """
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        assert convert_to_geojson_stream(str(PLACES_PARQUET), pretty=True) == 766
+
+        features = [json.loads(chunk) for chunk in self._written(stream).split(RS) if chunk.strip()]
+        assert len(features) == 766
+        assert any(f["properties"]["name"] == self.NON_LATIN1_NAME for f in features)
+
+    def test_pretty_feature_collection_survives_a_cp1252_stdout(self, monkeypatch):
+        """The indented FeatureCollection takes the same stdout path."""
+        stream = self._cp1252_stdout()
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        count = convert_to_geojson_stream(str(PLACES_PARQUET), seq=False, pretty=True)
+
+        assert count == 766
+        assert self.NON_LATIN1_NAME in json.dumps(
+            json.loads(self._written(stream)), ensure_ascii=False
+        )
+
+    @pytest.mark.parametrize(
+        ("encoding", "expected"),
+        [
+            ("utf-8", True),
+            # The reason for codecs.lookup rather than a string compare: Python
+            # reports the same codec under several names.
+            ("UTF8", True),
+            ("utf_8", True),
+            ("cp1252", False),
+            # A stream can name a codec Python does not have, and an unknown
+            # name must read as "not UTF-8" rather than raising mid-stream.
+            ("definitely-not-a-codec", False),
+        ],
+    )
+    def test_encodes_utf8_reads_the_codec_not_the_spelling(self, encoding, expected):
+        assert _encodes_utf8(SimpleNamespace(encoding=encoding)) is expected
+
+    @pytest.mark.parametrize("stream", [io.StringIO(), SimpleNamespace(encoding=None)])
+    def test_a_stream_with_no_codec_is_not_assumed_to_be_utf8(self, stream):
+        """A StringIO takes str directly and names no encoding; assume nothing."""
+        assert _encodes_utf8(stream) is False
+
+    def test_a_utf8_stdout_is_left_alone(self, monkeypatch):
+        """Nothing is reconfigured when the stream already speaks UTF-8."""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
+        monkeypatch.setattr(sys, "stdout", stream)
+
+        convert_to_geojson_stream(str(PLACES_PARQUET))
+
+        assert stream.encoding.lower().replace("-", "") == "utf8"
+        assert self.NON_LATIN1_NAME in self._written(stream)
 
 
 @pytest.mark.skipif(not BUILDINGS_PARQUET.exists(), reason="Test data not available")
