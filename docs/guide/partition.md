@@ -547,19 +547,22 @@ Partition by balanced spatial partitions:
     gpio partition kdtree input.parquet --preview
     ```
 
-    <!-- doctest: skip="the 766-row sample is too small to partition meaningfully" -->
+    <!-- doctest: menu -->
     ```bash
     # Auto-partition (default: ~120k rows each)
     gpio partition kdtree input.parquet output/
 
+    # Hive-style with progress tracking
+    gpio partition kdtree input.parquet output/ --hive --verbose
+    ```
+
+    <!-- doctest: skip="an explicit --partitions count is refused on the 766-row sample" -->
+    ```bash
     # Explicit partition count (must be power of 2)
     gpio partition kdtree input.parquet output/ --partitions 32
 
     # Exact computation (deterministic)
     gpio partition kdtree input.parquet output/ --partitions 16 --exact
-
-    # Hive-style with progress tracking
-    gpio partition kdtree input.parquet output/ --hive --verbose
     ```
 
 === "Python"
