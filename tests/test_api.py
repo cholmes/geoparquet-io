@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os
 import struct
 import tempfile
 import uuid
@@ -708,8 +709,31 @@ OPS_CORE_PATCH_SITE_LEAKS: frozenset[str] = frozenset(
 )
 
 
+def _skip_if_mutmut_rewrote_the_package() -> None:
+    """Step aside when the surface on offer is mutmut's copy, not gpio's.
+
+    The guards below read ``dir()`` to describe gpio's real public surface.
+    Under ``mutmut run`` there is no real package to describe: mutmut rewrites
+    every file it mutates, renaming each function to ``x_<name>__mutmut_orig``
+    plus one ``x_<name>__mutmut_<n>`` per mutant - so a private ``_foo`` mangles
+    into a *public* ``x__foo__mutmut_1`` - and injecting a trampoline preamble
+    that binds ``Annotated``, ``Callable``, ``ClassVar`` and ``MutantDict`` at
+    module scope. Asserting on that surface kills no mutant and fails the stats
+    phase, which aborts the whole nightly run before a single mutant is
+    measured; it has done so twice.
+
+    The skip lives in the helpers rather than on each test so a guard added
+    later cannot forget it. mutmut exports ``MUTANT_UNDER_TEST`` for every phase
+    (mutmut/__main__.py), and nothing else does, so every other lane - PRs
+    included - still runs these.
+    """
+    if "MUTANT_UNDER_TEST" in os.environ:
+        pytest.skip("dir() describes mutmut's rewritten copy, not gpio's real surface")
+
+
 def _ops_dir_public_surface() -> set[str]:
     """Every public callable ``dir(ops)`` shows, wherever it was defined."""
+    _skip_if_mutmut_rewrote_the_package()
     return {name for name in dir(ops) if not name.startswith("_") and callable(getattr(ops, name))}
 
 
@@ -730,6 +754,7 @@ def _ops_public_surface() -> set[str]:
 
 def _table_public_surface() -> set[str]:
     """Every public callable `Table` exposes (properties are not callables)."""
+    _skip_if_mutmut_rewrote_the_package()
     return {
         name for name in dir(Table) if not name.startswith("_") and callable(getattr(Table, name))
     }
